@@ -8,6 +8,7 @@ export const guildConfigs = pgTable("guild_configs", {
   guildId: text("guild_id").notNull().unique(),
   requestChannelId: text("request_channel_id"),
   logChannelId: text("log_channel_id"),
+  allowedRoleIds: text("allowed_role_ids").array(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

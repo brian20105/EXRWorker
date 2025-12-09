@@ -7,6 +7,7 @@ export interface IStorage {
   upsertGuildConfig(config: InsertGuildConfig): Promise<GuildConfig>;
   updateRequestChannel(guildId: string, channelId: string): Promise<GuildConfig>;
   updateLogChannel(guildId: string, channelId: string): Promise<GuildConfig>;
+  updateAllowedRoles(guildId: string, roleIds: string[]): Promise<GuildConfig>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -46,6 +47,13 @@ export class DatabaseStorage implements IStorage {
     return this.upsertGuildConfig({
       guildId,
       logChannelId: channelId,
+    });
+  }
+
+  async updateAllowedRoles(guildId: string, roleIds: string[]): Promise<GuildConfig> {
+    return this.upsertGuildConfig({
+      guildId,
+      allowedRoleIds: roleIds,
     });
   }
 }

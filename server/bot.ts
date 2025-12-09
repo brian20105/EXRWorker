@@ -47,7 +47,83 @@ const commands = [
         .setDescription("The channel where logs will be sent")
         .setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName("payout_permission")
+    .setDescription("Set which roles can approve/deny payout requests")
+    .addRoleOption((option) =>
+      option
+        .setName("role1")
+        .setDescription("First role that can approve/deny payouts")
+        .setRequired(true)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("role2")
+        .setDescription("Second role (optional)")
+        .setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("role3")
+        .setDescription("Third role (optional)")
+        .setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("role4")
+        .setDescription("Fourth role (optional)")
+        .setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("role5")
+        .setDescription("Fifth role (optional)")
+        .setRequired(false)
+    ),
 ].map((command) => command.toJSON());
+
+async function hasPayoutPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+  
+  if (!config?.allowedRoleIds || config.allowedRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string' 
+      ? BigInt(memberPermissions) 
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+  
+  if (!memberRoles) return false;
+  return config.allowedRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, paypal: string): Promise<void> {
+  try {
+    const user = await client.users.fetch(userId);
+    const statusEmoji = status === "approved" ? "✅" : "❌";
+    const statusText = status === "approved" ? "Approved" : "Denied";
+    const color = status === "approved" ? 0x23a559 : 0xda373c;
+    
+    const embed = new EmbedBuilder()
+      .setTitle(`Payout Request ${statusText}`)
+      .setDescription(`Your payout request has been ${status}.`)
+      .setColor(color)
+      .addFields(
+        { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
+        { name: "PayPal", value: paypal, inline: true },
+        { name: "Reason", value: reason, inline: false }
+      )
+      .setTimestamp();
+    
+    await user.send({ embeds: [embed] });
+  } catch (error) {
+    console.log(`Could not DM user ${userId}:`, error);
+  }
+}
 
 client.once("ready", async () => {
   console.log(`✅ Bot logged in as ${client.user?.tag}`);
@@ -113,6 +189,24 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Configuration saved! Payment logs will be sent to <#${channel.id}>.`,
           ephemeral: true,
         });
+      } else if (commandName === "payout_permission") {
+        const roles: string[] = [];
+        const roleNames: string[] = [];
+        
+        for (let i = 1; i <= 5; i++) {
+          const role = interaction.options.getRole(`role${i}`);
+          if (role) {
+            roles.push(role.id);
+            roleNames.push(role.name);
+          }
+        }
+        
+        await storage.updateAllowedRoles(interaction.guildId!, roles);
+        
+        await interaction.reply({
+          content: `✅ Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
+          ephemeral: true,
+        });
       }
     } else if (interaction.isButton()) {
       if (interaction.customId === "request_payout") {
@@ -152,12 +246,28 @@ client.on("interactionCreate", async (interaction) => {
         const [action, requestId] = interaction.customId.split("_");
         const message = interaction.message;
         
+        const member = interaction.member;
+        const memberRoles = member && 'roles' in member 
+          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+          : undefined;
+        const memberPermissions = interaction.memberPermissions?.bitfield;
+        
+        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
+        if (!hasPermission) {
+          await interaction.reply({
+            content: "❌ You don't have permission to approve or deny payout requests.",
+            ephemeral: true,
+          });
+          return;
+        }
+        
         if (!message.embeds[0]) return;
         
         const originalEmbed = message.embeds[0];
         const fields = originalEmbed.fields;
         
-        const userId = fields.find(f => f.name === "User ID")?.value || "Unknown";
+        const userIdField = fields.find(f => f.name === "User ID")?.value || "Unknown";
+        const userId = userIdField.replace(/<@|>/g, '').split(' ')[0];
         const requestedBy = fields.find(f => f.name === "Requested by")?.value || "Unknown";
         const reason = fields.find(f => f.name === "Reason")?.value || "No reason provided";
         const paypal = fields.find(f => f.name === "Paypal")?.value || "Not provided";
@@ -169,7 +279,7 @@ client.on("interactionCreate", async (interaction) => {
           .setTitle("Payout Request")
           .setColor(color)
           .addFields(
-            { name: "User ID", value: userId, inline: true },
+            { name: "User ID", value: userIdField, inline: true },
             { name: "Requested by", value: requestedBy, inline: true },
             { name: "Status", value: status, inline: true },
             { name: "Reason", value: reason, inline: false },
@@ -189,6 +299,8 @@ client.on("interactionCreate", async (interaction) => {
           ephemeral: true,
         });
 
+        await sendDMToUser(userId, action as "approved" | "denied", reason, paypal);
+
         if (action === "approve") {
           const config = await storage.getGuildConfig(interaction.guildId!);
           if (config?.logChannelId) {
@@ -196,7 +308,7 @@ client.on("interactionCreate", async (interaction) => {
             if (logChannel && "send" in logChannel) {
               const logEmbed = new EmbedBuilder()
                 .setTitle("Payment Logged")
-                .setDescription(`Payment successfully processed for User ID: ${userId}`)
+                .setDescription(`Payment successfully processed for User ID: ${userId} (<@${userId}>)`)
                 .setColor(0x23a559)
                 .addFields(
                   { name: "Amount", value: "$0.00 (Example)", inline: true },
@@ -237,7 +349,7 @@ client.on("interactionCreate", async (interaction) => {
           .setTitle("Payout Request")
           .setColor(0xf0b232)
           .addFields(
-            { name: "User ID", value: userId, inline: true },
+            { name: "User ID", value: `${userId} (<@${userId}>)`, inline: true },
             { name: "Requested by", value: `<@${interaction.user.id}>`, inline: true },
             { name: "Status", value: "⏳ Pending", inline: true },
             { name: "Reason", value: reason, inline: false },
