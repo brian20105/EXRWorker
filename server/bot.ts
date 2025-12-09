@@ -436,23 +436,33 @@ client.on("interactionCreate", async (interaction) => {
         await sendDMToUser(userId, dmStatus, reason, moneyOwed, paypal, actionReason);
         await sendDMToStaff(requestedById, dmStatus, userId, moneyOwed, paypal, actionReason);
 
-        if (action === "approve") {
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          if (config?.logChannelId) {
-            const logChannel = await client.channels.fetch(config.logChannelId);
-            if (logChannel && "send" in logChannel) {
-              const logEmbed = new EmbedBuilder()
-                .setTitle("Payment Logged")
-                .setDescription(`Payment successfully processed for User ID: ${userId} (<@${userId}>)`)
-                .setColor(0x23a559)
-                .addFields(
-                  { name: "Amount", value: moneyOwedField, inline: true },
-                  { name: "Recipient", value: paypal, inline: true }
-                )
-                .setTimestamp();
-
-              await logChannel.send({ embeds: [logEmbed] });
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        if (config?.logChannelId) {
+          const logChannel = await client.channels.fetch(config.logChannelId);
+          if (logChannel && "send" in logChannel) {
+            const logTitle = action === "approve" ? "Payment Logged" : "Payment Denied";
+            const logDescription = action === "approve" 
+              ? `Payment successfully processed for User ID: ${userId} (<@${userId}>)`
+              : `Payment request denied for User ID: ${userId} (<@${userId}>)`;
+            const logColor = action === "approve" ? 0x23a559 : 0xda373c;
+            
+            const logFields: any[] = [
+              { name: "Amount", value: moneyOwedField, inline: true },
+              { name: "Recipient", value: paypal, inline: true }
+            ];
+            
+            if (actionReason) {
+              logFields.push({ name: action === "approve" ? "Note" : "Denial Reason", value: actionReason, inline: false });
             }
+            
+            const logEmbed = new EmbedBuilder()
+              .setTitle(logTitle)
+              .setDescription(logDescription)
+              .setColor(logColor)
+              .addFields(logFields)
+              .setTimestamp();
+
+            await logChannel.send({ embeds: [logEmbed] });
           }
         }
       }
