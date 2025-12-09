@@ -45,7 +45,7 @@ export default function DiscordPrototype() {
   ]);
 
   const [isPayoutModalOpen, setIsPayoutModalOpen] = useState(false);
-  const [modalData, setModalData] = useState({ userId: "", reason: "", paypal: "" });
+  const [modalData, setModalData] = useState({ userId: "", reason: "", moneyOwed: "", paypal: "" });
 
   // Config State
   const [requestChannel, setRequestChannel] = useState<string | null>(null);
@@ -186,6 +186,7 @@ export default function DiscordPrototype() {
                         { name: "Requested by", value: "@User", inline: true }, // Simulating user tag
                         { name: "Status", value: "⏳ Pending", inline: true },
                         { name: "Reason", value: modalData.reason, inline: false },
+                        { name: "Money Owed", value: `$${modalData.moneyOwed}`, inline: false },
                         { name: "Paypal", value: modalData.paypal, inline: false },
                     ]}
                     footer={`Request ID: ${requestId}`}
@@ -211,7 +212,7 @@ export default function DiscordPrototype() {
         };
         setMessages((prev) => [...prev, requestMessage]);
     }
-    setModalData({ userId: "", reason: "", paypal: "" });
+    setModalData({ userId: "", reason: "", moneyOwed: "", paypal: "" });
   };
 
   const handleRequestAction = (msgId: string, action: "approve" | "deny", data: any) => {
@@ -233,6 +234,7 @@ export default function DiscordPrototype() {
                             { name: "Requested by", value: "@User", inline: true },
                             { name: "Status", value: status, inline: true },
                             { name: "Reason", value: data.reason, inline: false },
+                            { name: "Money Owed", value: `$${data.moneyOwed}`, inline: false },
                             { name: "Paypal", value: data.paypal, inline: false },
                             { name: "Actioned by", value: "@Admin User", inline: false }
                         ]}
@@ -268,7 +270,7 @@ export default function DiscordPrototype() {
                         color="#23A559"
                         description={`Payment successfully processed for User ID: ${data.userId}`}
                         fields={[
-                            { name: "Amount", value: "$0.00 (Example)", inline: true },
+                            { name: "Amount", value: `$${data.moneyOwed}`, inline: true },
                             { name: "Recipient", value: data.paypal, inline: true },
                         ]}
                         timestamp={new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -371,6 +373,19 @@ export default function DiscordPrototype() {
               placeholder="Why?"
               value={modalData.reason}
               onChange={(e) => setModalData({ ...modalData, reason: e.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold text-discord-text-muted uppercase tracking-wide">
+              Money Owed <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              className="w-full bg-[#1E1F22] border-none rounded-[3px] p-2.5 text-discord-text-normal focus:outline-none focus:ring-0"
+              placeholder="0.00"
+              value={modalData.moneyOwed}
+              onChange={(e) => setModalData({ ...modalData, moneyOwed: e.target.value })}
             />
           </div>
           <div className="space-y-1.5">
