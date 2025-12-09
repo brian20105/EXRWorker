@@ -101,27 +101,63 @@ async function hasPayoutPermission(
   return config.allowedRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
-async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, paypal: string): Promise<void> {
+async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, paypal: string, actionReason?: string): Promise<void> {
   try {
     const user = await client.users.fetch(userId);
     const statusEmoji = status === "approved" ? "✅" : "❌";
     const statusText = status === "approved" ? "Approved" : "Denied";
     const color = status === "approved" ? 0x23a559 : 0xda373c;
     
+    const fields: any[] = [
+      { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
+      { name: "PayPal", value: paypal, inline: true },
+      { name: "Request Reason", value: reason, inline: false }
+    ];
+    
+    if (actionReason) {
+      fields.push({ name: status === "approved" ? "Approval Note" : "Denial Reason", value: actionReason, inline: false });
+    }
+    
     const embed = new EmbedBuilder()
       .setTitle(`Payout Request ${statusText}`)
-      .setDescription(`Your payout request has been ${status}.`)
+      .setDescription(`Your payout request has been ${statusText.toLowerCase()}.`)
       .setColor(color)
-      .addFields(
-        { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
-        { name: "PayPal", value: paypal, inline: true },
-        { name: "Reason", value: reason, inline: false }
-      )
+      .addFields(fields)
       .setTimestamp();
     
     await user.send({ embeds: [embed] });
   } catch (error) {
     console.log(`Could not DM user ${userId}:`, error);
+  }
+}
+
+async function sendDMToStaff(staffUserId: string, status: "approved" | "denied", targetUserId: string, paypal: string, actionReason?: string): Promise<void> {
+  try {
+    const user = await client.users.fetch(staffUserId);
+    const statusEmoji = status === "approved" ? "✅" : "❌";
+    const statusText = status === "approved" ? "Approved" : "Denied";
+    const color = status === "approved" ? 0x23a559 : 0xda373c;
+    
+    const fields: any[] = [
+      { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
+      { name: "User to be Paid", value: `<@${targetUserId}>`, inline: true },
+      { name: "PayPal", value: paypal, inline: false }
+    ];
+    
+    if (actionReason) {
+      fields.push({ name: status === "approved" ? "Approval Note" : "Denial Reason", value: actionReason, inline: false });
+    }
+    
+    const embed = new EmbedBuilder()
+      .setTitle(`Payout Request ${statusText}`)
+      .setDescription(`The payout request you submitted has been ${statusText.toLowerCase()}.`)
+      .setColor(color)
+      .addFields(fields)
+      .setTimestamp();
+    
+    await user.send({ embeds: [embed] });
+  } catch (error) {
+    console.log(`Could not DM staff ${staffUserId}:`, error);
   }
 }
 
@@ -244,7 +280,6 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.showModal(modal);
       } else if (interaction.customId.startsWith("approve_") || interaction.customId.startsWith("deny_")) {
         const [action, requestId] = interaction.customId.split("_");
-        const message = interaction.message;
         
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
@@ -261,65 +296,21 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
-        if (!message.embeds[0]) return;
-        
-        const originalEmbed = message.embeds[0];
-        const fields = originalEmbed.fields;
-        
-        const userIdField = fields.find(f => f.name === "User ID")?.value || "Unknown";
-        const userId = userIdField.replace(/<@|>/g, '').split(' ')[0];
-        const requestedBy = fields.find(f => f.name === "Requested by")?.value || "Unknown";
-        const reason = fields.find(f => f.name === "Reason")?.value || "No reason provided";
-        const paypal = fields.find(f => f.name === "Paypal")?.value || "Not provided";
-        
-        const status = action === "approve" ? "✅ Approved" : "❌ Denied";
-        const color = action === "approve" ? 0x23a559 : 0xda373c;
+        const modal = new ModalBuilder()
+          .setCustomId(`action_reason_${action}_${requestId}`)
+          .setTitle(action === "approve" ? "Approve Payout" : "Deny Payout");
 
-        const updatedEmbed = new EmbedBuilder()
-          .setTitle("Payout Request")
-          .setColor(color)
-          .addFields(
-            { name: "User ID", value: userIdField, inline: true },
-            { name: "Requested by", value: requestedBy, inline: true },
-            { name: "Status", value: status, inline: true },
-            { name: "Reason", value: reason, inline: false },
-            { name: "Paypal", value: paypal, inline: false },
-            { name: "Actioned by", value: `<@${interaction.user.id}>`, inline: false }
-          )
-          .setFooter({ text: `Request ID: ${requestId}` })
-          .setTimestamp();
+        const reasonInput = new TextInputBuilder()
+          .setCustomId("action_reason")
+          .setLabel(action === "approve" ? "Note (Optional)" : "Reason (Optional)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder(action === "approve" ? "Add a note..." : "Why are you denying this?")
+          .setRequired(false);
 
-        await message.edit({
-          embeds: [updatedEmbed],
-          components: [],
-        });
+        const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+        modal.addComponents(row);
 
-        await interaction.reply({
-          content: `Request ${action === "approve" ? "approved" : "denied"} successfully.`,
-          ephemeral: true,
-        });
-
-        await sendDMToUser(userId, action as "approved" | "denied", reason, paypal);
-
-        if (action === "approve") {
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          if (config?.logChannelId) {
-            const logChannel = await client.channels.fetch(config.logChannelId);
-            if (logChannel && "send" in logChannel) {
-              const logEmbed = new EmbedBuilder()
-                .setTitle("Payment Logged")
-                .setDescription(`Payment successfully processed for User ID: ${userId} (<@${userId}>)`)
-                .setColor(0x23a559)
-                .addFields(
-                  { name: "Amount", value: "$0.00 (Example)", inline: true },
-                  { name: "Recipient", value: paypal, inline: true }
-                )
-                .setTimestamp();
-
-              await logChannel.send({ embeds: [logEmbed] });
-            }
-          }
-        }
+        await interaction.showModal(modal);
       }
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId === "payout_modal") {
@@ -373,6 +364,81 @@ client.on("interactionCreate", async (interaction) => {
           embeds: [embed],
           components: [row],
         });
+      } else if (interaction.customId.startsWith("action_reason_")) {
+        const parts = interaction.customId.split("_");
+        const action = parts[2];
+        const requestId = parts[3];
+        const actionReason = interaction.fields.getTextInputValue("action_reason") || undefined;
+        
+        const message = interaction.message;
+        if (!message || !message.embeds[0]) return;
+        
+        const originalEmbed = message.embeds[0];
+        const fields = originalEmbed.fields;
+        
+        const userIdField = fields.find(f => f.name === "User ID")?.value || "Unknown";
+        const userId = userIdField.replace(/<@|>/g, '').split(' ')[0];
+        const requestedByField = fields.find(f => f.name === "Requested by")?.value || "Unknown";
+        const requestedById = requestedByField.replace(/<@|>/g, '');
+        const reason = fields.find(f => f.name === "Reason")?.value || "No reason provided";
+        const paypal = fields.find(f => f.name === "Paypal")?.value || "Not provided";
+        
+        const status = action === "approve" ? "✅ Approved" : "❌ Denied";
+        const color = action === "approve" ? 0x23a559 : 0xda373c;
+
+        const updatedFields: any[] = [
+          { name: "User ID", value: userIdField, inline: true },
+          { name: "Requested by", value: requestedByField, inline: true },
+          { name: "Status", value: status, inline: true },
+          { name: "Reason", value: reason, inline: false },
+          { name: "Paypal", value: paypal, inline: false }
+        ];
+        
+        if (actionReason) {
+          updatedFields.push({ name: action === "approve" ? "Approval Note" : "Denial Reason", value: actionReason, inline: false });
+        }
+        
+        updatedFields.push({ name: "Actioned by", value: `<@${interaction.user.id}>`, inline: false });
+
+        const updatedEmbed = new EmbedBuilder()
+          .setTitle("Payout Request")
+          .setColor(color)
+          .addFields(updatedFields)
+          .setFooter({ text: `Request ID: ${requestId}` })
+          .setTimestamp();
+
+        await message.edit({
+          embeds: [updatedEmbed],
+          components: [],
+        });
+
+        await interaction.reply({
+          content: `Request ${action === "approve" ? "approved" : "denied"} successfully.`,
+          ephemeral: true,
+        });
+
+        await sendDMToUser(userId, action as "approved" | "denied", reason, paypal, actionReason);
+        await sendDMToStaff(requestedById, action as "approved" | "denied", userId, paypal, actionReason);
+
+        if (action === "approve") {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          if (config?.logChannelId) {
+            const logChannel = await client.channels.fetch(config.logChannelId);
+            if (logChannel && "send" in logChannel) {
+              const logEmbed = new EmbedBuilder()
+                .setTitle("Payment Logged")
+                .setDescription(`Payment successfully processed for User ID: ${userId} (<@${userId}>)`)
+                .setColor(0x23a559)
+                .addFields(
+                  { name: "Amount", value: "$0.00 (Example)", inline: true },
+                  { name: "Recipient", value: paypal, inline: true }
+                )
+                .setTimestamp();
+
+              await logChannel.send({ embeds: [logEmbed] });
+            }
+          }
+        }
       }
     }
   } catch (error) {
