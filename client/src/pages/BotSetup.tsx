@@ -141,6 +141,19 @@ export default function BotSetup() {
                 This sets the channel where approved payment logs will be sent automatically.
               </p>
             </div>
+
+            <div className="space-y-2">
+              <h4 className="font-semibold flex items-center">
+                <Terminal className="w-4 h-4 mr-2 text-indigo-600" />
+                Set Approval Permissions
+              </h4>
+              <div className="bg-gray-900 rounded-lg p-4 font-mono text-sm text-gray-100">
+                <code>/payout_permission role1:@Moderators role2:@Admins</code>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Sets which roles can approve or deny payout requests. Up to 5 roles can be specified.
+              </p>
+            </div>
           </CardContent>
         </Card>
 
@@ -162,7 +175,11 @@ export default function BotSetup() {
               </li>
               <li className="text-sm">
                 <span className="font-medium">Moderator reviews and takes action</span>
-                <p className="ml-6 text-muted-foreground">Clicking Approve or Deny updates the request status</p>
+                <p className="ml-6 text-muted-foreground">Only users with permitted roles can approve or deny requests</p>
+              </li>
+              <li className="text-sm">
+                <span className="font-medium">User receives a DM notification</span>
+                <p className="ml-6 text-muted-foreground">The requested user gets a direct message when their request is approved or denied</p>
               </li>
               <li className="text-sm">
                 <span className="font-medium">Approved requests are logged automatically</span>
@@ -187,6 +204,10 @@ export default function BotSetup() {
               <div className="border-l-4 border-purple-500 pl-4">
                 <code className="text-sm font-mono">/setup_payment_logs</code>
                 <p className="text-sm text-muted-foreground mt-1">Configure the channel for payment logs</p>
+              </div>
+              <div className="border-l-4 border-green-500 pl-4">
+                <code className="text-sm font-mono">/payout_permission</code>
+                <p className="text-sm text-muted-foreground mt-1">Set which roles can approve or deny payout requests</p>
               </div>
             </div>
           </CardContent>
