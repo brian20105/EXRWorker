@@ -95,4 +95,8 @@ app.use((req, res, next) => {
       log(`serving on port ${port}`);
     },
   );
+
+  // Start Discord bot
+  const { startBot } = await import("./bot");
+  await startBot();
 })();
