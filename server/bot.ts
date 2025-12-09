@@ -101,7 +101,7 @@ async function hasPayoutPermission(
   return config.allowedRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
-async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, paypal: string, actionReason?: string): Promise<void> {
+async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, moneyOwed: string, paypal: string, actionReason?: string): Promise<void> {
   try {
     const user = await client.users.fetch(userId);
     const statusEmoji = status === "approved" ? "✅" : "❌";
@@ -110,7 +110,8 @@ async function sendDMToUser(userId: string, status: "approved" | "denied", reaso
     
     const fields: any[] = [
       { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
-      { name: "PayPal", value: paypal, inline: true },
+      { name: "Money Owed", value: `$${moneyOwed}`, inline: true },
+      { name: "PayPal", value: paypal, inline: false },
       { name: "Request Reason", value: reason, inline: false }
     ];
     
@@ -131,7 +132,7 @@ async function sendDMToUser(userId: string, status: "approved" | "denied", reaso
   }
 }
 
-async function sendDMToStaff(staffUserId: string, status: "approved" | "denied", targetUserId: string, paypal: string, actionReason?: string): Promise<void> {
+async function sendDMToStaff(staffUserId: string, status: "approved" | "denied", targetUserId: string, moneyOwed: string, paypal: string, actionReason?: string): Promise<void> {
   try {
     const user = await client.users.fetch(staffUserId);
     const statusEmoji = status === "approved" ? "✅" : "❌";
@@ -141,6 +142,7 @@ async function sendDMToStaff(staffUserId: string, status: "approved" | "denied",
     const fields: any[] = [
       { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
       { name: "User to be Paid", value: `<@${targetUserId}>`, inline: true },
+      { name: "Money Owed", value: `$${moneyOwed}`, inline: true },
       { name: "PayPal", value: paypal, inline: false }
     ];
     
@@ -264,6 +266,13 @@ client.on("interactionCreate", async (interaction) => {
           .setPlaceholder("Why?")
           .setRequired(true);
 
+        const moneyOwedInput = new TextInputBuilder()
+          .setCustomId("money_owed")
+          .setLabel("Money Owed")
+          .setStyle(TextInputStyle.Short)
+          .setPlaceholder("0.00")
+          .setRequired(true);
+
         const paypalInput = new TextInputBuilder()
           .setCustomId("paypal")
           .setLabel("Paypal Username/Email")
@@ -273,9 +282,10 @@ client.on("interactionCreate", async (interaction) => {
 
         const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
         const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
-        const row3 = new ActionRowBuilder<TextInputBuilder>().addComponents(paypalInput);
+        const row3 = new ActionRowBuilder<TextInputBuilder>().addComponents(moneyOwedInput);
+        const row4 = new ActionRowBuilder<TextInputBuilder>().addComponents(paypalInput);
 
-        modal.addComponents(row1, row2, row3);
+        modal.addComponents(row1, row2, row3, row4);
 
         await interaction.showModal(modal);
       } else if (interaction.customId.startsWith("approve_") || interaction.customId.startsWith("deny_")) {
@@ -316,6 +326,7 @@ client.on("interactionCreate", async (interaction) => {
       if (interaction.customId === "payout_modal") {
         const userId = interaction.fields.getTextInputValue("user_id");
         const reason = interaction.fields.getTextInputValue("reason");
+        const moneyOwed = interaction.fields.getTextInputValue("money_owed");
         const paypal = interaction.fields.getTextInputValue("paypal");
 
         await interaction.reply({
@@ -344,6 +355,7 @@ client.on("interactionCreate", async (interaction) => {
             { name: "Requested by", value: `<@${interaction.user.id}>`, inline: true },
             { name: "Status", value: "⏳ Pending", inline: true },
             { name: "Reason", value: reason, inline: false },
+            { name: "Money Owed", value: `$${moneyOwed}`, inline: false },
             { name: "Paypal", value: paypal, inline: false }
           )
           .setFooter({ text: `Request ID: ${requestId}` })
@@ -381,6 +393,8 @@ client.on("interactionCreate", async (interaction) => {
         const requestedByField = fields.find(f => f.name === "Requested by")?.value || "Unknown";
         const requestedById = requestedByField.replace(/<@|>/g, '');
         const reason = fields.find(f => f.name === "Reason")?.value || "No reason provided";
+        const moneyOwedField = fields.find(f => f.name === "Money Owed")?.value || "$0.00";
+        const moneyOwed = moneyOwedField.replace('$', '');
         const paypal = fields.find(f => f.name === "Paypal")?.value || "Not provided";
         
         const status = action === "approve" ? "✅ Approved" : "❌ Denied";
@@ -391,6 +405,7 @@ client.on("interactionCreate", async (interaction) => {
           { name: "Requested by", value: requestedByField, inline: true },
           { name: "Status", value: status, inline: true },
           { name: "Reason", value: reason, inline: false },
+          { name: "Money Owed", value: moneyOwedField, inline: false },
           { name: "Paypal", value: paypal, inline: false }
         ];
         
@@ -417,8 +432,9 @@ client.on("interactionCreate", async (interaction) => {
           ephemeral: true,
         });
 
-        await sendDMToUser(userId, action as "approved" | "denied", reason, paypal, actionReason);
-        await sendDMToStaff(requestedById, action as "approved" | "denied", userId, paypal, actionReason);
+        const dmStatus = action === "approve" ? "approved" : "denied";
+        await sendDMToUser(userId, dmStatus, reason, moneyOwed, paypal, actionReason);
+        await sendDMToStaff(requestedById, dmStatus, userId, moneyOwed, paypal, actionReason);
 
         if (action === "approve") {
           const config = await storage.getGuildConfig(interaction.guildId!);
@@ -430,7 +446,7 @@ client.on("interactionCreate", async (interaction) => {
                 .setDescription(`Payment successfully processed for User ID: ${userId} (<@${userId}>)`)
                 .setColor(0x23a559)
                 .addFields(
-                  { name: "Amount", value: "$0.00 (Example)", inline: true },
+                  { name: "Amount", value: moneyOwedField, inline: true },
                   { name: "Recipient", value: paypal, inline: true }
                 )
                 .setTimestamp();
