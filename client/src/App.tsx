@@ -4,12 +4,12 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
-import DiscordPrototype from "@/pages/DiscordPrototype";
+import BotSetup from "@/pages/BotSetup";
 
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={DiscordPrototype} />
+      <Route path="/" component={BotSetup} />
       <Route component={NotFound} />
     </Switch>
   );
