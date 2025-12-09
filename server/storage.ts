@@ -1,38 +1,53 @@
-import { type User, type InsertUser } from "@shared/schema";
-import { randomUUID } from "crypto";
-
-// modify the interface with any CRUD methods
-// you might need
+import { type GuildConfig, type InsertGuildConfig, guildConfigs } from "@shared/schema";
+import { db } from "./db";
+import { eq } from "drizzle-orm";
 
 export interface IStorage {
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
+  getGuildConfig(guildId: string): Promise<GuildConfig | undefined>;
+  upsertGuildConfig(config: InsertGuildConfig): Promise<GuildConfig>;
+  updateRequestChannel(guildId: string, channelId: string): Promise<GuildConfig>;
+  updateLogChannel(guildId: string, channelId: string): Promise<GuildConfig>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<string, User>;
-
-  constructor() {
-    this.users = new Map();
+export class DatabaseStorage implements IStorage {
+  async getGuildConfig(guildId: string): Promise<GuildConfig | undefined> {
+    const result = await db
+      .select()
+      .from(guildConfigs)
+      .where(eq(guildConfigs.guildId, guildId))
+      .limit(1);
+    return result[0];
   }
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async upsertGuildConfig(config: InsertGuildConfig): Promise<GuildConfig> {
+    const existing = await this.getGuildConfig(config.guildId);
+    
+    if (existing) {
+      const updated = await db
+        .update(guildConfigs)
+        .set({ ...config, updatedAt: new Date() })
+        .where(eq(guildConfigs.guildId, config.guildId))
+        .returning();
+      return updated[0];
+    } else {
+      const inserted = await db.insert(guildConfigs).values(config).returning();
+      return inserted[0];
+    }
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+  async updateRequestChannel(guildId: string, channelId: string): Promise<GuildConfig> {
+    return this.upsertGuildConfig({
+      guildId,
+      requestChannelId: channelId,
+    });
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+  async updateLogChannel(guildId: string, channelId: string): Promise<GuildConfig> {
+    return this.upsertGuildConfig({
+      guildId,
+      logChannelId: channelId,
+    });
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();
