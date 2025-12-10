@@ -103,6 +103,12 @@ async function hasPayoutPermission(
 
 async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, moneyOwed: string, paypal: string, actionReason?: string): Promise<void> {
   try {
+    // Validate user ID format (Discord snowflake IDs are 17-19 digits)
+    if (!/^\d{17,19}$/.test(userId)) {
+      console.log(`Invalid user ID format: ${userId}`);
+      return;
+    }
+    
     const user = await client.users.fetch(userId);
     const statusEmoji = status === "approved" ? "✅" : "❌";
     const statusText = status === "approved" ? "Approved" : "Denied";
@@ -134,6 +140,12 @@ async function sendDMToUser(userId: string, status: "approved" | "denied", reaso
 
 async function sendDMToStaff(staffUserId: string, status: "approved" | "denied", targetUserId: string, moneyOwed: string, paypal: string, actionReason?: string): Promise<void> {
   try {
+    // Validate staff user ID format
+    if (!/^\d{17,19}$/.test(staffUserId)) {
+      console.log(`Invalid staff user ID format: ${staffUserId}`);
+      return;
+    }
+    
     const user = await client.users.fetch(staffUserId);
     const statusEmoji = status === "approved" ? "✅" : "❌";
     const statusText = status === "approved" ? "Approved" : "Denied";
@@ -250,6 +262,7 @@ client.on("interactionCreate", async (interaction) => {
       }
     } else if (interaction.isButton()) {
       if (interaction.customId === "request_payout") {
+        // Build and show modal immediately to prevent timeout
         const modal = new ModalBuilder()
           .setCustomId("payout_modal")
           .setTitle("Request Payout");
@@ -289,7 +302,8 @@ client.on("interactionCreate", async (interaction) => {
 
         modal.addComponents(row1, row2, row3, row4);
 
-        await interaction.showModal(modal);
+        // Show modal immediately without any await before this
+        return await interaction.showModal(modal);
       } else if (interaction.customId.startsWith("approve_") || interaction.customId.startsWith("deny_")) {
         const [action, requestId] = interaction.customId.split("_");
         
