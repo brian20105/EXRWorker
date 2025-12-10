@@ -233,15 +233,18 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Configuration saved! Payout requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_payment_logs") {
+        await interaction.deferReply({ flags: 64 });
+        
         const channel = interaction.options.getChannel("channel", true);
         
         await storage.updateLogChannel(interaction.guildId!, channel.id);
         
-        await interaction.reply({
+        await interaction.editReply({
           content: `✅ Configuration saved! Payment logs will be sent to <#${channel.id}>.`,
-          flags: 64,
         });
       } else if (commandName === "payout_permission") {
+        await interaction.deferReply({ flags: 64 });
+        
         const roles: string[] = [];
         const roleNames: string[] = [];
         
@@ -255,9 +258,8 @@ client.on("interactionCreate", async (interaction) => {
         
         await storage.updateAllowedRoles(interaction.guildId!, roles);
         
-        await interaction.reply({
+        await interaction.editReply({
           content: `✅ Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
-          flags: 64,
         });
       }
     } else if (interaction.isButton()) {
@@ -340,24 +342,24 @@ client.on("interactionCreate", async (interaction) => {
       }
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId === "payout_modal") {
+        await interaction.deferReply({ flags: 64 });
+        
         const userId = interaction.fields.getTextInputValue("user_id");
         const reason = interaction.fields.getTextInputValue("reason");
         const moneyOwed = interaction.fields.getTextInputValue("money_owed");
         const paypal = interaction.fields.getTextInputValue("paypal");
 
-        await interaction.reply({
-          content: "Your payout request has been submitted!",
-          flags: 64,
-        });
-
         const config = await storage.getGuildConfig(interaction.guildId!);
         if (!config?.requestChannelId) {
-          await interaction.followUp({
+          await interaction.editReply({
             content: "⚠️  Request channel not configured. Please ask an admin to run `/setup_pay_request`.",
-            flags: 64,
           });
           return;
         }
+        
+        await interaction.editReply({
+          content: "Your payout request has been submitted!",
+        });
 
         const requestChannel = await client.channels.fetch(config.requestChannelId);
         if (!requestChannel || !("send" in requestChannel)) return;
@@ -405,7 +407,8 @@ client.on("interactionCreate", async (interaction) => {
         const fields = originalEmbed.fields;
         
         const userIdField = fields.find(f => f.name === "User ID")?.value || "Unknown";
-        const userId = userIdField.replace(/<@|>/g, '').split(' ')[0];
+        // Extract the actual user ID (first part before the mention)
+        const userId = userIdField.split(' ')[0].trim();
         const requestedByField = fields.find(f => f.name === "Requested by")?.value || "Unknown";
         const requestedById = requestedByField.replace(/<@|>/g, '');
         const reason = fields.find(f => f.name === "Reason")?.value || "No reason provided";
