@@ -195,10 +195,8 @@ client.on("interactionCreate", async (interaction) => {
         
         await storage.updateRequestChannel(interaction.guildId!, channel.id);
         
-        await interaction.reply({
-          content: `✅ Configuration saved! Payout requests will be sent to <#${channel.id}>.`,
-          ephemeral: true,
-        });
+        // Defer reply to prevent timeout
+        await interaction.deferReply({ flags: 64 }); // 64 = ephemeral
 
         const embed = new EmbedBuilder()
           .setTitle("Payout Request System")
@@ -218,6 +216,10 @@ client.on("interactionCreate", async (interaction) => {
             components: [row],
           });
         }
+        
+        await interaction.editReply({
+          content: `✅ Configuration saved! Payout requests will be sent to <#${channel.id}>.`,
+        });
       } else if (commandName === "setup_payment_logs") {
         const channel = interaction.options.getChannel("channel", true);
         
@@ -225,7 +227,7 @@ client.on("interactionCreate", async (interaction) => {
         
         await interaction.reply({
           content: `✅ Configuration saved! Payment logs will be sent to <#${channel.id}>.`,
-          ephemeral: true,
+          flags: 64,
         });
       } else if (commandName === "payout_permission") {
         const roles: string[] = [];
@@ -243,7 +245,7 @@ client.on("interactionCreate", async (interaction) => {
         
         await interaction.reply({
           content: `✅ Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
-          ephemeral: true,
+          flags: 64,
         });
       }
     } else if (interaction.isButton()) {
@@ -301,7 +303,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!hasPermission) {
           await interaction.reply({
             content: "❌ You don't have permission to approve or deny payout requests.",
-            ephemeral: true,
+            flags: 64,
           });
           return;
         }
@@ -331,14 +333,14 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.reply({
           content: "Your payout request has been submitted!",
-          ephemeral: true,
+          flags: 64,
         });
 
         const config = await storage.getGuildConfig(interaction.guildId!);
         if (!config?.requestChannelId) {
           await interaction.followUp({
             content: "⚠️  Request channel not configured. Please ask an admin to run `/setup_pay_request`.",
-            ephemeral: true,
+            flags: 64,
           });
           return;
         }
@@ -429,7 +431,7 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.reply({
           content: `Request ${action === "approve" ? "approved" : "denied"} successfully.`,
-          ephemeral: true,
+          flags: 64,
         });
 
         const dmStatus = action === "approve" ? "approved" : "denied";
@@ -472,7 +474,7 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.isRepliable() && !interaction.replied) {
       await interaction.reply({
         content: "An error occurred while processing your request.",
-        ephemeral: true,
+        flags: 64,
       }).catch(() => {});
     }
   }
