@@ -3,8 +3,6 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
-const keep_alive = require("./keepalive.js");
-
 const app = express();
 const httpServer = createServer(app);
 
