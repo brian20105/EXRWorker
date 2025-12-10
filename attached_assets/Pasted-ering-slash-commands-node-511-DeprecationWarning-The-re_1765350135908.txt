@@ -1,0 +1,40 @@
+ering slash commands...
+(node:511) DeprecationWarning: The ready event has been renamed to clientReady to distinguish it from the gateway READY event and will only emit under that name in v15. Please use clientReady instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+✅ Slash commands registered successfully!
+7:01:05 AM [express] GET /api/bot-status 200 in 1ms :: {"status":"online","applicationId":"1447870937214222347","botTag":"Thrill Payout Worker#6310"}
+Error handling interaction: DiscordAPIError[10062]: Unknown interaction
+    at handleErrors (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/handlers/Shared.ts:148:10)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async BurstHandler.runRequest (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/handlers/BurstHandler.ts:144:20)
+    at async _REST.request (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/REST.ts:210:20)
+    at async ButtonInteraction.showModal (/home/runner/workspace/node_modules/discord.js/src/structures/interfaces/InteractionResponses.js:399:22)
+    at async Client.<anonymous> (/home/runner/workspace/server/bot.ts:292:9) {
+  requestBody: { files: undefined, json: { type: 9, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1448207940027945023/aW50ZXJhY3Rpb246MTQ0ODIwNzk0MDAyNzk0NTAyMzpiaXB3aEkyTGdRY0ZmUVVnQjlqbGpyd2hYTDA0VXRpTW5ONU8zZ2xNWktveDFDM3lFZjlwY096Z1BCSGZsSHRiOHNTVDdkS3NiT0NETnRBMTBZOVM4Q2RmNGNzTGlnaUEwYzAwb2tOV1ZadktyY01VUTdNbjlrb2FXdWJyU0p3aQ/callback?with_response=false'
+}
+Could not DM user f: DiscordAPIError[50035]: Invalid Form Body
+user_id[NUMBER_TYPE_COERCE]: Value "f" is not snowflake.
+    at handleErrors (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/handlers/Shared.ts:148:10)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async SequentialHandler.runRequest (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/handlers/SequentialHandler.ts:417:20)
+    at async SequentialHandler.queueRequest (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/handlers/SequentialHandler.ts:169:11)
+    at async _REST.request (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/REST.ts:210:20)
+    at async UserManager.fetch (/home/runner/workspace/node_modules/discord.js/src/managers/UserManager.js:95:18)
+    at async sendDMToUser (/home/runner/workspace/server/bot.ts:106:18)
+    at async Client.<anonymous> (/home/runner/workspace/server/bot.ts:438:9) {
+  requestBody: { files: undefined, json: undefined },
+  rawError: {
+    message: 'Invalid Form Body',
+    code: 50035,
+    errors: { user_id: [Object] }
+  },
+  code: 50035,
+  status: 400,
+  method: 'GET',
+  url: 'https://discord.com/api/v10/users/f'
+}
