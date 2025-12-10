@@ -254,7 +254,13 @@ export default function DiscordPrototype() {
       }));
 
       // Log if enabled
-      if (logChannel && action === "approve") {
+      if (logChannel) {
+          const logTitle = action === "approve" ? "Payment Logged" : "Payment Denied";
+          const logDescription = action === "approve"
+              ? `Payment successfully processed for User ID: ${data.userId}`
+              : `Payment request denied for User ID: ${data.userId}`;
+          const logColor = action === "approve" ? "#23A559" : "#DA373C";
+          
           setMessages((prev) => [
               ...prev,
               {
@@ -267,9 +273,9 @@ export default function DiscordPrototype() {
                 embeds: [
                     <DiscordEmbed
                         key="log"
-                        title="Payment Logged"
-                        color="#23A559"
-                        description={`Payment successfully processed for User ID: ${data.userId}`}
+                        title={logTitle}
+                        color={logColor}
+                        description={logDescription}
                         fields={[
                             { name: "Amount", value: `$${data.moneyOwed}`, inline: true },
                             { name: "Recipient", value: data.paypal, inline: true },
