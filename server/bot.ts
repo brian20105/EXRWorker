@@ -191,12 +191,12 @@ client.on("interactionCreate", async (interaction) => {
       const { commandName } = interaction;
 
       if (commandName === "setup_pay_request") {
+        // Defer reply immediately to prevent timeout
+        await interaction.deferReply({ flags: 64 }); // 64 = ephemeral
+        
         const channel = interaction.options.getChannel("channel", true);
         
         await storage.updateRequestChannel(interaction.guildId!, channel.id);
-        
-        // Defer reply to prevent timeout
-        await interaction.deferReply({ flags: 64 }); // 64 = ephemeral
 
         const embed = new EmbedBuilder()
           .setTitle("Payout Request System")
