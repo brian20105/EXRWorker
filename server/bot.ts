@@ -114,6 +114,44 @@ const commands = [
           { name: "Staff Roster", value: "staff" }
         )
     ),
+  new SlashCommandBuilder()
+    .setName("payout")
+    .setDescription("Add or remove a payout request")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("action")
+        .setDescription("Add or remove a payout")
+        .setRequired(true)
+        .addChoices(
+          { name: "Add", value: "add" },
+          { name: "Remove", value: "remove" }
+        )
+    )
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("The user for the payout")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("amount")
+        .setDescription("Amount owed (for add)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("email")
+        .setDescription("PayPal email (for add)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("reason")
+        .setDescription("Reason for payout (for add)")
+        .setRequired(false)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -227,6 +265,27 @@ const STAFF_ROLE_IDS = [
   "1447118712183459882",
   "1447071053334708406",
 ];
+
+const SYNCED_SERVERS = ["1447126562414530726", "1447066742559080489"];
+const ROLE_SYNC_MAP: { [key: string]: string } = {
+  "1447070054960332871": "1447142565886562385",
+  "1447142565886562385": "1447070054960332871",
+  "1447118813022781554": "1447159778995605645",
+  "1447159778995605645": "1447118813022781554",
+  "1447142477437075506": "1447070441058336789",
+  "1447070441058336789": "1447142477437075506",
+  "1447070950750294026": "1447142434202058823",
+  "1447142434202058823": "1447070950750294026",
+  "1447142274583498822": "1447118712183459882",
+  "1447118712183459882": "1447142274583498822",
+  "1447071053334708406": "1447142391516627067",
+  "1447142391516627067": "1447071053334708406",
+};
+
+const SERVER_PAIR: { [key: string]: string } = {
+  "1447126562414530726": "1447066742559080489",
+  "1447066742559080489": "1447126562414530726",
+};
 
 function getMembersWithRole(guild: any, roleId: string): string[] {
   const role = guild.roles.cache.get(roleId);
@@ -581,6 +640,122 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           embeds: [embed],
         });
+      } else if (commandName === "payout") {
+        const member = interaction.member;
+        const memberRoles = member && 'roles' in member 
+          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+          : undefined;
+        const memberPermissions = member && 'permissions' in member 
+          ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+          : undefined;
+        
+        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
+        if (!hasPermission) {
+          await interaction.reply({
+            content: "❌ You don't have permission to manage payout requests.",
+            flags: 64,
+          });
+          return;
+        }
+        
+        const action = interaction.options.getString("action", true);
+        const targetUser = interaction.options.getUser("user", true);
+        
+        await interaction.deferReply({ flags: 64 });
+        
+        if (action === "add") {
+          const amount = interaction.options.getString("amount") || "0.00";
+          const email = interaction.options.getString("email") || "Not provided";
+          const reason = interaction.options.getString("reason") || "Added via command";
+          
+          const payoutRequest = await storage.createPayoutRequest({
+            guildId: interaction.guildId!,
+            userId: targetUser.id,
+            requestedById: interaction.user.id,
+            reason,
+            moneyOwed: amount,
+            email,
+            status: "pending",
+          });
+          
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          if (config?.requestChannelId) {
+            try {
+              const requestChannel = await client.channels.fetch(config.requestChannelId);
+              if (requestChannel && "send" in requestChannel) {
+                const embed = new EmbedBuilder()
+                  .setTitle("Payout Request")
+                  .setColor(0xf0b232)
+                  .addFields(
+                    { name: "User ID", value: `${targetUser.id} (<@${targetUser.id}>)`, inline: true },
+                    { name: "Requested by", value: `<@${interaction.user.id}>`, inline: true },
+                    { name: "Status", value: "⏳ Pending", inline: true },
+                    { name: "Reason", value: reason, inline: false },
+                    { name: "Money Owed", value: `$${amount}`, inline: false },
+                    { name: "Paypal", value: email, inline: false }
+                  )
+                  .setFooter({ text: `Request ID: ${payoutRequest.id}` })
+                  .setTimestamp();
+
+                const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(`approve_${payoutRequest.id}`)
+                    .setLabel("Approve")
+                    .setStyle(ButtonStyle.Success),
+                  new ButtonBuilder()
+                    .setCustomId(`deny_${payoutRequest.id}`)
+                    .setLabel("Deny")
+                    .setStyle(ButtonStyle.Danger)
+                );
+
+                const sentMessage = await requestChannel.send({
+                  embeds: [embed],
+                  components: [row],
+                });
+
+                await storage.updatePayoutMessageId(payoutRequest.id, sentMessage.id);
+              }
+            } catch (error) {
+              console.log("Could not send to request channel:", error);
+            }
+          }
+          
+          await interaction.editReply({
+            content: `✅ Payout request added for <@${targetUser.id}> - $${amount}`,
+          });
+        } else if (action === "remove") {
+          const userPayouts = await storage.getUserPendingPayouts(interaction.guildId!, targetUser.id);
+          
+          if (userPayouts.length === 0) {
+            await interaction.editReply({
+              content: `❌ No pending payout requests found for <@${targetUser.id}>.`,
+            });
+            return;
+          }
+          
+          for (const payout of userPayouts) {
+            await storage.deletePayoutRequest(payout.id);
+            
+            if (payout.messageId) {
+              try {
+                const config = await storage.getGuildConfig(interaction.guildId!);
+                if (config?.requestChannelId) {
+                  const channel = await client.channels.fetch(config.requestChannelId);
+                  if (channel && "messages" in channel) {
+                    const message = await channel.messages.fetch(payout.messageId);
+                    await message.delete();
+                  }
+                }
+              } catch (error) {
+                console.log("Could not delete payout message:", error);
+              }
+            }
+          }
+          
+          await interaction.editReply({
+            content: `✅ Removed ${userPayouts.length} pending payout request(s) for <@${targetUser.id}>.`,
+          });
+        }
       }
     } else if (interaction.isButton()) {
       if (interaction.customId === "request_payout") {
@@ -897,6 +1072,8 @@ client.on("error", (error) => {
   console.error("Discord client error:", error);
 });
 
+const syncingUsers = new Set<string>();
+
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   const oldRoles = Array.from(oldMember.roles.cache.keys());
   const newRoles = Array.from(newMember.roles.cache.keys());
@@ -910,6 +1087,74 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   if (hasRosterRoleChange) {
     console.log(`Roster role changed for ${newMember.user.tag}, updating rosters...`);
     await updateRosterMessages(newMember.guild.id);
+  }
+  
+  const currentGuildId = newMember.guild.id;
+  if (!SYNCED_SERVERS.includes(currentGuildId)) return;
+  
+  const syncKey = `${newMember.id}-${currentGuildId}`;
+  if (syncingUsers.has(syncKey)) return;
+  
+  const addedRoles = newRoles.filter(r => !oldRoles.includes(r));
+  const removedRoles = oldRoles.filter(r => !newRoles.includes(r));
+  
+  const syncableAdded = addedRoles.filter(r => ROLE_SYNC_MAP[r]);
+  const syncableRemoved = removedRoles.filter(r => ROLE_SYNC_MAP[r]);
+  
+  if (syncableAdded.length === 0 && syncableRemoved.length === 0) return;
+  
+  const targetGuildId = SERVER_PAIR[currentGuildId];
+  if (!targetGuildId) return;
+  
+  try {
+    syncingUsers.add(syncKey);
+    const targetSyncKey = `${newMember.id}-${targetGuildId}`;
+    syncingUsers.add(targetSyncKey);
+    
+    const targetGuild = client.guilds.cache.get(targetGuildId);
+    if (!targetGuild) {
+      console.log(`Target guild ${targetGuildId} not found in cache`);
+      return;
+    }
+    
+    let targetMember;
+    try {
+      targetMember = await targetGuild.members.fetch(newMember.id);
+    } catch (error) {
+      console.log(`User ${newMember.user.tag} not found in target guild`);
+      return;
+    }
+    
+    for (const roleId of syncableAdded) {
+      const targetRoleId = ROLE_SYNC_MAP[roleId];
+      if (targetRoleId && !targetMember.roles.cache.has(targetRoleId)) {
+        try {
+          await targetMember.roles.add(targetRoleId);
+          console.log(`Synced role add: ${newMember.user.tag} got role ${targetRoleId} in ${targetGuild.name}`);
+        } catch (error) {
+          console.log(`Failed to add synced role ${targetRoleId}:`, error);
+        }
+      }
+    }
+    
+    for (const roleId of syncableRemoved) {
+      const targetRoleId = ROLE_SYNC_MAP[roleId];
+      if (targetRoleId && targetMember.roles.cache.has(targetRoleId)) {
+        try {
+          await targetMember.roles.remove(targetRoleId);
+          console.log(`Synced role remove: ${newMember.user.tag} lost role ${targetRoleId} in ${targetGuild.name}`);
+        } catch (error) {
+          console.log(`Failed to remove synced role ${targetRoleId}:`, error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error syncing roles:", error);
+  } finally {
+    setTimeout(() => {
+      syncingUsers.delete(syncKey);
+      syncingUsers.delete(`${newMember.id}-${targetGuildId}`);
+    }, 5000);
   }
 });
 
