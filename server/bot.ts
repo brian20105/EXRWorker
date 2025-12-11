@@ -1158,6 +1158,8 @@ client.on("error", (error) => {
 const syncingUsers = new Set<string>();
 
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  console.log(`[ROLE SYNC] guildMemberUpdate triggered for ${newMember.user.tag} in guild ${newMember.guild.name} (${newMember.guild.id})`);
+  
   const oldRoles = Array.from(oldMember.roles.cache.keys());
   const newRoles = Array.from(newMember.roles.cache.keys());
   
@@ -1173,21 +1175,41 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   }
   
   const currentGuildId = newMember.guild.id;
-  if (!SYNCED_SERVERS.includes(currentGuildId)) return;
+  if (!SYNCED_SERVERS.includes(currentGuildId)) {
+    console.log(`[ROLE SYNC] Guild ${currentGuildId} is not in SYNCED_SERVERS, skipping sync`);
+    return;
+  }
   
   const syncKey = `${newMember.id}-${currentGuildId}`;
-  if (syncingUsers.has(syncKey)) return;
+  if (syncingUsers.has(syncKey)) {
+    console.log(`[ROLE SYNC] Sync already in progress for ${newMember.user.tag}, skipping to prevent loop`);
+    return;
+  }
   
   const addedRoles = newRoles.filter(r => !oldRoles.includes(r));
   const removedRoles = oldRoles.filter(r => !newRoles.includes(r));
   
+  console.log(`[ROLE SYNC] Added roles: ${addedRoles.join(", ") || "none"}`);
+  console.log(`[ROLE SYNC] Removed roles: ${removedRoles.join(", ") || "none"}`);
+  
   const syncableAdded = addedRoles.filter(r => ROLE_SYNC_MAP[r]);
   const syncableRemoved = removedRoles.filter(r => ROLE_SYNC_MAP[r]);
   
-  if (syncableAdded.length === 0 && syncableRemoved.length === 0) return;
+  console.log(`[ROLE SYNC] Syncable added: ${syncableAdded.join(", ") || "none"}`);
+  console.log(`[ROLE SYNC] Syncable removed: ${syncableRemoved.join(", ") || "none"}`);
+  
+  if (syncableAdded.length === 0 && syncableRemoved.length === 0) {
+    console.log(`[ROLE SYNC] No syncable roles changed, skipping`);
+    return;
+  }
   
   const targetGuildId = SERVER_PAIR[currentGuildId];
-  if (!targetGuildId) return;
+  if (!targetGuildId) {
+    console.log(`[ROLE SYNC] No target guild found for ${currentGuildId}`);
+    return;
+  }
+  
+  console.log(`[ROLE SYNC] Target guild ID: ${targetGuildId}`);
   
   try {
     syncingUsers.add(syncKey);
@@ -1196,8 +1218,15 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
     
     const targetGuild = client.guilds.cache.get(targetGuildId);
     if (!targetGuild) {
-      console.log(`Target guild ${targetGuildId} not found in cache`);
+      console.log(`[ROLE SYNC] Target guild ${targetGuildId} not found in cache. Available guilds: ${Array.from(client.guilds.cache.keys()).join(", ")}`);
       return;
+    }
+    
+    console.log(`[ROLE SYNC] Found target guild: ${targetGuild.name}`);
+    
+    const botMember = targetGuild.members.cache.get(client.user!.id);
+    if (botMember) {
+      console.log(`[ROLE SYNC] Bot highest role position in target guild: ${botMember.roles.highest.position}`);
     }
     
     let targetMember;
