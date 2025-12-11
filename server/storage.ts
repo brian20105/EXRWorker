@@ -35,6 +35,8 @@ export interface IStorage {
   updatePayoutMessageId(id: string, messageId: string): Promise<void>;
   updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string; status?: string }): Promise<PayoutRequest>;
   deletePayoutRequest(id: string): Promise<void>;
+  deleteAllPayouts(guildId: string): Promise<number>;
+  deleteUserPayouts(guildId: string, userId: string): Promise<number>;
   getAllRoleSyncPairs(): Promise<RoleSyncPair[]>;
   addRoleSyncPair(pair: InsertRoleSyncPair): Promise<RoleSyncPair>;
   removeRoleSyncPair(id: string): Promise<void>;
@@ -189,6 +191,25 @@ export class DatabaseStorage implements IStorage {
     await db
       .delete(payoutRequests)
       .where(eq(payoutRequests.id, id));
+  }
+
+  async deleteAllPayouts(guildId: string): Promise<number> {
+    const payouts = await this.getAllPayouts(guildId);
+    await db
+      .delete(payoutRequests)
+      .where(eq(payoutRequests.guildId, guildId));
+    return payouts.length;
+  }
+
+  async deleteUserPayouts(guildId: string, userId: string): Promise<number> {
+    const payouts = await this.getUserPayouts(guildId, userId);
+    await db
+      .delete(payoutRequests)
+      .where(and(
+        eq(payoutRequests.guildId, guildId),
+        eq(payoutRequests.userId, userId)
+      ));
+    return payouts.length;
   }
 
   async getAllRoleSyncPairs(): Promise<RoleSyncPair[]> {

@@ -169,6 +169,12 @@ const commands = [
           { name: "Approved", value: "approved" },
           { name: "Denied", value: "denied" }
         )
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("remove_all")
+        .setDescription("Remove ALL payouts (for user if specified, or everyone)")
+        .setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("sync_roles")
@@ -1071,52 +1077,114 @@ client.on("interactionCreate", async (interaction) => {
             content: `✅ Updated payout request for <@${payout.userId}>.\n**Changes:** ${changedFields.join(", ")}`,
           });
         } else if (action === "remove") {
-          let payout;
+          const removeAll = interaction.options.getBoolean("remove_all") ?? false;
           
-          if (payoutId) {
-            payout = await storage.getPayoutRequest(payoutId);
-            if (!payout) {
-              await interaction.editReply({
-                content: `Payout request with ID \`${payoutId}\` not found.`,
-              });
-              return;
-            }
-          } else if (targetUser) {
-            const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
-            if (userPayouts.length === 0) {
-              await interaction.editReply({
-                content: `No payout requests found for <@${targetUser.id}>.`,
-              });
-              return;
-            }
-            payout = userPayouts[0]; // Get most recent
-          } else {
-            await interaction.editReply({
-              content: "Please provide either a user or payout_id to remove.",
-            });
-            return;
-          }
-          
-          await storage.deletePayoutRequest(payout.id);
-          
-          if (payout.messageId) {
-            try {
+          if (removeAll) {
+            if (targetUser) {
+              const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
+              if (userPayouts.length === 0) {
+                await interaction.editReply({
+                  content: `No payout requests found for <@${targetUser.id}>.`,
+                });
+                return;
+              }
+              
               const config = await storage.getGuildConfig(interaction.guildId!);
-              if (config?.requestChannelId) {
-                const channel = await client.channels.fetch(config.requestChannelId);
-                if (channel && "messages" in channel) {
-                  const message = await channel.messages.fetch(payout.messageId);
-                  await message.delete();
+              for (const payout of userPayouts) {
+                if (payout.messageId && config?.requestChannelId) {
+                  try {
+                    const channel = await client.channels.fetch(config.requestChannelId);
+                    if (channel && "messages" in channel) {
+                      const message = await channel.messages.fetch(payout.messageId);
+                      await message.delete();
+                    }
+                  } catch (error) {
+                    console.log("Could not delete payout message:", error);
+                  }
                 }
               }
-            } catch (error) {
-              console.log("Could not delete payout message:", error);
+              
+              const count = await storage.deleteUserPayouts(interaction.guildId!, targetUser.id);
+              await interaction.editReply({
+                content: `✅ Removed all ${count} payout request(s) for <@${targetUser.id}>.`,
+              });
+            } else {
+              const allPayouts = await storage.getAllPayouts(interaction.guildId!);
+              if (allPayouts.length === 0) {
+                await interaction.editReply({
+                  content: "No payout requests found in this server.",
+                });
+                return;
+              }
+              
+              const config = await storage.getGuildConfig(interaction.guildId!);
+              for (const payout of allPayouts) {
+                if (payout.messageId && config?.requestChannelId) {
+                  try {
+                    const channel = await client.channels.fetch(config.requestChannelId);
+                    if (channel && "messages" in channel) {
+                      const message = await channel.messages.fetch(payout.messageId);
+                      await message.delete();
+                    }
+                  } catch (error) {
+                    console.log("Could not delete payout message:", error);
+                  }
+                }
+              }
+              
+              const count = await storage.deleteAllPayouts(interaction.guildId!);
+              await interaction.editReply({
+                content: `✅ Removed all ${count} payout request(s) from this server.`,
+              });
             }
+          } else {
+            let payout;
+            
+            if (payoutId) {
+              payout = await storage.getPayoutRequest(payoutId);
+              if (!payout) {
+                await interaction.editReply({
+                  content: `Payout request with ID \`${payoutId}\` not found.`,
+                });
+                return;
+              }
+            } else if (targetUser) {
+              const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
+              if (userPayouts.length === 0) {
+                await interaction.editReply({
+                  content: `No payout requests found for <@${targetUser.id}>.`,
+                });
+                return;
+              }
+              payout = userPayouts[0];
+            } else {
+              await interaction.editReply({
+                content: "Please provide either a user or payout_id to remove.",
+              });
+              return;
+            }
+            
+            await storage.deletePayoutRequest(payout.id);
+            
+            if (payout.messageId) {
+              try {
+                const config = await storage.getGuildConfig(interaction.guildId!);
+                if (config?.requestChannelId) {
+                  const channel = await client.channels.fetch(config.requestChannelId);
+                  if (channel && "messages" in channel) {
+                    const message = await channel.messages.fetch(payout.messageId);
+                    await message.delete();
+                  }
+                }
+              } catch (error) {
+                console.log("Could not delete payout message:", error);
+              }
+            }
+            
+            await interaction.editReply({
+              content: `✅ Removed payout request for <@${payout.userId}>.`,
+            });
           }
-          
-          await interaction.editReply({
-            content: `✅ Removed payout request for <@${payout.userId}>.`,
-          });
         }
       } else if (commandName === "sync_roles") {
         const member = interaction.member;
