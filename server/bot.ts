@@ -2331,30 +2331,34 @@ client.on("interactionCreate", async (interaction) => {
           const answer = parts.slice(3).join("_");
           
           if (interaction.user.id !== odUserId) {
-            await interaction.reply({ content: "This button is not for you!", flags: 64 });
+            try {
+              await interaction.reply({ content: "This button is not for you!", flags: 64 });
+            } catch (e) {}
             return;
           }
           
           const quizState = activeQuizzes.get(odUserId);
           if (!quizState) {
-            await interaction.reply({ content: "Quiz session expired. Please start a new quiz.", flags: 64 });
+            try {
+              await interaction.reply({ content: "Quiz session expired. Please start a new quiz.", flags: 64 });
+            } catch (e) {}
             return;
           }
-          
-          // Defer the interaction immediately to prevent timeout
-          await interaction.deferUpdate().catch(() => {});
           
           const config = await storage.getGuildConfig(quizState.guildId);
           const questions = getQuizQuestions(config);
           
-          // Update the message after deferring
+          // Try to update the message with the answer
           try {
-            await interaction.editReply({
+            await interaction.update({
               content: `${questions[quizState.currentQuestion].text}\n\n✅ **Your answer:** ${answer}`,
               components: [],
             });
-          } catch (error) {
-            console.log("Could not update quiz message:", error);
+          } catch (error: any) {
+            // If update fails (interaction expired), just acknowledge silently
+            if (error.code !== 10062) {
+              console.log("Could not update quiz message:", error.message);
+            }
           }
           
           const dmChannel = interaction.channel;
