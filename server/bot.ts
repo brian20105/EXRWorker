@@ -716,6 +716,10 @@ const commands = [
     .addRoleOption((option) =>
       option.setName("role5").setDescription("Role 5 to ping").setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName("terminate_quizzes")
+    .setDescription("Terminate all active staff intro quizzes")
+    .setDefaultMemberPermissions(0),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -2134,6 +2138,26 @@ client.on("interactionCreate", async (interaction) => {
             content: `✅ The following roles will be pinged on new inactivity requests: ${roleMentions}`,
           });
         }
+      } else if (commandName === "terminate_quizzes") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const count = activeQuizzes.size;
+        
+        // Send termination message to all active quiz users
+        for (const [userId, quizState] of Array.from(activeQuizzes.entries())) {
+          try {
+            const user = await client.users.fetch(userId);
+            await user.send("⚠️ Your quiz session has been terminated by an administrator. Please start a new quiz if you wish to continue.");
+          } catch (error) {
+            console.log(`Could not DM user ${userId} about quiz termination`);
+          }
+        }
+        
+        activeQuizzes.clear();
+        
+        await interaction.editReply({
+          content: `✅ Terminated ${count} active quiz session${count !== 1 ? "s" : ""}.`,
+        });
       }
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
