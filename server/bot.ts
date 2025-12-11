@@ -1023,6 +1023,9 @@ client.on("interactionCreate", async (interaction) => {
           flags: 64,
         });
       } else if (commandName === "list_payouts") {
+        const isPrivate = interaction.options.getBoolean("private") ?? true;
+        await interaction.deferReply({ flags: isPrivate ? 64 : undefined });
+        
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
@@ -1033,15 +1036,11 @@ client.on("interactionCreate", async (interaction) => {
         
         const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
         if (!hasPermission) {
-          await interaction.reply({
+          await interaction.editReply({
             content: "❌ You don't have permission to view payout requests.",
-            flags: 64,
           });
           return;
         }
-        
-        const isPrivate = interaction.options.getBoolean("private") ?? true;
-        await interaction.deferReply({ flags: isPrivate ? 64 : undefined });
         
         const allPayouts = await storage.getAllPayouts(interaction.guildId!);
         
