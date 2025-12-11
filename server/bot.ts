@@ -224,6 +224,91 @@ const commands = [
         .setDescription("The role to list members for")
         .setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName("setup_ban")
+    .setDescription("Set the channel for ban requests")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where ban requests will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_unban")
+    .setDescription("Set the channel for unban requests")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where unban requests will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_permissions")
+    .setDescription("Set which roles can approve/deny ban/unban requests")
+    .setDefaultMemberPermissions(0)
+    .addRoleOption((option) =>
+      option
+        .setName("role1")
+        .setDescription("First role that can approve/deny requests")
+        .setRequired(true)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("role2")
+        .setDescription("Second role (optional)")
+        .setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("role3")
+        .setDescription("Third role (optional)")
+        .setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("role4")
+        .setDescription("Fourth role (optional)")
+        .setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("role5")
+        .setDescription("Fifth role (optional)")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("activity")
+    .setDescription("View the activity leaderboard")
+    .addStringOption((option) =>
+      option
+        .setName("category")
+        .setDescription("Filter by request type")
+        .setRequired(false)
+        .addChoices(
+          { name: "Ban Requests", value: "ban" },
+          { name: "Unban Requests", value: "unban" }
+        )
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("from")
+        .setDescription("Start time in days ago (e.g., 7 for last week)")
+        .setRequired(false)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("to")
+        .setDescription("End time in days ago (e.g., 0 for today, leave empty for all time)")
+        .setRequired(false)
+    )
+    .addBooleanOption((option) =>
+      option
+        .setName("private")
+        .setDescription("Show the leaderboard only to you")
+        .setRequired(false)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -1069,6 +1154,145 @@ client.on("interactionCreate", async (interaction) => {
         } else {
           await interaction.editReply({ embeds: [embed] });
         }
+      } else if (commandName === "setup_ban") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const channel = interaction.options.getChannel("channel", true);
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          banChannelId: channel.id,
+        });
+
+        const embed = new EmbedBuilder()
+          .setTitle("🚫 Ban Request")
+          .setDescription("Need to report a user for violating rules? Click below to submit a ban request with evidence.")
+          .setColor(0xed4245)
+          .setFooter({ text: "Ban Requests Can Take Up To A Day To Get Finalised" });
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("submit_ban_request")
+            .setLabel("Submit Ban Request")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("⚠️")
+        );
+
+        if (interaction.channel && "send" in interaction.channel) {
+          await interaction.channel.send({
+            embeds: [embed],
+            components: [row],
+          });
+        }
+        
+        await interaction.editReply({
+          content: `✅ Ban request channel configured! Requests will be sent to <#${channel.id}>.`,
+        });
+      } else if (commandName === "setup_unban") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const channel = interaction.options.getChannel("channel", true);
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          unbanChannelId: channel.id,
+        });
+
+        const embed = new EmbedBuilder()
+          .setTitle("🔓 Unban Request")
+          .setDescription("Submitting an unban request for another user? Click the button below and provide their username, the reason they were banned.")
+          .setColor(0xf0b232)
+          .setFooter({ text: "Please provide accurate information" });
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("submit_unban_request")
+            .setLabel("Submit Unban Request")
+            .setStyle(ButtonStyle.Primary)
+            .setEmoji("📝")
+        );
+
+        if (interaction.channel && "send" in interaction.channel) {
+          await interaction.channel.send({
+            embeds: [embed],
+            components: [row],
+          });
+        }
+        
+        await interaction.editReply({
+          content: `✅ Unban request channel configured! Requests will be sent to <#${channel.id}>.`,
+        });
+      } else if (commandName === "setup_permissions") {
+        const roles: string[] = [];
+        const roleNames: string[] = [];
+        
+        for (let i = 1; i <= 5; i++) {
+          const role = interaction.options.getRole(`role${i}`);
+          if (role) {
+            roles.push(role.id);
+            roleNames.push(role.name);
+          }
+        }
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          modRoleIds: roles,
+        });
+        
+        await interaction.reply({
+          content: `✅ Moderation permissions updated! The following roles can now approve/deny ban/unban requests:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
+          flags: 64,
+        });
+      } else if (commandName === "activity") {
+        const isPrivate = interaction.options.getBoolean("private") ?? false;
+        await interaction.deferReply({ flags: isPrivate ? 64 : undefined });
+        
+        const category = interaction.options.getString("category");
+        const fromDays = interaction.options.getInteger("from") ?? undefined;
+        const toDays = interaction.options.getInteger("to") ?? undefined;
+        
+        const banStats = !category || category === "ban" 
+          ? await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays) 
+          : [];
+        const unbanStats = !category || category === "unban"
+          ? await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays)
+          : [];
+        
+        const combinedStats: { [userId: string]: number } = {};
+        for (const stat of banStats) {
+          combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+        }
+        for (const stat of unbanStats) {
+          combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+        }
+        
+        const leaderboard = Object.entries(combinedStats)
+          .map(([userId, count]) => ({ userId, count }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 10);
+        
+        const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : "All Requests";
+        const timeRange = fromDays !== undefined || toDays !== undefined
+          ? ` (${fromDays ?? "∞"}d ago - ${toDays ?? "now"})`
+          : "";
+        
+        const embed = new EmbedBuilder()
+          .setTitle(`📊 Activity Leaderboard - ${categoryText}${timeRange}`)
+          .setColor(0x5865f2)
+          .setTimestamp();
+        
+        if (leaderboard.length === 0) {
+          embed.setDescription("No activity found for the specified filters.");
+        } else {
+          let description = "";
+          leaderboard.forEach((entry, index) => {
+            const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `**${index + 1}.**`;
+            description += `${medal} <@${entry.userId}> - **${entry.count}** reviews\n`;
+          });
+          embed.setDescription(description);
+        }
+        
+        await interaction.editReply({ embeds: [embed] });
       }
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
@@ -1202,6 +1426,128 @@ client.on("interactionCreate", async (interaction) => {
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) {
             console.log('Interaction expired or already acknowledged:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
+      } else if (interaction.customId === "submit_ban_request") {
+        try {
+          const modal = new ModalBuilder()
+            .setCustomId("ban_request_modal")
+            .setTitle("Ban Request");
+
+          const userIdInput = new TextInputBuilder()
+            .setCustomId("user_id")
+            .setLabel("User ID")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Enter the user ID")
+            .setRequired(true);
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Ban Reason")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Why should this user be banned?")
+            .setRequired(true);
+
+          const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
+          const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+
+          modal.addComponents(row1, row2);
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
+      } else if (interaction.customId === "submit_unban_request") {
+        try {
+          const modal = new ModalBuilder()
+            .setCustomId("unban_request_modal")
+            .setTitle("Unban Request");
+
+          const userIdInput = new TextInputBuilder()
+            .setCustomId("user_id")
+            .setLabel("User ID")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Enter the user ID")
+            .setRequired(true);
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Unban Reason")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Why should this user be unbanned?")
+            .setRequired(true);
+
+          const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
+          const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+
+          modal.addComponents(row1, row2);
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
+      } else if (interaction.customId.startsWith("ban_approve_") || interaction.customId.startsWith("ban_deny_")) {
+        try {
+          const parts = interaction.customId.split("_");
+          const action = parts[1]; // approve or deny
+          const requestId = parts.slice(2).join("_");
+          
+          const modal = new ModalBuilder()
+            .setCustomId(`ban_action_${action}_${requestId}`)
+            .setTitle(action === "approve" ? "Approve Request" : "Deny Request");
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("action_reason")
+            .setLabel("Reason (optional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Enter a reason for this decision...")
+            .setRequired(false);
+
+          const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+          modal.addComponents(row);
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
+      } else if (interaction.customId.startsWith("unban_approve_") || interaction.customId.startsWith("unban_deny_")) {
+        try {
+          const parts = interaction.customId.split("_");
+          const action = parts[1]; // approve or deny
+          const requestId = parts.slice(2).join("_");
+          
+          const modal = new ModalBuilder()
+            .setCustomId(`unban_action_${action}_${requestId}`)
+            .setTitle(action === "approve" ? "Approve Request" : "Deny Request");
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("action_reason")
+            .setLabel("Reason (optional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Enter a reason for this decision...")
+            .setRequired(false);
+
+          const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+          modal.addComponents(row);
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired:', interaction.id);
           } else {
             throw error;
           }
@@ -1416,6 +1762,346 @@ client.on("interactionCreate", async (interaction) => {
 
             await logChannel.send({ embeds: [logEmbed] });
           }
+        }
+      } else if (interaction.customId === "ban_request_modal") {
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+        
+        const userId = interaction.fields.getTextInputValue("user_id").trim();
+        const reason = interaction.fields.getTextInputValue("reason");
+
+        if (!/^\d{17,19}$/.test(userId)) {
+          await interaction.editReply({
+            content: "Invalid User ID. Please enter a valid Discord User ID (17-19 digit number).",
+          });
+          return;
+        }
+
+        let targetUser;
+        try {
+          targetUser = await client.users.fetch(userId);
+        } catch {
+          await interaction.editReply({
+            content: "Could not find a Discord user with that ID. Please check the ID and try again.",
+          });
+          return;
+        }
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        if (!config?.banChannelId) {
+          await interaction.editReply({
+            content: "Ban request channel not configured. Please ask an admin to run `/setup_ban`.",
+          });
+          return;
+        }
+
+        const banRequest = await storage.createBanRequest({
+          guildId: interaction.guildId!,
+          targetUserId: userId,
+          requestedById: interaction.user.id,
+          reason,
+          status: "pending",
+        });
+
+        const requestChannel = await client.channels.fetch(config.banChannelId);
+        if (!requestChannel || !("send" in requestChannel)) return;
+
+        const embed = new EmbedBuilder()
+          .setTitle("Ban Request")
+          .setColor(0xf0b232)
+          .addFields(
+            { name: "User ID", value: `<@${userId}>\n(${userId})`, inline: true },
+            { name: "Moderator", value: "Pending", inline: true },
+            { name: "Status", value: "⏳ Pending", inline: true },
+            { name: "Requested by", value: `<@${interaction.user.id}>`, inline: false },
+            { name: "Ban Reason", value: reason, inline: false }
+          )
+          .setFooter({ text: `Pending Review • Request ID: ${banRequest.id} • Today at ${new Date().toLocaleTimeString()}` })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`ban_approve_${banRequest.id}`)
+            .setLabel("✓")
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId(`ban_deny_${banRequest.id}`)
+            .setLabel("✕")
+            .setStyle(ButtonStyle.Danger)
+        );
+
+        const sentMessage = await requestChannel.send({ embeds: [embed], components: [row] });
+        await storage.updateBanRequest(banRequest.id, { messageId: sentMessage.id });
+
+        await interaction.editReply({
+          content: "Your ban request has been submitted!",
+        });
+      } else if (interaction.customId === "unban_request_modal") {
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+        
+        const userId = interaction.fields.getTextInputValue("user_id").trim();
+        const reason = interaction.fields.getTextInputValue("reason");
+
+        if (!/^\d{17,19}$/.test(userId)) {
+          await interaction.editReply({
+            content: "Invalid User ID. Please enter a valid Discord User ID (17-19 digit number).",
+          });
+          return;
+        }
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        if (!config?.unbanChannelId) {
+          await interaction.editReply({
+            content: "Unban request channel not configured. Please ask an admin to run `/setup_unban`.",
+          });
+          return;
+        }
+
+        const unbanRequest = await storage.createUnbanRequest({
+          guildId: interaction.guildId!,
+          targetUserId: userId,
+          requestedById: interaction.user.id,
+          reason,
+          status: "pending",
+        });
+
+        const requestChannel = await client.channels.fetch(config.unbanChannelId);
+        if (!requestChannel || !("send" in requestChannel)) return;
+
+        const embed = new EmbedBuilder()
+          .setTitle("Unban Request")
+          .setColor(0xf0b232)
+          .addFields(
+            { name: "User ID", value: `<@${userId}>\n(${userId})`, inline: true },
+            { name: "Moderator", value: "Pending", inline: true },
+            { name: "Status", value: "⏳ Pending", inline: true },
+            { name: "Requested by", value: `<@${interaction.user.id}>`, inline: false },
+            { name: "Unban Reason", value: reason, inline: false }
+          )
+          .setFooter({ text: `Pending Review • Request ID: ${unbanRequest.id} • Today at ${new Date().toLocaleTimeString()}` })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`unban_approve_${unbanRequest.id}`)
+            .setLabel("✓")
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId(`unban_deny_${unbanRequest.id}`)
+            .setLabel("✕")
+            .setStyle(ButtonStyle.Danger)
+        );
+
+        const sentMessage = await requestChannel.send({ embeds: [embed], components: [row] });
+        await storage.updateUnbanRequest(unbanRequest.id, { messageId: sentMessage.id });
+
+        await interaction.editReply({
+          content: "Your unban request has been submitted!",
+        });
+      } else if (interaction.customId.startsWith("ban_action_")) {
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+        
+        const parts = interaction.customId.split("_");
+        const action = parts[2]; // approve or deny
+        const requestId = parts.slice(3).join("_");
+        const actionReason = interaction.fields.getTextInputValue("action_reason") || "";
+
+        // Check mod permission
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const member = interaction.member;
+        const memberRoles = member && 'roles' in member 
+          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+          : [];
+        
+        const hasModPermission = config?.modRoleIds?.some(roleId => memberRoles.includes(roleId)) || false;
+        const memberPermissions = member && 'permissions' in member 
+          ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+          : undefined;
+        const permBits = typeof memberPermissions === 'string' 
+          ? BigInt(memberPermissions) 
+          : (memberPermissions ?? BigInt(0));
+        const ADMINISTRATOR = BigInt(1) << BigInt(3);
+        const isAdmin = (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+        
+        if (!hasModPermission && !isAdmin) {
+          await interaction.editReply({
+            content: "You don't have permission to approve or deny ban requests.",
+          });
+          return;
+        }
+
+        const banRequest = await storage.getBanRequest(requestId);
+        if (!banRequest) {
+          await interaction.editReply({
+            content: "Ban request not found.",
+          });
+          return;
+        }
+
+        await storage.updateBanRequest(requestId, {
+          status: action === "approve" ? "approved" : "denied",
+          reviewedById: interaction.user.id,
+          reviewReason: actionReason,
+        });
+
+        const message = interaction.message;
+        if (message && message.embeds[0]) {
+          const status = action === "approve" ? "✅ Approved" : "❌ Denied";
+          const color = action === "approve" ? 0x23a559 : 0xda373c;
+          
+          const embed = new EmbedBuilder()
+            .setTitle("Ban Request")
+            .setColor(color)
+            .addFields(
+              { name: "User ID", value: `<@${banRequest.targetUserId}>\n(${banRequest.targetUserId})`, inline: true },
+              { name: "Moderator", value: `<@${interaction.user.id}>`, inline: true },
+              { name: "Status", value: status, inline: true },
+              { name: "Requested by", value: `<@${banRequest.requestedById}>`, inline: false },
+              { name: "Ban Reason", value: banRequest.reason, inline: false }
+            )
+            .setFooter({ text: `Request ID: ${requestId}` })
+            .setTimestamp();
+
+          if (actionReason) {
+            embed.addFields({ name: "Review Note", value: actionReason, inline: false });
+          }
+
+          await message.edit({ embeds: [embed], components: [] });
+        }
+
+        await interaction.editReply({
+          content: `Ban request ${action === "approve" ? "approved" : "denied"} successfully.`,
+        });
+
+        // Send DM to the requester
+        try {
+          const requester = await client.users.fetch(banRequest.requestedById);
+          const guild = interaction.guild;
+          const dmEmbed = new EmbedBuilder()
+            .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
+            .setDescription(`Your ban request has been **${action === "approve" ? "approved" : "denied"}**.`)
+            .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+            .addFields(
+              { name: "Reviewed by", value: interaction.user.username, inline: true },
+              { name: "Server", value: guild?.name || "Unknown", inline: true },
+              { name: "Reason", value: actionReason || "No reason provided", inline: false }
+            )
+            .setTimestamp();
+          await requester.send({ embeds: [dmEmbed] });
+        } catch (error) {
+          console.log("Could not DM requester");
+        }
+      } else if (interaction.customId.startsWith("unban_action_")) {
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+        
+        const parts = interaction.customId.split("_");
+        const action = parts[2]; // approve or deny
+        const requestId = parts.slice(3).join("_");
+        const actionReason = interaction.fields.getTextInputValue("action_reason") || "";
+
+        // Check mod permission
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const member = interaction.member;
+        const memberRoles = member && 'roles' in member 
+          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+          : [];
+        
+        const hasModPermission = config?.modRoleIds?.some(roleId => memberRoles.includes(roleId)) || false;
+        const memberPermissions = member && 'permissions' in member 
+          ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+          : undefined;
+        const permBits = typeof memberPermissions === 'string' 
+          ? BigInt(memberPermissions) 
+          : (memberPermissions ?? BigInt(0));
+        const ADMINISTRATOR = BigInt(1) << BigInt(3);
+        const isAdmin = (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+        
+        if (!hasModPermission && !isAdmin) {
+          await interaction.editReply({
+            content: "You don't have permission to approve or deny unban requests.",
+          });
+          return;
+        }
+
+        const unbanRequest = await storage.getUnbanRequest(requestId);
+        if (!unbanRequest) {
+          await interaction.editReply({
+            content: "Unban request not found.",
+          });
+          return;
+        }
+
+        await storage.updateUnbanRequest(requestId, {
+          status: action === "approve" ? "approved" : "denied",
+          reviewedById: interaction.user.id,
+          reviewReason: actionReason,
+        });
+
+        const message = interaction.message;
+        if (message && message.embeds[0]) {
+          const status = action === "approve" ? "✅ Approved" : "❌ Denied";
+          const color = action === "approve" ? 0x23a559 : 0xda373c;
+          
+          const embed = new EmbedBuilder()
+            .setTitle("Unban Request")
+            .setColor(color)
+            .addFields(
+              { name: "User ID", value: `<@${unbanRequest.targetUserId}>\n(${unbanRequest.targetUserId})`, inline: true },
+              { name: "Moderator", value: `<@${interaction.user.id}>`, inline: true },
+              { name: "Status", value: status, inline: true },
+              { name: "Requested by", value: `<@${unbanRequest.requestedById}>`, inline: false },
+              { name: "Unban Reason", value: unbanRequest.reason, inline: false }
+            )
+            .setFooter({ text: `Request ID: ${requestId}` })
+            .setTimestamp();
+
+          if (actionReason) {
+            embed.addFields({ name: "Review Note", value: actionReason, inline: false });
+          }
+
+          await message.edit({ embeds: [embed], components: [] });
+        }
+
+        await interaction.editReply({
+          content: `Unban request ${action === "approve" ? "approved" : "denied"} successfully.`,
+        });
+
+        // Send DM to the requester
+        try {
+          const requester = await client.users.fetch(unbanRequest.requestedById);
+          const guild = interaction.guild;
+          const dmEmbed = new EmbedBuilder()
+            .setTitle(`Unban Request ${action === "approve" ? "Approved" : "Denied"}`)
+            .setDescription(`Your unban request has been **${action === "approve" ? "approved" : "denied"}**.`)
+            .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+            .addFields(
+              { name: "Reviewed by", value: interaction.user.username, inline: true },
+              { name: "Server", value: guild?.name || "Unknown", inline: true },
+              { name: "Reason", value: actionReason || "No reason provided", inline: false }
+            )
+            .setTimestamp();
+          await requester.send({ embeds: [dmEmbed] });
+        } catch (error) {
+          console.log("Could not DM requester");
         }
       }
     }
