@@ -2231,25 +2231,27 @@ client.on("interactionCreate", async (interaction) => {
         const guildId = interaction.customId.replace("start_quiz_", "");
         const user = interaction.user;
         
-        // Defer immediately to prevent timeout
+        // Check if user already has an active quiz first
+        if (activeQuizzes.has(user.id)) {
+          try {
+            await interaction.reply({
+              content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
+              flags: 64,
+            });
+          } catch (e) {}
+          return;
+        }
+        
+        // Try to defer reply
         let deferred = false;
         try {
           await interaction.deferReply({ flags: 64 });
           deferred = true;
         } catch (e) {
-          console.log("Could not defer start quiz interaction");
+          // Interaction might have timed out or already been acknowledged
         }
         
         try {
-          if (activeQuizzes.has(user.id)) {
-            if (deferred) {
-              await interaction.editReply({
-                content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
-              });
-            }
-            return;
-          }
-          
           activeQuizzes.set(user.id, {
             guildId,
             currentQuestion: 0,
@@ -2262,24 +2264,33 @@ client.on("interactionCreate", async (interaction) => {
           });
           await sendQuizQuestion(user.id, dmChannel);
           
+          // Quiz started successfully - try to notify user
           if (deferred) {
-            await interaction.editReply({
-              content: "✅ Quiz started! Check your DMs for the questions.",
-            });
+            try {
+              await interaction.editReply({
+                content: "✅ Quiz started! Check your DMs for the questions.",
+              });
+            } catch (e) {}
           }
         } catch (error: any) {
           activeQuizzes.delete(user.id);
-          console.log("Error starting quiz:", error);
+          console.log("Error starting quiz - DM failed:", error.message);
           
-          // Try to edit reply with error message
+          // Try to show error to user
           if (deferred) {
             try {
               await interaction.editReply({
                 content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
               });
-            } catch (replyError) {
-              console.log("Could not send error message to user");
-            }
+            } catch (e) {}
+          } else {
+            // If defer failed, try a fresh reply
+            try {
+              await interaction.reply({
+                content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
+                flags: 64,
+              });
+            } catch (e) {}
           }
         }
         return;
