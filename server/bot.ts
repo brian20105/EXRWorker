@@ -1045,7 +1045,12 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "list_payouts") {
         const isPrivate = interaction.options.getBoolean("private") ?? true;
-        await interaction.deferReply({ flags: isPrivate ? 64 : undefined });
+        try {
+          await interaction.deferReply({ flags: isPrivate ? 64 : undefined });
+        } catch (e) {
+          console.log("list_payouts: deferReply failed");
+          return;
+        }
         
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
