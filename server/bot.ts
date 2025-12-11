@@ -71,11 +71,53 @@ const FULL_QUESTIONS = [
   "You understand that this is a paid position and any unprofessionalism/arguing will get you removed?"
 ];
 
+interface QuizQuestion {
+  text: string;
+  type: "text" | "choice";
+  options?: { label: string; value: string }[];
+}
+
+function getQuizQuestions(config: any): QuizQuestion[] {
+  const defaultQuestions = QUIZ_QUESTIONS;
+  
+  const q1Text = config?.quizQuestion1 || "How do you warn/mute somebody?";
+  const q2Text = config?.quizQuestion2 || "If something is bannable, where do you go to ban them?";
+  const q3Text = config?.quizQuestion3 || "If you are unsure about a situation, who should you ask?";
+  const q4Text = config?.quizQuestion4 || "If somebody makes a partnership ticket, who do you bring to handle it?";
+  const q5Text = config?.quizQuestion5 || "You understand that this is a paid position and any unprofessionalism/arguing will get you removed?";
+  
+  const q3OptionsStr = config?.quizQuestion3Options || "Admin|Lead Staff|Handle it yourself|Forget about it";
+  const q5OptionsStr = config?.quizQuestion5Options || "Yes|No";
+  
+  const q3Options = q3OptionsStr.split("|").map((opt: string) => ({ label: opt.trim(), value: opt.trim() }));
+  const q5Options = q5OptionsStr.split("|").map((opt: string) => ({ label: opt.trim(), value: opt.trim() }));
+  
+  return [
+    { text: `**Question 1:** ${q1Text}`, type: "text" },
+    { text: `**Question 2:** ${q2Text}`, type: "text" },
+    { text: `**Question 3:** ${q3Text}`, type: "choice", options: q3Options },
+    { text: `**Question 4:** ${q4Text}`, type: "text" },
+    { text: `**Question 5:** ${q5Text}`, type: "choice", options: q5Options }
+  ];
+}
+
+function getFullQuestions(config: any): string[] {
+  return [
+    config?.quizQuestion1 || "How do you warn/mute somebody?",
+    config?.quizQuestion2 || "If something is bannable, where do you go to ban them?",
+    config?.quizQuestion3 || "If you are unsure about a situation, who should you ask?",
+    config?.quizQuestion4 || "If somebody makes a partnership ticket, who do you bring to handle it?",
+    config?.quizQuestion5 || "You understand that this is a paid position and any unprofessionalism/arguing will get you removed?"
+  ];
+}
+
 async function sendQuizQuestion(userId: string, dmChannel: any): Promise<void> {
   const quizState = activeQuizzes.get(userId);
   if (!quizState) return;
   
-  const question = QUIZ_QUESTIONS[quizState.currentQuestion];
+  const config = await storage.getGuildConfig(quizState.guildId);
+  const questions = getQuizQuestions(config);
+  const question = questions[quizState.currentQuestion];
   
   if (question.type === "choice" && question.options) {
     const row = new ActionRowBuilder<ButtonBuilder>();
@@ -105,12 +147,14 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
   quizState.answers.push(answer);
   quizState.currentQuestion++;
   
-  if (quizState.currentQuestion < QUIZ_QUESTIONS.length) {
+  const config = await storage.getGuildConfig(quizState.guildId);
+  const questions = getQuizQuestions(config);
+  
+  if (quizState.currentQuestion < questions.length) {
     await sendQuizQuestion(userId, dmChannel);
   } else {
     activeQuizzes.delete(userId);
     
-    const config = await storage.getGuildConfig(quizState.guildId);
     if (!config?.staffIntroSubmissionsChannelId) {
       await dmChannel.send({
         content: "Thank you for completing the quiz! Your answers have been recorded, but the submissions channel hasn't been set up yet. Please contact an admin.",
@@ -129,6 +173,8 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
       status: "pending",
     });
     
+    const fullQuestions = getFullQuestions(config);
+    
     try {
       const submissionsChannel = await client.channels.fetch(config.staffIntroSubmissionsChannelId);
       if (submissionsChannel && "send" in submissionsChannel) {
@@ -137,11 +183,11 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
           .setColor(0xf0b232)
           .setDescription(`**Submitted by:** <@${userId}>`)
           .addFields(
-            { name: `Q1: ${FULL_QUESTIONS[0]}`, value: quizState.answers[0] || "No answer", inline: false },
-            { name: `Q2: ${FULL_QUESTIONS[1]}`, value: quizState.answers[1] || "No answer", inline: false },
-            { name: `Q3: ${FULL_QUESTIONS[2]}`, value: quizState.answers[2] || "No answer", inline: false },
-            { name: `Q4: ${FULL_QUESTIONS[3]}`, value: quizState.answers[3] || "No answer", inline: false },
-            { name: `Q5: ${FULL_QUESTIONS[4]}`, value: quizState.answers[4] || "No answer", inline: false }
+            { name: `Q1: ${fullQuestions[0]}`, value: quizState.answers[0] || "No answer", inline: false },
+            { name: `Q2: ${fullQuestions[1]}`, value: quizState.answers[1] || "No answer", inline: false },
+            { name: `Q3: ${fullQuestions[2]}`, value: quizState.answers[2] || "No answer", inline: false },
+            { name: `Q4: ${fullQuestions[3]}`, value: quizState.answers[3] || "No answer", inline: false },
+            { name: `Q5: ${fullQuestions[4]}`, value: quizState.answers[4] || "No answer", inline: false }
           )
           .setFooter({ text: `Submission ID: ${submission.id}` })
           .setTimestamp();
@@ -564,6 +610,52 @@ const commands = [
         .setName("channel")
         .setDescription("The channel where submissions will be sent")
         .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_intro_questions")
+    .setDescription("Customize the staff intro quiz questions")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("question1")
+        .setDescription("Question 1 (text answer)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("question2")
+        .setDescription("Question 2 (text answer)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("question3")
+        .setDescription("Question 3 (multiple choice)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("question3_options")
+        .setDescription("Q3 options separated by | (e.g. Option A|Option B|Option C)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("question4")
+        .setDescription("Question 4 (text answer)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("question5")
+        .setDescription("Question 5 (multiple choice)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("question5_options")
+        .setDescription("Q5 options separated by | (e.g. Yes|No)")
+        .setRequired(false)
     ),
 ].map((command) => command.toJSON());
 
@@ -1825,6 +1917,46 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Staff intro submissions will be sent to <#${channel.id}>!`,
         });
+      } else if (commandName === "setup_intro_questions") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const q1 = interaction.options.getString("question1");
+        const q2 = interaction.options.getString("question2");
+        const q3 = interaction.options.getString("question3");
+        const q3Options = interaction.options.getString("question3_options");
+        const q4 = interaction.options.getString("question4");
+        const q5 = interaction.options.getString("question5");
+        const q5Options = interaction.options.getString("question5_options");
+        
+        const updateData: any = { guildId: interaction.guildId! };
+        
+        if (q1 !== null) updateData.quizQuestion1 = q1;
+        if (q2 !== null) updateData.quizQuestion2 = q2;
+        if (q3 !== null) updateData.quizQuestion3 = q3;
+        if (q3Options !== null) updateData.quizQuestion3Options = q3Options;
+        if (q4 !== null) updateData.quizQuestion4 = q4;
+        if (q5 !== null) updateData.quizQuestion5 = q5;
+        if (q5Options !== null) updateData.quizQuestion5Options = q5Options;
+        
+        await storage.upsertGuildConfig(updateData);
+        
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        
+        const currentQuestions = getQuizQuestions(config);
+        
+        let summary = "**Current Quiz Questions:**\n\n";
+        for (let i = 0; i < currentQuestions.length; i++) {
+          const q = currentQuestions[i];
+          summary += `**Q${i + 1}:** ${q.text.replace(/\*\*/g, "")}\n`;
+          if (q.type === "choice" && q.options) {
+            summary += `Options: ${q.options.map(o => o.label).join(", ")}\n`;
+          }
+          summary += "\n";
+        }
+        
+        await interaction.editReply({
+          content: `✅ Quiz questions updated!\n\n${summary}`,
+        });
       }
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
@@ -1940,8 +2072,11 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
           
+          const config = await storage.getGuildConfig(quizState.guildId);
+          const questions = getQuizQuestions(config);
+          
           await interaction.update({
-            content: `${QUIZ_QUESTIONS[quizState.currentQuestion].text}\n\n✅ **Your answer:** ${answer}`,
+            content: `${questions[quizState.currentQuestion].text}\n\n✅ **Your answer:** ${answer}`,
             components: [],
           });
           
@@ -2918,7 +3053,10 @@ client.on("messageCreate", async (message) => {
   const quizState = activeQuizzes.get(message.author.id);
   if (!quizState) return;
   
-  const currentQuestion = QUIZ_QUESTIONS[quizState.currentQuestion];
+  const config = await storage.getGuildConfig(quizState.guildId);
+  const questions = getQuizQuestions(config);
+  const currentQuestion = questions[quizState.currentQuestion];
+  
   if (currentQuestion.type === "choice") {
     await message.reply({
       content: "Please use the buttons above to answer this question!",

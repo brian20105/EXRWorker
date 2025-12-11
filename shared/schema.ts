@@ -20,6 +20,13 @@ export const guildConfigs = pgTable("guild_configs", {
   modRoleIds: text("mod_role_ids").array(),
   staffIntroChannelId: text("staff_intro_channel_id"),
   staffIntroSubmissionsChannelId: text("staff_intro_submissions_channel_id"),
+  quizQuestion1: text("quiz_question_1"),
+  quizQuestion2: text("quiz_question_2"),
+  quizQuestion3: text("quiz_question_3"),
+  quizQuestion3Options: text("quiz_question_3_options"),
+  quizQuestion4: text("quiz_question_4"),
+  quizQuestion5: text("quiz_question_5"),
+  quizQuestion5Options: text("quiz_question_5_options"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
