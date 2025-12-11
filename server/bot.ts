@@ -82,7 +82,7 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("list_payouts")
-    .setDescription("List all pending payout requests")
+    .setDescription("List all payout requests (pending, approved, denied)")
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("user_payouts")
@@ -93,6 +93,19 @@ const commands = [
         .setName("user")
         .setDescription("The user to check payouts for")
         .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup")
+    .setDescription("Setup roster displays")
+    .addStringOption((option) =>
+      option
+        .setName("roster")
+        .setDescription("Choose which roster to display")
+        .setRequired(true)
+        .addChoices(
+          { name: "Player Roster", value: "player" },
+          { name: "Staff Roster", value: "staff" }
+        )
     ),
 ].map((command) => command.toJSON());
 
@@ -299,32 +312,130 @@ client.on("interactionCreate", async (interaction) => {
         
         await interaction.deferReply({ flags: 64 });
         
-        const pendingPayouts = await storage.getPendingPayouts(interaction.guildId!);
+        const allPayouts = await storage.getAllPayouts(interaction.guildId!);
         
-        if (pendingPayouts.length === 0) {
+        if (allPayouts.length === 0) {
           await interaction.editReply({
-            content: "No pending payout requests found.",
+            content: "No payout requests found.",
           });
           return;
         }
         
+        const pending = allPayouts.filter(p => p.status === "pending");
+        const approved = allPayouts.filter(p => p.status === "approved");
+        const denied = allPayouts.filter(p => p.status === "denied");
+        
+        const totalPending = pending.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+        const totalApproved = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+        const totalDenied = denied.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+        
         const embed = new EmbedBuilder()
-          .setTitle("Pending Payout Requests")
-          .setColor(0xf0b232)
-          .setDescription(`Found ${pendingPayouts.length} pending request(s)`)
+          .setTitle("All Payout Requests")
+          .setColor(0x5865f2)
+          .setDescription(`Total: ${allPayouts.length} request(s)`)
+          .addFields(
+            { name: "⏳ Pending", value: `${pending.length} ($${totalPending.toFixed(2)})`, inline: true },
+            { name: "✅ Approved", value: `${approved.length} ($${totalApproved.toFixed(2)})`, inline: true },
+            { name: "❌ Denied", value: `${denied.length} ($${totalDenied.toFixed(2)})`, inline: true }
+          )
           .setTimestamp();
         
-        const fields = pendingPayouts.slice(0, 25).map((payout, index) => ({
-          name: `#${index + 1} - $${payout.moneyOwed}`,
-          value: `User: <@${payout.userId}>\nRequested by: <@${payout.requestedById}>\nPayPal: ${payout.email}`,
-          inline: true,
-        }));
+        const recentPayouts = allPayouts.slice(0, 15);
+        const fields = recentPayouts.map((payout, index) => {
+          const statusEmoji = payout.status === "pending" ? "⏳" : payout.status === "approved" ? "✅" : "❌";
+          return {
+            name: `${statusEmoji} #${index + 1} - $${payout.moneyOwed}`,
+            value: `User: <@${payout.userId}>\nStatus: ${payout.status}`,
+            inline: true,
+          };
+        });
         
-        embed.addFields(fields);
+        if (fields.length > 0) {
+          embed.addFields(fields);
+        }
         
         await interaction.editReply({
           embeds: [embed],
         });
+      } else if (commandName === "setup") {
+        const rosterType = interaction.options.getString("roster", true);
+        
+        if (rosterType === "player") {
+          const playerRoster = `**Thrill's Competitive Roster**
+
+<@&1447116161866137601>
+
+None
+<@&1447116037358358598>
+
+<@1019085588890136647>
+<@&1447115944349663314>
+
+<@948598563359817728>
+<@1435759854470824082>
+<@929661942535184424>
+<@&1447139335785943050>
+
+<@1139076177009594438>
+<@944385000059600896>
+<@&1447116224432570469>
+
+<@989365663413968917>
+<@688865264166764559>
+<@&1447416759266050108>
+
+<@1139076177009594438>
+<@&1447144088054005761>
+
+<@948598563359817728>
+<@560219156407123978>
+<@1408928252315177061>`;
+
+          if (interaction.channel && "send" in interaction.channel) {
+            await interaction.channel.send(playerRoster);
+          }
+          
+          await interaction.reply({
+            content: "✅ Player roster has been posted!",
+            flags: 64,
+          });
+        } else if (rosterType === "staff") {
+          const staffRoster = `**Thrill's Staff Roster**
+
+<@&1447070054960332871>
+
+<@1139076177009594438>
+<@948598563359817728>
+<@944385000059600896> - Founder
+<@&1447118813022781554>
+
+<@1382092940888903771>
+<@&1447070441058336789>
+
+<@1435759854470824082>
+<@&1447070950750294026>
+
+<@688865264166764559>
+<@&1447118712183459882>
+
+<@1416931593209118953>
+<@881593846599925790>
+<@&1447071053334708406>
+
+<@1019085588890136647>
+<@1409408029782446210>
+<@1311127722025553960>
+<@1256676224856490046>`;
+
+          if (interaction.channel && "send" in interaction.channel) {
+            await interaction.channel.send(staffRoster);
+          }
+          
+          await interaction.reply({
+            content: "✅ Staff roster has been posted!",
+            flags: 64,
+          });
+        }
       } else if (commandName === "user_payouts") {
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 

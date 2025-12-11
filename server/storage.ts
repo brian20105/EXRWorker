@@ -19,6 +19,7 @@ export interface IStorage {
   getPayoutRequest(id: string): Promise<PayoutRequest | undefined>;
   getPayoutRequestByMessageId(messageId: string): Promise<PayoutRequest | undefined>;
   getPendingPayouts(guildId: string): Promise<PayoutRequest[]>;
+  getAllPayouts(guildId: string): Promise<PayoutRequest[]>;
   getUserPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
   updatePayoutStatus(id: string, status: string, actionedById: string): Promise<PayoutRequest>;
   updatePayoutMessageId(id: string, messageId: string): Promise<void>;
@@ -102,6 +103,13 @@ export class DatabaseStorage implements IStorage {
         eq(payoutRequests.guildId, guildId),
         eq(payoutRequests.status, "pending")
       ));
+  }
+
+  async getAllPayouts(guildId: string): Promise<PayoutRequest[]> {
+    return db
+      .select()
+      .from(payoutRequests)
+      .where(eq(payoutRequests.guildId, guildId));
   }
 
   async getUserPayouts(guildId: string, userId: string): Promise<PayoutRequest[]> {
