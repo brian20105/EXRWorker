@@ -25,6 +25,7 @@ export const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
   ],
 });
 
@@ -332,91 +333,113 @@ client.on("interactionCreate", async (interaction) => {
         let payoutList = "**All Payout Requests**\n\n";
         payoutList += `**Summary:** ${allPayouts.length} total | ⏳ ${pending.length} pending ($${totalPending.toFixed(2)}) | ✅ ${approved.length} approved ($${totalApproved.toFixed(2)}) | ❌ ${denied.length} denied ($${totalDenied.toFixed(2)})\n\n`;
         
-        allPayouts.slice(0, 20).forEach((payout, index) => {
-          const statusEmoji = payout.status === "pending" ? "⏳" : payout.status === "approved" ? "✅" : "❌";
-          payoutList += `${statusEmoji} **${index + 1}.)** <@${payout.userId}> - ${payout.userId} - ${payout.reason || "No reason"} - $${payout.moneyOwed} - ${payout.email}\n`;
+        allPayouts.forEach((payout, index) => {
+          const statusText = payout.status === "pending" ? "Pending" : payout.status === "approved" ? "Approved" : "Denied";
+          payoutList += `**${index + 1}.)** <@${payout.userId}> - ${payout.userId} - ${payout.reason || "No reason"} - $${payout.moneyOwed} - ${payout.email} - ${statusText}\n`;
         });
         
-        await interaction.editReply({
-          content: payoutList,
-        });
+        if (payoutList.length > 1900) {
+          const chunks: string[] = [];
+          let currentChunk = "**All Payout Requests**\n\n";
+          currentChunk += `**Summary:** ${allPayouts.length} total | ⏳ ${pending.length} pending | ✅ ${approved.length} approved | ❌ ${denied.length} denied\n\n`;
+          
+          allPayouts.forEach((payout, index) => {
+            const statusText = payout.status === "pending" ? "Pending" : payout.status === "approved" ? "Approved" : "Denied";
+            const line = `**${index + 1}.)** <@${payout.userId}> - ${payout.userId} - ${payout.reason || "No reason"} - $${payout.moneyOwed} - ${payout.email} - ${statusText}\n`;
+            
+            if (currentChunk.length + line.length > 1900) {
+              chunks.push(currentChunk);
+              currentChunk = "";
+            }
+            currentChunk += line;
+          });
+          
+          if (currentChunk) chunks.push(currentChunk);
+          
+          await interaction.editReply({ content: chunks[0] });
+          for (let i = 1; i < chunks.length; i++) {
+            await interaction.followUp({ content: chunks[i], flags: 64 });
+          }
+        } else {
+          await interaction.editReply({ content: payoutList });
+        }
       } else if (commandName === "setup") {
         const rosterType = interaction.options.getString("roster", true);
         
+        await interaction.deferReply({ flags: 64 });
+        
+        const guild = interaction.guild;
+        if (!guild) {
+          await interaction.editReply({ content: "❌ Could not fetch guild information." });
+          return;
+        }
+        
+        await guild.members.fetch();
+        
+        const getMembersWithRole = (roleId: string) => {
+          const role = guild.roles.cache.get(roleId);
+          if (!role) return [];
+          return role.members.map(m => `<@${m.id}>`);
+        };
+        
         if (rosterType === "player") {
-          const playerRoster = `**Thrill's Competitive Roster**
-
-<@&1447116161866137601>
-
-None
-<@&1447116037358358598>
-
-<@1019085588890136647>
-<@&1447115944349663314>
-
-<@948598563359817728>
-<@1435759854470824082>
-<@929661942535184424>
-<@&1447139335785943050>
-
-<@1139076177009594438>
-<@944385000059600896>
-<@&1447116224432570469>
-
-<@989365663413968917>
-<@688865264166764559>
-<@&1447416759266050108>
-
-<@1139076177009594438>
-<@&1447144088054005761>
-
-<@948598563359817728>
-<@560219156407123978>
-<@1408928252315177061>`;
+          const playerRoles = [
+            { id: "1447116161866137601", name: null },
+            { id: "1447116037358358598", name: null },
+            { id: "1447115944349663314", name: null },
+            { id: "1447139335785943050", name: null },
+            { id: "1447116224432570469", name: null },
+            { id: "1447416759266050108", name: null },
+            { id: "1447144088054005761", name: null },
+          ];
+          
+          let playerRoster = "**Thrill's Competitive Roster**\n\n";
+          
+          for (const roleInfo of playerRoles) {
+            const members = getMembersWithRole(roleInfo.id);
+            playerRoster += `<@&${roleInfo.id}>\n\n`;
+            if (members.length === 0) {
+              playerRoster += "None\n";
+            } else {
+              playerRoster += members.join("\n") + "\n";
+            }
+          }
 
           if (interaction.channel && "send" in interaction.channel) {
             await interaction.channel.send(playerRoster);
           }
           
-          await interaction.reply({
+          await interaction.editReply({
             content: "✅ Player roster has been posted!",
-            flags: 64,
           });
         } else if (rosterType === "staff") {
-          const staffRoster = `**Thrill's Staff Roster**
-
-<@&1447070054960332871>
-
-<@1139076177009594438>
-<@948598563359817728>
-<@944385000059600896> - Founder
-<@&1447118813022781554>
-
-<@1382092940888903771>
-<@&1447070441058336789>
-
-<@1435759854470824082>
-<@&1447070950750294026>
-
-<@688865264166764559>
-<@&1447118712183459882>
-
-<@1416931593209118953>
-<@881593846599925790>
-<@&1447071053334708406>
-
-<@1019085588890136647>
-<@1409408029782446210>
-<@1311127722025553960>
-<@1256676224856490046>`;
+          const staffRoles = [
+            { id: "1447070054960332871", name: null },
+            { id: "1447118813022781554", name: null },
+            { id: "1447070441058336789", name: null },
+            { id: "1447070950750294026", name: null },
+            { id: "1447118712183459882", name: null },
+            { id: "1447071053334708406", name: null },
+          ];
+          
+          let staffRoster = "**Thrill's Staff Roster**\n\n";
+          
+          for (const roleInfo of staffRoles) {
+            const members = getMembersWithRole(roleInfo.id);
+            staffRoster += `<@&${roleInfo.id}>\n\n`;
+            if (members.length === 0) {
+              staffRoster += "None\n";
+            } else {
+              staffRoster += members.join("\n") + "\n";
+            }
+          }
 
           if (interaction.channel && "send" in interaction.channel) {
             await interaction.channel.send(staffRoster);
           }
           
-          await interaction.reply({
+          await interaction.editReply({
             content: "✅ Staff roster has been posted!",
-            flags: 64,
           });
         }
       } else if (commandName === "user_payouts") {
