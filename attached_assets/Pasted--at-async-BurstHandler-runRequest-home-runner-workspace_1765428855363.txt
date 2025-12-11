@@ -1,0 +1,28 @@
+  at async BurstHandler.runRequest (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/handlers/BurstHandler.ts:144:20)
+    at async _REST.request (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/REST.ts:210:20)
+    at async ButtonInteraction.showModal (/home/runner/workspace/node_modules/discord.js/src/structures/interfaces/InteractionResponses.js:399:22)
+    at async Client.<anonymous> (/home/runner/workspace/server/bot.ts:419:16) {
+  requestBody: { files: undefined, json: { type: 9, data: [Object] } },
+  rawError: { message: 'Unknown interaction', code: 10062 },
+  code: 10062,
+  status: 404,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1448537984780603473/aW50ZXJhY3Rpb246MTQ0ODUzNzk4NDc4MDYwMzQ3MzpOcDRMSXJ3NzRsWFUxblhBVEJITHJSUUhaeVRZVldId3VYbzFLMG4yMEM1RDRORXUyTk94RTYzdkxpemZWaDFmN1BFTjhQenpTM0pITjFBSkFXaExERzh6b0s1TDVZY05tb2lEZ0cxNkNCQW15THNpRVhBekkyaVFST1ZuNEg2ZQ/callback?with_response=false'
+}
+Error handling interaction: DiscordAPIError[40060]: Interaction has already been acknowledged.
+    at handleErrors (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/handlers/Shared.ts:148:10)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async BurstHandler.runRequest (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/handlers/BurstHandler.ts:144:20)
+    at async _REST.request (/home/runner/workspace/node_modules/@discordjs/rest/src/lib/REST.ts:210:20)
+    at async ModalSubmitInteraction.reply (/home/runner/workspace/node_modules/discord.js/src/structures/interfaces/InteractionResponses.js:193:22)
+    at async Client.<anonymous> (/home/runner/workspace/server/bot.ts:479:9) {
+  requestBody: { files: [], json: { type: 4, data: [Object] } },
+  rawError: {
+    message: 'Interaction has already been acknowledged.',
+    code: 40060
+  },
+  code: 40060,
+  status: 400,
+  method: 'POST',
+  url: 'https://discord.com/api/v10/interactions/1448538038383808592/aW50ZXJhY3Rpb246MTQ0ODUzODAzODM4MzgwODU5MjpMWG9YSHBpNTc2d3pkQnB1SXB2SE1XcXhVd1NzYUM5RjY1QWJOQXRFVWlEVDR5cVR5d05iV3loeHo4NTRjNmtWNEZCMTVESVl6ZXczMW5NMlV5ZWVRekRTQTNKcGl3dExqWWhkQ1MzUThZand2TWZOUmQ4RW1Sajdya2NjUVdtUA/callback?with_response=false'
+}
