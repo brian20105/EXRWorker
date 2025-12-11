@@ -24,6 +24,7 @@ export interface IStorage {
   getUserPendingPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
   updatePayoutStatus(id: string, status: string, actionedById: string): Promise<PayoutRequest>;
   updatePayoutMessageId(id: string, messageId: string): Promise<void>;
+  updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string }): Promise<PayoutRequest>;
   deletePayoutRequest(id: string): Promise<void>;
 }
 
@@ -150,6 +151,15 @@ export class DatabaseStorage implements IStorage {
       .update(payoutRequests)
       .set({ messageId })
       .where(eq(payoutRequests.id, id));
+  }
+
+  async updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string }): Promise<PayoutRequest> {
+    const result = await db
+      .update(payoutRequests)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(payoutRequests.id, id))
+      .returning();
+    return result[0];
   }
 
   async deletePayoutRequest(id: string): Promise<void> {

@@ -116,15 +116,16 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("payout")
-    .setDescription("Add or remove a payout request")
+    .setDescription("Add, edit, or remove a payout request")
     .setDefaultMemberPermissions(0)
     .addStringOption((option) =>
       option
         .setName("action")
-        .setDescription("Add or remove a payout")
+        .setDescription("Add, edit, or remove a payout")
         .setRequired(true)
         .addChoices(
           { name: "Add", value: "add" },
+          { name: "Edit", value: "edit" },
           { name: "Remove", value: "remove" }
         )
     )
@@ -137,19 +138,19 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName("amount")
-        .setDescription("Amount owed (for add)")
+        .setDescription("Amount owed (for add/edit)")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("email")
-        .setDescription("PayPal email (for add)")
+        .setDescription("PayPal email (for add/edit)")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("reason")
-        .setDescription("Reason for payout (for add)")
+        .setDescription("Reason for payout (for add/edit)")
         .setRequired(false)
     ),
 ].map((command) => command.toJSON());
@@ -722,6 +723,88 @@ client.on("interactionCreate", async (interaction) => {
           
           await interaction.editReply({
             content: `✅ Payout request added for <@${targetUser.id}> - $${amount}`,
+          });
+        } else if (action === "edit") {
+          const userPayouts = await storage.getUserPendingPayouts(interaction.guildId!, targetUser.id);
+          
+          if (userPayouts.length === 0) {
+            await interaction.editReply({
+              content: `❌ No pending payout requests found for <@${targetUser.id}>.`,
+            });
+            return;
+          }
+          
+          const amount = interaction.options.getString("amount");
+          const email = interaction.options.getString("email");
+          const reason = interaction.options.getString("reason");
+          
+          if (!amount && !email && !reason) {
+            await interaction.editReply({
+              content: `❌ Please provide at least one field to update (amount, email, or reason).`,
+            });
+            return;
+          }
+          
+          const updates: { moneyOwed?: string; email?: string; reason?: string } = {};
+          if (amount) updates.moneyOwed = amount;
+          if (email) updates.email = email;
+          if (reason) updates.reason = reason;
+          
+          for (const payout of userPayouts) {
+            const updatedPayout = await storage.updatePayoutRequest(payout.id, updates);
+            
+            if (payout.messageId) {
+              try {
+                const config = await storage.getGuildConfig(interaction.guildId!);
+                if (config?.requestChannelId) {
+                  const channel = await client.channels.fetch(config.requestChannelId);
+                  if (channel && "messages" in channel) {
+                    const message = await channel.messages.fetch(payout.messageId);
+                    
+                    const updatedEmbed = new EmbedBuilder()
+                      .setTitle("Payout Request")
+                      .setColor(0xf0b232)
+                      .addFields(
+                        { name: "User ID", value: `${targetUser.id} (<@${targetUser.id}>)`, inline: true },
+                        { name: "Requested by", value: `<@${updatedPayout.requestedById}>`, inline: true },
+                        { name: "Status", value: "⏳ Pending", inline: true },
+                        { name: "Reason", value: updatedPayout.reason || "No reason", inline: false },
+                        { name: "Money Owed", value: `$${updatedPayout.moneyOwed}`, inline: false },
+                        { name: "Paypal", value: updatedPayout.email || "Not provided", inline: false }
+                      )
+                      .setFooter({ text: `Request ID: ${payout.id} (Edited)` })
+                      .setTimestamp();
+
+                    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(`approve_${payout.id}`)
+                        .setLabel("Approve")
+                        .setStyle(ButtonStyle.Success),
+                      new ButtonBuilder()
+                        .setCustomId(`deny_${payout.id}`)
+                        .setLabel("Deny")
+                        .setStyle(ButtonStyle.Danger)
+                    );
+
+                    await message.edit({
+                      embeds: [updatedEmbed],
+                      components: [row],
+                    });
+                  }
+                }
+              } catch (error) {
+                console.log("Could not update payout message:", error);
+              }
+            }
+          }
+          
+          const changedFields = [];
+          if (amount) changedFields.push(`Amount: $${amount}`);
+          if (email) changedFields.push(`Email: ${email}`);
+          if (reason) changedFields.push(`Reason: ${reason}`);
+          
+          await interaction.editReply({
+            content: `✅ Updated ${userPayouts.length} pending payout(s) for <@${targetUser.id}>.\n**Changes:** ${changedFields.join(", ")}`,
           });
         } else if (action === "remove") {
           const userPayouts = await storage.getUserPendingPayouts(interaction.guildId!, targetUser.id);
