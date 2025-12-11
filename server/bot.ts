@@ -855,6 +855,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
       return;
     }
     
+    // Always fetch fresh member data
     try {
       await guild.members.fetch({ time: 30000 });
       console.log("[ROSTER] Fetched all members for roster update");
@@ -862,42 +863,90 @@ async function updateRosterMessages(guildId: string): Promise<void> {
       console.log("[ROSTER] Could not fetch all members, using cached");
     }
     
-    if (config.playerRosterMessageId && config.playerRosterChannelId) {
+    // Update player roster
+    if (config.playerRosterChannelId) {
       console.log("[ROSTER] Updating player roster...", config.playerRosterChannelId, config.playerRosterMessageId);
       try {
         const channel = await client.channels.fetch(config.playerRosterChannelId);
-        if (channel && "messages" in channel) {
-          const message = await channel.messages.fetch(config.playerRosterMessageId);
+        if (channel && "send" in channel) {
           const newContent = await generatePlayerRoster(guild);
-          await message.edit({ content: newContent });
-          console.log("[ROSTER] Updated player roster successfully");
+          
+          // Try to edit existing message
+          if (config.playerRosterMessageId) {
+            try {
+              const message = await (channel as any).messages.fetch(config.playerRosterMessageId);
+              await message.edit({ content: newContent });
+              console.log("[ROSTER] Updated player roster successfully");
+            } catch (fetchError: any) {
+              // Message deleted - create new one
+              console.log("[ROSTER] Player roster message not found, creating new one");
+              const newMessage = await (channel as any).send({ content: newContent });
+              await storage.upsertGuildConfig({
+                guildId,
+                playerRosterMessageId: newMessage.id,
+              });
+              console.log("[ROSTER] Created new player roster message");
+            }
+          } else {
+            // No message ID configured - create new one
+            const newMessage = await (channel as any).send({ content: newContent });
+            await storage.upsertGuildConfig({
+              guildId,
+              playerRosterMessageId: newMessage.id,
+            });
+            console.log("[ROSTER] Created new player roster message");
+          }
         } else {
           console.log("[ROSTER] Channel not a text channel");
         }
       } catch (error: any) {
-        console.log("[ROSTER] Could not update player roster message:", error.message || error);
+        console.log("[ROSTER] Could not update player roster:", error.message || error);
       }
     } else {
-      console.log("[ROSTER] No player roster configured");
+      console.log("[ROSTER] No player roster channel configured");
     }
     
-    if (config.staffRosterMessageId && config.staffRosterChannelId) {
+    // Update staff roster
+    if (config.staffRosterChannelId) {
       console.log("[ROSTER] Updating staff roster...", config.staffRosterChannelId, config.staffRosterMessageId);
       try {
         const channel = await client.channels.fetch(config.staffRosterChannelId);
-        if (channel && "messages" in channel) {
-          const message = await channel.messages.fetch(config.staffRosterMessageId);
+        if (channel && "send" in channel) {
           const newContent = await generateStaffRoster(guild);
-          await message.edit({ content: newContent });
-          console.log("[ROSTER] Updated staff roster successfully");
+          
+          // Try to edit existing message
+          if (config.staffRosterMessageId) {
+            try {
+              const message = await (channel as any).messages.fetch(config.staffRosterMessageId);
+              await message.edit({ content: newContent });
+              console.log("[ROSTER] Updated staff roster successfully");
+            } catch (fetchError: any) {
+              // Message deleted - create new one
+              console.log("[ROSTER] Staff roster message not found, creating new one");
+              const newMessage = await (channel as any).send({ content: newContent });
+              await storage.upsertGuildConfig({
+                guildId,
+                staffRosterMessageId: newMessage.id,
+              });
+              console.log("[ROSTER] Created new staff roster message");
+            }
+          } else {
+            // No message ID configured - create new one
+            const newMessage = await (channel as any).send({ content: newContent });
+            await storage.upsertGuildConfig({
+              guildId,
+              staffRosterMessageId: newMessage.id,
+            });
+            console.log("[ROSTER] Created new staff roster message");
+          }
         } else {
           console.log("[ROSTER] Channel not a text channel");
         }
       } catch (error: any) {
-        console.log("[ROSTER] Could not update staff roster message:", error.message || error);
+        console.log("[ROSTER] Could not update staff roster:", error.message || error);
       }
     } else {
-      console.log("[ROSTER] No staff roster configured");
+      console.log("[ROSTER] No staff roster channel configured");
     }
   } catch (error) {
     console.error("[ROSTER] Error updating roster messages:", error);
@@ -2316,24 +2365,28 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
-        const isApprove = interaction.customId.startsWith("quiz_approve_");
-        const submissionId = interaction.customId.replace(isApprove ? "quiz_approve_" : "quiz_deny_", "");
-        
-        const modal = new ModalBuilder()
-          .setCustomId(`quiz_review_${isApprove ? "approve" : "deny"}_${submissionId}`)
-          .setTitle(isApprove ? "Approve Submission" : "Deny Submission");
-        
-        const reasonInput = new TextInputBuilder()
-          .setCustomId("review_reason")
-          .setLabel("Reason (optional)")
-          .setStyle(TextInputStyle.Paragraph)
-          .setPlaceholder(isApprove ? "Any notes for the user..." : "Why is this submission being denied?")
-          .setRequired(false);
-        
-        const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
-        modal.addComponents(row);
-        
-        await interaction.showModal(modal);
+        try {
+          const isApprove = interaction.customId.startsWith("quiz_approve_");
+          const submissionId = interaction.customId.replace(isApprove ? "quiz_approve_" : "quiz_deny_", "");
+          
+          const modal = new ModalBuilder()
+            .setCustomId(`quiz_review_${isApprove ? "approve" : "deny"}_${submissionId}`)
+            .setTitle(isApprove ? "Approve Submission" : "Deny Submission");
+          
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("review_reason")
+            .setLabel("Reason (optional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder(isApprove ? "Any notes for the user..." : "Why is this submission being denied?")
+            .setRequired(false);
+          
+          const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+          modal.addComponents(row);
+          
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          console.log("Error showing quiz review modal:", error.message);
+        }
         return;
       } else if (interaction.customId === "request_payout") {
         try {
