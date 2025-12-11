@@ -7,7 +7,7 @@ import {
   payoutRequests 
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 
 export interface IStorage {
   getGuildConfig(guildId: string): Promise<GuildConfig | undefined>;
@@ -109,7 +109,8 @@ export class DatabaseStorage implements IStorage {
     return db
       .select()
       .from(payoutRequests)
-      .where(eq(payoutRequests.guildId, guildId));
+      .where(eq(payoutRequests.guildId, guildId))
+      .orderBy(desc(payoutRequests.createdAt));
   }
 
   async getUserPayouts(guildId: string, userId: string): Promise<PayoutRequest[]> {
