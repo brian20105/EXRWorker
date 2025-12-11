@@ -110,8 +110,10 @@ async function sendQuizQuestion(userId: string, dmChannel: any, isFirst: boolean
   const question = questions[quizState.currentQuestion];
   
   const content = isFirst 
-    ? `**Staff Introduction Quiz**\n\nYou have started the quiz! Please answer all 5 questions.\n\n${question.text}`
+    ? `**Staff Introduction Quiz**\n\nPlease answer all 5 questions.\n\n${question.text}`
     : question.text;
+  
+  console.log(`[QUIZ] Sending message to ${userId}: "${content.substring(0, 50)}..."`);
   
   await dmChannel.send({
     content: content,
