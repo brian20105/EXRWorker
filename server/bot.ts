@@ -2217,13 +2217,12 @@ client.on("interactionCreate", async (interaction) => {
         return;
       } else if (interaction.customId.startsWith("start_quiz_")) {
         const guildId = interaction.customId.replace("start_quiz_", "");
+        const user = interaction.user;
         
         // Defer immediately to prevent timeout
         await interaction.deferReply({ flags: 64 }).catch(() => {});
         
         try {
-          const user = interaction.user;
-          
           if (activeQuizzes.has(user.id)) {
             await interaction.editReply({
               content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
