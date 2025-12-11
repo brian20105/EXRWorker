@@ -697,6 +697,25 @@ const commands = [
         .setDescription("The channel where logs will be sent")
         .setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName("setup_inactivity_ping")
+    .setDescription("Set roles to ping when inactivity is submitted (up to 5)")
+    .setDefaultMemberPermissions(0)
+    .addRoleOption((option) =>
+      option.setName("role1").setDescription("Role 1 to ping").setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option.setName("role2").setDescription("Role 2 to ping").setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option.setName("role3").setDescription("Role 3 to ping").setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option.setName("role4").setDescription("Role 4 to ping").setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option.setName("role5").setDescription("Role 5 to ping").setRequired(false)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -2092,6 +2111,30 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Inactivity logs will be sent to <#${channel.id}>!`,
         });
+      } else if (commandName === "setup_inactivity_ping") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const roles: string[] = [];
+        for (let i = 1; i <= 5; i++) {
+          const role = interaction.options.getRole(`role${i}`);
+          if (role) roles.push(role.id);
+        }
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          inactivityPingRoleIds: roles,
+        });
+        
+        if (roles.length === 0) {
+          await interaction.editReply({
+            content: "✅ Inactivity ping roles cleared. No roles will be pinged.",
+          });
+        } else {
+          const roleMentions = roles.map(id => `<@&${id}>`).join(", ");
+          await interaction.editReply({
+            content: `✅ The following roles will be pinged on new inactivity requests: ${roleMentions}`,
+          });
+        }
       }
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
@@ -2235,66 +2278,24 @@ client.on("interactionCreate", async (interaction) => {
         const requestId = interaction.customId.replace(isApprove ? "inactivity_approve_" : "inactivity_deny_", "");
         
         try {
-          await interaction.deferUpdate();
+          const modal = new ModalBuilder()
+            .setCustomId(`inactivity_review_${isApprove ? "approve" : "deny"}_${requestId}`)
+            .setTitle(isApprove ? "Approve Inactivity Request" : "Deny Inactivity Request");
           
-          const request = await storage.getInactivityRequest(requestId);
-          if (!request) {
-            return;
-          }
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Reason (optional)")
+            .setPlaceholder("Enter a reason for your decision...")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(false);
           
-          const status = isApprove ? "approved" : "denied";
-          await storage.updateInactivityRequest(requestId, {
-            status,
-            reviewedById: interaction.user.id,
-          });
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
           
-          const embed = new EmbedBuilder()
-            .setTitle(`Inactivity Request ${isApprove ? "Approved" : "Denied"}`)
-            .setColor(isApprove ? 0x57f287 : 0xed4245)
-            .setDescription(`**Requested by:** <@${request.userId}>`)
-            .addFields(
-              { name: "From", value: request.fromDate, inline: true },
-              { name: "To", value: request.toDate, inline: true },
-              { name: "Reason", value: request.reason, inline: false },
-              { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: false }
-            )
-            .setTimestamp();
-          
-          await interaction.editReply({ embeds: [embed], components: [] });
-          
-          // Post to log channel
-          const config = await storage.getGuildConfig(request.guildId);
-          if (config?.inactivityLogChannelId) {
-            try {
-              const logChannel = await client.channels.fetch(config.inactivityLogChannelId);
-              if (logChannel && "send" in logChannel) {
-                await logChannel.send({ embeds: [embed] });
-              }
-            } catch (error) {
-              console.log("Could not post to inactivity log channel");
-            }
-          }
-          
-          // DM the user
-          try {
-            const user = await client.users.fetch(request.userId);
-            const dmEmbed = new EmbedBuilder()
-              .setTitle(`Inactivity Request ${isApprove ? "Approved!" : "Denied"}`)
-              .setColor(isApprove ? 0x57f287 : 0xed4245)
-              .setDescription(isApprove 
-                ? "Your inactivity request has been approved. Enjoy your time off!" 
-                : "Unfortunately, your inactivity request was not approved.")
-              .addFields(
-                { name: "From", value: request.fromDate, inline: true },
-                { name: "To", value: request.toDate, inline: true }
-              )
-              .setTimestamp();
-            await user.send({ embeds: [dmEmbed] });
-          } catch (error) {
-            console.log("Could not DM user about inactivity decision");
-          }
+          await interaction.showModal(modal);
         } catch (error: any) {
-          console.log("Error processing inactivity review:", error);
+          console.log("Error showing inactivity review modal:", error);
         }
         return;
       } else if (interaction.customId.startsWith("quiz_answer_")) {
@@ -3189,6 +3190,103 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not post to unban log channel");
           }
         }
+      } else if (interaction.customId.startsWith("inactivity_review_")) {
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Inactivity review modal expired:', interaction.id);
+            return;
+          }
+          throw error;
+        }
+        
+        const parts = interaction.customId.split("_");
+        const action = parts[2];
+        const requestId = parts.slice(3).join("_");
+        const isApprove = action === "approve";
+        
+        const reviewReason = interaction.fields.getTextInputValue("reason") || undefined;
+        
+        const request = await storage.getInactivityRequest(requestId);
+        if (!request) {
+          await interaction.editReply({ content: "Request not found." });
+          return;
+        }
+        
+        const status = isApprove ? "approved" : "denied";
+        await storage.updateInactivityRequest(requestId, {
+          status,
+          reviewedById: interaction.user.id,
+          reviewReason,
+        });
+        
+        const embed = new EmbedBuilder()
+          .setTitle(`Inactivity Request ${isApprove ? "Approved" : "Denied"}`)
+          .setColor(isApprove ? 0x57f287 : 0xed4245)
+          .setDescription(`**Requested by:** <@${request.userId}>`)
+          .addFields(
+            { name: "From", value: request.fromDate, inline: true },
+            { name: "To", value: request.toDate, inline: true },
+            { name: "Reason", value: request.reason, inline: false },
+            { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: false }
+          )
+          .setTimestamp();
+        
+        if (reviewReason) {
+          embed.addFields({ name: "Review Reason", value: reviewReason, inline: false });
+        }
+        
+        // Update the original message
+        try {
+          if (request.messageId && interaction.channel) {
+            const originalMessage = await interaction.channel.messages.fetch(request.messageId);
+            await originalMessage.edit({ embeds: [embed], components: [] });
+          }
+        } catch (error) {
+          console.log("Could not update original inactivity message");
+        }
+        
+        // Post to log channel
+        const config = await storage.getGuildConfig(request.guildId);
+        if (config?.inactivityLogChannelId) {
+          try {
+            const logChannel = await client.channels.fetch(config.inactivityLogChannelId);
+            if (logChannel && "send" in logChannel) {
+              await logChannel.send({ embeds: [embed] });
+            }
+          } catch (error) {
+            console.log("Could not post to inactivity log channel");
+          }
+        }
+        
+        // DM the user
+        try {
+          const user = await client.users.fetch(request.userId);
+          const dmEmbed = new EmbedBuilder()
+            .setTitle(`Inactivity Request ${isApprove ? "Approved!" : "Denied"}`)
+            .setColor(isApprove ? 0x57f287 : 0xed4245)
+            .setDescription(isApprove 
+              ? "Your inactivity request has been approved. Enjoy your time off!" 
+              : "Unfortunately, your inactivity request was not approved.")
+            .addFields(
+              { name: "From", value: request.fromDate, inline: true },
+              { name: "To", value: request.toDate, inline: true }
+            )
+            .setTimestamp();
+          
+          if (reviewReason) {
+            dmEmbed.addFields({ name: "Reason", value: reviewReason, inline: false });
+          }
+          
+          await user.send({ embeds: [dmEmbed] });
+        } catch (error) {
+          console.log("Could not DM user about inactivity decision");
+        }
+        
+        await interaction.editReply({
+          content: `✅ Inactivity request ${isApprove ? "approved" : "denied"} successfully!`,
+        });
       } else if (interaction.customId.startsWith("inactivity_submit_")) {
         try {
           await interaction.deferReply({ flags: 64 });
@@ -3251,7 +3349,14 @@ client.on("interactionCreate", async (interaction) => {
                 .setEmoji("❌")
             );
             
+            // Build ping content
+            let pingContent = "";
+            if (config.inactivityPingRoleIds && config.inactivityPingRoleIds.length > 0) {
+              pingContent = config.inactivityPingRoleIds.map(id => `<@&${id}>`).join(" ");
+            }
+            
             const sentMessage = await submissionsChannel.send({
+              content: pingContent || undefined,
               embeds: [embed],
               components: [row],
             });
