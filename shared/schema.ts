@@ -22,6 +22,9 @@ export const guildConfigs = pgTable("guild_configs", {
   staffIntroSubmissionsChannelId: text("staff_intro_submissions_channel_id"),
   staffIntroEmbedTitle: text("staff_intro_embed_title"),
   staffIntroEmbedDescription: text("staff_intro_embed_description"),
+  inactivityChannelId: text("inactivity_channel_id"),
+  inactivitySubmissionsChannelId: text("inactivity_submissions_channel_id"),
+  inactivityLogChannelId: text("inactivity_log_channel_id"),
   quizQuestion1: text("quiz_question_1"),
   quizQuestion2: text("quiz_question_2"),
   quizQuestion3: text("quiz_question_3"),
@@ -152,3 +155,27 @@ export const insertStaffIntroSubmissionSchema = createInsertSchema(staffIntroSub
 
 export type InsertStaffIntroSubmission = z.infer<typeof insertStaffIntroSubmissionSchema>;
 export type StaffIntroSubmission = typeof staffIntroSubmissions.$inferSelect;
+
+export const inactivityRequests = pgTable("inactivity_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  fromDate: text("from_date").notNull(),
+  toDate: text("to_date").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("pending"),
+  messageId: text("message_id"),
+  reviewedById: text("reviewed_by_id"),
+  reviewReason: text("review_reason"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertInactivityRequestSchema = createInsertSchema(inactivityRequests).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertInactivityRequest = z.infer<typeof insertInactivityRequestSchema>;
+export type InactivityRequest = typeof inactivityRequests.$inferSelect;
