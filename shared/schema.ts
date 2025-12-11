@@ -15,6 +15,8 @@ export const guildConfigs = pgTable("guild_configs", {
   staffRosterChannelId: text("staff_roster_channel_id"),
   banChannelId: text("ban_channel_id"),
   unbanChannelId: text("unban_channel_id"),
+  banLogChannelId: text("ban_log_channel_id"),
+  unbanLogChannelId: text("unban_log_channel_id"),
   modRoleIds: text("mod_role_ids").array(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
