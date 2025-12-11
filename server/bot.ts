@@ -1039,18 +1039,94 @@ client.on("interactionCreate", async (interaction) => {
         }
         
         const members = guildRole.members.map((m) => `<@${m.id}>`);
+        const pageSize = 10;
+        const totalPages = Math.ceil(members.length / pageSize) || 1;
+        const currentPage = 0;
+        
+        const pageMembers = members.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
         
         const embed = new EmbedBuilder()
           .setTitle(`Members with ${guildRole.name}`)
           .setColor(guildRole.color || 0x5865f2)
-          .setDescription(members.length > 0 ? members.join("\n") : "No members have this role.")
-          .setFooter({ text: `Total: ${members.length} member(s)` })
+          .setDescription(pageMembers.length > 0 ? pageMembers.join("\n") : "No members have this role.")
+          .setFooter({ text: `Page ${currentPage + 1}/${totalPages} • Total: ${members.length} member(s)` })
           .setTimestamp();
         
-        await interaction.editReply({ embeds: [embed] });
+        if (members.length > pageSize) {
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`members_prev_${role.id}_0`)
+              .setLabel("◀ Previous")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(true),
+            new ButtonBuilder()
+              .setCustomId(`members_next_${role.id}_0`)
+              .setLabel("Next ▶")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(totalPages <= 1)
+          );
+          await interaction.editReply({ embeds: [embed], components: [row] });
+        } else {
+          await interaction.editReply({ embeds: [embed] });
+        }
       }
     } else if (interaction.isButton()) {
-      if (interaction.customId === "request_payout") {
+      if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
+        await interaction.deferUpdate();
+        
+        const parts = interaction.customId.split("_");
+        const direction = parts[1];
+        const roleId = parts[2];
+        const currentPage = parseInt(parts[3]);
+        
+        const guild = interaction.guild;
+        if (!guild) return;
+        
+        try {
+          await guild.members.fetch({ time: 30000 });
+        } catch (error) {
+          console.log("Could not fully fetch members");
+        }
+        
+        const guildRole = guild.roles.cache.get(roleId);
+        if (!guildRole) return;
+        
+        const members = guildRole.members.map((m) => `<@${m.id}>`);
+        const pageSize = 10;
+        const totalPages = Math.ceil(members.length / pageSize) || 1;
+        
+        let newPage = currentPage;
+        if (direction === "next" && currentPage < totalPages - 1) {
+          newPage = currentPage + 1;
+        } else if (direction === "prev" && currentPage > 0) {
+          newPage = currentPage - 1;
+        }
+        
+        const pageMembers = members.slice(newPage * pageSize, (newPage + 1) * pageSize);
+        
+        const embed = new EmbedBuilder()
+          .setTitle(`Members with ${guildRole.name}`)
+          .setColor(guildRole.color || 0x5865f2)
+          .setDescription(pageMembers.length > 0 ? pageMembers.join("\n") : "No members have this role.")
+          .setFooter({ text: `Page ${newPage + 1}/${totalPages} • Total: ${members.length} member(s)` })
+          .setTimestamp();
+        
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`members_prev_${roleId}_${newPage}`)
+            .setLabel("◀ Previous")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(newPage === 0),
+          new ButtonBuilder()
+            .setCustomId(`members_next_${roleId}_${newPage}`)
+            .setLabel("Next ▶")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(newPage >= totalPages - 1)
+        );
+        
+        await interaction.editReply({ embeds: [embed], components: [row] });
+        return;
+      } else if (interaction.customId === "request_payout") {
         try {
           // Build and show modal immediately to prevent timeout
           const modal = new ModalBuilder()
