@@ -132,8 +132,14 @@ const commands = [
     .addUserOption((option) =>
       option
         .setName("user")
-        .setDescription("The user for the payout")
-        .setRequired(true)
+        .setDescription("The user for the payout (required for Add)")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("payout_id")
+        .setDescription("Payout request ID (required for Edit/Remove)")
+        .setRequired(false)
     )
     .addStringOption((option) =>
       option
@@ -152,6 +158,17 @@ const commands = [
         .setName("reason")
         .setDescription("Reason for payout (for add/edit)")
         .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("status")
+        .setDescription("New status (for edit only)")
+        .setRequired(false)
+        .addChoices(
+          { name: "Pending", value: "pending" },
+          { name: "Approved", value: "approved" },
+          { name: "Denied", value: "denied" }
+        )
     ),
 ].map((command) => command.toJSON());
 
@@ -660,11 +677,18 @@ client.on("interactionCreate", async (interaction) => {
         }
         
         const action = interaction.options.getString("action", true);
-        const targetUser = interaction.options.getUser("user", true);
+        const targetUser = interaction.options.getUser("user");
+        const payoutId = interaction.options.getString("payout_id");
         
         await interaction.deferReply({ flags: 64 });
         
         if (action === "add") {
+          if (!targetUser) {
+            await interaction.editReply({
+              content: "❌ You must specify a user for the Add action.",
+            });
+            return;
+          }
           const amount = interaction.options.getString("amount") || "0.00";
           const email = interaction.options.getString("email") || "Not provided";
           const reason = interaction.options.getString("reason") || "Added via command";
@@ -725,11 +749,18 @@ client.on("interactionCreate", async (interaction) => {
             content: `✅ Payout request added for <@${targetUser.id}> - $${amount}`,
           });
         } else if (action === "edit") {
-          const userPayouts = await storage.getUserPendingPayouts(interaction.guildId!, targetUser.id);
-          
-          if (userPayouts.length === 0) {
+          if (!payoutId) {
             await interaction.editReply({
-              content: `❌ No pending payout requests found for <@${targetUser.id}>.`,
+              content: "❌ You must specify a payout_id for the Edit action. You can find the ID in the payout list or request embed footer.",
+            });
+            return;
+          }
+          
+          const payout = await storage.getPayoutRequest(payoutId);
+          
+          if (!payout) {
+            await interaction.editReply({
+              content: `❌ Payout request with ID \`${payoutId}\` not found.`,
             });
             return;
           }
@@ -737,44 +768,50 @@ client.on("interactionCreate", async (interaction) => {
           const amount = interaction.options.getString("amount");
           const email = interaction.options.getString("email");
           const reason = interaction.options.getString("reason");
+          const status = interaction.options.getString("status");
           
-          if (!amount && !email && !reason) {
+          if (!amount && !email && !reason && !status) {
             await interaction.editReply({
-              content: `❌ Please provide at least one field to update (amount, email, or reason).`,
+              content: `❌ Please provide at least one field to update (amount, email, reason, or status).`,
             });
             return;
           }
           
-          const updates: { moneyOwed?: string; email?: string; reason?: string } = {};
+          const updates: { moneyOwed?: string; email?: string; reason?: string; status?: string } = {};
           if (amount) updates.moneyOwed = amount;
           if (email) updates.email = email;
           if (reason) updates.reason = reason;
+          if (status) updates.status = status;
           
-          for (const payout of userPayouts) {
-            const updatedPayout = await storage.updatePayoutRequest(payout.id, updates);
-            
-            if (payout.messageId) {
-              try {
-                const config = await storage.getGuildConfig(interaction.guildId!);
-                if (config?.requestChannelId) {
-                  const channel = await client.channels.fetch(config.requestChannelId);
-                  if (channel && "messages" in channel) {
-                    const message = await channel.messages.fetch(payout.messageId);
-                    
-                    const updatedEmbed = new EmbedBuilder()
-                      .setTitle("Payout Request")
-                      .setColor(0xf0b232)
-                      .addFields(
-                        { name: "User ID", value: `${targetUser.id} (<@${targetUser.id}>)`, inline: true },
-                        { name: "Requested by", value: `<@${updatedPayout.requestedById}>`, inline: true },
-                        { name: "Status", value: "⏳ Pending", inline: true },
-                        { name: "Reason", value: updatedPayout.reason || "No reason", inline: false },
-                        { name: "Money Owed", value: `$${updatedPayout.moneyOwed}`, inline: false },
-                        { name: "Paypal", value: updatedPayout.email || "Not provided", inline: false }
-                      )
-                      .setFooter({ text: `Request ID: ${payout.id} (Edited)` })
-                      .setTimestamp();
+          const updatedPayout = await storage.updatePayoutRequest(payout.id, updates);
+          
+          if (payout.messageId) {
+            try {
+              const config = await storage.getGuildConfig(interaction.guildId!);
+              if (config?.requestChannelId) {
+                const channel = await client.channels.fetch(config.requestChannelId);
+                if (channel && "messages" in channel) {
+                  const message = await channel.messages.fetch(payout.messageId);
+                  
+                  const statusEmoji = updatedPayout.status === "pending" ? "⏳" : updatedPayout.status === "approved" ? "✅" : "❌";
+                  const statusText = updatedPayout.status!.charAt(0).toUpperCase() + updatedPayout.status!.slice(1);
+                  const embedColor = updatedPayout.status === "pending" ? 0xf0b232 : updatedPayout.status === "approved" ? 0x57f287 : 0xed4245;
+                  
+                  const updatedEmbed = new EmbedBuilder()
+                    .setTitle("Payout Request")
+                    .setColor(embedColor)
+                    .addFields(
+                      { name: "User ID", value: `${payout.userId} (<@${payout.userId}>)`, inline: true },
+                      { name: "Requested by", value: `<@${updatedPayout.requestedById}>`, inline: true },
+                      { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
+                      { name: "Reason", value: updatedPayout.reason || "No reason", inline: false },
+                      { name: "Money Owed", value: `$${updatedPayout.moneyOwed}`, inline: false },
+                      { name: "Paypal", value: updatedPayout.email || "Not provided", inline: false }
+                    )
+                    .setFooter({ text: `Request ID: ${payout.id} (Edited)` })
+                    .setTimestamp();
 
+                  if (updatedPayout.status === "pending") {
                     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                       new ButtonBuilder()
                         .setCustomId(`approve_${payout.id}`)
@@ -785,16 +822,20 @@ client.on("interactionCreate", async (interaction) => {
                         .setLabel("Deny")
                         .setStyle(ButtonStyle.Danger)
                     );
-
                     await message.edit({
                       embeds: [updatedEmbed],
                       components: [row],
                     });
+                  } else {
+                    await message.edit({
+                      embeds: [updatedEmbed],
+                      components: [],
+                    });
                   }
                 }
-              } catch (error) {
-                console.log("Could not update payout message:", error);
               }
+            } catch (error) {
+              console.log("Could not update payout message:", error);
             }
           }
           
@@ -802,41 +843,47 @@ client.on("interactionCreate", async (interaction) => {
           if (amount) changedFields.push(`Amount: $${amount}`);
           if (email) changedFields.push(`Email: ${email}`);
           if (reason) changedFields.push(`Reason: ${reason}`);
+          if (status) changedFields.push(`Status: ${status}`);
           
           await interaction.editReply({
-            content: `✅ Updated ${userPayouts.length} pending payout(s) for <@${targetUser.id}>.\n**Changes:** ${changedFields.join(", ")}`,
+            content: `✅ Updated payout request \`${payoutId}\`.\n**Changes:** ${changedFields.join(", ")}`,
           });
         } else if (action === "remove") {
-          const userPayouts = await storage.getUserPendingPayouts(interaction.guildId!, targetUser.id);
-          
-          if (userPayouts.length === 0) {
+          if (!payoutId) {
             await interaction.editReply({
-              content: `❌ No pending payout requests found for <@${targetUser.id}>.`,
+              content: "❌ You must specify a payout_id for the Remove action. You can find the ID in the payout list or request embed footer.",
             });
             return;
           }
           
-          for (const payout of userPayouts) {
-            await storage.deletePayoutRequest(payout.id);
-            
-            if (payout.messageId) {
-              try {
-                const config = await storage.getGuildConfig(interaction.guildId!);
-                if (config?.requestChannelId) {
-                  const channel = await client.channels.fetch(config.requestChannelId);
-                  if (channel && "messages" in channel) {
-                    const message = await channel.messages.fetch(payout.messageId);
-                    await message.delete();
-                  }
+          const payout = await storage.getPayoutRequest(payoutId);
+          
+          if (!payout) {
+            await interaction.editReply({
+              content: `❌ Payout request with ID \`${payoutId}\` not found.`,
+            });
+            return;
+          }
+          
+          await storage.deletePayoutRequest(payout.id);
+          
+          if (payout.messageId) {
+            try {
+              const config = await storage.getGuildConfig(interaction.guildId!);
+              if (config?.requestChannelId) {
+                const channel = await client.channels.fetch(config.requestChannelId);
+                if (channel && "messages" in channel) {
+                  const message = await channel.messages.fetch(payout.messageId);
+                  await message.delete();
                 }
-              } catch (error) {
-                console.log("Could not delete payout message:", error);
               }
+            } catch (error) {
+              console.log("Could not delete payout message:", error);
             }
           }
           
           await interaction.editReply({
-            content: `✅ Removed ${userPayouts.length} pending payout request(s) for <@${targetUser.id}>.`,
+            content: `✅ Removed payout request \`${payoutId}\`.`,
           });
         }
       }
