@@ -40,6 +40,9 @@ interface QuizState {
 }
 const activeQuizzes = new Map<string, QuizState>();
 
+// Prevent duplicate Start Quiz button processing
+const processingQuizStart = new Set<string>();
+
 // Clean up expired quiz sessions (30 minutes)
 setInterval(() => {
   const now = Date.now();
@@ -2170,8 +2173,18 @@ client.on("interactionCreate", async (interaction) => {
         const guildId = interaction.customId.replace("start_quiz_", "");
         const user = interaction.user;
         
-        // Check if user already has an active quiz first
+        // Prevent duplicate processing
+        if (processingQuizStart.has(user.id)) {
+          try {
+            await interaction.deferUpdate().catch(() => {});
+          } catch (e) {}
+          return;
+        }
+        processingQuizStart.add(user.id);
+        
+        // Check if user already has an active quiz
         if (activeQuizzes.has(user.id)) {
+          processingQuizStart.delete(user.id);
           try {
             await interaction.reply({
               content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
@@ -2233,6 +2246,9 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) {}
           }
         }
+        
+        // Clean up after a short delay to allow for double-click protection
+        setTimeout(() => processingQuizStart.delete(user.id), 5000);
         return;
       } else if (interaction.customId.startsWith("request_inactivity_")) {
         const guildId = interaction.customId.replace("request_inactivity_", "");
