@@ -101,7 +101,7 @@ function getFullQuestions(config: any): string[] {
   ];
 }
 
-async function sendQuizQuestion(userId: string, dmChannel: any): Promise<void> {
+async function sendQuizQuestion(userId: string, dmChannel: any, isFirst: boolean = false): Promise<void> {
   const quizState = activeQuizzes.get(userId);
   if (!quizState) return;
   
@@ -109,8 +109,12 @@ async function sendQuizQuestion(userId: string, dmChannel: any): Promise<void> {
   const questions = getQuizQuestions(config);
   const question = questions[quizState.currentQuestion];
   
+  const content = isFirst 
+    ? `**Staff Introduction Quiz**\n\nYou have started the quiz! Please answer all 5 questions.\n\n${question.text}`
+    : question.text;
+  
   await dmChannel.send({
-    content: question.text,
+    content: content,
   });
 }
 
@@ -2216,12 +2220,8 @@ client.on("interactionCreate", async (interaction) => {
           });
           
           const dmChannel = await user.createDM();
-          console.log(`[QUIZ START] About to send intro message to ${user.id}`);
-          await dmChannel.send({
-            content: `**Staff Introduction Quiz**\n\nYou have started the quiz! Please answer all 5 questions.`,
-          });
-          console.log(`[QUIZ START] Intro message sent to ${user.id}, now sending Q1`);
-          await sendQuizQuestion(user.id, dmChannel);
+          console.log(`[QUIZ START] Sending combined intro + Q1 to ${user.id}`);
+          await sendQuizQuestion(user.id, dmChannel, true);
           console.log(`[QUIZ START] Q1 sent to ${user.id}`);
           
           // Quiz started successfully - try to notify user
