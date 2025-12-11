@@ -2341,13 +2341,21 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
           
+          // Defer the interaction immediately to prevent timeout
+          await interaction.deferUpdate().catch(() => {});
+          
           const config = await storage.getGuildConfig(quizState.guildId);
           const questions = getQuizQuestions(config);
           
-          await interaction.update({
-            content: `${questions[quizState.currentQuestion].text}\n\n✅ **Your answer:** ${answer}`,
-            components: [],
-          });
+          // Update the message after deferring
+          try {
+            await interaction.editReply({
+              content: `${questions[quizState.currentQuestion].text}\n\n✅ **Your answer:** ${answer}`,
+              components: [],
+            });
+          } catch (error) {
+            console.log("Could not update quiz message:", error);
+          }
           
           const dmChannel = interaction.channel;
           await processQuizAnswer(odUserId, answer, dmChannel);
