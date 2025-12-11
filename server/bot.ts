@@ -1903,7 +1903,12 @@ client.on("interactionCreate", async (interaction) => {
           content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
         });
       } else if (commandName === "setup_staff_intro") {
-        await interaction.deferReply({ flags: 64 });
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (e) {
+          console.log("setup_staff_intro: deferReply failed, interaction may have timed out");
+          return;
+        }
         
         const config = await storage.getGuildConfig(interaction.guildId!);
         const embedTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
@@ -1935,9 +1940,11 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
         
-        await interaction.editReply({
-          content: "✅ Staff introduction quiz has been posted!",
-        });
+        try {
+          await interaction.editReply({
+            content: "✅ Staff introduction quiz has been posted!",
+          });
+        } catch (e) {}
       } else if (commandName === "setup_staff_intro_submissions") {
         await interaction.deferReply({ flags: 64 });
         
@@ -2189,12 +2196,9 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {}
           return;
         }
-        processingQuizStart.add(user.id);
-        console.log(`[QUIZ START] Processing quiz start for user ${user.id}`);
         
         // Check if user already has an active quiz
         if (activeQuizzes.has(user.id)) {
-          processingQuizStart.delete(user.id);
           try {
             await interaction.reply({
               content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
@@ -2204,14 +2208,19 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
-        // Try to defer reply
-        let deferred = false;
+        // DEFER IMMEDIATELY before any async work
         try {
           await interaction.deferReply({ flags: 64 });
-          deferred = true;
-        } catch (e) {
-          // Interaction might have timed out or already been acknowledged
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired before defer:', interaction.id);
+            return;
+          }
+          throw error;
         }
+        
+        processingQuizStart.add(user.id);
+        console.log(`[QUIZ START] Processing quiz start for user ${user.id}`);
         
         try {
           activeQuizzes.set(user.id, {
@@ -2226,38 +2235,20 @@ client.on("interactionCreate", async (interaction) => {
           await sendQuizQuestion(user.id, dmChannel, true);
           console.log(`[QUIZ START] Q1 sent to ${user.id}`);
           
-          // Quiz started successfully - try to notify user
-          if (deferred) {
-            try {
-              await interaction.editReply({
-                content: "✅ Quiz started! Check your DMs for the questions.",
-              });
-            } catch (e) {}
-          }
+          await interaction.editReply({
+            content: "✅ Quiz started! Check your DMs for the questions.",
+          });
         } catch (error: any) {
           activeQuizzes.delete(user.id);
           console.log("Error starting quiz - DM failed:", error.message);
           
-          // Try to show error to user
-          if (deferred) {
-            try {
-              await interaction.editReply({
-                content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
-              });
-            } catch (e) {}
-          } else {
-            // If defer failed, try a fresh reply
-            try {
-              await interaction.reply({
-                content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
-                flags: 64,
-              });
-            } catch (e) {}
-          }
+          await interaction.editReply({
+            content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
+          });
+        } finally {
+          // Clean up after a short delay to allow for double-click protection
+          setTimeout(() => processingQuizStart.delete(user.id), 5000);
         }
-        
-        // Clean up after a short delay to allow for double-click protection
-        setTimeout(() => processingQuizStart.delete(user.id), 5000);
         return;
       } else if (interaction.customId.startsWith("request_inactivity_")) {
         const guildId = interaction.customId.replace("request_inactivity_", "");
