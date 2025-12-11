@@ -11,12 +11,15 @@ import {
   type InsertUnbanRequest,
   type StaffIntroSubmission,
   type InsertStaffIntroSubmission,
+  type InactivityRequest,
+  type InsertInactivityRequest,
   guildConfigs,
   payoutRequests,
   roleSyncPairs,
   banRequests,
   unbanRequests,
-  staffIntroSubmissions
+  staffIntroSubmissions,
+  inactivityRequests
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, or } from "drizzle-orm";
@@ -57,6 +60,10 @@ export interface IStorage {
   createStaffIntroSubmission(submission: InsertStaffIntroSubmission): Promise<StaffIntroSubmission>;
   getStaffIntroSubmission(id: string): Promise<StaffIntroSubmission | undefined>;
   updateStaffIntroSubmission(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<StaffIntroSubmission>;
+  
+  createInactivityRequest(request: InsertInactivityRequest): Promise<InactivityRequest>;
+  getInactivityRequest(id: string): Promise<InactivityRequest | undefined>;
+  updateInactivityRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<InactivityRequest>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -334,6 +341,21 @@ export class DatabaseStorage implements IStorage {
 
   async updateStaffIntroSubmission(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<StaffIntroSubmission> {
     const result = await db.update(staffIntroSubmissions).set({ ...updates, updatedAt: new Date() }).where(eq(staffIntroSubmissions.id, id)).returning();
+    return result[0];
+  }
+
+  async createInactivityRequest(request: InsertInactivityRequest): Promise<InactivityRequest> {
+    const result = await db.insert(inactivityRequests).values(request).returning();
+    return result[0];
+  }
+
+  async getInactivityRequest(id: string): Promise<InactivityRequest | undefined> {
+    const result = await db.select().from(inactivityRequests).where(eq(inactivityRequests.id, id));
+    return result[0];
+  }
+
+  async updateInactivityRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<InactivityRequest> {
+    const result = await db.update(inactivityRequests).set({ ...updates, updatedAt: new Date() }).where(eq(inactivityRequests.id, id)).returning();
     return result[0];
   }
 }

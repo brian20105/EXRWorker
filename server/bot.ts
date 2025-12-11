@@ -673,6 +673,30 @@ const commands = [
         .setDescription("The embed description")
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName("setup_inactivity")
+    .setDescription("Post the inactivity request embed in the current channel")
+    .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("setup_inactivity_submissions")
+    .setDescription("Set the channel for inactivity request submissions")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where submissions will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_inactivity_logs")
+    .setDescription("Set the channel for inactivity request logs (approved/denied)")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where logs will be sent")
+        .setRequired(true)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -2012,6 +2036,62 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Quiz questions updated!\n\n${summary}`,
         });
+      } else if (commandName === "setup_inactivity") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const embed = new EmbedBuilder()
+          .setTitle("Inactivity Request")
+          .setDescription("Need to take a break? Click the button below to submit an inactivity request.\n\nPlease provide the dates you'll be inactive and your reason.")
+          .setColor(0x5865f2)
+          .setFooter({ text: "All requests require approval" });
+        
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`request_inactivity_${interaction.guildId}`)
+            .setLabel("Request Inactivity")
+            .setStyle(ButtonStyle.Primary)
+            .setEmoji("📋")
+        );
+        
+        const channel = interaction.channel;
+        if (channel && "send" in channel) {
+          await channel.send({ embeds: [embed], components: [row] });
+        }
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          inactivityChannelId: interaction.channelId,
+        });
+        
+        await interaction.editReply({
+          content: "✅ Inactivity request embed has been posted!",
+        });
+      } else if (commandName === "setup_inactivity_submissions") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const channel = interaction.options.getChannel("channel", true);
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          inactivitySubmissionsChannelId: channel.id,
+        });
+        
+        await interaction.editReply({
+          content: `✅ Inactivity submissions will be sent to <#${channel.id}>!`,
+        });
+      } else if (commandName === "setup_inactivity_logs") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const channel = interaction.options.getChannel("channel", true);
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          inactivityLogChannelId: channel.id,
+        });
+        
+        await interaction.editReply({
+          content: `✅ Inactivity logs will be sent to <#${channel.id}>!`,
+        });
       }
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
@@ -2108,6 +2188,113 @@ client.on("interactionCreate", async (interaction) => {
           }
         } catch (error: any) {
           console.log("Error starting quiz:", error);
+        }
+        return;
+      } else if (interaction.customId.startsWith("request_inactivity_")) {
+        const guildId = interaction.customId.replace("request_inactivity_", "");
+        
+        try {
+          const modal = new ModalBuilder()
+            .setCustomId(`inactivity_submit_${guildId}`)
+            .setTitle("Inactivity Request");
+          
+          const fromDate = new TextInputBuilder()
+            .setCustomId("from_date")
+            .setLabel("From")
+            .setPlaceholder("Start date (e.g. 12/15/2024)")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+          
+          const toDate = new TextInputBuilder()
+            .setCustomId("to_date")
+            .setLabel("To")
+            .setPlaceholder("End date (e.g. 12/22/2024)")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+          
+          const reason = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Reason")
+            .setPlaceholder("Reason for inactivity")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(fromDate),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(toDate),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reason)
+          );
+          
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          console.log("Error showing inactivity modal:", error);
+        }
+        return;
+      } else if (interaction.customId.startsWith("inactivity_approve_") || interaction.customId.startsWith("inactivity_deny_")) {
+        const isApprove = interaction.customId.startsWith("inactivity_approve_");
+        const requestId = interaction.customId.replace(isApprove ? "inactivity_approve_" : "inactivity_deny_", "");
+        
+        try {
+          await interaction.deferUpdate();
+          
+          const request = await storage.getInactivityRequest(requestId);
+          if (!request) {
+            return;
+          }
+          
+          const status = isApprove ? "approved" : "denied";
+          await storage.updateInactivityRequest(requestId, {
+            status,
+            reviewedById: interaction.user.id,
+          });
+          
+          const embed = new EmbedBuilder()
+            .setTitle(`Inactivity Request ${isApprove ? "Approved" : "Denied"}`)
+            .setColor(isApprove ? 0x57f287 : 0xed4245)
+            .setDescription(`**Requested by:** <@${request.userId}>`)
+            .addFields(
+              { name: "From", value: request.fromDate, inline: true },
+              { name: "To", value: request.toDate, inline: true },
+              { name: "Reason", value: request.reason, inline: false },
+              { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: false }
+            )
+            .setTimestamp();
+          
+          await interaction.editReply({ embeds: [embed], components: [] });
+          
+          // Post to log channel
+          const config = await storage.getGuildConfig(request.guildId);
+          if (config?.inactivityLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.inactivityLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                await logChannel.send({ embeds: [embed] });
+              }
+            } catch (error) {
+              console.log("Could not post to inactivity log channel");
+            }
+          }
+          
+          // DM the user
+          try {
+            const user = await client.users.fetch(request.userId);
+            const dmEmbed = new EmbedBuilder()
+              .setTitle(`Inactivity Request ${isApprove ? "Approved!" : "Denied"}`)
+              .setColor(isApprove ? 0x57f287 : 0xed4245)
+              .setDescription(isApprove 
+                ? "Your inactivity request has been approved. Enjoy your time off!" 
+                : "Unfortunately, your inactivity request was not approved.")
+              .addFields(
+                { name: "From", value: request.fromDate, inline: true },
+                { name: "To", value: request.toDate, inline: true }
+              )
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (error) {
+            console.log("Could not DM user about inactivity decision");
+          }
+        } catch (error: any) {
+          console.log("Error processing inactivity review:", error);
         }
         return;
       } else if (interaction.customId.startsWith("quiz_answer_")) {
@@ -3002,6 +3189,84 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not post to unban log channel");
           }
         }
+      } else if (interaction.customId.startsWith("inactivity_submit_")) {
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Inactivity submit modal expired:', interaction.id);
+            return;
+          }
+          throw error;
+        }
+        
+        const guildId = interaction.customId.replace("inactivity_submit_", "");
+        
+        const fromDate = interaction.fields.getTextInputValue("from_date");
+        const toDate = interaction.fields.getTextInputValue("to_date");
+        const reason = interaction.fields.getTextInputValue("reason");
+        
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.inactivitySubmissionsChannelId) {
+          await interaction.editReply({
+            content: "Thank you for your request! However, the submissions channel hasn't been set up yet. Please contact an admin.",
+          });
+          return;
+        }
+        
+        const request = await storage.createInactivityRequest({
+          guildId,
+          userId: interaction.user.id,
+          fromDate,
+          toDate,
+          reason,
+          status: "pending",
+        });
+        
+        try {
+          const submissionsChannel = await client.channels.fetch(config.inactivitySubmissionsChannelId);
+          if (submissionsChannel && "send" in submissionsChannel) {
+            const embed = new EmbedBuilder()
+              .setTitle("Inactivity Request")
+              .setColor(0xf0b232)
+              .setDescription(`**Requested by:** <@${interaction.user.id}>`)
+              .addFields(
+                { name: "From", value: fromDate, inline: true },
+                { name: "To", value: toDate, inline: true },
+                { name: "Reason", value: reason, inline: false }
+              )
+              .setFooter({ text: `Request ID: ${request.id}` })
+              .setTimestamp();
+            
+            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`inactivity_approve_${request.id}`)
+                .setLabel("Approve")
+                .setStyle(ButtonStyle.Success)
+                .setEmoji("✅"),
+              new ButtonBuilder()
+                .setCustomId(`inactivity_deny_${request.id}`)
+                .setLabel("Deny")
+                .setStyle(ButtonStyle.Danger)
+                .setEmoji("❌")
+            );
+            
+            const sentMessage = await submissionsChannel.send({
+              embeds: [embed],
+              components: [row],
+            });
+            
+            await storage.updateInactivityRequest(request.id, {
+              messageId: sentMessage.id,
+            });
+          }
+        } catch (error) {
+          console.log("Could not send inactivity request to channel:", error);
+        }
+        
+        await interaction.editReply({
+          content: "✅ Your inactivity request has been submitted! You will receive a DM once it has been reviewed.",
+        });
       } else if (interaction.customId.startsWith("quiz_review_")) {
         try {
           await interaction.deferReply({ flags: 64 });
