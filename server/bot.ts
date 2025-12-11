@@ -1941,7 +1941,12 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.deferReply({ flags: 64 });
         
         const title = interaction.options.getString("title");
-        const description = interaction.options.getString("description");
+        let description = interaction.options.getString("description");
+        
+        // Convert \n to actual newlines for spacing
+        if (description) {
+          description = description.replace(/\\n/g, "\n");
+        }
         
         if (!title && !description) {
           const config = await storage.getGuildConfig(interaction.guildId!);
@@ -1949,7 +1954,7 @@ client.on("interactionCreate", async (interaction) => {
           const currentDesc = config?.staffIntroEmbedDescription || "Welcome! Click the button below to start your staff introduction quiz.";
           
           await interaction.editReply({
-            content: `**Current Staff Intro Embed Settings:**\n\n**Title:** ${currentTitle}\n**Description:** ${currentDesc}\n\nUse this command with the \`title\` or \`description\` options to change them.`,
+            content: `**Current Staff Intro Embed Settings:**\n\n**Title:** ${currentTitle}\n**Description:**\n${currentDesc}\n\nUse this command with the \`title\` or \`description\` options to change them.\n\n*Tip: Use \\\\n in your description to add line breaks!*`,
           });
           return;
         }
@@ -1965,7 +1970,7 @@ client.on("interactionCreate", async (interaction) => {
         const newDesc = config?.staffIntroEmbedDescription || "Welcome! Click the button below to start your staff introduction quiz.";
         
         await interaction.editReply({
-          content: `✅ Staff intro embed updated!\n\n**Title:** ${newTitle}\n**Description:** ${newDesc}`,
+          content: `✅ Staff intro embed updated!\n\n**Title:** ${newTitle}\n**Description:**\n${newDesc}`,
         });
       } else if (commandName === "setup_intro_questions") {
         await interaction.deferReply({ flags: 64 });
