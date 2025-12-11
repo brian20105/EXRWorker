@@ -1,6 +1,13 @@
-import { type GuildConfig, type InsertGuildConfig, guildConfigs } from "@shared/schema";
+import { 
+  type GuildConfig, 
+  type InsertGuildConfig, 
+  type PayoutRequest,
+  type InsertPayoutRequest,
+  guildConfigs,
+  payoutRequests 
+} from "@shared/schema";
 import { db } from "./db";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 export interface IStorage {
   getGuildConfig(guildId: string): Promise<GuildConfig | undefined>;
@@ -8,6 +15,13 @@ export interface IStorage {
   updateRequestChannel(guildId: string, channelId: string): Promise<GuildConfig>;
   updateLogChannel(guildId: string, channelId: string): Promise<GuildConfig>;
   updateAllowedRoles(guildId: string, roleIds: string[]): Promise<GuildConfig>;
+  createPayoutRequest(request: InsertPayoutRequest): Promise<PayoutRequest>;
+  getPayoutRequest(id: string): Promise<PayoutRequest | undefined>;
+  getPayoutRequestByMessageId(messageId: string): Promise<PayoutRequest | undefined>;
+  getPendingPayouts(guildId: string): Promise<PayoutRequest[]>;
+  getUserPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
+  updatePayoutStatus(id: string, status: string, actionedById: string): Promise<PayoutRequest>;
+  updatePayoutMessageId(id: string, messageId: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -55,6 +69,65 @@ export class DatabaseStorage implements IStorage {
       guildId,
       allowedRoleIds: roleIds,
     });
+  }
+
+  async createPayoutRequest(request: InsertPayoutRequest): Promise<PayoutRequest> {
+    const result = await db.insert(payoutRequests).values(request).returning();
+    return result[0];
+  }
+
+  async getPayoutRequest(id: string): Promise<PayoutRequest | undefined> {
+    const result = await db
+      .select()
+      .from(payoutRequests)
+      .where(eq(payoutRequests.id, id))
+      .limit(1);
+    return result[0];
+  }
+
+  async getPayoutRequestByMessageId(messageId: string): Promise<PayoutRequest | undefined> {
+    const result = await db
+      .select()
+      .from(payoutRequests)
+      .where(eq(payoutRequests.messageId, messageId))
+      .limit(1);
+    return result[0];
+  }
+
+  async getPendingPayouts(guildId: string): Promise<PayoutRequest[]> {
+    return db
+      .select()
+      .from(payoutRequests)
+      .where(and(
+        eq(payoutRequests.guildId, guildId),
+        eq(payoutRequests.status, "pending")
+      ));
+  }
+
+  async getUserPayouts(guildId: string, userId: string): Promise<PayoutRequest[]> {
+    return db
+      .select()
+      .from(payoutRequests)
+      .where(and(
+        eq(payoutRequests.guildId, guildId),
+        eq(payoutRequests.userId, userId)
+      ));
+  }
+
+  async updatePayoutStatus(id: string, status: string, actionedById: string): Promise<PayoutRequest> {
+    const result = await db
+      .update(payoutRequests)
+      .set({ status, actionedById, updatedAt: new Date() })
+      .where(eq(payoutRequests.id, id))
+      .returning();
+    return result[0];
+  }
+
+  async updatePayoutMessageId(id: string, messageId: string): Promise<void> {
+    await db
+      .update(payoutRequests)
+      .set({ messageId })
+      .where(eq(payoutRequests.id, id));
   }
 }
 

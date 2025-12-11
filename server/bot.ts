@@ -80,6 +80,20 @@ const commands = [
         .setDescription("Fifth role (optional)")
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName("list_payouts")
+    .setDescription("List all pending payout requests")
+    .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("user_payouts")
+    .setDescription("Get payout info for a specific user")
+    .setDefaultMemberPermissions(0)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("The user to check payouts for")
+        .setRequired(true)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -259,6 +273,105 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
           flags: 64,
         });
+      } else if (commandName === "list_payouts") {
+        const member = interaction.member;
+        const memberRoles = member && 'roles' in member 
+          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+          : undefined;
+        const memberPermissions = member && 'permissions' in member 
+          ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+          : undefined;
+        
+        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
+        if (!hasPermission) {
+          await interaction.reply({
+            content: "❌ You don't have permission to view payout requests.",
+            flags: 64,
+          });
+          return;
+        }
+        
+        await interaction.deferReply({ flags: 64 });
+        
+        const pendingPayouts = await storage.getPendingPayouts(interaction.guildId!);
+        
+        if (pendingPayouts.length === 0) {
+          await interaction.editReply({
+            content: "No pending payout requests found.",
+          });
+          return;
+        }
+        
+        const embed = new EmbedBuilder()
+          .setTitle("Pending Payout Requests")
+          .setColor(0xf0b232)
+          .setDescription(`Found ${pendingPayouts.length} pending request(s)`)
+          .setTimestamp();
+        
+        const fields = pendingPayouts.slice(0, 25).map((payout, index) => ({
+          name: `#${index + 1} - $${payout.moneyOwed}`,
+          value: `User: <@${payout.userId}>\nRequested by: <@${payout.requestedById}>\nPayPal: ${payout.email}`,
+          inline: true,
+        }));
+        
+        embed.addFields(fields);
+        
+        await interaction.editReply({
+          embeds: [embed],
+        });
+      } else if (commandName === "user_payouts") {
+        const member = interaction.member;
+        const memberRoles = member && 'roles' in member 
+          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+          : undefined;
+        const memberPermissions = member && 'permissions' in member 
+          ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+          : undefined;
+        
+        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
+        if (!hasPermission) {
+          await interaction.reply({
+            content: "❌ You don't have permission to view payout requests.",
+            flags: 64,
+          });
+          return;
+        }
+        
+        await interaction.deferReply({ flags: 64 });
+        
+        const targetUser = interaction.options.getUser("user", true);
+        const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
+        
+        if (userPayouts.length === 0) {
+          await interaction.editReply({
+            content: `No payout requests found for <@${targetUser.id}>.`,
+          });
+          return;
+        }
+        
+        const pending = userPayouts.filter(p => p.status === "pending");
+        const approved = userPayouts.filter(p => p.status === "approved");
+        const denied = userPayouts.filter(p => p.status === "denied");
+        
+        const totalOwed = pending.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+        const totalPaid = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+        
+        const embed = new EmbedBuilder()
+          .setTitle(`Payout History for ${targetUser.username}`)
+          .setColor(0x5865f2)
+          .addFields(
+            { name: "Total Requests", value: userPayouts.length.toString(), inline: true },
+            { name: "Pending", value: pending.length.toString(), inline: true },
+            { name: "Approved", value: approved.length.toString(), inline: true },
+            { name: "Denied", value: denied.length.toString(), inline: true },
+            { name: "Pending Amount", value: `$${totalOwed.toFixed(2)}`, inline: true },
+            { name: "Total Paid", value: `$${totalPaid.toFixed(2)}`, inline: true }
+          )
+          .setTimestamp();
+        
+        await interaction.editReply({
+          embeds: [embed],
+        });
       }
     } else if (interaction.isButton()) {
       if (interaction.customId === "request_payout") {
@@ -340,10 +453,28 @@ client.on("interactionCreate", async (interaction) => {
       }
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId === "payout_modal") {
-        const userId = interaction.fields.getTextInputValue("user_id");
+        const userId = interaction.fields.getTextInputValue("user_id").trim();
         const reason = interaction.fields.getTextInputValue("reason");
         const moneyOwed = interaction.fields.getTextInputValue("money_owed");
         const paypal = interaction.fields.getTextInputValue("paypal");
+
+        if (!/^\d{17,19}$/.test(userId)) {
+          await interaction.reply({
+            content: "❌ Invalid User ID. Please enter a valid Discord User ID (17-19 digit number).",
+            flags: 64,
+          });
+          return;
+        }
+
+        try {
+          await client.users.fetch(userId);
+        } catch {
+          await interaction.reply({
+            content: "❌ Could not find a Discord user with that ID. Please check the ID and try again.",
+            flags: 64,
+          });
+          return;
+        }
 
         await interaction.reply({
           content: "Your payout request has been submitted!",
@@ -362,7 +493,17 @@ client.on("interactionCreate", async (interaction) => {
         const requestChannel = await client.channels.fetch(config.requestChannelId);
         if (!requestChannel || !("send" in requestChannel)) return;
 
-        const requestId = Date.now().toString();
+        const payoutRequest = await storage.createPayoutRequest({
+          guildId: interaction.guildId!,
+          userId,
+          requestedById: interaction.user.id,
+          reason,
+          moneyOwed,
+          email: paypal,
+          status: "pending",
+        });
+
+        const requestId = payoutRequest.id;
         const embed = new EmbedBuilder()
           .setTitle("Payout Request")
           .setColor(0xf0b232)
@@ -388,10 +529,12 @@ client.on("interactionCreate", async (interaction) => {
             .setStyle(ButtonStyle.Danger)
         );
 
-        await requestChannel.send({
+        const sentMessage = await requestChannel.send({
           embeds: [embed],
           components: [row],
         });
+
+        await storage.updatePayoutMessageId(requestId, sentMessage.id);
       } else if (interaction.customId.startsWith("action_reason_")) {
         const parts = interaction.customId.split("_");
         const action = parts[2];
@@ -415,6 +558,8 @@ client.on("interactionCreate", async (interaction) => {
         
         const status = action === "approve" ? "✅ Approved" : "❌ Denied";
         const color = action === "approve" ? 0x23a559 : 0xda373c;
+
+        await storage.updatePayoutStatus(requestId, action === "approve" ? "approved" : "denied", interaction.user.id);
 
         const updatedFields: any[] = [
           { name: "User ID", value: userIdField, inline: true },
