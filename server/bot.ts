@@ -84,7 +84,13 @@ const commands = [
   new SlashCommandBuilder()
     .setName("list_payouts")
     .setDescription("List all payout requests (pending, approved, denied)")
-    .setDefaultMemberPermissions(0),
+    .setDefaultMemberPermissions(0)
+    .addBooleanOption((option) =>
+      option
+        .setName("private")
+        .setDescription("Make the response only visible to you (default: true)")
+        .setRequired(false)
+    ),
   new SlashCommandBuilder()
     .setName("user_payouts")
     .setDescription("Get payout info for a specific user")
@@ -311,7 +317,8 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
-        await interaction.deferReply({ flags: 64 });
+        const isPrivate = interaction.options.getBoolean("private") ?? true;
+        await interaction.deferReply({ flags: isPrivate ? 64 : undefined });
         
         const allPayouts = await storage.getAllPayouts(interaction.guildId!);
         
@@ -330,39 +337,46 @@ client.on("interactionCreate", async (interaction) => {
         const totalApproved = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
         const totalDenied = denied.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
         
-        let payoutList = "**All Payout Requests**\n\n";
-        payoutList += `**Summary:** ${allPayouts.length} total | ⏳ ${pending.length} pending ($${totalPending.toFixed(2)}) | ✅ ${approved.length} approved ($${totalApproved.toFixed(2)}) | ❌ ${denied.length} denied ($${totalDenied.toFixed(2)})\n\n`;
+        const embeds: EmbedBuilder[] = [];
         
-        allPayouts.forEach((payout, index) => {
-          const statusText = payout.status === "pending" ? "Pending" : payout.status === "approved" ? "Approved" : "Denied";
-          payoutList += `**${index + 1}.)** <@${payout.userId}> - ${payout.userId} - ${payout.reason || "No reason"} - $${payout.moneyOwed} - ${payout.email} - ${statusText}\n`;
-        });
+        const summaryEmbed = new EmbedBuilder()
+          .setTitle("📋 All Payout Requests")
+          .setColor(0x5865f2)
+          .setDescription(`Total: **${allPayouts.length}** requests`)
+          .addFields(
+            { name: "⏳ Pending", value: `**${pending.length}** requests\n$${totalPending.toFixed(2)}`, inline: true },
+            { name: "✅ Approved", value: `**${approved.length}** requests\n$${totalApproved.toFixed(2)}`, inline: true },
+            { name: "❌ Denied", value: `**${denied.length}** requests\n$${totalDenied.toFixed(2)}`, inline: true }
+          )
+          .setTimestamp();
+        embeds.push(summaryEmbed);
         
-        if (payoutList.length > 1900) {
-          const chunks: string[] = [];
-          let currentChunk = "**All Payout Requests**\n\n";
-          currentChunk += `**Summary:** ${allPayouts.length} total | ⏳ ${pending.length} pending | ✅ ${approved.length} approved | ❌ ${denied.length} denied\n\n`;
+        const formatPayoutList = (payouts: typeof allPayouts, title: string, emoji: string, color: number) => {
+          if (payouts.length === 0) return null;
           
-          allPayouts.forEach((payout, index) => {
-            const statusText = payout.status === "pending" ? "Pending" : payout.status === "approved" ? "Approved" : "Denied";
-            const line = `**${index + 1}.)** <@${payout.userId}> - ${payout.userId} - ${payout.reason || "No reason"} - $${payout.moneyOwed} - ${payout.email} - ${statusText}\n`;
-            
-            if (currentChunk.length + line.length > 1900) {
-              chunks.push(currentChunk);
-              currentChunk = "";
+          let description = "";
+          payouts.forEach((payout, index) => {
+            const line = `**${index + 1}.)** <@${payout.userId}>\n> **ID:** ${payout.userId}\n> **Reason:** ${payout.reason || "No reason"}\n> **Amount:** $${payout.moneyOwed}\n> **Email:** ${payout.email}\n\n`;
+            if (description.length + line.length < 4000) {
+              description += line;
             }
-            currentChunk += line;
           });
           
-          if (currentChunk) chunks.push(currentChunk);
-          
-          await interaction.editReply({ content: chunks[0] });
-          for (let i = 1; i < chunks.length; i++) {
-            await interaction.followUp({ content: chunks[i], flags: 64 });
-          }
-        } else {
-          await interaction.editReply({ content: payoutList });
-        }
+          return new EmbedBuilder()
+            .setTitle(`${emoji} ${title}`)
+            .setColor(color)
+            .setDescription(description || "None");
+        };
+        
+        const pendingEmbed = formatPayoutList(pending, "Pending Requests", "⏳", 0xf0b232);
+        const approvedEmbed = formatPayoutList(approved, "Approved Requests", "✅", 0x23a559);
+        const deniedEmbed = formatPayoutList(denied, "Denied Requests", "❌", 0xda373c);
+        
+        if (pendingEmbed) embeds.push(pendingEmbed);
+        if (approvedEmbed) embeds.push(approvedEmbed);
+        if (deniedEmbed) embeds.push(deniedEmbed);
+        
+        await interaction.editReply({ embeds: embeds.slice(0, 10) });
       } else if (commandName === "setup") {
         const rosterType = interaction.options.getString("roster", true);
         
