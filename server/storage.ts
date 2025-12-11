@@ -21,8 +21,10 @@ export interface IStorage {
   getPendingPayouts(guildId: string): Promise<PayoutRequest[]>;
   getAllPayouts(guildId: string): Promise<PayoutRequest[]>;
   getUserPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
+  getUserPendingPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
   updatePayoutStatus(id: string, status: string, actionedById: string): Promise<PayoutRequest>;
   updatePayoutMessageId(id: string, messageId: string): Promise<void>;
+  deletePayoutRequest(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -123,6 +125,17 @@ export class DatabaseStorage implements IStorage {
       ));
   }
 
+  async getUserPendingPayouts(guildId: string, userId: string): Promise<PayoutRequest[]> {
+    return db
+      .select()
+      .from(payoutRequests)
+      .where(and(
+        eq(payoutRequests.guildId, guildId),
+        eq(payoutRequests.userId, userId),
+        eq(payoutRequests.status, "pending")
+      ));
+  }
+
   async updatePayoutStatus(id: string, status: string, actionedById: string): Promise<PayoutRequest> {
     const result = await db
       .update(payoutRequests)
@@ -136,6 +149,12 @@ export class DatabaseStorage implements IStorage {
     await db
       .update(payoutRequests)
       .set({ messageId })
+      .where(eq(payoutRequests.id, id));
+  }
+
+  async deletePayoutRequest(id: string): Promise<void> {
+    await db
+      .delete(payoutRequests)
       .where(eq(payoutRequests.id, id));
   }
 }
