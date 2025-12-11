@@ -209,6 +209,109 @@ async function sendDMToStaff(staffUserId: string, status: "approved" | "denied",
   }
 }
 
+const PLAYER_ROLE_IDS = [
+  "1447116161866137601",
+  "1447116037358358598",
+  "1447115944349663314",
+  "1447139335785943050",
+  "1447116224432570469",
+  "1447416759266050108",
+  "1447144088054005761",
+];
+
+const STAFF_ROLE_IDS = [
+  "1447070054960332871",
+  "1447118813022781554",
+  "1447070441058336789",
+  "1447070950750294026",
+  "1447118712183459882",
+  "1447071053334708406",
+];
+
+function getMembersWithRole(guild: any, roleId: string): string[] {
+  const role = guild.roles.cache.get(roleId);
+  if (!role) return [];
+  return role.members.map((m: any) => `<@${m.id}>`);
+}
+
+async function generatePlayerRoster(guild: any): Promise<string> {
+  let playerRoster = "**Thrill's Competitive Roster**\n\n";
+  
+  for (const roleId of PLAYER_ROLE_IDS) {
+    const members = getMembersWithRole(guild, roleId);
+    playerRoster += `<@&${roleId}>\n\n`;
+    if (members.length === 0) {
+      playerRoster += "None\n";
+    } else {
+      playerRoster += members.join("\n") + "\n";
+    }
+  }
+  
+  return playerRoster;
+}
+
+async function generateStaffRoster(guild: any): Promise<string> {
+  let staffRoster = "**Thrill's Staff Roster**\n\n";
+  
+  for (const roleId of STAFF_ROLE_IDS) {
+    const members = getMembersWithRole(guild, roleId);
+    staffRoster += `<@&${roleId}>\n\n`;
+    if (members.length === 0) {
+      staffRoster += "None\n";
+    } else {
+      staffRoster += members.join("\n") + "\n";
+    }
+  }
+  
+  return staffRoster;
+}
+
+async function updateRosterMessages(guildId: string): Promise<void> {
+  try {
+    const config = await storage.getGuildConfig(guildId);
+    if (!config) return;
+    
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return;
+    
+    try {
+      await guild.members.fetch({ time: 30000 });
+    } catch (error) {
+      console.log("Could not fetch all members for roster update, using cached");
+    }
+    
+    if (config.playerRosterMessageId && config.playerRosterChannelId) {
+      try {
+        const channel = await client.channels.fetch(config.playerRosterChannelId);
+        if (channel && "messages" in channel) {
+          const message = await channel.messages.fetch(config.playerRosterMessageId);
+          const newContent = await generatePlayerRoster(guild);
+          await message.edit(newContent);
+          console.log("Updated player roster");
+        }
+      } catch (error) {
+        console.log("Could not update player roster message");
+      }
+    }
+    
+    if (config.staffRosterMessageId && config.staffRosterChannelId) {
+      try {
+        const channel = await client.channels.fetch(config.staffRosterChannelId);
+        if (channel && "messages" in channel) {
+          const message = await channel.messages.fetch(config.staffRosterMessageId);
+          const newContent = await generateStaffRoster(guild);
+          await message.edit(newContent);
+          console.log("Updated staff roster");
+        }
+      } catch (error) {
+        console.log("Could not update staff roster message");
+      }
+    }
+  } catch (error) {
+    console.error("Error updating roster messages:", error);
+  }
+}
+
 client.once("ready", async () => {
   console.log(`✅ Bot logged in as ${client.user?.tag}`);
 
@@ -388,72 +491,41 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
-        await guild.members.fetch();
-        
-        const getMembersWithRole = (roleId: string) => {
-          const role = guild.roles.cache.get(roleId);
-          if (!role) return [];
-          return role.members.map(m => `<@${m.id}>`);
-        };
+        try {
+          await guild.members.fetch({ time: 30000 });
+        } catch (error) {
+          console.log("Could not fetch all members, using cached members");
+        }
         
         if (rosterType === "player") {
-          const playerRoles = [
-            { id: "1447116161866137601", name: null },
-            { id: "1447116037358358598", name: null },
-            { id: "1447115944349663314", name: null },
-            { id: "1447139335785943050", name: null },
-            { id: "1447116224432570469", name: null },
-            { id: "1447416759266050108", name: null },
-            { id: "1447144088054005761", name: null },
-          ];
-          
-          let playerRoster = "**Thrill's Competitive Roster**\n\n";
-          
-          for (const roleInfo of playerRoles) {
-            const members = getMembersWithRole(roleInfo.id);
-            playerRoster += `<@&${roleInfo.id}>\n\n`;
-            if (members.length === 0) {
-              playerRoster += "None\n";
-            } else {
-              playerRoster += members.join("\n") + "\n";
-            }
-          }
+          const playerRoster = await generatePlayerRoster(guild);
 
           if (interaction.channel && "send" in interaction.channel) {
-            await interaction.channel.send(playerRoster);
+            const sentMessage = await interaction.channel.send(playerRoster);
+            await storage.upsertGuildConfig({
+              guildId: guild.id,
+              playerRosterMessageId: sentMessage.id,
+              playerRosterChannelId: interaction.channelId,
+            });
           }
           
           await interaction.editReply({
-            content: "✅ Player roster has been posted!",
+            content: "✅ Player roster has been posted! It will update automatically when roles change.",
           });
         } else if (rosterType === "staff") {
-          const staffRoles = [
-            { id: "1447070054960332871", name: null },
-            { id: "1447118813022781554", name: null },
-            { id: "1447070441058336789", name: null },
-            { id: "1447070950750294026", name: null },
-            { id: "1447118712183459882", name: null },
-            { id: "1447071053334708406", name: null },
-          ];
-          
-          let staffRoster = "**Thrill's Staff Roster**\n\n";
-          
-          for (const roleInfo of staffRoles) {
-            const members = getMembersWithRole(roleInfo.id);
-            staffRoster += `<@&${roleInfo.id}>\n\n`;
-            if (members.length === 0) {
-              staffRoster += "None\n";
-            } else {
-              staffRoster += members.join("\n") + "\n";
-            }
-          }
+          const staffRoster = await generateStaffRoster(guild);
 
           if (interaction.channel && "send" in interaction.channel) {
-            await interaction.channel.send(staffRoster);
+            const sentMessage = await interaction.channel.send(staffRoster);
+            await storage.upsertGuildConfig({
+              guildId: guild.id,
+              staffRosterMessageId: sentMessage.id,
+              staffRosterChannelId: interaction.channelId,
+            });
           }
           
           await interaction.editReply({
-            content: "✅ Staff roster has been posted!",
+            content: "✅ Staff roster has been posted! It will update automatically when roles change.",
           });
         }
       } else if (commandName === "user_payouts") {
@@ -823,6 +895,22 @@ client.on("interactionCreate", async (interaction) => {
 
 client.on("error", (error) => {
   console.error("Discord client error:", error);
+});
+
+client.on("guildMemberUpdate", async (oldMember, newMember) => {
+  const oldRoles = Array.from(oldMember.roles.cache.keys());
+  const newRoles = Array.from(newMember.roles.cache.keys());
+  
+  const allRosterRoles = [...PLAYER_ROLE_IDS, ...STAFF_ROLE_IDS];
+  
+  const hasRosterRoleChange = allRosterRoles.some(roleId => 
+    oldRoles.includes(roleId) !== newRoles.includes(roleId)
+  );
+  
+  if (hasRosterRoleChange) {
+    console.log(`Roster role changed for ${newMember.user.tag}, updating rosters...`);
+    await updateRosterMessages(newMember.guild.id);
+  }
 });
 
 export async function startBot() {

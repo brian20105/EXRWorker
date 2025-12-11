@@ -9,6 +9,10 @@ export const guildConfigs = pgTable("guild_configs", {
   requestChannelId: text("request_channel_id"),
   logChannelId: text("log_channel_id"),
   allowedRoleIds: text("allowed_role_ids").array(),
+  playerRosterMessageId: text("player_roster_message_id"),
+  playerRosterChannelId: text("player_roster_channel_id"),
+  staffRosterMessageId: text("staff_roster_message_id"),
+  staffRosterChannelId: text("staff_roster_channel_id"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
