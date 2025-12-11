@@ -2218,9 +2218,10 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.customId.startsWith("start_quiz_")) {
         const guildId = interaction.customId.replace("start_quiz_", "");
         
+        // Defer immediately to prevent timeout
+        await interaction.deferReply({ flags: 64 }).catch(() => {});
+        
         try {
-          await interaction.deferReply({ flags: 64 });
-          
           const user = interaction.user;
           
           if (activeQuizzes.has(user.id)) {
@@ -2236,24 +2237,27 @@ client.on("interactionCreate", async (interaction) => {
             answers: [],
           });
           
+          const dmChannel = await user.createDM();
+          await dmChannel.send({
+            content: `**Staff Introduction Quiz**\n\nYou have started the quiz! Please answer all 5 questions.`,
+          });
+          await sendQuizQuestion(user.id, dmChannel);
+          
+          await interaction.editReply({
+            content: "✅ Quiz started! Check your DMs for the questions.",
+          });
+        } catch (error: any) {
+          activeQuizzes.delete(user.id);
+          console.log("Error starting quiz:", error);
+          
+          // Try to edit reply with error message
           try {
-            const dmChannel = await user.createDM();
-            await dmChannel.send({
-              content: `**Staff Introduction Quiz**\n\nYou have started the quiz! Please answer all 5 questions.`,
-            });
-            await sendQuizQuestion(user.id, dmChannel);
-            
-            await interaction.editReply({
-              content: "✅ Quiz started! Check your DMs for the questions.",
-            });
-          } catch (error) {
-            activeQuizzes.delete(user.id);
             await interaction.editReply({
               content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
             });
+          } catch (replyError) {
+            console.log("Could not send error message to user");
           }
-        } catch (error: any) {
-          console.log("Error starting quiz:", error);
         }
         return;
       } else if (interaction.customId.startsWith("request_inactivity_")) {
