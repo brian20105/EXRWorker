@@ -365,6 +365,32 @@ const commands = [
           { name: "Unban Requests", value: "unban" }
         )
     ),
+  new SlashCommandBuilder()
+    .setName("activity_remove")
+    .setDescription("Remove amount of log entries from a staff member")
+    .setDefaultMemberPermissions(0)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("The staff member to remove entries from")
+        .setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("amount")
+        .setDescription("Number of log entries to remove")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("category")
+        .setDescription("Category of entries")
+        .setRequired(true)
+        .addChoices(
+          { name: "Ban Requests", value: "ban" },
+          { name: "Unban Requests", value: "unban" }
+        )
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -1448,6 +1474,19 @@ client.on("interactionCreate", async (interaction) => {
         const categoryText = category === "ban" ? "ban request" : "unban request";
         await interaction.editReply({
           content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
+        });
+      } else if (commandName === "activity_remove") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const user = interaction.options.getUser("user", true);
+        const amount = interaction.options.getInteger("amount", true);
+        const category = interaction.options.getString("category", true);
+        
+        const removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
+        
+        const categoryText = category === "ban" ? "ban request" : "unban request";
+        await interaction.editReply({
+          content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
         });
       }
     } else if (interaction.isButton()) {
