@@ -36,43 +36,28 @@ interface QuizState {
   guildId: string;
   currentQuestion: number;
   answers: string[];
+  startedAt: number;
 }
 const activeQuizzes = new Map<string, QuizState>();
 
-// Track recently processed quiz button clicks to prevent duplicates
-const processedQuizButtons = new Set<string>();
-function markQuizButtonProcessed(interactionId: string): boolean {
-  if (processedQuizButtons.has(interactionId)) {
-    return false; // Already processed
+// Clean up expired quiz sessions (30 minutes)
+setInterval(() => {
+  const now = Date.now();
+  const THIRTY_MINUTES = 30 * 60 * 1000;
+  for (const [userId, quizState] of Array.from(activeQuizzes.entries())) {
+    if (now - quizState.startedAt > THIRTY_MINUTES) {
+      activeQuizzes.delete(userId);
+      console.log(`[QUIZ] Cleaned up expired quiz session for user ${userId}`);
+    }
   }
-  processedQuizButtons.add(interactionId);
-  // Clean up after 10 seconds
-  setTimeout(() => processedQuizButtons.delete(interactionId), 10000);
-  return true; // First time processing
-}
+}, 5 * 60 * 1000); // Check every 5 minutes
 
 const QUIZ_QUESTIONS = [
   { text: "**Question 1:** How do you warn/mute somebody?", type: "text" },
   { text: "**Question 2:** If something is bannable, where do you go to ban them?", type: "text" },
-  { 
-    text: "**Question 3:** If you are unsure about a situation, who should you ask?", 
-    type: "choice",
-    options: [
-      { label: "Admin", value: "Admin" },
-      { label: "Lead Staff", value: "Lead Staff" },
-      { label: "Handle it yourself", value: "Handle it yourself" },
-      { label: "Forget about it", value: "Forget about it" }
-    ]
-  },
+  { text: "**Question 3:** If you are unsure about a situation, who should you ask?", type: "text" },
   { text: "**Question 4:** If somebody makes a partnership ticket, who do you bring to handle it?", type: "text" },
-  { 
-    text: "**Question 5:** You understand that this is a paid position and any unprofessionalism/arguing will get you removed?", 
-    type: "choice",
-    options: [
-      { label: "Yes", value: "Yes" },
-      { label: "No", value: "No" }
-    ]
-  }
+  { text: "**Question 5:** You understand that this is a paid position and any unprofessionalism/arguing will get you removed?", type: "text" }
 ];
 
 const FULL_QUESTIONS = [
@@ -85,31 +70,21 @@ const FULL_QUESTIONS = [
 
 interface QuizQuestion {
   text: string;
-  type: "text" | "choice";
-  options?: { label: string; value: string }[];
 }
 
 function getQuizQuestions(config: any): QuizQuestion[] {
-  const defaultQuestions = QUIZ_QUESTIONS;
-  
   const q1Text = config?.quizQuestion1 || "How do you warn/mute somebody?";
   const q2Text = config?.quizQuestion2 || "If something is bannable, where do you go to ban them?";
   const q3Text = config?.quizQuestion3 || "If you are unsure about a situation, who should you ask?";
   const q4Text = config?.quizQuestion4 || "If somebody makes a partnership ticket, who do you bring to handle it?";
   const q5Text = config?.quizQuestion5 || "You understand that this is a paid position and any unprofessionalism/arguing will get you removed?";
   
-  const q3OptionsStr = config?.quizQuestion3Options || "Admin|Lead Staff|Handle it yourself|Forget about it";
-  const q5OptionsStr = config?.quizQuestion5Options || "Yes|No";
-  
-  const q3Options = q3OptionsStr.split("|").map((opt: string) => ({ label: opt.trim(), value: opt.trim() }));
-  const q5Options = q5OptionsStr.split("|").map((opt: string) => ({ label: opt.trim(), value: opt.trim() }));
-  
   return [
-    { text: `**Question 1:** ${q1Text}`, type: "text" },
-    { text: `**Question 2:** ${q2Text}`, type: "text" },
-    { text: `**Question 3:** ${q3Text}`, type: "choice", options: q3Options },
-    { text: `**Question 4:** ${q4Text}`, type: "text" },
-    { text: `**Question 5:** ${q5Text}`, type: "choice", options: q5Options }
+    { text: `**Question 1:** ${q1Text}` },
+    { text: `**Question 2:** ${q2Text}` },
+    { text: `**Question 3:** ${q3Text}` },
+    { text: `**Question 4:** ${q4Text}` },
+    { text: `**Question 5:** ${q5Text}` }
   ];
 }
 
@@ -131,25 +106,9 @@ async function sendQuizQuestion(userId: string, dmChannel: any): Promise<void> {
   const questions = getQuizQuestions(config);
   const question = questions[quizState.currentQuestion];
   
-  if (question.type === "choice" && question.options) {
-    const row = new ActionRowBuilder<ButtonBuilder>();
-    for (const option of question.options) {
-      row.addComponents(
-        new ButtonBuilder()
-          .setCustomId(`quiz_answer_${userId}_${option.value}`)
-          .setLabel(option.label)
-          .setStyle(ButtonStyle.Primary)
-      );
-    }
-    await dmChannel.send({
-      content: question.text,
-      components: [row],
-    });
-  } else {
-    await dmChannel.send({
-      content: question.text,
-    });
-  }
+  await dmChannel.send({
+    content: question.text,
+  });
 }
 
 async function processQuizAnswer(userId: string, answer: string, dmChannel: any): Promise<void> {
@@ -630,43 +589,31 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName("question1")
-        .setDescription("Question 1 (text answer)")
+        .setDescription("Question 1")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("question2")
-        .setDescription("Question 2 (text answer)")
+        .setDescription("Question 2")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("question3")
-        .setDescription("Question 3 (multiple choice)")
-        .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("question3_options")
-        .setDescription("Q3 options separated by | (e.g. Option A|Option B|Option C)")
+        .setDescription("Question 3")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("question4")
-        .setDescription("Question 4 (text answer)")
+        .setDescription("Question 4")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("question5")
-        .setDescription("Question 5 (multiple choice)")
-        .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("question5_options")
-        .setDescription("Q5 options separated by | (e.g. Yes|No)")
+        .setDescription("Question 5")
         .setRequired(false)
     ),
   new SlashCommandBuilder()
@@ -2036,20 +1983,16 @@ client.on("interactionCreate", async (interaction) => {
         const q1 = interaction.options.getString("question1");
         const q2 = interaction.options.getString("question2");
         const q3 = interaction.options.getString("question3");
-        const q3Options = interaction.options.getString("question3_options");
         const q4 = interaction.options.getString("question4");
         const q5 = interaction.options.getString("question5");
-        const q5Options = interaction.options.getString("question5_options");
         
         const updateData: any = { guildId: interaction.guildId! };
         
         if (q1 !== null) updateData.quizQuestion1 = q1;
         if (q2 !== null) updateData.quizQuestion2 = q2;
         if (q3 !== null) updateData.quizQuestion3 = q3;
-        if (q3Options !== null) updateData.quizQuestion3Options = q3Options;
         if (q4 !== null) updateData.quizQuestion4 = q4;
         if (q5 !== null) updateData.quizQuestion5 = q5;
-        if (q5Options !== null) updateData.quizQuestion5Options = q5Options;
         
         await storage.upsertGuildConfig(updateData);
         
@@ -2060,11 +2003,7 @@ client.on("interactionCreate", async (interaction) => {
         let summary = "**Current Quiz Questions:**\n\n";
         for (let i = 0; i < currentQuestions.length; i++) {
           const q = currentQuestions[i];
-          summary += `**Q${i + 1}:** ${q.text.replace(/\*\*/g, "")}\n`;
-          if (q.type === "choice" && q.options) {
-            summary += `Options: ${q.options.map(o => o.label).join(", ")}\n`;
-          }
-          summary += "\n";
+          summary += `**Q${i + 1}:** ${q.text.replace(/\*\*/g, "")}\n\n`;
         }
         
         await interaction.editReply({
@@ -2256,6 +2195,7 @@ client.on("interactionCreate", async (interaction) => {
             guildId,
             currentQuestion: 0,
             answers: [],
+            startedAt: Date.now(),
           });
           
           const dmChannel = await user.createDM();
@@ -2357,63 +2297,6 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.showModal(modal);
         } catch (error: any) {
           console.log("Error showing inactivity review modal:", error);
-        }
-        return;
-      } else if (interaction.customId.startsWith("quiz_answer_")) {
-        // Prevent duplicate processing
-        if (!markQuizButtonProcessed(interaction.id)) {
-          console.log(`[QUIZ] Duplicate interaction ${interaction.id} ignored`);
-          return;
-        }
-        
-        try {
-          const parts = interaction.customId.split("_");
-          const odUserId = parts[2];
-          const answer = parts.slice(3).join("_");
-          
-          console.log(`[QUIZ] Button clicked by ${interaction.user.id}, customId userId: ${odUserId}, answer: ${answer}`);
-          console.log(`[QUIZ] Active quizzes: ${Array.from(activeQuizzes.keys()).join(", ") || "none"}`);
-          
-          if (interaction.user.id !== odUserId) {
-            console.log(`[QUIZ] User mismatch - button not for this user`);
-            try {
-              await interaction.reply({ content: "This button is not for you!", flags: 64 });
-            } catch (e) {}
-            return;
-          }
-          
-          const quizState = activeQuizzes.get(odUserId);
-          if (!quizState) {
-            console.log(`[QUIZ] No quiz state found for user ${odUserId}`);
-            // Don't show error if button was already processed successfully
-            try {
-              await interaction.deferUpdate().catch(() => {});
-            } catch (e) {}
-            return;
-          }
-          
-          console.log(`[QUIZ] Quiz state found - current question: ${quizState.currentQuestion}, guildId: ${quizState.guildId}`);
-          
-          const config = await storage.getGuildConfig(quizState.guildId);
-          const questions = getQuizQuestions(config);
-          
-          // Try to update the message with the answer
-          try {
-            await interaction.update({
-              content: `${questions[quizState.currentQuestion].text}\n\n✅ **Your answer:** ${answer}`,
-              components: [],
-            });
-          } catch (error: any) {
-            // If update fails (interaction expired), just acknowledge silently
-            if (error.code !== 10062) {
-              console.log("Could not update quiz message:", error.message);
-            }
-          }
-          
-          const dmChannel = interaction.channel;
-          await processQuizAnswer(odUserId, answer, dmChannel);
-        } catch (error: any) {
-          console.log("Error processing quiz answer button:", error);
         }
         return;
       } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
@@ -3564,17 +3447,6 @@ client.on("messageCreate", async (message) => {
   
   const quizState = activeQuizzes.get(message.author.id);
   if (!quizState) return;
-  
-  const config = await storage.getGuildConfig(quizState.guildId);
-  const questions = getQuizQuestions(config);
-  const currentQuestion = questions[quizState.currentQuestion];
-  
-  if (currentQuestion.type === "choice") {
-    await message.reply({
-      content: "Please use the buttons above to answer this question!",
-    });
-    return;
-  }
   
   const answer = message.content.trim();
   await processQuizAnswer(message.author.id, answer, message.channel);
