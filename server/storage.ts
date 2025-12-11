@@ -22,9 +22,10 @@ export interface IStorage {
   getAllPayouts(guildId: string): Promise<PayoutRequest[]>;
   getUserPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
   getUserPendingPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
+  getPayoutRequest(id: string): Promise<PayoutRequest | undefined>;
   updatePayoutStatus(id: string, status: string, actionedById: string): Promise<PayoutRequest>;
   updatePayoutMessageId(id: string, messageId: string): Promise<void>;
-  updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string }): Promise<PayoutRequest>;
+  updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string; status?: string }): Promise<PayoutRequest>;
   deletePayoutRequest(id: string): Promise<void>;
 }
 
@@ -153,7 +154,15 @@ export class DatabaseStorage implements IStorage {
       .where(eq(payoutRequests.id, id));
   }
 
-  async updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string }): Promise<PayoutRequest> {
+  async getPayoutRequest(id: string): Promise<PayoutRequest | undefined> {
+    const result = await db
+      .select()
+      .from(payoutRequests)
+      .where(eq(payoutRequests.id, id));
+    return result[0];
+  }
+
+  async updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string; status?: string }): Promise<PayoutRequest> {
     const result = await db
       .update(payoutRequests)
       .set({ ...updates, updatedAt: new Date() })
