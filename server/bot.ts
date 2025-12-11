@@ -1750,15 +1750,15 @@ client.on("interactionCreate", async (interaction) => {
           
           const q2 = new TextInputBuilder()
             .setCustomId("q2")
-            .setLabel("If bannable, where do you ban them?")
+            .setLabel("Where do you go to ban someone?")
             .setStyle(TextInputStyle.Short)
             .setRequired(true);
           
           const q3 = new TextInputBuilder()
             .setCustomId("q3")
-            .setLabel("Unsure about situation? (1-Admin 2-Lead 3-Self 4-Forget)")
+            .setLabel("Who to ask if unsure? (1-4)")
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder("Enter 1, 2, 3, or 4")
+            .setPlaceholder("1=Admin, 2=Lead, 3=Self, 4=Forget")
             .setRequired(true);
           
           const q4 = new TextInputBuilder()
@@ -1769,9 +1769,9 @@ client.on("interactionCreate", async (interaction) => {
           
           const q5 = new TextInputBuilder()
             .setCustomId("q5")
-            .setLabel("Understand paid position = no unprofessionalism?")
+            .setLabel("Paid position, no arguing? (1=Yes, 2=No)")
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder("Enter 1 (Yes) or 2 (No)")
+            .setPlaceholder("Enter 1 or 2")
             .setRequired(true);
           
           modal.addComponents(
