@@ -115,6 +115,10 @@ const commands = [
         )
     ),
   new SlashCommandBuilder()
+    .setName("refresh_roster")
+    .setDescription("Manually refresh roster displays")
+    .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
     .setName("payout")
     .setDescription("Add, edit, or remove a payout request")
     .setDefaultMemberPermissions(0)
@@ -553,46 +557,63 @@ async function generateStaffRoster(guild: any): Promise<string> {
 async function updateRosterMessages(guildId: string): Promise<void> {
   try {
     const config = await storage.getGuildConfig(guildId);
-    if (!config) return;
+    if (!config) {
+      console.log("[ROSTER] No config found for guild", guildId);
+      return;
+    }
     
     const guild = client.guilds.cache.get(guildId);
-    if (!guild) return;
+    if (!guild) {
+      console.log("[ROSTER] Guild not in cache", guildId);
+      return;
+    }
     
     try {
       await guild.members.fetch({ time: 30000 });
+      console.log("[ROSTER] Fetched all members for roster update");
     } catch (error) {
-      console.log("Could not fetch all members for roster update, using cached");
+      console.log("[ROSTER] Could not fetch all members, using cached");
     }
     
     if (config.playerRosterMessageId && config.playerRosterChannelId) {
+      console.log("[ROSTER] Updating player roster...", config.playerRosterChannelId, config.playerRosterMessageId);
       try {
         const channel = await client.channels.fetch(config.playerRosterChannelId);
         if (channel && "messages" in channel) {
           const message = await channel.messages.fetch(config.playerRosterMessageId);
           const newContent = await generatePlayerRoster(guild);
-          await message.edit(newContent);
-          console.log("Updated player roster");
+          await message.edit({ content: newContent });
+          console.log("[ROSTER] Updated player roster successfully");
+        } else {
+          console.log("[ROSTER] Channel not a text channel");
         }
-      } catch (error) {
-        console.log("Could not update player roster message");
+      } catch (error: any) {
+        console.log("[ROSTER] Could not update player roster message:", error.message || error);
       }
+    } else {
+      console.log("[ROSTER] No player roster configured");
     }
     
     if (config.staffRosterMessageId && config.staffRosterChannelId) {
+      console.log("[ROSTER] Updating staff roster...", config.staffRosterChannelId, config.staffRosterMessageId);
       try {
         const channel = await client.channels.fetch(config.staffRosterChannelId);
         if (channel && "messages" in channel) {
           const message = await channel.messages.fetch(config.staffRosterMessageId);
           const newContent = await generateStaffRoster(guild);
-          await message.edit(newContent);
-          console.log("Updated staff roster");
+          await message.edit({ content: newContent });
+          console.log("[ROSTER] Updated staff roster successfully");
+        } else {
+          console.log("[ROSTER] Channel not a text channel");
         }
-      } catch (error) {
-        console.log("Could not update staff roster message");
+      } catch (error: any) {
+        console.log("[ROSTER] Could not update staff roster message:", error.message || error);
       }
+    } else {
+      console.log("[ROSTER] No staff roster configured");
     }
   } catch (error) {
-    console.error("Error updating roster messages:", error);
+    console.error("[ROSTER] Error updating roster messages:", error);
   }
 }
 
@@ -812,6 +833,14 @@ client.on("interactionCreate", async (interaction) => {
             content: "✅ Staff roster has been posted! It will update automatically when roles change.",
           });
         }
+      } else if (commandName === "refresh_roster") {
+        await interaction.deferReply({ flags: 64 });
+        
+        await updateRosterMessages(interaction.guildId!);
+        
+        await interaction.editReply({
+          content: "✅ Rosters have been refreshed!",
+        });
       } else if (commandName === "user_payouts") {
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
