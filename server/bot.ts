@@ -36,6 +36,7 @@ interface QuizState {
   guildId: string;
   currentQuestion: number;
   answers: string[];
+  startedAt: number;
 }
 const activeQuizzes = new Map<string, QuizState>();
 
@@ -50,6 +51,18 @@ function markQuizButtonProcessed(interactionId: string): boolean {
   setTimeout(() => processedQuizButtons.delete(interactionId), 10000);
   return true; // First time processing
 }
+
+// Clean up expired quiz sessions (30 minutes)
+setInterval(() => {
+  const now = Date.now();
+  const THIRTY_MINUTES = 30 * 60 * 1000;
+  for (const [userId, quizState] of activeQuizzes.entries()) {
+    if (now - quizState.startedAt > THIRTY_MINUTES) {
+      activeQuizzes.delete(userId);
+      console.log(`[QUIZ] Cleaned up expired quiz session for user ${userId}`);
+    }
+  }
+}, 5 * 60 * 1000); // Check every 5 minutes
 
 const QUIZ_QUESTIONS = [
   { text: "**Question 1:** How do you warn/mute somebody?", type: "text" },
@@ -2256,6 +2269,7 @@ client.on("interactionCreate", async (interaction) => {
             guildId,
             currentQuestion: 0,
             answers: [],
+            startedAt: Date.now(),
           });
           
           const dmChannel = await user.createDM();
