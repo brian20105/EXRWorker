@@ -2330,7 +2330,11 @@ client.on("interactionCreate", async (interaction) => {
           const odUserId = parts[2];
           const answer = parts.slice(3).join("_");
           
+          console.log(`[QUIZ] Button clicked by ${interaction.user.id}, customId userId: ${odUserId}, answer: ${answer}`);
+          console.log(`[QUIZ] Active quizzes: ${Array.from(activeQuizzes.keys()).join(", ") || "none"}`);
+          
           if (interaction.user.id !== odUserId) {
+            console.log(`[QUIZ] User mismatch - button not for this user`);
             try {
               await interaction.reply({ content: "This button is not for you!", flags: 64 });
             } catch (e) {}
@@ -2339,11 +2343,14 @@ client.on("interactionCreate", async (interaction) => {
           
           const quizState = activeQuizzes.get(odUserId);
           if (!quizState) {
+            console.log(`[QUIZ] No quiz state found for user ${odUserId}`);
             try {
               await interaction.reply({ content: "Quiz session expired. Please start a new quiz.", flags: 64 });
             } catch (e) {}
             return;
           }
+          
+          console.log(`[QUIZ] Quiz state found - current question: ${quizState.currentQuestion}, guildId: ${quizState.guildId}`);
           
           const config = await storage.getGuildConfig(quizState.guildId);
           const questions = getQuizQuestions(config);
