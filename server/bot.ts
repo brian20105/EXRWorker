@@ -132,31 +132,31 @@ const commands = [
     .addUserOption((option) =>
       option
         .setName("user")
-        .setDescription("The user for the payout (required for Add)")
+        .setDescription("The user for the payout")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("payout_id")
-        .setDescription("Payout request ID (required for Edit/Remove)")
+        .setDescription("Payout ID (optional - will use user's latest if not provided)")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("amount")
-        .setDescription("Amount owed (for add/edit)")
+        .setDescription("Amount owed")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("email")
-        .setDescription("PayPal email (for add/edit)")
+        .setDescription("PayPal email")
         .setRequired(false)
     )
     .addStringOption((option) =>
       option
         .setName("reason")
-        .setDescription("Reason for payout (for add/edit)")
+        .setDescription("Reason for payout")
         .setRequired(false)
     )
     .addStringOption((option) =>
@@ -950,18 +950,28 @@ client.on("interactionCreate", async (interaction) => {
             content: `✅ Payout request added for <@${targetUser.id}> - $${amount}`,
           });
         } else if (action === "edit") {
-          if (!payoutId) {
-            await interaction.editReply({
-              content: "❌ You must specify a payout_id for the Edit action. You can find the ID in the payout list or request embed footer.",
-            });
-            return;
-          }
+          let payout;
           
-          const payout = await storage.getPayoutRequest(payoutId);
-          
-          if (!payout) {
+          if (payoutId) {
+            payout = await storage.getPayoutRequest(payoutId);
+            if (!payout) {
+              await interaction.editReply({
+                content: `Payout request with ID \`${payoutId}\` not found.`,
+              });
+              return;
+            }
+          } else if (targetUser) {
+            const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
+            if (userPayouts.length === 0) {
+              await interaction.editReply({
+                content: `No payout requests found for <@${targetUser.id}>.`,
+              });
+              return;
+            }
+            payout = userPayouts[0]; // Get most recent
+          } else {
             await interaction.editReply({
-              content: `❌ Payout request with ID \`${payoutId}\` not found.`,
+              content: "Please provide either a user or payout_id to edit.",
             });
             return;
           }
@@ -1047,21 +1057,31 @@ client.on("interactionCreate", async (interaction) => {
           if (status) changedFields.push(`Status: ${status}`);
           
           await interaction.editReply({
-            content: `✅ Updated payout request \`${payoutId}\`.\n**Changes:** ${changedFields.join(", ")}`,
+            content: `✅ Updated payout request for <@${payout.userId}>.\n**Changes:** ${changedFields.join(", ")}`,
           });
         } else if (action === "remove") {
-          if (!payoutId) {
-            await interaction.editReply({
-              content: "❌ You must specify a payout_id for the Remove action. You can find the ID in the payout list or request embed footer.",
-            });
-            return;
-          }
+          let payout;
           
-          const payout = await storage.getPayoutRequest(payoutId);
-          
-          if (!payout) {
+          if (payoutId) {
+            payout = await storage.getPayoutRequest(payoutId);
+            if (!payout) {
+              await interaction.editReply({
+                content: `Payout request with ID \`${payoutId}\` not found.`,
+              });
+              return;
+            }
+          } else if (targetUser) {
+            const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
+            if (userPayouts.length === 0) {
+              await interaction.editReply({
+                content: `No payout requests found for <@${targetUser.id}>.`,
+              });
+              return;
+            }
+            payout = userPayouts[0]; // Get most recent
+          } else {
             await interaction.editReply({
-              content: `❌ Payout request with ID \`${payoutId}\` not found.`,
+              content: "Please provide either a user or payout_id to remove.",
             });
             return;
           }
@@ -1084,7 +1104,7 @@ client.on("interactionCreate", async (interaction) => {
           }
           
           await interaction.editReply({
-            content: `✅ Removed payout request \`${payoutId}\`.`,
+            content: `✅ Removed payout request for <@${payout.userId}>.`,
           });
         }
       } else if (commandName === "sync_roles") {
