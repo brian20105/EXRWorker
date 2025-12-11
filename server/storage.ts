@@ -3,11 +3,14 @@ import {
   type InsertGuildConfig, 
   type PayoutRequest,
   type InsertPayoutRequest,
+  type RoleSyncPair,
+  type InsertRoleSyncPair,
   guildConfigs,
-  payoutRequests 
+  payoutRequests,
+  roleSyncPairs
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, or } from "drizzle-orm";
 
 export interface IStorage {
   getGuildConfig(guildId: string): Promise<GuildConfig | undefined>;
@@ -22,11 +25,14 @@ export interface IStorage {
   getAllPayouts(guildId: string): Promise<PayoutRequest[]>;
   getUserPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
   getUserPendingPayouts(guildId: string, userId: string): Promise<PayoutRequest[]>;
-  getPayoutRequest(id: string): Promise<PayoutRequest | undefined>;
   updatePayoutStatus(id: string, status: string, actionedById: string): Promise<PayoutRequest>;
   updatePayoutMessageId(id: string, messageId: string): Promise<void>;
   updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string; status?: string }): Promise<PayoutRequest>;
   deletePayoutRequest(id: string): Promise<void>;
+  getAllRoleSyncPairs(): Promise<RoleSyncPair[]>;
+  addRoleSyncPair(pair: InsertRoleSyncPair): Promise<RoleSyncPair>;
+  removeRoleSyncPair(id: string): Promise<void>;
+  getRoleSyncPairsByGuild(guildId: string): Promise<RoleSyncPair[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -154,14 +160,6 @@ export class DatabaseStorage implements IStorage {
       .where(eq(payoutRequests.id, id));
   }
 
-  async getPayoutRequest(id: string): Promise<PayoutRequest | undefined> {
-    const result = await db
-      .select()
-      .from(payoutRequests)
-      .where(eq(payoutRequests.id, id));
-    return result[0];
-  }
-
   async updatePayoutRequest(id: string, updates: { moneyOwed?: string; email?: string; reason?: string; status?: string }): Promise<PayoutRequest> {
     const result = await db
       .update(payoutRequests)
@@ -175,6 +173,31 @@ export class DatabaseStorage implements IStorage {
     await db
       .delete(payoutRequests)
       .where(eq(payoutRequests.id, id));
+  }
+
+  async getAllRoleSyncPairs(): Promise<RoleSyncPair[]> {
+    return await db.select().from(roleSyncPairs);
+  }
+
+  async addRoleSyncPair(pair: InsertRoleSyncPair): Promise<RoleSyncPair> {
+    const result = await db.insert(roleSyncPairs).values(pair).returning();
+    return result[0];
+  }
+
+  async removeRoleSyncPair(id: string): Promise<void> {
+    await db.delete(roleSyncPairs).where(eq(roleSyncPairs.id, id));
+  }
+
+  async getRoleSyncPairsByGuild(guildId: string): Promise<RoleSyncPair[]> {
+    return await db
+      .select()
+      .from(roleSyncPairs)
+      .where(
+        or(
+          eq(roleSyncPairs.sourceGuildId, guildId),
+          eq(roleSyncPairs.targetGuildId, guildId)
+        )
+      );
   }
 }
 

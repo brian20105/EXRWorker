@@ -47,3 +47,20 @@ export const insertPayoutRequestSchema = createInsertSchema(payoutRequests).omit
 
 export type InsertPayoutRequest = z.infer<typeof insertPayoutRequestSchema>;
 export type PayoutRequest = typeof payoutRequests.$inferSelect;
+
+export const roleSyncPairs = pgTable("role_sync_pairs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sourceGuildId: text("source_guild_id").notNull(),
+  sourceRoleId: text("source_role_id").notNull(),
+  targetGuildId: text("target_guild_id").notNull(),
+  targetRoleId: text("target_role_id").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertRoleSyncPairSchema = createInsertSchema(roleSyncPairs).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertRoleSyncPair = z.infer<typeof insertRoleSyncPairSchema>;
+export type RoleSyncPair = typeof roleSyncPairs.$inferSelect;
