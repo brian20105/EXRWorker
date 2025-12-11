@@ -213,6 +213,12 @@ client.once("ready", async () => {
 
 client.on("interactionCreate", async (interaction) => {
   try {
+    // Check if interaction is still valid
+    if (interaction.isRepliable() && interaction.replied) {
+      console.log('Interaction already replied to:', interaction.id);
+      return;
+    }
+    
     if (interaction.isChatInputCommand()) {
       const { commandName } = interaction;
 
@@ -375,95 +381,108 @@ client.on("interactionCreate", async (interaction) => {
       }
     } else if (interaction.isButton()) {
       if (interaction.customId === "request_payout") {
-        // Build and show modal immediately to prevent timeout
-        const modal = new ModalBuilder()
-          .setCustomId("payout_modal")
-          .setTitle("Request Payout");
+        try {
+          // Build and show modal immediately to prevent timeout
+          const modal = new ModalBuilder()
+            .setCustomId("payout_modal")
+            .setTitle("Request Payout");
 
-        const userIdInput = new TextInputBuilder()
-          .setCustomId("user_id")
-          .setLabel("User ID")
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder("Enter the user ID")
-          .setRequired(true);
+          const userIdInput = new TextInputBuilder()
+            .setCustomId("user_id")
+            .setLabel("User ID")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Enter the user ID")
+            .setRequired(true);
 
-        const reasonInput = new TextInputBuilder()
-          .setCustomId("reason")
-          .setLabel("Reason")
-          .setStyle(TextInputStyle.Paragraph)
-          .setPlaceholder("Why?")
-          .setRequired(true);
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Reason")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Why?")
+            .setRequired(true);
 
-        const moneyOwedInput = new TextInputBuilder()
-          .setCustomId("money_owed")
-          .setLabel("Money Owed")
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder("0.00")
-          .setRequired(true);
+          const moneyOwedInput = new TextInputBuilder()
+            .setCustomId("money_owed")
+            .setLabel("Money Owed")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("0.00")
+            .setRequired(true);
 
-        const paypalInput = new TextInputBuilder()
-          .setCustomId("paypal")
-          .setLabel("Paypal Username/Email")
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder("email@example.com")
-          .setRequired(true);
+          const paypalInput = new TextInputBuilder()
+            .setCustomId("paypal")
+            .setLabel("Paypal Username/Email")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("email@example.com")
+            .setRequired(true);
 
-        const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
-        const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
-        const row3 = new ActionRowBuilder<TextInputBuilder>().addComponents(moneyOwedInput);
-        const row4 = new ActionRowBuilder<TextInputBuilder>().addComponents(paypalInput);
+          const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
+          const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+          const row3 = new ActionRowBuilder<TextInputBuilder>().addComponents(moneyOwedInput);
+          const row4 = new ActionRowBuilder<TextInputBuilder>().addComponents(paypalInput);
 
-        modal.addComponents(row1, row2, row3, row4);
+          modal.addComponents(row1, row2, row3, row4);
 
-        // Show modal immediately without any await before this
-        return await interaction.showModal(modal);
-      } else if (interaction.customId.startsWith("approve_") || interaction.customId.startsWith("deny_")) {
-        const [action, requestId] = interaction.customId.split("_");
-        
-        // Check permissions first, but do it synchronously if possible
-        const member = interaction.member;
-        const memberRoles = member && 'roles' in member 
-          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
-          : undefined;
-        const memberPermissions = interaction.memberPermissions?.bitfield;
-        
-        // Build modal first
-        const modal = new ModalBuilder()
-          .setCustomId(`action_reason_${action}_${requestId}`)
-          .setTitle(action === "approve" ? "Approve Payout" : "Deny Payout");
-
-        const reasonInput = new TextInputBuilder()
-          .setCustomId("action_reason")
-          .setLabel(action === "approve" ? "Note (Optional)" : "Reason (Optional)")
-          .setStyle(TextInputStyle.Paragraph)
-          .setPlaceholder(action === "approve" ? "Add a note..." : "Why are you denying this?")
-          .setRequired(false);
-
-        const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
-        modal.addComponents(row);
-
-        // Show modal immediately to prevent timeout
-        await interaction.showModal(modal);
-        
-        // Check permissions asynchronously after showing modal
-        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
-        if (!hasPermission) {
-          // Note: We can't send a message here since modal was already shown
-          // The permission check will happen again in the modal submit handler
-          console.log(`User ${interaction.user.id} tried to approve/deny without permission`);
+          // Show modal immediately
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired or already acknowledged:', interaction.id);
+          } else {
+            throw error;
+          }
         }
+        return;
+      } else if (interaction.customId.startsWith("approve_") || interaction.customId.startsWith("deny_")) {
+        try {
+          const [action, requestId] = interaction.customId.split("_");
+          
+          // Build and show modal immediately to prevent timeout
+          const modal = new ModalBuilder()
+            .setCustomId(`action_reason_${action}_${requestId}`)
+            .setTitle(action === "approve" ? "Approve Payout" : "Deny Payout");
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("action_reason")
+            .setLabel(action === "approve" ? "Note (Optional)" : "Reason (Optional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder(action === "approve" ? "Add a note..." : "Why are you denying this?")
+            .setRequired(false);
+
+          const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+          modal.addComponents(row);
+
+          // Show modal immediately - permission check will happen in modal submit
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired or already acknowledged:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
       }
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId === "payout_modal") {
+        // Defer reply immediately to prevent timeout
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Modal interaction expired:', interaction.id);
+            return;
+          }
+          throw error;
+        }
+        
         const userId = interaction.fields.getTextInputValue("user_id").trim();
         const reason = interaction.fields.getTextInputValue("reason");
         const moneyOwed = interaction.fields.getTextInputValue("money_owed");
         const paypal = interaction.fields.getTextInputValue("paypal");
 
         if (!/^\d{17,19}$/.test(userId)) {
-          await interaction.reply({
+          await interaction.editReply({
             content: "❌ Invalid User ID. Please enter a valid Discord User ID (17-19 digit number).",
-            flags: 64,
           });
           return;
         }
@@ -471,23 +490,20 @@ client.on("interactionCreate", async (interaction) => {
         try {
           await client.users.fetch(userId);
         } catch {
-          await interaction.reply({
+          await interaction.editReply({
             content: "❌ Could not find a Discord user with that ID. Please check the ID and try again.",
-            flags: 64,
           });
           return;
         }
 
-        await interaction.reply({
+        await interaction.editReply({
           content: "Your payout request has been submitted!",
-          flags: 64,
         });
 
         const config = await storage.getGuildConfig(interaction.guildId!);
         if (!config?.requestChannelId) {
-          await interaction.followUp({
+          await interaction.editReply({
             content: "⚠️  Request channel not configured. Please ask an admin to run `/setup_pay_request`.",
-            flags: 64,
           });
           return;
         }
@@ -538,12 +554,23 @@ client.on("interactionCreate", async (interaction) => {
 
         await storage.updatePayoutMessageId(requestId, sentMessage.id);
       } else if (interaction.customId.startsWith("action_reason_")) {
+        // Defer reply immediately to prevent timeout
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Modal interaction expired:', interaction.id);
+            return;
+          }
+          throw error;
+        }
+        
         const parts = interaction.customId.split("_");
         const action = parts[2];
         const requestId = parts[3];
         const actionReason = interaction.fields.getTextInputValue("action_reason") || undefined;
         
-        // Check permissions again in modal submit
+        // Check permissions
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
@@ -554,9 +581,8 @@ client.on("interactionCreate", async (interaction) => {
         
         const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
         if (!hasPermission) {
-          await interaction.reply({
+          await interaction.editReply({
             content: "❌ You don't have permission to approve or deny payout requests.",
-            flags: 64,
           });
           return;
         }
@@ -608,9 +634,8 @@ client.on("interactionCreate", async (interaction) => {
           components: [],
         });
 
-        await interaction.reply({
+        await interaction.editReply({
           content: `Request ${action === "approve" ? "approved" : "denied"} successfully.`,
-          flags: 64,
         });
 
         const dmStatus = action === "approve" ? "approved" : "denied";
@@ -650,11 +675,17 @@ client.on("interactionCreate", async (interaction) => {
     }
   } catch (error) {
     console.error("Error handling interaction:", error);
-    if (interaction.isRepliable() && !interaction.replied) {
-      await interaction.reply({
-        content: "An error occurred while processing your request.",
-        flags: 64,
-      }).catch(() => {});
+    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+      try {
+        await interaction.reply({
+          content: "An error occurred while processing your request.",
+          flags: 64,
+        });
+      } catch (replyError: any) {
+        if (replyError.code !== 10062 && replyError.code !== 40060) {
+          console.error("Failed to send error message:", replyError);
+        }
+      }
     }
   }
 });
