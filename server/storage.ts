@@ -9,11 +9,14 @@ import {
   type InsertBanRequest,
   type UnbanRequest,
   type InsertUnbanRequest,
+  type StaffIntroSubmission,
+  type InsertStaffIntroSubmission,
   guildConfigs,
   payoutRequests,
   roleSyncPairs,
   banRequests,
-  unbanRequests
+  unbanRequests,
+  staffIntroSubmissions
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, or } from "drizzle-orm";
@@ -51,6 +54,9 @@ export interface IStorage {
   getAllUnbanRequests(guildId: string): Promise<UnbanRequest[]>;
   getActivityStats(guildId: string, category: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   removeActivityEntries(guildId: string, userId: string, category: string, amount: number): Promise<number>;
+  createStaffIntroSubmission(submission: InsertStaffIntroSubmission): Promise<StaffIntroSubmission>;
+  getStaffIntroSubmission(id: string): Promise<StaffIntroSubmission | undefined>;
+  updateStaffIntroSubmission(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<StaffIntroSubmission>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -314,6 +320,21 @@ export class DatabaseStorage implements IStorage {
       removed++;
     }
     return removed;
+  }
+
+  async createStaffIntroSubmission(submission: InsertStaffIntroSubmission): Promise<StaffIntroSubmission> {
+    const result = await db.insert(staffIntroSubmissions).values(submission).returning();
+    return result[0];
+  }
+
+  async getStaffIntroSubmission(id: string): Promise<StaffIntroSubmission | undefined> {
+    const result = await db.select().from(staffIntroSubmissions).where(eq(staffIntroSubmissions.id, id));
+    return result[0];
+  }
+
+  async updateStaffIntroSubmission(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<StaffIntroSubmission> {
+    const result = await db.update(staffIntroSubmissions).set({ ...updates, updatedAt: new Date() }).where(eq(staffIntroSubmissions.id, id)).returning();
+    return result[0];
   }
 }
 

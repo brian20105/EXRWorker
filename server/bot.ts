@@ -26,8 +26,10 @@ export const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
   ],
 });
+
 
 const commands = [
   new SlashCommandBuilder()
@@ -400,6 +402,20 @@ const commands = [
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" }
         )
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_staff_intro")
+    .setDescription("Post the staff introduction quiz in the current channel")
+    .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("setup_staff_intro_submissions")
+    .setDescription("Set the channel for staff intro quiz submissions")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where submissions will be sent")
+        .setRequired(true)
     ),
 ].map((command) => command.toJSON());
 
@@ -1616,6 +1632,51 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
         });
+      } else if (commandName === "setup_staff_intro") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const embed = new EmbedBuilder()
+          .setTitle("Staff Introduction Quiz")
+          .setDescription("Welcome to the staff introduction quiz! This quiz will help you understand our policies and procedures.\n\nClick the button below to start the quiz. You will receive 5 questions in your DMs.")
+          .setColor(0x5865f2)
+          .setFooter({ text: "Make sure your DMs are open!" });
+        
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`start_quiz_${interaction.guildId}`)
+            .setLabel("Start Quiz")
+            .setStyle(ButtonStyle.Primary)
+            .setEmoji("📝")
+        );
+        
+        if (interaction.channel && "send" in interaction.channel) {
+          await interaction.channel.send({
+            embeds: [embed],
+            components: [row],
+          });
+          
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            staffIntroChannelId: interaction.channelId,
+          });
+        }
+        
+        await interaction.editReply({
+          content: "✅ Staff introduction quiz has been posted!",
+        });
+      } else if (commandName === "setup_staff_intro_submissions") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const channel = interaction.options.getChannel("channel", true);
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          staffIntroSubmissionsChannelId: channel.id,
+        });
+        
+        await interaction.editReply({
+          content: `✅ Staff intro submissions will be sent to <#${channel.id}>!`,
+        });
       }
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
@@ -1672,6 +1733,79 @@ client.on("interactionCreate", async (interaction) => {
         );
         
         await interaction.editReply({ embeds: [embed], components: [row] });
+        return;
+      } else if (interaction.customId.startsWith("start_quiz_")) {
+        const guildId = interaction.customId.replace("start_quiz_", "");
+        
+        try {
+          const modal = new ModalBuilder()
+            .setCustomId(`quiz_submit_${guildId}`)
+            .setTitle("Staff Introduction Quiz");
+          
+          const q1 = new TextInputBuilder()
+            .setCustomId("q1")
+            .setLabel("How do you warn/mute somebody?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+          
+          const q2 = new TextInputBuilder()
+            .setCustomId("q2")
+            .setLabel("If bannable, where do you ban them?")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+          
+          const q3 = new TextInputBuilder()
+            .setCustomId("q3")
+            .setLabel("Unsure about situation? (1-Admin 2-Lead 3-Self 4-Forget)")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Enter 1, 2, 3, or 4")
+            .setRequired(true);
+          
+          const q4 = new TextInputBuilder()
+            .setCustomId("q4")
+            .setLabel("Partnership ticket - who to bring?")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+          
+          const q5 = new TextInputBuilder()
+            .setCustomId("q5")
+            .setLabel("Understand paid position = no unprofessionalism?")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Enter 1 (Yes) or 2 (No)")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(q1),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(q2),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(q3),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(q4),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(q5)
+          );
+          
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          console.log("Error showing quiz modal:", error);
+        }
+        return;
+      } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
+        const isApprove = interaction.customId.startsWith("quiz_approve_");
+        const submissionId = interaction.customId.replace(isApprove ? "quiz_approve_" : "quiz_deny_", "");
+        
+        const modal = new ModalBuilder()
+          .setCustomId(`quiz_review_${isApprove ? "approve" : "deny"}_${submissionId}`)
+          .setTitle(isApprove ? "Approve Submission" : "Deny Submission");
+        
+        const reasonInput = new TextInputBuilder()
+          .setCustomId("review_reason")
+          .setLabel("Reason (optional)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder(isApprove ? "Any notes for the user..." : "Why is this submission being denied?")
+          .setRequired(false);
+        
+        const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+        modal.addComponents(row);
+        
+        await interaction.showModal(modal);
         return;
       } else if (interaction.customId === "request_payout") {
         try {
@@ -2514,6 +2648,166 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not post to unban log channel");
           }
         }
+      } else if (interaction.customId.startsWith("quiz_submit_")) {
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Quiz submit modal expired:', interaction.id);
+            return;
+          }
+          throw error;
+        }
+        
+        const guildId = interaction.customId.replace("quiz_submit_", "");
+        
+        const answer1 = interaction.fields.getTextInputValue("q1");
+        const answer2 = interaction.fields.getTextInputValue("q2");
+        const answer3 = interaction.fields.getTextInputValue("q3");
+        const answer4 = interaction.fields.getTextInputValue("q4");
+        const answer5 = interaction.fields.getTextInputValue("q5");
+        
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.staffIntroSubmissionsChannelId) {
+          await interaction.editReply({
+            content: "Thank you for completing the quiz! Your answers have been recorded, but the submissions channel hasn't been set up yet. Please contact an admin.",
+          });
+          return;
+        }
+        
+        const submission = await storage.createStaffIntroSubmission({
+          guildId,
+          userId: interaction.user.id,
+          answer1,
+          answer2,
+          answer3,
+          answer4,
+          answer5,
+          status: "pending",
+        });
+        
+        try {
+          const submissionsChannel = await client.channels.fetch(config.staffIntroSubmissionsChannelId);
+          if (submissionsChannel && "send" in submissionsChannel) {
+            const embed = new EmbedBuilder()
+              .setTitle("Staff Intro Quiz Submission")
+              .setColor(0xf0b232)
+              .setDescription(`**Submitted by:** <@${interaction.user.id}>`)
+              .addFields(
+                { name: "Q1: How do you warn/mute somebody?", value: answer1 || "No answer", inline: false },
+                { name: "Q2: If bannable, where do you ban?", value: answer2 || "No answer", inline: false },
+                { name: "Q3: Unsure about situation - who to ask?", value: answer3 || "No answer", inline: false },
+                { name: "Q4: Partnership ticket handler?", value: answer4 || "No answer", inline: false },
+                { name: "Q5: Understand paid position policy?", value: answer5 || "No answer", inline: false }
+              )
+              .setFooter({ text: `Submission ID: ${submission.id}` })
+              .setTimestamp();
+            
+            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`quiz_approve_${submission.id}`)
+                .setLabel("Approve")
+                .setStyle(ButtonStyle.Success)
+                .setEmoji("✅"),
+              new ButtonBuilder()
+                .setCustomId(`quiz_deny_${submission.id}`)
+                .setLabel("Deny")
+                .setStyle(ButtonStyle.Danger)
+                .setEmoji("❌")
+            );
+            
+            const sentMessage = await submissionsChannel.send({
+              embeds: [embed],
+              components: [row],
+            });
+            
+            await storage.updateStaffIntroSubmission(submission.id, {
+              messageId: sentMessage.id,
+            });
+          }
+        } catch (error) {
+          console.log("Could not send submission to channel:", error);
+        }
+        
+        await interaction.editReply({
+          content: "✅ Thank you for completing the quiz! Your submission has been sent for review. You will receive a DM once it has been reviewed.",
+        });
+      } else if (interaction.customId.startsWith("quiz_review_")) {
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Quiz review modal expired:', interaction.id);
+            return;
+          }
+          throw error;
+        }
+        
+        const parts = interaction.customId.split("_");
+        const action = parts[2];
+        const submissionId = parts.slice(3).join("_");
+        const reviewReason = interaction.fields.getTextInputValue("review_reason") || undefined;
+        
+        const submission = await storage.getStaffIntroSubmission(submissionId);
+        if (!submission) {
+          await interaction.editReply({
+            content: "Could not find this submission.",
+          });
+          return;
+        }
+        
+        await storage.updateStaffIntroSubmission(submissionId, {
+          status: action === "approve" ? "approved" : "denied",
+          reviewedById: interaction.user.id,
+          reviewReason,
+        });
+        
+        const message = interaction.message;
+        if (message && message.embeds[0]) {
+          const status = action === "approve" ? "✅ Approved" : "❌ Denied";
+          const color = action === "approve" ? 0x23a559 : 0xda373c;
+          
+          const oldEmbed = message.embeds[0];
+          const embed = new EmbedBuilder()
+            .setTitle(`Staff Intro Submission - ${action === "approve" ? "Approved" : "Denied"}`)
+            .setColor(color)
+            .setDescription(oldEmbed.description || "")
+            .addFields(
+              { name: "Status", value: status, inline: true },
+              { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: true }
+            )
+            .setFooter({ text: `Submission ID: ${submissionId}` })
+            .setTimestamp();
+          
+          if (reviewReason) {
+            embed.addFields({ name: "Review Note", value: reviewReason, inline: false });
+          }
+          
+          await message.edit({ embeds: [embed], components: [] });
+        }
+        
+        try {
+          const user = await client.users.fetch(submission.userId);
+          const dmEmbed = new EmbedBuilder()
+            .setTitle(`Staff Introduction Quiz ${action === "approve" ? "Passed!" : "Not Passed"}`)
+            .setDescription(action === "approve" 
+              ? "Congratulations! Your staff introduction quiz has been approved." 
+              : "Unfortunately, your staff introduction quiz was not approved.")
+            .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+            .setTimestamp();
+          
+          if (reviewReason) {
+            dmEmbed.addFields({ name: "Note from reviewer", value: reviewReason, inline: false });
+          }
+          
+          await user.send({ embeds: [dmEmbed] });
+        } catch (error) {
+          console.log("Could not DM user about quiz result");
+        }
+        
+        await interaction.editReply({
+          content: `Submission ${action === "approve" ? "approved" : "denied"} successfully.`,
+        });
       }
     }
   } catch (error) {
