@@ -2173,14 +2173,18 @@ client.on("interactionCreate", async (interaction) => {
         const guildId = interaction.customId.replace("start_quiz_", "");
         const user = interaction.user;
         
+        console.log(`[QUIZ START] Button clicked by ${user.id}, interaction: ${interaction.id}`);
+        
         // Prevent duplicate processing
         if (processingQuizStart.has(user.id)) {
+          console.log(`[QUIZ START] Blocked duplicate for user ${user.id}`);
           try {
             await interaction.deferUpdate().catch(() => {});
           } catch (e) {}
           return;
         }
         processingQuizStart.add(user.id);
+        console.log(`[QUIZ START] Processing quiz start for user ${user.id}`);
         
         // Check if user already has an active quiz
         if (activeQuizzes.has(user.id)) {
