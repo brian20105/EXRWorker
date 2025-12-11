@@ -40,12 +40,143 @@ interface QuizState {
 const activeQuizzes = new Map<string, QuizState>();
 
 const QUIZ_QUESTIONS = [
-  "**Question 1:** How do you warn/mute somebody?",
-  "**Question 2:** If something is bannable, where do you go to ban them?",
-  "**Question 3:** If you are unsure about a situation, who should you ask?\n1.) Admin\n2.) Lead Staff\n3.) Handle it yourself\n4.) Forget about it\n\n*Reply with just the number (1, 2, 3, or 4)*",
-  "**Question 4:** If somebody makes a partnership ticket, who do you bring to handle it?",
-  "**Question 5:** You understand that this is a paid position and any unprofessionalism/arguing will get you removed?\n1.) Yes\n2.) No\n\n*Reply with just the number (1 or 2)*"
+  { text: "**Question 1:** How do you warn/mute somebody?", type: "text" },
+  { text: "**Question 2:** If something is bannable, where do you go to ban them?", type: "text" },
+  { 
+    text: "**Question 3:** If you are unsure about a situation, who should you ask?", 
+    type: "choice",
+    options: [
+      { label: "Admin", value: "Admin" },
+      { label: "Lead Staff", value: "Lead Staff" },
+      { label: "Handle it yourself", value: "Handle it yourself" },
+      { label: "Forget about it", value: "Forget about it" }
+    ]
+  },
+  { text: "**Question 4:** If somebody makes a partnership ticket, who do you bring to handle it?", type: "text" },
+  { 
+    text: "**Question 5:** You understand that this is a paid position and any unprofessionalism/arguing will get you removed?", 
+    type: "choice",
+    options: [
+      { label: "Yes", value: "Yes" },
+      { label: "No", value: "No" }
+    ]
+  }
 ];
+
+const FULL_QUESTIONS = [
+  "How do you warn/mute somebody?",
+  "If something is bannable, where do you go to ban them?",
+  "If you are unsure about a situation, who should you ask?",
+  "If somebody makes a partnership ticket, who do you bring to handle it?",
+  "You understand that this is a paid position and any unprofessionalism/arguing will get you removed?"
+];
+
+async function sendQuizQuestion(userId: string, dmChannel: any): Promise<void> {
+  const quizState = activeQuizzes.get(userId);
+  if (!quizState) return;
+  
+  const question = QUIZ_QUESTIONS[quizState.currentQuestion];
+  
+  if (question.type === "choice" && question.options) {
+    const row = new ActionRowBuilder<ButtonBuilder>();
+    for (const option of question.options) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`quiz_answer_${userId}_${option.value}`)
+          .setLabel(option.label)
+          .setStyle(ButtonStyle.Primary)
+      );
+    }
+    await dmChannel.send({
+      content: question.text,
+      components: [row],
+    });
+  } else {
+    await dmChannel.send({
+      content: question.text,
+    });
+  }
+}
+
+async function processQuizAnswer(userId: string, answer: string, dmChannel: any): Promise<void> {
+  const quizState = activeQuizzes.get(userId);
+  if (!quizState) return;
+  
+  quizState.answers.push(answer);
+  quizState.currentQuestion++;
+  
+  if (quizState.currentQuestion < QUIZ_QUESTIONS.length) {
+    await sendQuizQuestion(userId, dmChannel);
+  } else {
+    activeQuizzes.delete(userId);
+    
+    const config = await storage.getGuildConfig(quizState.guildId);
+    if (!config?.staffIntroSubmissionsChannelId) {
+      await dmChannel.send({
+        content: "Thank you for completing the quiz! Your answers have been recorded, but the submissions channel hasn't been set up yet. Please contact an admin.",
+      });
+      return;
+    }
+    
+    const submission = await storage.createStaffIntroSubmission({
+      guildId: quizState.guildId,
+      userId: userId,
+      answer1: quizState.answers[0] || "",
+      answer2: quizState.answers[1] || "",
+      answer3: quizState.answers[2] || "",
+      answer4: quizState.answers[3] || "",
+      answer5: quizState.answers[4] || "",
+      status: "pending",
+    });
+    
+    try {
+      const submissionsChannel = await client.channels.fetch(config.staffIntroSubmissionsChannelId);
+      if (submissionsChannel && "send" in submissionsChannel) {
+        const embed = new EmbedBuilder()
+          .setTitle("Staff Intro Quiz Submission")
+          .setColor(0xf0b232)
+          .setDescription(`**Submitted by:** <@${userId}>`)
+          .addFields(
+            { name: `Q1: ${FULL_QUESTIONS[0]}`, value: quizState.answers[0] || "No answer", inline: false },
+            { name: `Q2: ${FULL_QUESTIONS[1]}`, value: quizState.answers[1] || "No answer", inline: false },
+            { name: `Q3: ${FULL_QUESTIONS[2]}`, value: quizState.answers[2] || "No answer", inline: false },
+            { name: `Q4: ${FULL_QUESTIONS[3]}`, value: quizState.answers[3] || "No answer", inline: false },
+            { name: `Q5: ${FULL_QUESTIONS[4]}`, value: quizState.answers[4] || "No answer", inline: false }
+          )
+          .setFooter({ text: `Submission ID: ${submission.id}` })
+          .setTimestamp();
+        
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`quiz_approve_${submission.id}`)
+            .setLabel("Approve")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("✅"),
+          new ButtonBuilder()
+            .setCustomId(`quiz_deny_${submission.id}`)
+            .setLabel("Deny")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("❌")
+        );
+        
+        const sentMessage = await submissionsChannel.send({
+          embeds: [embed],
+          components: [row],
+        });
+        
+        await storage.updateStaffIntroSubmission(submission.id, {
+          messageId: sentMessage.id,
+        });
+      }
+    } catch (error) {
+      console.log("Could not send submission to channel:", error);
+    }
+    
+    await dmChannel.send({
+      content: "✅ Thank you for completing the quiz! Your submission has been sent for review. You will receive a DM once it has been reviewed.",
+    });
+  }
+}
 
 
 const commands = [
@@ -1775,8 +1906,9 @@ client.on("interactionCreate", async (interaction) => {
           try {
             const dmChannel = await user.createDM();
             await dmChannel.send({
-              content: `**Staff Introduction Quiz**\n\nYou have started the quiz! Please answer all 5 questions by replying to each one.\n\n${QUIZ_QUESTIONS[0]}`,
+              content: `**Staff Introduction Quiz**\n\nYou have started the quiz! Please answer all 5 questions.`,
             });
+            await sendQuizQuestion(user.id, dmChannel);
             
             await interaction.editReply({
               content: "✅ Quiz started! Check your DMs for the questions.",
@@ -1789,6 +1921,34 @@ client.on("interactionCreate", async (interaction) => {
           }
         } catch (error: any) {
           console.log("Error starting quiz:", error);
+        }
+        return;
+      } else if (interaction.customId.startsWith("quiz_answer_")) {
+        try {
+          const parts = interaction.customId.split("_");
+          const odUserId = parts[2];
+          const answer = parts.slice(3).join("_");
+          
+          if (interaction.user.id !== odUserId) {
+            await interaction.reply({ content: "This button is not for you!", flags: 64 });
+            return;
+          }
+          
+          const quizState = activeQuizzes.get(odUserId);
+          if (!quizState) {
+            await interaction.reply({ content: "Quiz session expired. Please start a new quiz.", flags: 64 });
+            return;
+          }
+          
+          await interaction.update({
+            content: `${QUIZ_QUESTIONS[quizState.currentQuestion].text}\n\n✅ **Your answer:** ${answer}`,
+            components: [],
+          });
+          
+          const dmChannel = interaction.channel;
+          await processQuizAnswer(odUserId, answer, dmChannel);
+        } catch (error: any) {
+          console.log("Error processing quiz answer button:", error);
         }
         return;
       } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
@@ -2758,83 +2918,16 @@ client.on("messageCreate", async (message) => {
   const quizState = activeQuizzes.get(message.author.id);
   if (!quizState) return;
   
-  const answer = message.content.trim();
-  quizState.answers.push(answer);
-  quizState.currentQuestion++;
-  
-  if (quizState.currentQuestion < QUIZ_QUESTIONS.length) {
+  const currentQuestion = QUIZ_QUESTIONS[quizState.currentQuestion];
+  if (currentQuestion.type === "choice") {
     await message.reply({
-      content: QUIZ_QUESTIONS[quizState.currentQuestion],
+      content: "Please use the buttons above to answer this question!",
     });
-  } else {
-    activeQuizzes.delete(message.author.id);
-    
-    const config = await storage.getGuildConfig(quizState.guildId);
-    if (!config?.staffIntroSubmissionsChannelId) {
-      await message.reply({
-        content: "Thank you for completing the quiz! Your answers have been recorded, but the submissions channel hasn't been set up yet. Please contact an admin.",
-      });
-      return;
-    }
-    
-    const submission = await storage.createStaffIntroSubmission({
-      guildId: quizState.guildId,
-      userId: message.author.id,
-      answer1: quizState.answers[0] || "",
-      answer2: quizState.answers[1] || "",
-      answer3: quizState.answers[2] || "",
-      answer4: quizState.answers[3] || "",
-      answer5: quizState.answers[4] || "",
-      status: "pending",
-    });
-    
-    try {
-      const submissionsChannel = await client.channels.fetch(config.staffIntroSubmissionsChannelId);
-      if (submissionsChannel && "send" in submissionsChannel) {
-        const embed = new EmbedBuilder()
-          .setTitle("Staff Intro Quiz Submission")
-          .setColor(0xf0b232)
-          .setDescription(`**Submitted by:** <@${message.author.id}>`)
-          .addFields(
-            { name: "Q1: How do you warn/mute somebody?", value: quizState.answers[0] || "No answer", inline: false },
-            { name: "Q2: If bannable, where do you go to ban?", value: quizState.answers[1] || "No answer", inline: false },
-            { name: "Q3: If unsure, who to ask?", value: quizState.answers[2] || "No answer", inline: false },
-            { name: "Q4: Partnership ticket handler?", value: quizState.answers[3] || "No answer", inline: false },
-            { name: "Q5: Understand paid position policy?", value: quizState.answers[4] || "No answer", inline: false }
-          )
-          .setFooter({ text: `Submission ID: ${submission.id}` })
-          .setTimestamp();
-        
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`quiz_approve_${submission.id}`)
-            .setLabel("Approve")
-            .setStyle(ButtonStyle.Success)
-            .setEmoji("✅"),
-          new ButtonBuilder()
-            .setCustomId(`quiz_deny_${submission.id}`)
-            .setLabel("Deny")
-            .setStyle(ButtonStyle.Danger)
-            .setEmoji("❌")
-        );
-        
-        const sentMessage = await submissionsChannel.send({
-          embeds: [embed],
-          components: [row],
-        });
-        
-        await storage.updateStaffIntroSubmission(submission.id, {
-          messageId: sentMessage.id,
-        });
-      }
-    } catch (error) {
-      console.log("Could not send submission to channel:", error);
-    }
-    
-    await message.reply({
-      content: "✅ Thank you for completing the quiz! Your submission has been sent for review. You will receive a DM once it has been reviewed.",
-    });
+    return;
   }
+  
+  const answer = message.content.trim();
+  await processQuizAnswer(message.author.id, answer, message.channel);
 });
 
 const syncingUsers = new Set<string>();
