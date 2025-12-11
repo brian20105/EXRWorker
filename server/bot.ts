@@ -329,6 +329,42 @@ const commands = [
         .setDescription("Show the leaderboard only to you")
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName("clear-role")
+    .setDescription("Clear all members from a role")
+    .setDefaultMemberPermissions(0)
+    .addRoleOption((option) =>
+      option
+        .setName("role")
+        .setDescription("The role to clear members from")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("activity_add")
+    .setDescription("Add amount of log entries to a staff member")
+    .setDefaultMemberPermissions(0)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("The staff member to add entries to")
+        .setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("amount")
+        .setDescription("Number of log entries to add")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("category")
+        .setDescription("Category of entries")
+        .setRequired(true)
+        .addChoices(
+          { name: "Ban Requests", value: "ban" },
+          { name: "Unban Requests", value: "unban" }
+        )
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -1337,6 +1373,82 @@ client.on("interactionCreate", async (interaction) => {
         }
         
         await interaction.editReply({ embeds: [embed] });
+      } else if (commandName === "clear-role") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const role = interaction.options.getRole("role", true);
+        const guild = interaction.guild;
+        
+        if (!guild) {
+          await interaction.editReply({ content: "This command must be used in a server." });
+          return;
+        }
+        
+        try {
+          await guild.members.fetch({ time: 30000 });
+        } catch (error) {
+          console.log("Could not fully fetch members");
+        }
+        
+        const guildRole = guild.roles.cache.get(role.id);
+        if (!guildRole) {
+          await interaction.editReply({ content: "Role not found in this server." });
+          return;
+        }
+        
+        const members = Array.from(guildRole.members.values());
+        let removed = 0;
+        let failed = 0;
+        
+        for (const member of members) {
+          try {
+            await member.roles.remove(guildRole);
+            removed++;
+          } catch (error) {
+            failed++;
+            console.log(`Failed to remove role from ${member.id}`);
+          }
+        }
+        
+        await interaction.editReply({
+          content: `Cleared **${removed}** members from the role **${guildRole.name}**.${failed > 0 ? ` (${failed} failed)` : ""}`,
+        });
+      } else if (commandName === "activity_add") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const user = interaction.options.getUser("user", true);
+        const amount = interaction.options.getInteger("amount", true);
+        const category = interaction.options.getString("category", true);
+        
+        // Create manual activity entries by creating fake reviewed requests
+        for (let i = 0; i < amount; i++) {
+          if (category === "ban") {
+            await storage.createBanRequest({
+              guildId: interaction.guildId!,
+              targetUserId: "manual_entry",
+              requestedById: "manual_entry",
+              reason: "Manual activity entry",
+              status: "approved",
+              reviewedById: user.id,
+              reviewReason: "Manual entry by admin",
+            });
+          } else {
+            await storage.createUnbanRequest({
+              guildId: interaction.guildId!,
+              targetUserId: "manual_entry",
+              requestedById: "manual_entry",
+              reason: "Manual activity entry",
+              status: "approved",
+              reviewedById: user.id,
+              reviewReason: "Manual entry by admin",
+            });
+          }
+        }
+        
+        const categoryText = category === "ban" ? "ban request" : "unban request";
+        await interaction.editReply({
+          content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
+        });
       }
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
