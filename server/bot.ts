@@ -657,6 +657,22 @@ const commands = [
         .setDescription("Q5 options separated by | (e.g. Yes|No)")
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName("config_staff_intro")
+    .setDescription("Configure the staff intro embed title and description")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("title")
+        .setDescription("The embed title")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("description")
+        .setDescription("The embed description")
+        .setRequired(false)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -1875,9 +1891,13 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "setup_staff_intro") {
         await interaction.deferReply({ flags: 64 });
         
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const embedTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
+        const embedDesc = config?.staffIntroEmbedDescription || "Welcome to the staff introduction quiz! This quiz will help you understand our policies and procedures.\n\nClick the button below to start the quiz. You will receive 5 questions in your DMs.";
+        
         const embed = new EmbedBuilder()
-          .setTitle("Staff Introduction Quiz")
-          .setDescription("Welcome to the staff introduction quiz! This quiz will help you understand our policies and procedures.\n\nClick the button below to start the quiz. You will receive 5 questions in your DMs.")
+          .setTitle(embedTitle)
+          .setDescription(embedDesc)
           .setColor(0x5865f2)
           .setFooter({ text: "Make sure your DMs are open!" });
         
@@ -1916,6 +1936,36 @@ client.on("interactionCreate", async (interaction) => {
         
         await interaction.editReply({
           content: `✅ Staff intro submissions will be sent to <#${channel.id}>!`,
+        });
+      } else if (commandName === "config_staff_intro") {
+        await interaction.deferReply({ flags: 64 });
+        
+        const title = interaction.options.getString("title");
+        const description = interaction.options.getString("description");
+        
+        if (!title && !description) {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const currentTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
+          const currentDesc = config?.staffIntroEmbedDescription || "Welcome! Click the button below to start your staff introduction quiz.";
+          
+          await interaction.editReply({
+            content: `**Current Staff Intro Embed Settings:**\n\n**Title:** ${currentTitle}\n**Description:** ${currentDesc}\n\nUse this command with the \`title\` or \`description\` options to change them.`,
+          });
+          return;
+        }
+        
+        const updateData: any = { guildId: interaction.guildId! };
+        if (title !== null) updateData.staffIntroEmbedTitle = title;
+        if (description !== null) updateData.staffIntroEmbedDescription = description;
+        
+        await storage.upsertGuildConfig(updateData);
+        
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const newTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
+        const newDesc = config?.staffIntroEmbedDescription || "Welcome! Click the button below to start your staff introduction quiz.";
+        
+        await interaction.editReply({
+          content: `✅ Staff intro embed updated!\n\n**Title:** ${newTitle}\n**Description:** ${newDesc}`,
         });
       } else if (commandName === "setup_intro_questions") {
         await interaction.deferReply({ flags: 64 });
