@@ -1169,13 +1169,20 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
       } else if (commandName === "refresh_roster") {
-        await interaction.deferReply({ flags: 64 });
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (e) {
+          console.log("refresh_roster: deferReply failed");
+          return;
+        }
         
         await updateRosterMessages(interaction.guildId!);
         
-        await interaction.editReply({
-          content: "✅ Rosters have been refreshed!",
-        });
+        try {
+          await interaction.editReply({
+            content: "✅ Rosters have been refreshed!",
+          });
+        } catch (e) {}
       } else if (commandName === "user_payouts") {
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
