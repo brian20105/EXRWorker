@@ -5,9 +5,15 @@ import {
   type InsertPayoutRequest,
   type RoleSyncPair,
   type InsertRoleSyncPair,
+  type BanRequest,
+  type InsertBanRequest,
+  type UnbanRequest,
+  type InsertUnbanRequest,
   guildConfigs,
   payoutRequests,
-  roleSyncPairs
+  roleSyncPairs,
+  banRequests,
+  unbanRequests
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, or } from "drizzle-orm";
@@ -33,6 +39,15 @@ export interface IStorage {
   addRoleSyncPair(pair: InsertRoleSyncPair): Promise<RoleSyncPair>;
   removeRoleSyncPair(id: string): Promise<void>;
   getRoleSyncPairsByGuild(guildId: string): Promise<RoleSyncPair[]>;
+  createBanRequest(request: InsertBanRequest): Promise<BanRequest>;
+  getBanRequest(id: string): Promise<BanRequest | undefined>;
+  updateBanRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<BanRequest>;
+  getAllBanRequests(guildId: string): Promise<BanRequest[]>;
+  createUnbanRequest(request: InsertUnbanRequest): Promise<UnbanRequest>;
+  getUnbanRequest(id: string): Promise<UnbanRequest | undefined>;
+  updateUnbanRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<UnbanRequest>;
+  getAllUnbanRequests(guildId: string): Promise<UnbanRequest[]>;
+  getActivityStats(guildId: string, category: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -198,6 +213,70 @@ export class DatabaseStorage implements IStorage {
           eq(roleSyncPairs.targetGuildId, guildId)
         )
       );
+  }
+
+  async createBanRequest(request: InsertBanRequest): Promise<BanRequest> {
+    const result = await db.insert(banRequests).values(request).returning();
+    return result[0];
+  }
+
+  async getBanRequest(id: string): Promise<BanRequest | undefined> {
+    const result = await db.select().from(banRequests).where(eq(banRequests.id, id));
+    return result[0];
+  }
+
+  async updateBanRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<BanRequest> {
+    const result = await db.update(banRequests).set({ ...updates, updatedAt: new Date() }).where(eq(banRequests.id, id)).returning();
+    return result[0];
+  }
+
+  async getAllBanRequests(guildId: string): Promise<BanRequest[]> {
+    return await db.select().from(banRequests).where(eq(banRequests.guildId, guildId)).orderBy(desc(banRequests.createdAt));
+  }
+
+  async createUnbanRequest(request: InsertUnbanRequest): Promise<UnbanRequest> {
+    const result = await db.insert(unbanRequests).values(request).returning();
+    return result[0];
+  }
+
+  async getUnbanRequest(id: string): Promise<UnbanRequest | undefined> {
+    const result = await db.select().from(unbanRequests).where(eq(unbanRequests.id, id));
+    return result[0];
+  }
+
+  async updateUnbanRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<UnbanRequest> {
+    const result = await db.update(unbanRequests).set({ ...updates, updatedAt: new Date() }).where(eq(unbanRequests.id, id)).returning();
+    return result[0];
+  }
+
+  async getAllUnbanRequests(guildId: string): Promise<UnbanRequest[]> {
+    return await db.select().from(unbanRequests).where(eq(unbanRequests.guildId, guildId)).orderBy(desc(unbanRequests.createdAt));
+  }
+
+  async getActivityStats(guildId: string, category: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    const table = category === "ban" ? banRequests : unbanRequests;
+    let requests = await db.select().from(table).where(eq(table.guildId, guildId));
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      requests = requests.filter(r => r.createdAt >= fromDate);
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      requests = requests.filter(r => r.createdAt <= toDate);
+    }
+    
+    const counts: { [userId: string]: number } = {};
+    for (const r of requests) {
+      if (r.reviewedById && r.status !== "pending") {
+        counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
+      }
+    }
+    
+    return Object.entries(counts)
+      .map(([userId, count]) => ({ userId, count }))
+      .sort((a, b) => b.count - a.count);
   }
 }
 
