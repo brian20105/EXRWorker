@@ -420,21 +420,14 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.customId.startsWith("approve_") || interaction.customId.startsWith("deny_")) {
         const [action, requestId] = interaction.customId.split("_");
         
+        // Check permissions first, but do it synchronously if possible
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
           : undefined;
         const memberPermissions = interaction.memberPermissions?.bitfield;
         
-        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
-        if (!hasPermission) {
-          await interaction.reply({
-            content: "❌ You don't have permission to approve or deny payout requests.",
-            flags: 64,
-          });
-          return;
-        }
-        
+        // Build modal first
         const modal = new ModalBuilder()
           .setCustomId(`action_reason_${action}_${requestId}`)
           .setTitle(action === "approve" ? "Approve Payout" : "Deny Payout");
@@ -449,7 +442,16 @@ client.on("interactionCreate", async (interaction) => {
         const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
         modal.addComponents(row);
 
+        // Show modal immediately to prevent timeout
         await interaction.showModal(modal);
+        
+        // Check permissions asynchronously after showing modal
+        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
+        if (!hasPermission) {
+          // Note: We can't send a message here since modal was already shown
+          // The permission check will happen again in the modal submit handler
+          console.log(`User ${interaction.user.id} tried to approve/deny without permission`);
+        }
       }
     } else if (interaction.isModalSubmit()) {
       if (interaction.customId === "payout_modal") {
@@ -540,6 +542,24 @@ client.on("interactionCreate", async (interaction) => {
         const action = parts[2];
         const requestId = parts[3];
         const actionReason = interaction.fields.getTextInputValue("action_reason") || undefined;
+        
+        // Check permissions again in modal submit
+        const member = interaction.member;
+        const memberRoles = member && 'roles' in member 
+          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+          : undefined;
+        const memberPermissions = member && 'permissions' in member 
+          ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+          : undefined;
+        
+        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
+        if (!hasPermission) {
+          await interaction.reply({
+            content: "❌ You don't have permission to approve or deny payout requests.",
+            flags: 64,
+          });
+          return;
+        }
         
         const message = interaction.message;
         if (!message || !message.embeds[0]) return;
