@@ -1903,7 +1903,12 @@ client.on("interactionCreate", async (interaction) => {
           content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
         });
       } else if (commandName === "setup_staff_intro") {
-        await interaction.deferReply({ flags: 64 });
+        try {
+          await interaction.deferReply({ flags: 64 });
+        } catch (e) {
+          console.log("setup_staff_intro: deferReply failed, interaction may have timed out");
+          return;
+        }
         
         const config = await storage.getGuildConfig(interaction.guildId!);
         const embedTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
@@ -1935,9 +1940,11 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
         
-        await interaction.editReply({
-          content: "✅ Staff introduction quiz has been posted!",
-        });
+        try {
+          await interaction.editReply({
+            content: "✅ Staff introduction quiz has been posted!",
+          });
+        } catch (e) {}
       } else if (commandName === "setup_staff_intro_submissions") {
         await interaction.deferReply({ flags: 64 });
         
