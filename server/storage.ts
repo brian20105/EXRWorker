@@ -48,6 +48,7 @@ export interface IStorage {
   updateUnbanRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<UnbanRequest>;
   getAllUnbanRequests(guildId: string): Promise<UnbanRequest[]>;
   getActivityStats(guildId: string, category: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  removeActivityEntries(guildId: string, userId: string, category: string, amount: number): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -277,6 +278,21 @@ export class DatabaseStorage implements IStorage {
     return Object.entries(counts)
       .map(([userId, count]) => ({ userId, count }))
       .sort((a, b) => b.count - a.count);
+  }
+
+  async removeActivityEntries(guildId: string, userId: string, category: string, amount: number): Promise<number> {
+    const table = category === "ban" ? banRequests : unbanRequests;
+    const requests = await db.select().from(table)
+      .where(and(eq(table.guildId, guildId), eq(table.reviewedById, userId)))
+      .orderBy(desc(table.createdAt));
+    
+    let removed = 0;
+    for (const request of requests) {
+      if (removed >= amount) break;
+      await db.delete(table).where(eq(table.id, request.id));
+      removed++;
+    }
+    return removed;
   }
 }
 
