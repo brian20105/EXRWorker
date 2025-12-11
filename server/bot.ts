@@ -893,6 +893,7 @@ client.on("interactionCreate", async (interaction) => {
           const amount = interaction.options.getString("amount") || "0.00";
           const email = interaction.options.getString("email") || "Not provided";
           const reason = interaction.options.getString("reason") || "Added via command";
+          const status = interaction.options.getString("status") || "pending";
           
           const payoutRequest = await storage.createPayoutRequest({
             guildId: interaction.guildId!,
@@ -901,7 +902,7 @@ client.on("interactionCreate", async (interaction) => {
             reason,
             moneyOwed: amount,
             email,
-            status: "pending",
+            status,
           });
           
           const config = await storage.getGuildConfig(interaction.guildId!);
@@ -909,13 +910,17 @@ client.on("interactionCreate", async (interaction) => {
             try {
               const requestChannel = await client.channels.fetch(config.requestChannelId);
               if (requestChannel && "send" in requestChannel) {
+                const statusEmoji = status === "pending" ? "⏳" : status === "approved" ? "✅" : "❌";
+                const statusText = status.charAt(0).toUpperCase() + status.slice(1);
+                const embedColor = status === "pending" ? 0xf0b232 : status === "approved" ? 0x57f287 : 0xed4245;
+                
                 const embed = new EmbedBuilder()
                   .setTitle("Payout Request")
-                  .setColor(0xf0b232)
+                  .setColor(embedColor)
                   .addFields(
                     { name: "User ID", value: `${targetUser.id} (<@${targetUser.id}>)`, inline: true },
                     { name: "Requested by", value: `<@${interaction.user.id}>`, inline: true },
-                    { name: "Status", value: "⏳ Pending", inline: true },
+                    { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
                     { name: "Reason", value: reason, inline: false },
                     { name: "Money Owed", value: `$${amount}`, inline: false },
                     { name: "Paypal", value: email, inline: false }
@@ -923,23 +928,29 @@ client.on("interactionCreate", async (interaction) => {
                   .setFooter({ text: `Request ID: ${payoutRequest.id}` })
                   .setTimestamp();
 
-                const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(`approve_${payoutRequest.id}`)
-                    .setLabel("Approve")
-                    .setStyle(ButtonStyle.Success),
-                  new ButtonBuilder()
-                    .setCustomId(`deny_${payoutRequest.id}`)
-                    .setLabel("Deny")
-                    .setStyle(ButtonStyle.Danger)
-                );
+                if (status === "pending") {
+                  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(`approve_${payoutRequest.id}`)
+                      .setLabel("Approve")
+                      .setStyle(ButtonStyle.Success),
+                    new ButtonBuilder()
+                      .setCustomId(`deny_${payoutRequest.id}`)
+                      .setLabel("Deny")
+                      .setStyle(ButtonStyle.Danger)
+                  );
 
-                const sentMessage = await requestChannel.send({
-                  embeds: [embed],
-                  components: [row],
-                });
-
-                await storage.updatePayoutMessageId(payoutRequest.id, sentMessage.id);
+                  const sentMessage = await requestChannel.send({
+                    embeds: [embed],
+                    components: [row],
+                  });
+                  await storage.updatePayoutMessageId(payoutRequest.id, sentMessage.id);
+                } else {
+                  const sentMessage = await requestChannel.send({
+                    embeds: [embed],
+                  });
+                  await storage.updatePayoutMessageId(payoutRequest.id, sentMessage.id);
+                }
               }
             } catch (error) {
               console.log("Could not send to request channel:", error);
