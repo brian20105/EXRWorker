@@ -279,6 +279,26 @@ const commands = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName("setup_ban_logs")
+    .setDescription("Set the channel for ban request logs")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where ban logs will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_unban_logs")
+    .setDescription("Set the channel for unban request logs")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where unban logs will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
     .setName("activity")
     .setDescription("View the activity leaderboard")
     .addStringOption((option) =>
@@ -1202,7 +1222,7 @@ client.on("interactionCreate", async (interaction) => {
           .setTitle("🔓 Unban Request")
           .setDescription("Submitting an unban request for another user? Click the button below and provide their username, the reason they were banned.")
           .setColor(0xf0b232)
-          .setFooter({ text: "Please provide accurate information" });
+          .setFooter({ text: "Unban Requests Can Take Up To A Day To Get Finalised" });
 
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
@@ -1241,6 +1261,30 @@ client.on("interactionCreate", async (interaction) => {
         
         await interaction.reply({
           content: `✅ Moderation permissions updated! The following roles can now approve/deny ban/unban requests:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
+          flags: 64,
+        });
+      } else if (commandName === "setup_ban_logs") {
+        const channel = interaction.options.getChannel("channel", true);
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          banLogChannelId: channel.id,
+        });
+        
+        await interaction.reply({
+          content: `✅ Configuration saved! Ban request logs will be sent to <#${channel.id}>.`,
+          flags: 64,
+        });
+      } else if (commandName === "setup_unban_logs") {
+        const channel = interaction.options.getChannel("channel", true);
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          unbanLogChannelId: channel.id,
+        });
+        
+        await interaction.reply({
+          content: `✅ Configuration saved! Unban request logs will be sent to <#${channel.id}>.`,
           flags: 64,
         });
       } else if (commandName === "activity") {
@@ -1987,10 +2031,11 @@ client.on("interactionCreate", async (interaction) => {
           content: `Ban request ${action === "approve" ? "approved" : "denied"} successfully.`,
         });
 
+        const guild = interaction.guild;
+        
         // Send DM to the requester
         try {
           const requester = await client.users.fetch(banRequest.requestedById);
-          const guild = interaction.guild;
           const dmEmbed = new EmbedBuilder()
             .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
             .setDescription(`Your ban request has been **${action === "approve" ? "approved" : "denied"}**.`)
@@ -2004,6 +2049,49 @@ client.on("interactionCreate", async (interaction) => {
           await requester.send({ embeds: [dmEmbed] });
         } catch (error) {
           console.log("Could not DM requester");
+        }
+
+        // Send DM to the target user
+        try {
+          const targetUser = await client.users.fetch(banRequest.targetUserId);
+          const targetDmEmbed = new EmbedBuilder()
+            .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
+            .setDescription(`A ban request regarding you has been **${action === "approve" ? "approved" : "denied"}**.`)
+            .setColor(action === "approve" ? 0xda373c : 0x23a559)
+            .addFields(
+              { name: "Server", value: guild?.name || "Unknown", inline: true },
+              { name: "Reason", value: actionReason || "No reason provided", inline: false }
+            )
+            .setTimestamp();
+          await targetUser.send({ embeds: [targetDmEmbed] });
+        } catch (error) {
+          console.log("Could not DM target user");
+        }
+
+        // Post to log channel
+        if (config?.banLogChannelId) {
+          try {
+            const logChannel = await client.channels.fetch(config.banLogChannelId);
+            if (logChannel && "send" in logChannel) {
+              const logEmbed = new EmbedBuilder()
+                .setTitle(action === "approve" ? "Ban Request Approved" : "Ban Request Denied")
+                .setDescription(`Ban request for <@${banRequest.targetUserId}> has been ${action === "approve" ? "approved" : "denied"}.`)
+                .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                .addFields(
+                  { name: "Target User", value: `<@${banRequest.targetUserId}>`, inline: true },
+                  { name: "Requested by", value: `<@${banRequest.requestedById}>`, inline: true },
+                  { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: true },
+                  { name: "Ban Reason", value: banRequest.reason, inline: false }
+                )
+                .setTimestamp();
+              if (actionReason) {
+                logEmbed.addFields({ name: "Review Note", value: actionReason, inline: false });
+              }
+              await logChannel.send({ embeds: [logEmbed] });
+            }
+          } catch (error) {
+            console.log("Could not post to ban log channel");
+          }
         }
       } else if (interaction.customId.startsWith("unban_action_")) {
         try {
@@ -2085,10 +2173,11 @@ client.on("interactionCreate", async (interaction) => {
           content: `Unban request ${action === "approve" ? "approved" : "denied"} successfully.`,
         });
 
+        const guild = interaction.guild;
+        
         // Send DM to the requester
         try {
           const requester = await client.users.fetch(unbanRequest.requestedById);
-          const guild = interaction.guild;
           const dmEmbed = new EmbedBuilder()
             .setTitle(`Unban Request ${action === "approve" ? "Approved" : "Denied"}`)
             .setDescription(`Your unban request has been **${action === "approve" ? "approved" : "denied"}**.`)
@@ -2102,6 +2191,49 @@ client.on("interactionCreate", async (interaction) => {
           await requester.send({ embeds: [dmEmbed] });
         } catch (error) {
           console.log("Could not DM requester");
+        }
+
+        // Send DM to the target user
+        try {
+          const targetUser = await client.users.fetch(unbanRequest.targetUserId);
+          const targetDmEmbed = new EmbedBuilder()
+            .setTitle(`Unban Request ${action === "approve" ? "Approved" : "Denied"}`)
+            .setDescription(`An unban request regarding you has been **${action === "approve" ? "approved" : "denied"}**.`)
+            .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+            .addFields(
+              { name: "Server", value: guild?.name || "Unknown", inline: true },
+              { name: "Reason", value: actionReason || "No reason provided", inline: false }
+            )
+            .setTimestamp();
+          await targetUser.send({ embeds: [targetDmEmbed] });
+        } catch (error) {
+          console.log("Could not DM target user");
+        }
+
+        // Post to log channel
+        if (config?.unbanLogChannelId) {
+          try {
+            const logChannel = await client.channels.fetch(config.unbanLogChannelId);
+            if (logChannel && "send" in logChannel) {
+              const logEmbed = new EmbedBuilder()
+                .setTitle(action === "approve" ? "Unban Request Approved" : "Unban Request Denied")
+                .setDescription(`Unban request for <@${unbanRequest.targetUserId}> has been ${action === "approve" ? "approved" : "denied"}.`)
+                .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                .addFields(
+                  { name: "Target User", value: `<@${unbanRequest.targetUserId}>`, inline: true },
+                  { name: "Requested by", value: `<@${unbanRequest.requestedById}>`, inline: true },
+                  { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: true },
+                  { name: "Unban Reason", value: unbanRequest.reason, inline: false }
+                )
+                .setTimestamp();
+              if (actionReason) {
+                logEmbed.addFields({ name: "Review Note", value: actionReason, inline: false });
+              }
+              await logChannel.send({ embeds: [logEmbed] });
+            }
+          } catch (error) {
+            console.log("Could not post to unban log channel");
+          }
         }
       }
     }
