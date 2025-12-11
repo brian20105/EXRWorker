@@ -329,33 +329,16 @@ client.on("interactionCreate", async (interaction) => {
         const totalApproved = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
         const totalDenied = denied.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
         
-        const embed = new EmbedBuilder()
-          .setTitle("All Payout Requests")
-          .setColor(0x5865f2)
-          .setDescription(`Total: ${allPayouts.length} request(s)`)
-          .addFields(
-            { name: "⏳ Pending", value: `${pending.length} ($${totalPending.toFixed(2)})`, inline: true },
-            { name: "✅ Approved", value: `${approved.length} ($${totalApproved.toFixed(2)})`, inline: true },
-            { name: "❌ Denied", value: `${denied.length} ($${totalDenied.toFixed(2)})`, inline: true }
-          )
-          .setTimestamp();
+        let payoutList = "**All Payout Requests**\n\n";
+        payoutList += `**Summary:** ${allPayouts.length} total | ⏳ ${pending.length} pending ($${totalPending.toFixed(2)}) | ✅ ${approved.length} approved ($${totalApproved.toFixed(2)}) | ❌ ${denied.length} denied ($${totalDenied.toFixed(2)})\n\n`;
         
-        const recentPayouts = allPayouts.slice(0, 15);
-        const fields = recentPayouts.map((payout, index) => {
+        allPayouts.slice(0, 20).forEach((payout, index) => {
           const statusEmoji = payout.status === "pending" ? "⏳" : payout.status === "approved" ? "✅" : "❌";
-          return {
-            name: `${statusEmoji} #${index + 1} - $${payout.moneyOwed}`,
-            value: `User: <@${payout.userId}>\nStatus: ${payout.status}`,
-            inline: true,
-          };
+          payoutList += `${statusEmoji} **${index + 1}.)** <@${payout.userId}> - ${payout.userId} - ${payout.reason || "No reason"} - $${payout.moneyOwed} - ${payout.email}\n`;
         });
         
-        if (fields.length > 0) {
-          embed.addFields(fields);
-        }
-        
         await interaction.editReply({
-          embeds: [embed],
+          content: payoutList,
         });
       } else if (commandName === "setup") {
         const rosterType = interaction.options.getString("roster", true);
