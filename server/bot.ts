@@ -39,6 +39,18 @@ interface QuizState {
 }
 const activeQuizzes = new Map<string, QuizState>();
 
+// Track recently processed quiz button clicks to prevent duplicates
+const processedQuizButtons = new Set<string>();
+function markQuizButtonProcessed(interactionId: string): boolean {
+  if (processedQuizButtons.has(interactionId)) {
+    return false; // Already processed
+  }
+  processedQuizButtons.add(interactionId);
+  // Clean up after 10 seconds
+  setTimeout(() => processedQuizButtons.delete(interactionId), 10000);
+  return true; // First time processing
+}
+
 const QUIZ_QUESTIONS = [
   { text: "**Question 1:** How do you warn/mute somebody?", type: "text" },
   { text: "**Question 2:** If something is bannable, where do you go to ban them?", type: "text" },
@@ -2220,13 +2232,21 @@ client.on("interactionCreate", async (interaction) => {
         const user = interaction.user;
         
         // Defer immediately to prevent timeout
-        await interaction.deferReply({ flags: 64 }).catch(() => {});
+        let deferred = false;
+        try {
+          await interaction.deferReply({ flags: 64 });
+          deferred = true;
+        } catch (e) {
+          console.log("Could not defer start quiz interaction");
+        }
         
         try {
           if (activeQuizzes.has(user.id)) {
-            await interaction.editReply({
-              content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
-            });
+            if (deferred) {
+              await interaction.editReply({
+                content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
+              });
+            }
             return;
           }
           
@@ -2242,20 +2262,24 @@ client.on("interactionCreate", async (interaction) => {
           });
           await sendQuizQuestion(user.id, dmChannel);
           
-          await interaction.editReply({
-            content: "✅ Quiz started! Check your DMs for the questions.",
-          });
+          if (deferred) {
+            await interaction.editReply({
+              content: "✅ Quiz started! Check your DMs for the questions.",
+            });
+          }
         } catch (error: any) {
           activeQuizzes.delete(user.id);
           console.log("Error starting quiz:", error);
           
           // Try to edit reply with error message
-          try {
-            await interaction.editReply({
-              content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
-            });
-          } catch (replyError) {
-            console.log("Could not send error message to user");
+          if (deferred) {
+            try {
+              await interaction.editReply({
+                content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
+              });
+            } catch (replyError) {
+              console.log("Could not send error message to user");
+            }
           }
         }
         return;
@@ -2325,6 +2349,12 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       } else if (interaction.customId.startsWith("quiz_answer_")) {
+        // Prevent duplicate processing
+        if (!markQuizButtonProcessed(interaction.id)) {
+          console.log(`[QUIZ] Duplicate interaction ${interaction.id} ignored`);
+          return;
+        }
+        
         try {
           const parts = interaction.customId.split("_");
           const odUserId = parts[2];
@@ -2344,8 +2374,9 @@ client.on("interactionCreate", async (interaction) => {
           const quizState = activeQuizzes.get(odUserId);
           if (!quizState) {
             console.log(`[QUIZ] No quiz state found for user ${odUserId}`);
+            // Don't show error if button was already processed successfully
             try {
-              await interaction.reply({ content: "Quiz session expired. Please start a new quiz.", flags: 64 });
+              await interaction.deferUpdate().catch(() => {});
             } catch (e) {}
             return;
           }
