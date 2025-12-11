@@ -71,6 +71,17 @@ const FULL_QUESTIONS = [
   "You understand that this is a paid position and any unprofessionalism/arguing will get you removed?"
 ];
 
+// Helper to safely defer replies - returns false if interaction expired
+async function safeDeferReply(interaction: any, ephemeral: boolean = true): Promise<boolean> {
+  try {
+    await interaction.deferReply({ flags: ephemeral ? 64 : undefined });
+    return true;
+  } catch (e) {
+    console.log(`Interaction expired before defer`);
+    return false;
+  }
+}
+
 interface QuizQuestion {
   text: string;
 }
@@ -987,9 +998,7 @@ client.on("interactionCreate", async (interaction) => {
       const { commandName } = interaction;
 
       if (commandName === "setup_pay_request") {
-        // Defer reply immediately to prevent timeout
-        await interaction.deferReply({ flags: 64 }); // 64 = ephemeral
-        
+        if (!await safeDeferReply(interaction)) return;
         const channel = interaction.options.getChannel("channel", true);
         
         await storage.updateRequestChannel(interaction.guildId!, channel.id);
@@ -1045,12 +1054,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "list_payouts") {
         const isPrivate = interaction.options.getBoolean("private") ?? true;
-        try {
-          await interaction.deferReply({ flags: isPrivate ? 64 : undefined });
-        } catch (e) {
-          console.log("list_payouts: deferReply failed");
-          return;
-        }
+        if (!await safeDeferReply(interaction, isPrivate)) return;
         
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
@@ -1128,7 +1132,7 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "setup") {
         const rosterType = interaction.options.getString("roster", true);
         
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const guild = interaction.guild;
         if (!guild) {
@@ -1175,7 +1179,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (commandName === "refresh_roster") {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (e) {
           console.log("refresh_roster: deferReply failed");
           return;
@@ -1206,7 +1210,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const targetUser = interaction.options.getUser("user", true);
         const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
@@ -1263,7 +1267,7 @@ client.on("interactionCreate", async (interaction) => {
         const targetUser = interaction.options.getUser("user");
         const payoutId = interaction.options.getString("payout_id");
         
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         if (action === "add") {
           if (!targetUser) {
@@ -1582,7 +1586,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const action = interaction.options.getString("action", true);
         
@@ -1658,7 +1662,7 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
       } else if (commandName === "members") {
-        await interaction.deferReply();
+        if (!await safeDeferReply(interaction, false)) return;
         
         const role = interaction.options.getRole("role", true);
         const guild = interaction.guild;
@@ -1712,7 +1716,7 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ embeds: [embed] });
         }
       } else if (commandName === "setup_ban") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const channel = interaction.options.getChannel("channel", true);
         
@@ -1746,7 +1750,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Ban request channel configured! Requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_unban") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const channel = interaction.options.getChannel("channel", true);
         
@@ -1826,7 +1830,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "activity") {
         const isPrivate = interaction.options.getBoolean("private") ?? false;
-        await interaction.deferReply({ flags: isPrivate ? 64 : undefined });
+        if (!await safeDeferReply(interaction, isPrivate)) return;
         
         const category = interaction.options.getString("category");
         const fromDays = interaction.options.getInteger("from") ?? undefined;
@@ -1875,7 +1879,7 @@ client.on("interactionCreate", async (interaction) => {
         
         await interaction.editReply({ embeds: [embed] });
       } else if (commandName === "clear-role") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const role = interaction.options.getRole("role", true);
         const guild = interaction.guild;
@@ -1915,7 +1919,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `Cleared **${removed}** members from the role **${guildRole.name}**.${failed > 0 ? ` (${failed} failed)` : ""}`,
         });
       } else if (commandName === "activity_add") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const user = interaction.options.getUser("user", true);
         const amount = interaction.options.getInteger("amount", true);
@@ -1951,7 +1955,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
         });
       } else if (commandName === "activity_remove") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const user = interaction.options.getUser("user", true);
         const amount = interaction.options.getInteger("amount", true);
@@ -1965,7 +1969,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "setup_staff_intro") {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (e) {
           console.log("setup_staff_intro: deferReply failed, interaction may have timed out");
           return;
@@ -2007,7 +2011,7 @@ client.on("interactionCreate", async (interaction) => {
           });
         } catch (e) {}
       } else if (commandName === "setup_staff_intro_submissions") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const channel = interaction.options.getChannel("channel", true);
         
@@ -2020,7 +2024,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Staff intro submissions will be sent to <#${channel.id}>!`,
         });
       } else if (commandName === "config_staff_intro") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const title = interaction.options.getString("title");
         let description = interaction.options.getString("description");
@@ -2055,7 +2059,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Staff intro embed updated!\n\n**Title:** ${newTitle}\n**Description:**\n${newDesc}`,
         });
       } else if (commandName === "setup_intro_questions") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const q1 = interaction.options.getString("question1");
         const q2 = interaction.options.getString("question2");
@@ -2087,7 +2091,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Quiz questions updated!\n\n${summary}`,
         });
       } else if (commandName === "setup_inactivity") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const embed = new EmbedBuilder()
           .setTitle("Inactivity Request")
@@ -2117,7 +2121,7 @@ client.on("interactionCreate", async (interaction) => {
           content: "✅ Inactivity request embed has been posted!",
         });
       } else if (commandName === "setup_inactivity_submissions") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const channel = interaction.options.getChannel("channel", true);
         
@@ -2130,7 +2134,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Inactivity submissions will be sent to <#${channel.id}>!`,
         });
       } else if (commandName === "setup_inactivity_logs") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const channel = interaction.options.getChannel("channel", true);
         
@@ -2143,7 +2147,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Inactivity logs will be sent to <#${channel.id}>!`,
         });
       } else if (commandName === "setup_inactivity_ping") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const roles: string[] = [];
         for (let i = 1; i <= 5; i++) {
@@ -2167,7 +2171,7 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
       } else if (commandName === "terminate_quizzes") {
-        await interaction.deferReply({ flags: 64 });
+        if (!await safeDeferReply(interaction)) return;
         
         const count = activeQuizzes.size;
         
@@ -2271,7 +2275,7 @@ client.on("interactionCreate", async (interaction) => {
         
         // DEFER IMMEDIATELY before any async work
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) {
             console.log('Interaction expired before defer:', interaction.id);
@@ -2608,7 +2612,7 @@ client.on("interactionCreate", async (interaction) => {
       if (interaction.customId === "payout_modal") {
         // Defer reply immediately to prevent timeout
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) {
             console.log('Modal interaction expired:', interaction.id);
@@ -2698,7 +2702,7 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.customId.startsWith("action_reason_")) {
         // Defer reply immediately to prevent timeout
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) {
             console.log('Modal interaction expired:', interaction.id);
@@ -2815,7 +2819,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (interaction.customId === "ban_request_modal") {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) return;
           throw error;
@@ -2892,7 +2896,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (interaction.customId === "unban_request_modal") {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) return;
           throw error;
@@ -2959,7 +2963,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (interaction.customId.startsWith("ban_action_")) {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) return;
           throw error;
@@ -3101,7 +3105,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (interaction.customId.startsWith("unban_action_")) {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) return;
           throw error;
@@ -3243,7 +3247,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (interaction.customId.startsWith("inactivity_review_")) {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) {
             console.log('Inactivity review modal expired:', interaction.id);
@@ -3340,7 +3344,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (interaction.customId.startsWith("inactivity_submit_")) {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) {
             console.log('Inactivity submit modal expired:', interaction.id);
@@ -3425,7 +3429,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (interaction.customId.startsWith("quiz_review_")) {
         try {
-          await interaction.deferReply({ flags: 64 });
+          if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
           if (error.code === 10062 || error.code === 40060) {
             console.log('Quiz review modal expired:', interaction.id);
