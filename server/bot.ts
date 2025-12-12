@@ -2359,49 +2359,59 @@ client.on("interactionCreate", async (interaction) => {
         const isApprove = interaction.customId.startsWith("inactivity_approve_");
         const requestId = interaction.customId.replace(isApprove ? "inactivity_approve_" : "inactivity_deny_", "");
         
+        // Build modal immediately - no async work before this
+        const modal = new ModalBuilder()
+          .setCustomId(`inactivity_review_${isApprove ? "approve" : "deny"}_${requestId}`)
+          .setTitle(isApprove ? "Approve Inactivity Request" : "Deny Inactivity Request");
+        
+        const reasonInput = new TextInputBuilder()
+          .setCustomId("reason")
+          .setLabel("Reason (optional)")
+          .setPlaceholder("Enter a reason for your decision...")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(false);
+        
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+        );
+        
         try {
-          const modal = new ModalBuilder()
-            .setCustomId(`inactivity_review_${isApprove ? "approve" : "deny"}_${requestId}`)
-            .setTitle(isApprove ? "Approve Inactivity Request" : "Deny Inactivity Request");
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("reason")
-            .setLabel("Reason (optional)")
-            .setPlaceholder("Enter a reason for your decision...")
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(false);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
-          );
-          
           await interaction.showModal(modal);
         } catch (error: any) {
-          console.log("Error showing inactivity review modal:", error);
+          if (error.code === 10062) {
+            console.log("Inactivity review modal: interaction expired");
+          } else {
+            console.log("Error showing inactivity review modal:", error.message);
+          }
         }
         return;
       } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
+        const isApprove = interaction.customId.startsWith("quiz_approve_");
+        const submissionId = interaction.customId.replace(isApprove ? "quiz_approve_" : "quiz_deny_", "");
+        
+        // Build modal immediately - no async work before this
+        const modal = new ModalBuilder()
+          .setCustomId(`quiz_review_${isApprove ? "approve" : "deny"}_${submissionId}`)
+          .setTitle(isApprove ? "Approve Submission" : "Deny Submission");
+        
+        const reasonInput = new TextInputBuilder()
+          .setCustomId("review_reason")
+          .setLabel("Reason (optional)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder(isApprove ? "Any notes for the user..." : "Why is this submission being denied?")
+          .setRequired(false);
+        
+        const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+        modal.addComponents(row);
+        
         try {
-          const isApprove = interaction.customId.startsWith("quiz_approve_");
-          const submissionId = interaction.customId.replace(isApprove ? "quiz_approve_" : "quiz_deny_", "");
-          
-          const modal = new ModalBuilder()
-            .setCustomId(`quiz_review_${isApprove ? "approve" : "deny"}_${submissionId}`)
-            .setTitle(isApprove ? "Approve Submission" : "Deny Submission");
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("review_reason")
-            .setLabel("Reason (optional)")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder(isApprove ? "Any notes for the user..." : "Why is this submission being denied?")
-            .setRequired(false);
-          
-          const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
-          modal.addComponents(row);
-          
           await interaction.showModal(modal);
         } catch (error: any) {
-          console.log("Error showing quiz review modal:", error.message);
+          if (error.code === 10062) {
+            console.log("Quiz review modal: interaction expired");
+          } else {
+            console.log("Error showing quiz review modal:", error.message);
+          }
         }
         return;
       } else if (interaction.customId === "request_payout") {
