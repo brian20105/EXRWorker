@@ -702,7 +702,7 @@ const commands = [
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("setup_modmail")
-    .setDescription("Configure the modmail system")
+    .setDescription("Post the modmail ticket embed in the current channel")
     .setDefaultMemberPermissions(0)
     .addChannelOption((option) =>
       option
@@ -721,21 +721,6 @@ const commands = [
         .setName("staff_role")
         .setDescription("Role that can respond to modmail")
         .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("modmail")
-    .setDescription("Modmail management commands")
-    .setDefaultMemberPermissions(0)
-    .addSubcommand((sub) =>
-      sub
-        .setName("close")
-        .setDescription("Close the current modmail thread")
-        .addStringOption((opt) =>
-          opt.setName("reason").setDescription("Reason for closing")
-        )
-    )
-    .addSubcommand((sub) =>
-      sub.setName("claim").setDescription("Claim this modmail thread")
     ),
 ].map((command) => command.toJSON());
 
@@ -2296,101 +2281,245 @@ client.on("interactionCreate", async (interaction) => {
           modmailStaffRoleIds: [staffRole.id],
         });
         
+        // Post the ticket embed with category buttons
+        const ticketEmbed = new EmbedBuilder()
+          .setTitle("Support Tickets")
+          .setDescription("Click a button below to create a ticket for the appropriate category.")
+          .setColor(0x2f3136);
+        
+        const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`ticket_general_${interaction.guildId}`)
+            .setLabel("General Inquiries")
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji("📥"),
+          new ButtonBuilder()
+            .setCustomId(`ticket_competitive_${interaction.guildId}`)
+            .setLabel("Apply For Competitive")
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji("🖥️"),
+          new ButtonBuilder()
+            .setCustomId(`ticket_contentcreator_${interaction.guildId}`)
+            .setLabel("Apply For Content Creator")
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji("📷")
+        );
+        
+        const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`ticket_report_${interaction.guildId}`)
+            .setLabel("User Reports")
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji("🚨"),
+          new ButtonBuilder()
+            .setCustomId(`ticket_partnerships_${interaction.guildId}`)
+            .setLabel("Partnerships")
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji("📋"),
+          new ButtonBuilder()
+            .setCustomId(`ticket_gfx_${interaction.guildId}`)
+            .setLabel("Apply For GFX Editor")
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji("📝")
+        );
+        
+        if (interaction.channel && "send" in interaction.channel) {
+          await interaction.channel.send({
+            embeds: [ticketEmbed],
+            components: [row1, row2],
+          });
+        }
+        
         await interaction.editReply({
-          content: `✅ Modmail configured!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>\n\nUsers can now DM the bot to create a modmail ticket.`,
+          content: `✅ Modmail configured and ticket embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
         });
-      } else if (commandName === "modmail") {
+      }
+    } else if (interaction.isButton()) {
+      // Handle ticket category buttons
+      if (interaction.customId.startsWith("ticket_")) {
         if (!await safeDeferReply(interaction)) return;
         
-        const subcommand = interaction.options.getSubcommand();
+        const parts = interaction.customId.split("_");
+        const ticketCategory = parts[1];
+        const guildId = parts[2];
         
-        const thread = await storage.getModmailThreadByChannel(interaction.channelId!);
-        if (!thread) {
-          await interaction.editReply({
-            content: "❌ This command can only be used in a modmail thread channel.",
-          });
+        const categoryLabels: { [key: string]: string } = {
+          general: "General Inquiries",
+          competitive: "Apply For Competitive",
+          contentcreator: "Apply For Content Creator",
+          report: "User Reports",
+          partnerships: "Partnerships",
+          gfx: "Apply For GFX Editor",
+        };
+        
+        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+        const user = interaction.user;
+        const guild = interaction.guild;
+        
+        if (!guild) {
+          await interaction.editReply({ content: "❌ This can only be used in a server." });
           return;
         }
         
-        if (subcommand === "close") {
-          const reason = interaction.options.getString("reason") || "No reason provided";
-          
-          await storage.updateModmailThread(thread.id, {
-            status: "closed",
-            closedById: interaction.user.id,
-            closeReason: reason,
-            closedAt: new Date(),
-          });
-          
-          // Notify user
-          try {
-            const user = await client.users.fetch(thread.userId);
-            const closeEmbed = new EmbedBuilder()
-              .setTitle("Modmail Thread Closed")
-              .setDescription(`Your modmail thread has been closed.`)
-              .addFields({ name: "Reason", value: reason })
-              .setColor(0xed4245)
-              .setTimestamp();
-            await user.send({ embeds: [closeEmbed] });
-          } catch (error) {
-            console.log("Could not DM user about thread close");
-          }
-          
-          // Log to modmail log channel
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          if (config?.modmailLogChannelId) {
-            try {
-              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
-              if (logChannel && "send" in logChannel) {
-                const messages = await storage.getModmailMessages(thread.id);
-                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-                
-                const logEmbed = new EmbedBuilder()
-                  .setTitle("Modmail Thread Closed")
-                  .setColor(0xed4245)
-                  .addFields(
-                    { name: "User", value: `<@${thread.userId}>`, inline: true },
-                    { name: "Closed By", value: `<@${interaction.user.id}>`, inline: true },
-                    { name: "Reason", value: reason, inline: false },
-                    { name: "Transcript", value: transcript || "No messages", inline: false }
-                  )
-                  .setTimestamp();
-                await logChannel.send({ embeds: [logEmbed] });
-              }
-            } catch (error) {
-              console.log("Could not send modmail log");
-            }
-          }
-          
-          // Delete the channel
-          try {
-            const channel = interaction.channel;
-            if (channel && "delete" in channel) {
-              await interaction.editReply({ content: "✅ Thread closed. Deleting channel..." });
-              setTimeout(async () => {
-                try {
-                  await (channel as any).delete();
-                } catch (e) {
-                  console.log("Could not delete modmail channel");
-                }
-              }, 3000);
-            }
-          } catch (error) {
-            await interaction.editReply({ content: "✅ Thread closed." });
-          }
-        } else if (subcommand === "claim") {
-          await storage.updateModmailThread(thread.id, {
-            claimedById: interaction.user.id,
-          });
-          
-          await interaction.editReply({
-            content: `✅ Thread claimed by <@${interaction.user.id}>`,
-          });
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.modmailCategoryId) {
+          await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
+          return;
         }
-      }
-    } else if (interaction.isButton()) {
-      if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
+        
+        // Check for existing open thread
+        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (existingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+        
+        // Create thread and channel
+        const thread = await storage.createModmailThread({
+          guildId,
+          userId: user.id,
+          status: "open",
+        });
+        
+        try {
+          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const newChannel = await guild.channels.create({
+            name: channelName,
+            parent: config.modmailCategoryId!,
+            topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
+          });
+          
+          await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+          
+          // Send initial embed with close/claim buttons
+          const staffRoleMentions = config.modmailStaffRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
+          const initialEmbed = new EmbedBuilder()
+            .setTitle(`New Ticket: ${categoryLabel}`)
+            .setColor(0x5865f2)
+            .addFields(
+              { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
+              { name: "Category", value: categoryLabel, inline: true }
+            )
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+          
+          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_claim_${thread.id}`)
+              .setLabel("Claim")
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_close_${thread.id}`)
+              .setLabel("Close")
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji("🔒")
+          );
+          
+          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          
+          // DM user confirmation
+          try {
+            const dmEmbed = new EmbedBuilder()
+              .setTitle("Ticket Created")
+              .setDescription(`Your **${categoryLabel}** ticket has been created. A staff member will respond shortly.\n\nReply to this DM to send messages to staff.`)
+              .setColor(0x57f287)
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {
+            console.log("Could not DM user about ticket creation");
+          }
+          
+          await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
+        } catch (error) {
+          console.log("Could not create ticket channel:", error);
+          await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+        }
+        return;
+      } else if (interaction.customId.startsWith("modmail_claim_")) {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const threadId = interaction.customId.replace("modmail_claim_", "");
+        const thread = await storage.getModmailThread(threadId);
+        
+        if (!thread) {
+          await interaction.editReply({ content: "❌ Thread not found." });
+          return;
+        }
+        
+        await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
+        await interaction.editReply({ content: `✅ Ticket claimed by <@${interaction.user.id}>` });
+        return;
+      } else if (interaction.customId.startsWith("modmail_close_")) {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const threadId = interaction.customId.replace("modmail_close_", "");
+        const thread = await storage.getModmailThread(threadId);
+        
+        if (!thread) {
+          await interaction.editReply({ content: "❌ Thread not found." });
+          return;
+        }
+        
+        await storage.updateModmailThread(threadId, {
+          status: "closed",
+          closedById: interaction.user.id,
+          closeReason: "Closed via button",
+          closedAt: new Date(),
+        });
+        
+        // Notify user
+        try {
+          const user = await client.users.fetch(thread.userId);
+          const closeEmbed = new EmbedBuilder()
+            .setTitle("Ticket Closed")
+            .setDescription("Your ticket has been closed by staff.")
+            .setColor(0xed4245)
+            .setTimestamp();
+          await user.send({ embeds: [closeEmbed] });
+        } catch (e) {
+          console.log("Could not DM user about ticket close");
+        }
+        
+        // Log to modmail log channel
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        if (config?.modmailLogChannelId) {
+          try {
+            const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+            if (logChannel && "send" in logChannel) {
+              const messages = await storage.getModmailMessages(thread.id);
+              let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+              if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+              
+              const logEmbed = new EmbedBuilder()
+                .setTitle("Ticket Closed")
+                .setColor(0xed4245)
+                .addFields(
+                  { name: "User", value: `<@${thread.userId}>`, inline: true },
+                  { name: "Closed By", value: `<@${interaction.user.id}>`, inline: true },
+                  { name: "Transcript", value: transcript || "No messages", inline: false }
+                )
+                .setTimestamp();
+              await logChannel.send({ embeds: [logEmbed] });
+            }
+          } catch (e) {
+            console.log("Could not send modmail log");
+          }
+        }
+        
+        // Delete channel
+        try {
+          await interaction.editReply({ content: "✅ Ticket closed. Deleting channel..." });
+          setTimeout(async () => {
+            try {
+              await (interaction.channel as any).delete();
+            } catch (e) {}
+          }, 3000);
+        } catch (e) {
+          await interaction.editReply({ content: "✅ Ticket closed." });
+        }
+        return;
+      } else if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
         await interaction.deferUpdate();
         
         const parts = interaction.customId.split("_");
