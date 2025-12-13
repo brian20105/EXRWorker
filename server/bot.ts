@@ -562,7 +562,8 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Ban Requests", value: "ban" },
-          { name: "Unban Requests", value: "unban" }
+          { name: "Unban Requests", value: "unban" },
+          { name: "Modmails Handled", value: "modmail" }
         )
     ),
   new SlashCommandBuilder()
@@ -588,8 +589,30 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Ban Requests", value: "ban" },
-          { name: "Unban Requests", value: "unban" }
+          { name: "Unban Requests", value: "unban" },
+          { name: "Modmails Handled", value: "modmail" }
         )
+    ),
+  new SlashCommandBuilder()
+    .setName("activity_reset")
+    .setDescription("Reset activity stats for a user or everyone")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("category")
+        .setDescription("Category to reset (leave empty for all)")
+        .setRequired(false)
+        .addChoices(
+          { name: "Ban Requests", value: "ban" },
+          { name: "Unban Requests", value: "unban" },
+          { name: "Modmails Handled", value: "modmail" }
+        )
+    )
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("User to reset (leave empty for everyone)")
+        .setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("setup_staff_intro")
@@ -2044,8 +2067,7 @@ client.on("interactionCreate", async (interaction) => {
         } else {
           let description = "";
           leaderboard.forEach((entry, index) => {
-            const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `**${index + 1}.**`;
-            description += `${medal} <@${entry.userId}> - **${entry.count}** reviews\n`;
+            description += `**${index + 1}.)** <@${entry.userId}> - **${entry.count}** reviews\n`;
           });
           embed.setDescription(description);
         }
@@ -2098,32 +2120,35 @@ client.on("interactionCreate", async (interaction) => {
         const amount = interaction.options.getInteger("amount", true);
         const category = interaction.options.getString("category", true);
         
-        // Create manual activity entries by creating fake reviewed requests
-        for (let i = 0; i < amount; i++) {
-          if (category === "ban") {
-            await storage.createBanRequest({
-              guildId: interaction.guildId!,
-              targetUserId: "manual_entry",
-              requestedById: "manual_entry",
-              reason: "Manual activity entry",
-              status: "approved",
-              reviewedById: user.id,
-              reviewReason: "Manual entry by admin",
-            });
-          } else {
-            await storage.createUnbanRequest({
-              guildId: interaction.guildId!,
-              targetUserId: "manual_entry",
-              requestedById: "manual_entry",
-              reason: "Manual activity entry",
-              status: "approved",
-              reviewedById: user.id,
-              reviewReason: "Manual entry by admin",
-            });
+        if (category === "modmail") {
+          await storage.addModmailActivityEntries(interaction.guildId!, user.id, amount);
+        } else {
+          for (let i = 0; i < amount; i++) {
+            if (category === "ban") {
+              await storage.createBanRequest({
+                guildId: interaction.guildId!,
+                targetUserId: "manual_entry",
+                requestedById: "manual_entry",
+                reason: "Manual activity entry",
+                status: "approved",
+                reviewedById: user.id,
+                reviewReason: "Manual entry by admin",
+              });
+            } else {
+              await storage.createUnbanRequest({
+                guildId: interaction.guildId!,
+                targetUserId: "manual_entry",
+                requestedById: "manual_entry",
+                reason: "Manual activity entry",
+                status: "approved",
+                reviewedById: user.id,
+                reviewReason: "Manual entry by admin",
+              });
+            }
           }
         }
         
-        const categoryText = category === "ban" ? "ban request" : "unban request";
+        const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
         await interaction.editReply({
           content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
         });
@@ -2134,11 +2159,30 @@ client.on("interactionCreate", async (interaction) => {
         const amount = interaction.options.getInteger("amount", true);
         const category = interaction.options.getString("category", true);
         
-        const removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
+        let removed: number;
+        if (category === "modmail") {
+          removed = await storage.removeModmailActivityEntries(interaction.guildId!, user.id, amount);
+        } else {
+          removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
+        }
         
-        const categoryText = category === "ban" ? "ban request" : "unban request";
+        const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
         await interaction.editReply({
           content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
+        });
+      } else if (commandName === "activity_reset") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const category = interaction.options.getString("category");
+        const user = interaction.options.getUser("user");
+        
+        const count = await storage.resetActivityStats(interaction.guildId!, category || undefined, user?.id);
+        
+        const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "modmail" ? "modmail" : "all";
+        const userText = user ? `<@${user.id}>` : "everyone";
+        
+        await interaction.editReply({
+          content: `Reset **${count}** ${categoryText} activity entries for ${userText}.`,
         });
       } else if (commandName === "setup_staff_intro") {
         try {
