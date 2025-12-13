@@ -36,6 +36,14 @@ export const guildConfigs = pgTable("guild_configs", {
   modmailCategoryId: text("modmail_category_id"),
   modmailLogChannelId: text("modmail_log_channel_id"),
   modmailStaffRoleIds: text("modmail_staff_role_ids").array(),
+  modmailBlockRoleIds: text("modmail_block_role_ids").array(),
+  modmailClaimRoleIds: text("modmail_claim_role_ids").array(),
+  categoryPingGeneral: text("category_ping_general").array(),
+  categoryPingCompetitive: text("category_ping_competitive").array(),
+  categoryPingContentcreator: text("category_ping_contentcreator").array(),
+  categoryPingReport: text("category_ping_report").array(),
+  categoryPingPartnerships: text("category_ping_partnerships").array(),
+  categoryPingGfx: text("category_ping_gfx").array(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -221,3 +229,21 @@ export const insertModmailMessageSchema = createInsertSchema(modmailMessages).om
 
 export type InsertModmailMessage = z.infer<typeof insertModmailMessageSchema>;
 export type ModmailMessage = typeof modmailMessages.$inferSelect;
+
+export const modmailBlocks = pgTable("modmail_blocks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  blockedById: text("blocked_by_id").notNull(),
+  reason: text("reason"),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertModmailBlockSchema = createInsertSchema(modmailBlocks).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertModmailBlock = z.infer<typeof insertModmailBlockSchema>;
+export type ModmailBlock = typeof modmailBlocks.$inferSelect;

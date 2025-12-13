@@ -722,6 +722,80 @@ const commands = [
         .setDescription("Role that can respond to modmail")
         .setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName("block")
+    .setDescription("Block a user from opening modmail tickets")
+    .setDefaultMemberPermissions(0)
+    .addUserOption((option) =>
+      option.setName("user").setDescription("User to block").setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option.setName("duration").setDescription("Duration amount").setRequired(true)
+    )
+    .addStringOption((option) =>
+      option.setName("time").setDescription("Time unit").setRequired(true)
+        .addChoices(
+          { name: "Minutes", value: "minutes" },
+          { name: "Hours", value: "hours" },
+          { name: "Days", value: "days" },
+          { name: "Weeks", value: "weeks" },
+          { name: "Permanent", value: "permanent" }
+        )
+    )
+    .addStringOption((option) =>
+      option.setName("reason").setDescription("Reason for block").setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("unblock")
+    .setDescription("Unblock a user from modmail")
+    .setDefaultMemberPermissions(0)
+    .addUserOption((option) =>
+      option.setName("user").setDescription("User to unblock").setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("permissions")
+    .setDescription("Set permission roles for various features")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option.setName("type").setDescription("Permission type").setRequired(true)
+        .addChoices(
+          { name: "Payout Approval", value: "payout" },
+          { name: "Ban/Unban Approval", value: "moderation" },
+          { name: "Inactivity Approval", value: "inactivity" },
+          { name: "Modmail Block", value: "block" },
+          { name: "Modmail Claim", value: "claim" }
+        )
+    )
+    .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
+    .addRoleOption((option) => option.setName("role2").setDescription("Role 2").setRequired(false))
+    .addRoleOption((option) => option.setName("role3").setDescription("Role 3").setRequired(false))
+    .addRoleOption((option) => option.setName("role4").setDescription("Role 4").setRequired(false))
+    .addRoleOption((option) => option.setName("role5").setDescription("Role 5").setRequired(false))
+    .addRoleOption((option) => option.setName("role6").setDescription("Role 6").setRequired(false))
+    .addRoleOption((option) => option.setName("role7").setDescription("Role 7").setRequired(false))
+    .addRoleOption((option) => option.setName("role8").setDescription("Role 8").setRequired(false))
+    .addRoleOption((option) => option.setName("role9").setDescription("Role 9").setRequired(false))
+    .addRoleOption((option) => option.setName("role10").setDescription("Role 10").setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("category_ping")
+    .setDescription("Set which roles get pinged for each ticket category")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option.setName("category").setDescription("Ticket category").setRequired(true)
+        .addChoices(
+          { name: "General Inquiries", value: "general" },
+          { name: "Apply For Competitive", value: "competitive" },
+          { name: "Apply For Content Creator", value: "contentcreator" },
+          { name: "User Reports", value: "report" },
+          { name: "Partnerships", value: "partnerships" },
+          { name: "Apply For GFX Editor", value: "gfx" }
+        )
+    )
+    .addRoleOption((option) => option.setName("role1").setDescription("Role 1 to ping").setRequired(false))
+    .addRoleOption((option) => option.setName("role2").setDescription("Role 2 to ping").setRequired(false))
+    .addRoleOption((option) => option.setName("role3").setDescription("Role 3 to ping").setRequired(false))
+    .addRoleOption((option) => option.setName("role4").setDescription("Role 4 to ping").setRequired(false))
+    .addRoleOption((option) => option.setName("role5").setDescription("Role 5 to ping").setRequired(false)),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -2333,6 +2407,134 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Modmail configured and ticket embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
         });
+      } else if (commandName === "block") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const targetUser = interaction.options.getUser("user", true);
+        const duration = interaction.options.getInteger("duration", true);
+        const timeUnit = interaction.options.getString("time", true);
+        const reason = interaction.options.getString("reason") || undefined;
+        
+        // Check if user has block permission
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const blockRoleIds = config?.modmailBlockRoleIds || [];
+        const memberRoles = interaction.member?.roles;
+        const hasBlockPermission = blockRoleIds.length === 0 || 
+          (memberRoles && Array.isArray(memberRoles) 
+            ? blockRoleIds.some(id => memberRoles.includes(id))
+            : memberRoles && 'cache' in memberRoles && blockRoleIds.some(id => memberRoles.cache.has(id)));
+        
+        if (blockRoleIds.length > 0 && !hasBlockPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to block users." });
+          return;
+        }
+        
+        let expiresAt: Date | undefined = undefined;
+        if (timeUnit !== "permanent") {
+          const multipliers: { [key: string]: number } = {
+            minutes: 60 * 1000,
+            hours: 60 * 60 * 1000,
+            days: 24 * 60 * 60 * 1000,
+            weeks: 7 * 24 * 60 * 60 * 1000,
+          };
+          expiresAt = new Date(Date.now() + duration * multipliers[timeUnit]);
+        }
+        
+        await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
+        await storage.createModmailBlock({
+          guildId: interaction.guildId!,
+          userId: targetUser.id,
+          blockedById: interaction.user.id,
+          reason,
+          expiresAt,
+        });
+        
+        const durationText = timeUnit === "permanent" ? "permanently" : `for ${duration} ${timeUnit}`;
+        await interaction.editReply({ content: `✅ <@${targetUser.id}> has been blocked from modmail ${durationText}.${reason ? ` Reason: ${reason}` : ""}` });
+      } else if (commandName === "unblock") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const targetUser = interaction.options.getUser("user", true);
+        
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const blockRoleIds = config?.modmailBlockRoleIds || [];
+        const memberRoles = interaction.member?.roles;
+        const hasBlockPermission = blockRoleIds.length === 0 || 
+          (memberRoles && Array.isArray(memberRoles) 
+            ? blockRoleIds.some(id => memberRoles.includes(id))
+            : memberRoles && 'cache' in memberRoles && blockRoleIds.some(id => memberRoles.cache.has(id)));
+        
+        if (blockRoleIds.length > 0 && !hasBlockPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to unblock users." });
+          return;
+        }
+        
+        await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
+        await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.` });
+      } else if (commandName === "permissions") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const permType = interaction.options.getString("type", true);
+        const roles: string[] = [];
+        for (let i = 1; i <= 10; i++) {
+          const role = interaction.options.getRole(`role${i}`);
+          if (role) roles.push(role.id);
+        }
+        
+        const typeLabels: { [key: string]: string } = {
+          payout: "Payout Approval",
+          moderation: "Ban/Unban Approval",
+          inactivity: "Inactivity Approval",
+          block: "Modmail Block",
+          claim: "Modmail Claim",
+        };
+        
+        if (permType === "payout") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, allowedRoleIds: roles });
+        } else if (permType === "moderation") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, modRoleIds: roles });
+        } else if (permType === "inactivity") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, inactivityPingRoleIds: roles });
+        } else if (permType === "block") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, modmailBlockRoleIds: roles });
+        } else if (permType === "claim") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, modmailClaimRoleIds: roles });
+        }
+        
+        const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
+        await interaction.editReply({ content: `✅ **${typeLabels[permType]}** permissions updated!\nRoles: ${roleMentions}` });
+      } else if (commandName === "category_ping") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const category = interaction.options.getString("category", true);
+        const roles: string[] = [];
+        for (let i = 1; i <= 5; i++) {
+          const role = interaction.options.getRole(`role${i}`);
+          if (role) roles.push(role.id);
+        }
+        
+        const categoryLabels: { [key: string]: string } = {
+          general: "General Inquiries",
+          competitive: "Apply For Competitive",
+          contentcreator: "Apply For Content Creator",
+          report: "User Reports",
+          partnerships: "Partnerships",
+          gfx: "Apply For GFX Editor",
+        };
+        
+        const updateField: { [key: string]: string } = {
+          general: "categoryPingGeneral",
+          competitive: "categoryPingCompetitive",
+          contentcreator: "categoryPingContentcreator",
+          report: "categoryPingReport",
+          partnerships: "categoryPingPartnerships",
+          gfx: "categoryPingGfx",
+        };
+        
+        await storage.upsertGuildConfig({ guildId: interaction.guildId!, [updateField[category]]: roles });
+        
+        const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "Default staff role";
+        await interaction.editReply({ content: `✅ **${categoryLabels[category]}** ping roles updated!\nRoles: ${roleMentions}` });
       }
     } else if (interaction.isButton()) {
       // Handle ticket category buttons
@@ -2367,6 +2569,16 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
+        // Check if user is blocked
+        const block = await storage.getActiveModmailBlock(guildId, user.id);
+        if (block) {
+          const expiresText = block.expiresAt 
+            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
+            : "You are permanently blocked.";
+          await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
+          return;
+        }
+        
         // Check for existing open thread
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
@@ -2391,8 +2603,17 @@ client.on("interactionCreate", async (interaction) => {
           
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
           
-          // Send initial embed with close/claim buttons
-          const staffRoleMentions = config.modmailStaffRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
+          // Get category-specific ping roles or fall back to general staff roles
+          const categoryPingMap: { [key: string]: string[] | null | undefined } = {
+            general: config.categoryPingGeneral,
+            competitive: config.categoryPingCompetitive,
+            contentcreator: config.categoryPingContentcreator,
+            report: config.categoryPingReport,
+            partnerships: config.categoryPingPartnerships,
+            gfx: config.categoryPingGfx,
+          };
+          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Ticket: ${categoryLabel}`)
             .setColor(0x5865f2)
@@ -2437,18 +2658,31 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       } else if (interaction.customId.startsWith("modmail_claim_")) {
-        if (!await safeDeferReply(interaction)) return;
+        await interaction.deferUpdate();
         
         const threadId = interaction.customId.replace("modmail_claim_", "");
         const thread = await storage.getModmailThread(threadId);
         
         if (!thread) {
-          await interaction.editReply({ content: "❌ Thread not found." });
+          await interaction.followUp({ content: "❌ Thread not found.", flags: 64 });
+          return;
+        }
+        
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
+        const memberRoles = interaction.member?.roles;
+        const hasClaimPermission = claimRoleIds.length === 0 || 
+          (memberRoles && Array.isArray(memberRoles) 
+            ? claimRoleIds.some(id => memberRoles.includes(id))
+            : memberRoles && 'cache' in memberRoles && claimRoleIds.some(id => memberRoles.cache.has(id)));
+        
+        if (!hasClaimPermission) {
+          await interaction.followUp({ content: "❌ You don't have permission to claim tickets.", flags: 64 });
           return;
         }
         
         await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
-        await interaction.editReply({ content: `✅ Ticket claimed by <@${interaction.user.id}>` });
+        await interaction.channel?.send({ content: `🙋 Ticket claimed by <@${interaction.user.id}>` });
         return;
       } else if (interaction.customId.startsWith("modmail_close_")) {
         if (!await safeDeferReply(interaction)) return;
