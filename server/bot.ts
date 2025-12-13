@@ -45,6 +45,20 @@ const activeQuizzes = new Map<string, QuizState>();
 // Prevent duplicate Start Quiz button processing
 const processingQuizStart = new Set<string>();
 
+// Track users with pending DM ticket category selection (userId -> messageId)
+const pendingDMTickets = new Map<string, { messageId: string; guildId: string; sentAt: number }>();
+
+// Clean up expired DM ticket selections (5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  const FIVE_MINUTES = 5 * 60 * 1000;
+  for (const [userId, data] of Array.from(pendingDMTickets.entries())) {
+    if (now - data.sentAt > FIVE_MINUTES) {
+      pendingDMTickets.delete(userId);
+    }
+  }
+}, 60 * 1000);
+
 // Clean up expired quiz sessions (30 minutes)
 setInterval(() => {
   const now = Date.now();
@@ -2923,6 +2937,133 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       }
+      
+      // Handle DM ticket category selection
+      if (interaction.customId.startsWith("dm_ticket_select_")) {
+        const guildId = interaction.customId.replace("dm_ticket_select_", "");
+        const ticketCategory = interaction.values[0];
+        const user = interaction.user;
+        
+        // Clean up pending state
+        pendingDMTickets.delete(user.id);
+        
+        // Disable the dropdown
+        try {
+          await interaction.update({
+            components: [],
+          });
+        } catch (e) {
+          // Ignore update errors
+        }
+        
+        const guild = client.guilds.cache.get(guildId);
+        if (!guild) {
+          await interaction.followUp({ content: "❌ Could not find the server.", flags: 64 });
+          return;
+        }
+        
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.modmailCategoryId) {
+          await interaction.followUp({ content: "❌ Modmail is not configured for this server.", flags: 64 });
+          return;
+        }
+        
+        // Check if user is blocked
+        const block = await storage.getActiveModmailBlock(guildId, user.id);
+        if (block) {
+          const expiresText = block.expiresAt 
+            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
+            : "You are permanently blocked.";
+          await interaction.followUp({ content: `❌ You are blocked from opening tickets. ${expiresText}`, flags: 64 });
+          return;
+        }
+        
+        // Check for existing open thread
+        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (existingThread) {
+          await interaction.followUp({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket.", flags: 64 });
+          return;
+        }
+        
+        const categoryLabels: { [key: string]: string } = {
+          general: "General Inquiries",
+          competitive: "Apply For Competitive",
+          contentcreator: "Apply For Content Creator",
+          report: "User Reports",
+          partnerships: "Partnerships",
+          gfx: "Apply For GFX Editor",
+        };
+        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+        
+        // Create thread and channel
+        const thread = await storage.createModmailThread({
+          guildId,
+          userId: user.id,
+          status: "open",
+        });
+        
+        try {
+          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const newChannel = await guild.channels.create({
+            name: channelName,
+            parent: config.modmailCategoryId!,
+            topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
+          });
+          
+          await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+          
+          // Get category-specific ping roles or fall back to general staff roles
+          const categoryPingMap: { [key: string]: string[] | null | undefined } = {
+            general: config.categoryPingGeneral,
+            competitive: config.categoryPingCompetitive,
+            contentcreator: config.categoryPingContentcreator,
+            report: config.categoryPingReport,
+            partnerships: config.categoryPingPartnerships,
+            gfx: config.categoryPingGfx,
+          };
+          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
+          
+          const initialEmbed = new EmbedBuilder()
+            .setTitle(`New Ticket: ${categoryLabel}`)
+            .setDescription("**Opened via DM**")
+            .setColor(0x5865f2)
+            .addFields(
+              { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
+              { name: "Category", value: categoryLabel, inline: true }
+            )
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+          
+          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_claim_${thread.id}`)
+              .setLabel("Claim")
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_close_${thread.id}`)
+              .setLabel("Close")
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji("🔒")
+          );
+          
+          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          
+          // Confirm to user in DM
+          const dmEmbed = new EmbedBuilder()
+            .setTitle("Ticket Created")
+            .setDescription(`Your **${categoryLabel}** ticket has been created in **${guild.name}**. A staff member will respond shortly.\n\nReply to this DM to send messages to staff.`)
+            .setColor(0x57f287)
+            .setTimestamp();
+          
+          await interaction.followUp({ embeds: [dmEmbed] });
+        } catch (error) {
+          console.log("Could not create ticket channel from DM:", error);
+          await interaction.followUp({ content: "❌ Failed to create ticket. Please try again.", flags: 64 });
+        }
+        return;
+      }
     } else if (interaction.isButton()) {
       // Handle ticket category buttons
       if (interaction.customId.startsWith("ticket_")) {
@@ -5170,8 +5311,96 @@ client.on("messageCreate", async (message) => {
       }
       
       if (!targetThread || !targetGuild) {
-        // No existing open ticket - do not create new ones from DMs
-        // User must use the dropdown menu in the server to create a ticket
+        // No existing open ticket - offer to create one via DM
+        // Check if user already has a pending category selection
+        if (pendingDMTickets.has(message.author.id)) {
+          return; // Already waiting for category selection
+        }
+        
+        // Find a guild where modmail is configured and user is a member
+        let availableGuild = null;
+        let availableConfig = null;
+        
+        for (const guild of client.guilds.cache.values()) {
+          try {
+            const member = await guild.members.fetch(message.author.id).catch(() => null);
+            if (!member) continue;
+            
+            const config = await storage.getGuildConfig(guild.id);
+            if (config?.modmailCategoryId) {
+              // Check if user is blocked
+              const block = await storage.getActiveModmailBlock(guild.id, message.author.id);
+              if (!block) {
+                availableGuild = guild;
+                availableConfig = config;
+                break;
+              }
+            }
+          } catch (e) {
+            // Skip this guild
+          }
+        }
+        
+        if (!availableGuild || !availableConfig) {
+          await message.reply("❌ You don't have access to any servers with modmail configured, or you may be blocked.");
+          return;
+        }
+        
+        // Send category selection dropdown
+        const embed = new EmbedBuilder()
+          .setTitle("Open a Support Ticket")
+          .setDescription("Select a category below to open a new support ticket.")
+          .setColor(0x5865f2);
+        
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId(`dm_ticket_select_${availableGuild.id}`)
+          .setPlaceholder("Select a category...")
+          .addOptions(
+            new StringSelectMenuOptionBuilder()
+              .setLabel("General Inquiries")
+              .setDescription("General questions and support")
+              .setValue("general")
+              .setEmoji("💬"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For Competitive")
+              .setDescription("Apply to join the competitive team")
+              .setValue("competitive")
+              .setEmoji("🏆"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For Content Creator")
+              .setDescription("Apply for content creator role")
+              .setValue("contentcreator")
+              .setEmoji("🎥"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("User Reports")
+              .setDescription("Report a user")
+              .setValue("report")
+              .setEmoji("⚠️"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Partnerships")
+              .setDescription("Partnership inquiries")
+              .setValue("partnerships")
+              .setEmoji("🤝"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For GFX Editor")
+              .setDescription("Apply for graphics editor role")
+              .setValue("gfx")
+              .setEmoji("🎨")
+          );
+        
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+        
+        const sentMessage = await message.reply({
+          embeds: [embed],
+          components: [row],
+        });
+        
+        pendingDMTickets.set(message.author.id, {
+          messageId: sentMessage.id,
+          guildId: availableGuild.id,
+          sentAt: Date.now(),
+        });
+        
         return;
       }
       
