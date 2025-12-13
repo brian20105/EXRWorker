@@ -4829,23 +4829,23 @@ client.on("messageCreate", async (message) => {
   
   // Handle !or command (override/unclaim - Admin only)
   if (message.guild && message.content.toLowerCase() === "!or") {
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
-    if (!thread) {
-      await message.reply("❌ This is not a modmail ticket channel.");
-      return;
-    }
-    
-    if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
-      return;
-    }
-    
-    // Check for admin permission
+    // Check for admin permission first
     const member = message.member;
     const hasAdminPermission = member && member.permissions.has("Administrator");
     
     if (!hasAdminPermission) {
       await message.reply("❌ Only administrators can use the !or (override/unclaim) command.");
+      return;
+    }
+    
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      // Silent return if not a modmail channel (don't spam error in non-ticket channels)
+      return;
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
       return;
     }
     
