@@ -4976,6 +4976,16 @@ client.on("error", (error) => {
 
 const pendingTimedCloses = new Map<string, NodeJS.Timeout>();
 
+// Track inactivity warnings and auto-close timers for modmail
+// Key: channelId, Value: { timeout, staffId, warningMessageId? }
+interface InactivityTimer {
+  timeout: NodeJS.Timeout;
+  staffId: string;
+  warningMessageId?: string;
+}
+const pendingInactivityWarnings = new Map<string, InactivityTimer>();
+const pendingInactivityCloses = new Map<string, InactivityTimer>();
+
 // Prevent duplicate message processing (in case of multiple bot instances)
 const processedMessages = new Set<string>();
 const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
@@ -5642,11 +5652,50 @@ client.on("messageCreate", async (message) => {
       try {
         const modmailChannel = await client.channels.fetch(targetThread.channelId!);
         if (modmailChannel && "send" in modmailChannel) {
+          // Cancel any pending inactivity and timed close timers when user responds
+          const channelId = targetThread.channelId!;
+          
+          // Cancel inactivity warning timer
+          const existingWarning = pendingInactivityWarnings.get(channelId);
+          if (existingWarning) {
+            clearTimeout(existingWarning.timeout);
+            pendingInactivityWarnings.delete(channelId);
+          }
+          
+          // Cancel inactivity auto-close timer
+          const existingClose = pendingInactivityCloses.get(channelId);
+          if (existingClose) {
+            clearTimeout(existingClose.timeout);
+            pendingInactivityCloses.delete(channelId);
+          }
+          
+          // Cancel timed close (!c) timer
+          const existingTimedClose = pendingTimedCloses.get(channelId);
+          if (existingTimedClose) {
+            clearTimeout(existingTimedClose);
+            pendingTimedCloses.delete(channelId);
+            // Notify staff that timed close was cancelled
+            await modmailChannel.send({ content: "⏰ Timed close cancelled - user responded." });
+          }
+          
           const userEmbed = new EmbedBuilder()
             .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-            .setDescription(message.content)
+            .setDescription(message.content || "(No text content)")
             .setColor(0x57f287)
             .setTimestamp();
+          
+          // Collect attachment URLs
+          const attachmentUrls = message.attachments.map(a => a.url);
+          
+          // Add attachment info to embed if there are any
+          if (attachmentUrls.length > 0) {
+            userEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
+            // Set the first image as the embed image if it's an image
+            const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
+            if (firstImageAttachment) {
+              userEmbed.setImage(firstImageAttachment.url);
+            }
+          }
           
           await modmailChannel.send({ embeds: [userEmbed] });
           
@@ -5679,11 +5728,11 @@ client.on("messageCreate", async (message) => {
     return;
   }
   
-  // Handle !r <message> reply command in modmail channels
-  if (message.guild && message.content.toLowerCase().startsWith("!r ")) {
-    const replyContent = message.content.substring(3).trim();
-    if (!replyContent) {
-      await message.reply("❌ Please provide a message to send. Usage: `!r <message>`");
+  // Handle !r <message> reply command in modmail channels (also allows !r with just attachments)
+  if (message.guild && (message.content.toLowerCase().startsWith("!r ") || (message.content.toLowerCase() === "!r" && message.attachments.size > 0))) {
+    const replyContent = message.content.toLowerCase() === "!r" ? "" : message.content.substring(3).trim();
+    if (!replyContent && message.attachments.size === 0) {
+      await message.reply("❌ Please provide a message or attach files. Usage: `!r <message>` or `!r` with attachments");
       return;
     }
     
@@ -5703,10 +5752,23 @@ client.on("messageCreate", async (message) => {
       
       const staffEmbed = new EmbedBuilder()
         .setAuthor({ name: `Staff Response`, iconURL: message.author.displayAvatarURL() })
-        .setDescription(replyContent)
+        .setDescription(replyContent || "(Attachment)")
         .setColor(0x5865f2)
         .setFooter({ text: message.author.tag })
         .setTimestamp();
+      
+      // Collect attachment URLs from the !r message
+      const attachmentUrls = message.attachments.map(a => a.url);
+      
+      // Add attachment info to embed if there are any
+      if (attachmentUrls.length > 0) {
+        staffEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
+        // Set the first image as the embed image if it's an image
+        const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
+        if (firstImageAttachment) {
+          staffEmbed.setImage(firstImageAttachment.url);
+        }
+      }
       
       // Send to user DM
       const dmMessage = await user.send({ embeds: [staffEmbed] });
@@ -5722,6 +5784,115 @@ client.on("messageCreate", async (message) => {
         isStaff: "true",
         channelMessageId: channelMessage.id,
         dmMessageId: dmMessage.id,
+      });
+      
+      // Cancel any existing inactivity timers for this channel
+      const existingWarning = pendingInactivityWarnings.get(message.channel.id);
+      if (existingWarning) {
+        clearTimeout(existingWarning.timeout);
+        pendingInactivityWarnings.delete(message.channel.id);
+      }
+      const existingClose = pendingInactivityCloses.get(message.channel.id);
+      if (existingClose) {
+        clearTimeout(existingClose.timeout);
+        pendingInactivityCloses.delete(message.channel.id);
+      }
+      
+      // Start 15-minute inactivity warning timer
+      const FIFTEEN_MINUTES = 15 * 60 * 1000;
+      const warningTime = Date.now() + FIFTEEN_MINUTES;
+      const closeTime = Date.now() + (30 * 60 * 1000); // 30 minutes total
+      
+      const warningTimeout = setTimeout(async () => {
+        pendingInactivityWarnings.delete(message.channel.id);
+        
+        // Re-fetch thread to make sure it's still open
+        const currentThread = await storage.getModmailThreadByChannel(message.channel.id);
+        if (!currentThread || currentThread.status !== "open") return;
+        
+        // Send warning message with hammer time timestamp
+        const closeTimestamp = Math.floor(closeTime / 1000);
+        try {
+          const warningEmbed = new EmbedBuilder()
+            .setTitle("⚠️ Inactivity Warning")
+            .setDescription(`Due to inactivity, this ticket will be closed <t:${closeTimestamp}:R>.`)
+            .setColor(0xf0b232)
+            .setTimestamp();
+          
+          const warningMsg = await (message.channel as any).send({ embeds: [warningEmbed] });
+          
+          // Also notify the user in DM
+          try {
+            const ticketUser = await client.users.fetch(currentThread.userId);
+            await ticketUser.send({ embeds: [warningEmbed] });
+          } catch (e) {
+            console.log("Could not DM user about inactivity warning");
+          }
+          
+          // Schedule auto-close after another 15 minutes
+          const closeTimeout = setTimeout(async () => {
+            pendingInactivityCloses.delete(message.channel.id);
+            
+            const threadToClose = await storage.getModmailThreadByChannel(message.channel.id);
+            if (!threadToClose || threadToClose.status !== "open") return;
+            
+            // Close the thread
+            await storage.updateModmailThread(threadToClose.id, {
+              status: "closed",
+              closedById: message.author.id,
+              closeReason: "Closed due to inactivity",
+              closedAt: new Date(),
+            });
+            
+            // Award 1 activity point to the staff member who handled it
+            if (message.guild) {
+              await storage.addModmailActivityEntries(message.guild.id, message.author.id, 1);
+            }
+            
+            // Log to modmail log channel
+            const config = await storage.getGuildConfig(message.guild!.id);
+            if (config?.modmailLogChannelId) {
+              try {
+                const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+                if (logChannel && "send" in logChannel) {
+                  const messages = await storage.getModmailMessages(threadToClose.id);
+                  let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                  if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                  
+                  const logEmbed = new EmbedBuilder()
+                    .setTitle("Ticket Closed (Inactivity)")
+                    .setColor(0xed4245)
+                    .addFields(
+                      { name: "User", value: `<@${threadToClose.userId}>`, inline: true },
+                      { name: "Closed By", value: `<@${message.author.id}> (auto)`, inline: true },
+                      { name: "Transcript", value: transcript || "No messages", inline: false }
+                    )
+                    .setTimestamp();
+                  await logChannel.send({ embeds: [logEmbed] });
+                }
+              } catch (e) {
+                console.log("Could not send modmail log");
+              }
+            }
+            
+            // Delete the channel
+            try {
+              await (message.channel as any).delete();
+            } catch (e) {}
+          }, FIFTEEN_MINUTES);
+          
+          pendingInactivityCloses.set(message.channel.id, {
+            timeout: closeTimeout,
+            staffId: message.author.id,
+          });
+        } catch (e) {
+          console.log("Could not send inactivity warning:", e);
+        }
+      }, FIFTEEN_MINUTES);
+      
+      pendingInactivityWarnings.set(message.channel.id, {
+        timeout: warningTimeout,
+        staffId: message.author.id,
       });
       
       // Delete the original trigger message
