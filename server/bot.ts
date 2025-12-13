@@ -2540,6 +2540,197 @@ client.on("interactionCreate", async (interaction) => {
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "Default staff role";
         await interaction.editReply({ content: `✅ **${categoryLabels[category]}** ping roles updated!\nRoles: ${roleMentions}` });
       }
+    } else if (interaction.isStringSelectMenu()) {
+      // Handle ticket dropdown selection
+      if (interaction.customId.startsWith("ticket_select_")) {
+        const guildId = interaction.customId.split("_")[2];
+        const ticketCategory = interaction.values[0];
+        const user = interaction.user;
+        const guild = interaction.guild;
+        
+        if (!guild) {
+          await interaction.reply({ content: "❌ This can only be used in a server.", flags: 64 });
+          return;
+        }
+        
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.modmailCategoryId) {
+          await interaction.reply({ content: "❌ Modmail is not configured for this server.", flags: 64 });
+          return;
+        }
+        
+        // Check if user is blocked
+        const block = await storage.getActiveModmailBlock(guildId, user.id);
+        if (block) {
+          const expiresText = block.expiresAt 
+            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
+            : "You are permanently blocked.";
+          await interaction.reply({ content: `❌ You are blocked from opening tickets. ${expiresText}`, flags: 64 });
+          return;
+        }
+        
+        // Check for existing open thread
+        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (existingThread) {
+          await interaction.reply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket.", flags: 64 });
+          return;
+        }
+        
+        // Categories that require application modals
+        if (ticketCategory === "competitive") {
+          const modal = new ModalBuilder()
+            .setCustomId(`ticket_modal_competitive_${guildId}`)
+            .setTitle("Apply For Competitive");
+          
+          const trackerInput = new TextInputBuilder()
+            .setCustomId("fortnite_tracker")
+            .setLabel("Send Your Fortnite Tracker")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("https://fortnitetracker.com/profile/...")
+            .setRequired(true);
+          
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("apply_reason")
+            .setLabel("Why Do You Want To Apply For Thrills Esports")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Explain why you want to join...")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(trackerInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
+          await interaction.showModal(modal);
+          return;
+        } else if (ticketCategory === "contentcreator") {
+          const modal = new ModalBuilder()
+            .setCustomId(`ticket_modal_contentcreator_${guildId}`)
+            .setTitle("Apply For Content Creator");
+          
+          const followersInput = new TextInputBuilder()
+            .setCustomId("followers_count")
+            .setLabel("How many followers do you have?")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("e.g., 10,000 on TikTok, 5,000 on YouTube")
+            .setRequired(true);
+          
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("apply_reason")
+            .setLabel("Why do you think you would be a good fit?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Explain why you'd be a good content creator...")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(followersInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
+          await interaction.showModal(modal);
+          return;
+        } else if (ticketCategory === "gfx") {
+          const modal = new ModalBuilder()
+            .setCustomId(`ticket_modal_gfx_${guildId}`)
+            .setTitle("Apply For GFX Editor");
+          
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("apply_reason")
+            .setLabel("Why are you a good GFX Editor?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Describe your skills and experience...")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
+          await interaction.showModal(modal);
+          return;
+        }
+        
+        // For general, report, partnerships - create ticket directly
+        if (!await safeDeferReply(interaction)) return;
+        
+        const categoryLabels: { [key: string]: string } = {
+          general: "General Inquiries",
+          competitive: "Apply For Competitive",
+          contentcreator: "Apply For Content Creator",
+          report: "User Reports",
+          partnerships: "Partnerships",
+          gfx: "Apply For GFX Editor",
+        };
+        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+        
+        // Create thread and channel
+        const thread = await storage.createModmailThread({
+          guildId,
+          userId: user.id,
+          status: "open",
+        });
+        
+        try {
+          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const newChannel = await guild.channels.create({
+            name: channelName,
+            parent: config.modmailCategoryId!,
+            topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
+          });
+          
+          await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+          
+          // Get category-specific ping roles or fall back to general staff roles
+          const categoryPingMap: { [key: string]: string[] | null | undefined } = {
+            general: config.categoryPingGeneral,
+            competitive: config.categoryPingCompetitive,
+            contentcreator: config.categoryPingContentcreator,
+            report: config.categoryPingReport,
+            partnerships: config.categoryPingPartnerships,
+            gfx: config.categoryPingGfx,
+          };
+          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
+          const initialEmbed = new EmbedBuilder()
+            .setTitle(`New Ticket: ${categoryLabel}`)
+            .setColor(0x5865f2)
+            .addFields(
+              { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
+              { name: "Category", value: categoryLabel, inline: true }
+            )
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+          
+          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_claim_${thread.id}`)
+              .setLabel("Claim")
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_close_${thread.id}`)
+              .setLabel("Close")
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji("🔒")
+          );
+          
+          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          
+          // DM user confirmation
+          try {
+            const dmEmbed = new EmbedBuilder()
+              .setTitle("Ticket Created")
+              .setDescription(`Your **${categoryLabel}** ticket has been created. A staff member will respond shortly.\n\nReply to this DM to send messages to staff.`)
+              .setColor(0x57f287)
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {
+            console.log("Could not DM user about ticket creation");
+          }
+          
+          await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
+        } catch (error) {
+          console.log("Could not create ticket channel:", error);
+          await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+        }
+        return;
+      }
     } else if (interaction.isButton()) {
       // Handle ticket category buttons
       if (interaction.customId.startsWith("ticket_")) {
@@ -3183,7 +3374,136 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
     } else if (interaction.isModalSubmit()) {
-      if (interaction.customId === "payout_modal") {
+      // Handle ticket application modals
+      if (interaction.customId.startsWith("ticket_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const parts = interaction.customId.split("_");
+        const ticketCategory = parts[2]; // competitive, contentcreator, or gfx
+        const guildId = parts[3];
+        const user = interaction.user;
+        const guild = interaction.guild;
+        
+        if (!guild) {
+          await interaction.editReply({ content: "❌ This can only be used in a server." });
+          return;
+        }
+        
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.modmailCategoryId) {
+          await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
+          return;
+        }
+        
+        // Check for existing open thread again (in case one was created between modal show and submit)
+        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (existingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+        
+        const categoryLabels: { [key: string]: string } = {
+          competitive: "Apply For Competitive",
+          contentcreator: "Apply For Content Creator",
+          gfx: "Apply For GFX Editor",
+        };
+        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+        
+        // Get form data based on category
+        let applicationFields: { name: string; value: string }[] = [];
+        if (ticketCategory === "competitive") {
+          const tracker = interaction.fields.getTextInputValue("fortnite_tracker");
+          const reason = interaction.fields.getTextInputValue("apply_reason");
+          applicationFields = [
+            { name: "Fortnite Tracker", value: tracker },
+            { name: "Why They Want To Apply", value: reason },
+          ];
+        } else if (ticketCategory === "contentcreator") {
+          const followers = interaction.fields.getTextInputValue("followers_count");
+          const reason = interaction.fields.getTextInputValue("apply_reason");
+          applicationFields = [
+            { name: "Follower Count", value: followers },
+            { name: "Why They Would Be A Good Fit", value: reason },
+          ];
+        } else if (ticketCategory === "gfx") {
+          const reason = interaction.fields.getTextInputValue("apply_reason");
+          applicationFields = [
+            { name: "Why They're A Good GFX Editor", value: reason },
+          ];
+        }
+        
+        // Create thread and channel
+        const thread = await storage.createModmailThread({
+          guildId,
+          userId: user.id,
+          status: "open",
+        });
+        
+        try {
+          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const newChannel = await guild.channels.create({
+            name: channelName,
+            parent: config.modmailCategoryId!,
+            topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
+          });
+          
+          await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+          
+          // Get category-specific ping roles or fall back to general staff roles
+          const categoryPingMap: { [key: string]: string[] | null | undefined } = {
+            competitive: config.categoryPingCompetitive,
+            contentcreator: config.categoryPingContentcreator,
+            gfx: config.categoryPingGfx,
+          };
+          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
+          
+          // Create initial embed with application info
+          const initialEmbed = new EmbedBuilder()
+            .setTitle(`New Application: ${categoryLabel}`)
+            .setColor(0x5865f2)
+            .addFields(
+              { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
+              { name: "Category", value: categoryLabel, inline: true },
+              ...applicationFields
+            )
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+          
+          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_claim_${thread.id}`)
+              .setLabel("Claim")
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_close_${thread.id}`)
+              .setLabel("Close")
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji("🔒")
+          );
+          
+          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          
+          // DM user confirmation
+          try {
+            const dmEmbed = new EmbedBuilder()
+              .setTitle("Application Submitted")
+              .setDescription(`Your **${categoryLabel}** application has been submitted. A staff member will review it and respond shortly.\n\nReply to this DM to send messages to staff.`)
+              .setColor(0x57f287)
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {
+            console.log("Could not DM user about application submission");
+          }
+          
+          await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted! Check your DMs.` });
+        } catch (error) {
+          console.log("Could not create ticket channel:", error);
+          await interaction.editReply({ content: "❌ Failed to submit application. Please try again." });
+        }
+        return;
+      } else if (interaction.customId === "payout_modal") {
         // Defer reply immediately to prevent timeout
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -4113,107 +4433,57 @@ client.on("messageCreate", async (message) => {
       return;
     }
     
-    // Handle modmail DMs
+    // Handle modmail DMs - only relay to EXISTING open threads
+    // New tickets must be created via the dropdown menu in the server
     try {
-      // Find a guild where the user is a member and modmail is configured
+      // Find an existing open thread for this user across all guilds
+      let targetThread = null;
       let targetGuild = null;
-      let targetConfig = null;
       
       for (const guild of client.guilds.cache.values()) {
         try {
-          const member = await guild.members.fetch(message.author.id);
-          if (member) {
-            const config = await storage.getGuildConfig(guild.id);
-            if (config?.modmailCategoryId) {
-              targetGuild = guild;
-              targetConfig = config;
-              break;
-            }
+          const thread = await storage.getOpenModmailThread(guild.id, message.author.id);
+          if (thread && thread.channelId) {
+            targetThread = thread;
+            targetGuild = guild;
+            break;
           }
         } catch (e) {
-          // User not in this guild
+          // No thread in this guild
         }
       }
       
-      if (!targetGuild || !targetConfig) {
-        return; // No modmail-configured guild found
+      if (!targetThread || !targetGuild) {
+        // No existing open ticket - do not create new ones from DMs
+        // User must use the dropdown menu in the server to create a ticket
+        return;
       }
       
-      // Check for existing open thread
-      let thread = await storage.getOpenModmailThread(targetGuild.id, message.author.id);
-      
-      if (!thread) {
-        // Create new thread
-        thread = await storage.createModmailThread({
-          guildId: targetGuild.id,
-          userId: message.author.id,
-          status: "open",
-        });
-        
-        // Create channel in modmail category
-        try {
-          const category = await targetGuild.channels.fetch(targetConfig.modmailCategoryId!);
-          if (category && category.type === 4) { // ChannelType.GuildCategory = 4
-            const channelName = `modmail-${message.author.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-            const newChannel = await targetGuild.channels.create({
-              name: channelName,
-              parent: targetConfig.modmailCategoryId!,
-              topic: `Modmail thread with ${message.author.tag} (${message.author.id})`,
-            });
-            
-            await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
-            thread.channelId = newChannel.id;
-            
-            // Send initial embed
-            const staffRoleMentions = targetConfig.modmailStaffRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
-            const initialEmbed = new EmbedBuilder()
-              .setTitle("New Modmail Thread")
-              .setColor(0x5865f2)
-              .addFields(
-                { name: "User", value: `<@${message.author.id}> (${message.author.tag})`, inline: true },
-                { name: "User ID", value: message.author.id, inline: true }
-              )
-              .setThumbnail(message.author.displayAvatarURL())
-              .setTimestamp();
-            
-            await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed] });
-          }
-        } catch (error) {
-          console.log("Could not create modmail channel:", error);
-          return;
+      // Relay message to existing modmail channel
+      try {
+        const modmailChannel = await client.channels.fetch(targetThread.channelId!);
+        if (modmailChannel && "send" in modmailChannel) {
+          const userEmbed = new EmbedBuilder()
+            .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+            .setDescription(message.content)
+            .setColor(0x57f287)
+            .setTimestamp();
+          
+          await modmailChannel.send({ embeds: [userEmbed] });
+          
+          // Save message
+          await storage.addModmailMessage({
+            threadId: targetThread.id,
+            authorId: message.author.id,
+            content: message.content,
+            isStaff: "false",
+          });
+          
+          // React to confirm
+          await message.react("✅");
         }
-        
-        // Confirm to user
-        await message.reply("✅ Your message has been received. A staff member will respond shortly.");
-      }
-      
-      // Relay message to modmail channel
-      if (thread.channelId) {
-        try {
-          const modmailChannel = await client.channels.fetch(thread.channelId);
-          if (modmailChannel && "send" in modmailChannel) {
-            const userEmbed = new EmbedBuilder()
-              .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-              .setDescription(message.content)
-              .setColor(0x57f287)
-              .setTimestamp();
-            
-            await modmailChannel.send({ embeds: [userEmbed] });
-            
-            // Save message
-            await storage.addModmailMessage({
-              threadId: thread.id,
-              authorId: message.author.id,
-              content: message.content,
-              isStaff: "false",
-            });
-            
-            // React to confirm
-            await message.react("✅");
-          }
-        } catch (error) {
-          console.log("Could not relay modmail message:", error);
-        }
+      } catch (error) {
+        console.log("Could not relay modmail message:", error);
       }
     } catch (error) {
       console.log("Modmail DM handler error:", error);
