@@ -13,16 +13,22 @@ import {
   type InsertStaffIntroSubmission,
   type InactivityRequest,
   type InsertInactivityRequest,
+  type ModmailThread,
+  type InsertModmailThread,
+  type ModmailMessage,
+  type InsertModmailMessage,
   guildConfigs,
   payoutRequests,
   roleSyncPairs,
   banRequests,
   unbanRequests,
   staffIntroSubmissions,
-  inactivityRequests
+  inactivityRequests,
+  modmailThreads,
+  modmailMessages
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, or } from "drizzle-orm";
+import { eq, and, desc, or, sql } from "drizzle-orm";
 
 export interface IStorage {
   getGuildConfig(guildId: string): Promise<GuildConfig | undefined>;
@@ -64,6 +70,17 @@ export interface IStorage {
   createInactivityRequest(request: InsertInactivityRequest): Promise<InactivityRequest>;
   getInactivityRequest(id: string): Promise<InactivityRequest | undefined>;
   updateInactivityRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<InactivityRequest>;
+  
+  createModmailThread(thread: InsertModmailThread): Promise<ModmailThread>;
+  getModmailThread(id: string): Promise<ModmailThread | undefined>;
+  getOpenModmailThread(guildId: string, userId: string): Promise<ModmailThread | undefined>;
+  getModmailThreadByChannel(channelId: string): Promise<ModmailThread | undefined>;
+  updateModmailThread(id: string, updates: { status?: string; claimedById?: string; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date }): Promise<ModmailThread>;
+  getAllModmailThreads(guildId: string): Promise<ModmailThread[]>;
+  
+  addModmailMessage(message: InsertModmailMessage): Promise<ModmailMessage>;
+  getModmailMessages(threadId: string): Promise<ModmailMessage[]>;
+  getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -357,6 +374,79 @@ export class DatabaseStorage implements IStorage {
   async updateInactivityRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<InactivityRequest> {
     const result = await db.update(inactivityRequests).set({ ...updates, updatedAt: new Date() }).where(eq(inactivityRequests.id, id)).returning();
     return result[0];
+  }
+
+  async createModmailThread(thread: InsertModmailThread): Promise<ModmailThread> {
+    const result = await db.insert(modmailThreads).values(thread).returning();
+    return result[0];
+  }
+
+  async getModmailThread(id: string): Promise<ModmailThread | undefined> {
+    const result = await db.select().from(modmailThreads).where(eq(modmailThreads.id, id));
+    return result[0];
+  }
+
+  async getOpenModmailThread(guildId: string, userId: string): Promise<ModmailThread | undefined> {
+    const result = await db.select().from(modmailThreads).where(
+      and(
+        eq(modmailThreads.guildId, guildId),
+        eq(modmailThreads.userId, userId),
+        eq(modmailThreads.status, "open")
+      )
+    );
+    return result[0];
+  }
+
+  async getModmailThreadByChannel(channelId: string): Promise<ModmailThread | undefined> {
+    const result = await db.select().from(modmailThreads).where(eq(modmailThreads.channelId, channelId));
+    return result[0];
+  }
+
+  async updateModmailThread(id: string, updates: { status?: string; claimedById?: string; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date }): Promise<ModmailThread> {
+    const result = await db.update(modmailThreads).set(updates).where(eq(modmailThreads.id, id)).returning();
+    return result[0];
+  }
+
+  async getAllModmailThreads(guildId: string): Promise<ModmailThread[]> {
+    return await db.select().from(modmailThreads).where(eq(modmailThreads.guildId, guildId)).orderBy(desc(modmailThreads.createdAt));
+  }
+
+  async addModmailMessage(message: InsertModmailMessage): Promise<ModmailMessage> {
+    const result = await db.insert(modmailMessages).values(message).returning();
+    return result[0];
+  }
+
+  async getModmailMessages(threadId: string): Promise<ModmailMessage[]> {
+    return await db.select().from(modmailMessages).where(eq(modmailMessages.threadId, threadId)).orderBy(modmailMessages.createdAt);
+  }
+
+  async getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    const threads = await db.select().from(modmailThreads).where(eq(modmailThreads.guildId, guildId));
+    const threadIds = threads.map(t => t.id);
+    
+    if (threadIds.length === 0) return [];
+    
+    let messages = await db.select().from(modmailMessages).where(eq(modmailMessages.isStaff, "true"));
+    messages = messages.filter(m => threadIds.includes(m.threadId));
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      messages = messages.filter(m => m.createdAt >= fromDate);
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      messages = messages.filter(m => m.createdAt <= toDate);
+    }
+    
+    const counts: { [userId: string]: number } = {};
+    for (const m of messages) {
+      counts[m.authorId] = (counts[m.authorId] || 0) + 1;
+    }
+    
+    return Object.entries(counts)
+      .map(([userId, count]) => ({ userId, count }))
+      .sort((a, b) => b.count - a.count);
   }
 }
 
