@@ -4870,6 +4870,102 @@ client.on("messageCreate", async (message) => {
     return;
   }
   
+  // Handle !sub command (subscribe to ticket notifications)
+  if (message.guild && (message.content.toLowerCase() === "!sub" || message.content.toLowerCase().startsWith("!sub "))) {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      return; // Silent return if not a modmail channel
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    // Parse target user (self or mentioned/ID)
+    const args = message.content.substring(4).trim();
+    let targetUserId = message.author.id;
+    
+    if (args) {
+      // Check for mention or user ID
+      const mentionMatch = args.match(/<@!?(\d+)>/);
+      const idMatch = args.match(/^(\d+)$/);
+      if (mentionMatch) {
+        targetUserId = mentionMatch[1];
+      } else if (idMatch) {
+        targetUserId = idMatch[1];
+      }
+    }
+    
+    const currentSubs = thread.subscribedUserIds || [];
+    if (currentSubs.includes(targetUserId)) {
+      if (targetUserId === message.author.id) {
+        await message.reply("❌ You are already subscribed to this ticket.");
+      } else {
+        await message.reply(`❌ <@${targetUserId}> is already subscribed to this ticket.`);
+      }
+      return;
+    }
+    
+    const newSubs = [...currentSubs, targetUserId];
+    await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
+    
+    if (targetUserId === message.author.id) {
+      await message.reply("🔔 You are now subscribed to this ticket. You'll be pinged when the user replies.");
+    } else {
+      await message.reply(`🔔 <@${targetUserId}> is now subscribed to this ticket.`);
+    }
+    return;
+  }
+  
+  // Handle !unsub command (unsubscribe from ticket notifications)
+  if (message.guild && (message.content.toLowerCase() === "!unsub" || message.content.toLowerCase().startsWith("!unsub "))) {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      return; // Silent return if not a modmail channel
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    // Parse target user (self or mentioned/ID)
+    const args = message.content.substring(6).trim();
+    let targetUserId = message.author.id;
+    
+    if (args) {
+      // Check for mention or user ID
+      const mentionMatch = args.match(/<@!?(\d+)>/);
+      const idMatch = args.match(/^(\d+)$/);
+      if (mentionMatch) {
+        targetUserId = mentionMatch[1];
+      } else if (idMatch) {
+        targetUserId = idMatch[1];
+      }
+    }
+    
+    const currentSubs = thread.subscribedUserIds || [];
+    if (!currentSubs.includes(targetUserId)) {
+      if (targetUserId === message.author.id) {
+        await message.reply("❌ You are not subscribed to this ticket.");
+      } else {
+        await message.reply(`❌ <@${targetUserId}> is not subscribed to this ticket.`);
+      }
+      return;
+    }
+    
+    const newSubs = currentSubs.filter(id => id !== targetUserId);
+    await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
+    
+    if (targetUserId === message.author.id) {
+      await message.reply("🔕 You are now unsubscribed from this ticket.");
+    } else {
+      await message.reply(`🔕 <@${targetUserId}> is now unsubscribed from this ticket.`);
+    }
+    return;
+  }
+  
   // Handle !snip commands for snippet management
   if (message.guild && message.content.toLowerCase().startsWith("!snip ")) {
     const args = message.content.substring(6).trim();
@@ -5075,6 +5171,15 @@ client.on("messageCreate", async (message) => {
             .setTimestamp();
           
           await modmailChannel.send({ embeds: [userEmbed] });
+          
+          // Ping subscribed users
+          const subs = targetThread.subscribedUserIds || [];
+          if (subs.length > 0) {
+            const pingContent = subs.map(id => `<@${id}>`).join(" ");
+            const pingMsg = await modmailChannel.send({ content: pingContent });
+            // Delete ping message after a short delay to keep channel clean
+            setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
+          }
           
           // Save message
           await storage.addModmailMessage({

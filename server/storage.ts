@@ -81,7 +81,7 @@ export interface IStorage {
   getModmailThread(id: string): Promise<ModmailThread | undefined>;
   getOpenModmailThread(guildId: string, userId: string): Promise<ModmailThread | undefined>;
   getModmailThreadByChannel(channelId: string): Promise<ModmailThread | undefined>;
-  updateModmailThread(id: string, updates: { status?: string; claimedById?: string; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date }): Promise<ModmailThread>;
+  updateModmailThread(id: string, updates: { status?: string; claimedById?: string; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[] }): Promise<ModmailThread>;
   getAllModmailThreads(guildId: string): Promise<ModmailThread[]>;
   
   addModmailMessage(message: InsertModmailMessage): Promise<ModmailMessage>;
@@ -427,7 +427,7 @@ export class DatabaseStorage implements IStorage {
     return result[0];
   }
 
-  async updateModmailThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date }): Promise<ModmailThread> {
+  async updateModmailThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[] }): Promise<ModmailThread> {
     const result = await db.update(modmailThreads).set(updates).where(eq(modmailThreads.id, id)).returning();
     return result[0];
   }
