@@ -86,6 +86,10 @@ export interface IStorage {
   
   addModmailMessage(message: InsertModmailMessage): Promise<ModmailMessage>;
   getModmailMessages(threadId: string): Promise<ModmailMessage[]>;
+  getModmailMessage(id: string): Promise<ModmailMessage | undefined>;
+  updateModmailMessage(id: string, updates: { content?: string; channelMessageId?: string; dmMessageId?: string }): Promise<ModmailMessage | undefined>;
+  deleteModmailMessage(id: string): Promise<void>;
+  getLatestStaffModmailMessage(threadId: string): Promise<ModmailMessage | undefined>;
   getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   
   createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock>;
@@ -439,6 +443,30 @@ export class DatabaseStorage implements IStorage {
 
   async getModmailMessages(threadId: string): Promise<ModmailMessage[]> {
     return await db.select().from(modmailMessages).where(eq(modmailMessages.threadId, threadId)).orderBy(modmailMessages.createdAt);
+  }
+
+  async getModmailMessage(id: string): Promise<ModmailMessage | undefined> {
+    const result = await db.select().from(modmailMessages).where(eq(modmailMessages.id, id));
+    return result[0];
+  }
+
+  async updateModmailMessage(id: string, updates: { content?: string; channelMessageId?: string; dmMessageId?: string }): Promise<ModmailMessage | undefined> {
+    const result = await db.update(modmailMessages).set(updates).where(eq(modmailMessages.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteModmailMessage(id: string): Promise<void> {
+    await db.delete(modmailMessages).where(eq(modmailMessages.id, id));
+  }
+
+  async getLatestStaffModmailMessage(threadId: string): Promise<ModmailMessage | undefined> {
+    const result = await db.select().from(modmailMessages).where(
+      and(
+        eq(modmailMessages.threadId, threadId),
+        eq(modmailMessages.isStaff, "true")
+      )
+    ).orderBy(desc(modmailMessages.createdAt)).limit(1);
+    return result[0];
   }
 
   async getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
