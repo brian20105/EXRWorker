@@ -11,6 +11,8 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
 } from "discord.js";
 import { storage } from "./storage";
 
@@ -2355,52 +2357,54 @@ client.on("interactionCreate", async (interaction) => {
           modmailStaffRoleIds: [staffRole.id],
         });
         
-        // Post the ticket embed with category buttons
+        // Post the ticket embed with dropdown menu
         const ticketEmbed = new EmbedBuilder()
           .setTitle("Support Tickets")
-          .setDescription("Click a button below to create a ticket for the appropriate category.")
+          .setDescription("Select a category below to create a ticket.")
           .setColor(0x2f3136);
         
-        const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`ticket_general_${interaction.guildId}`)
-            .setLabel("General Inquiries")
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji("📥"),
-          new ButtonBuilder()
-            .setCustomId(`ticket_competitive_${interaction.guildId}`)
-            .setLabel("Apply For Competitive")
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji("🖥️"),
-          new ButtonBuilder()
-            .setCustomId(`ticket_contentcreator_${interaction.guildId}`)
-            .setLabel("Apply For Content Creator")
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji("📷")
-        );
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId(`ticket_select_${interaction.guildId}`)
+          .setPlaceholder("Select a ticket category...")
+          .addOptions(
+            new StringSelectMenuOptionBuilder()
+              .setLabel("General Inquiries")
+              .setDescription("General questions or support")
+              .setValue("general")
+              .setEmoji("📥"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For Competitive")
+              .setDescription("Apply to join the competitive team")
+              .setValue("competitive")
+              .setEmoji("🖥️"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For Content Creator")
+              .setDescription("Apply to become a content creator")
+              .setValue("contentcreator")
+              .setEmoji("📷"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("User Reports")
+              .setDescription("Report a user")
+              .setValue("report")
+              .setEmoji("🚨"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Partnerships")
+              .setDescription("Partnership inquiries")
+              .setValue("partnerships")
+              .setEmoji("📋"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For GFX Editor")
+              .setDescription("Apply to become a GFX editor")
+              .setValue("gfx")
+              .setEmoji("📝")
+          );
         
-        const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`ticket_report_${interaction.guildId}`)
-            .setLabel("User Reports")
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji("🚨"),
-          new ButtonBuilder()
-            .setCustomId(`ticket_partnerships_${interaction.guildId}`)
-            .setLabel("Partnerships")
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji("📋"),
-          new ButtonBuilder()
-            .setCustomId(`ticket_gfx_${interaction.guildId}`)
-            .setLabel("Apply For GFX Editor")
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji("📝")
-        );
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
         
         if (interaction.channel && "send" in interaction.channel) {
           await interaction.channel.send({
             embeds: [ticketEmbed],
-            components: [row1, row2],
+            components: [row],
           });
         }
         
