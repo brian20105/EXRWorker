@@ -4948,7 +4948,8 @@ client.on("messageCreate", async (message) => {
   if (message.guild && message.content.startsWith("!") && !message.content.startsWith("!snip") && 
       !message.content.toLowerCase().startsWith("!close") && !message.content.toLowerCase().startsWith("!c") &&
       !message.content.toLowerCase().startsWith("!claim") && !message.content.toLowerCase().startsWith("!or") &&
-      !message.content.toLowerCase().startsWith("!r ")) {
+      !message.content.toLowerCase().startsWith("!r ") && !message.content.toLowerCase().startsWith("!edit ") &&
+      !message.content.toLowerCase().startsWith("!delete")) {
     const alias = message.content.substring(1).toLowerCase().split(" ")[0];
     if (alias) {
       const thread = await storage.getModmailThreadByChannel(message.channel.id);
@@ -4965,16 +4966,25 @@ client.on("messageCreate", async (message) => {
               .setFooter({ text: message.author.tag })
               .setTimestamp();
             
-            await user.send({ embeds: [staffEmbed] });
+            // Send to user DM
+            const dmMessage = await user.send({ embeds: [staffEmbed] });
+            
+            // Send to channel as well
+            const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
             
             await storage.addModmailMessage({
               threadId: thread.id,
               authorId: message.author.id,
               content: snippet.content,
               isStaff: "true",
+              channelMessageId: channelMessage.id,
+              dmMessageId: dmMessage.id,
             });
             
-            await message.react("✅");
+            // Delete the trigger message
+            try {
+              await message.delete();
+            } catch (e) {}
           } catch (error) {
             console.log("Could not send snippet to user:", error);
             await message.react("❌");
@@ -5082,21 +5092,199 @@ client.on("messageCreate", async (message) => {
         .setFooter({ text: message.author.tag })
         .setTimestamp();
       
-      await user.send({ embeds: [staffEmbed] });
+      // Send to user DM
+      const dmMessage = await user.send({ embeds: [staffEmbed] });
       
-      // Save message
-      await storage.addModmailMessage({
+      // Send to channel as well
+      const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
+      
+      // Save message with message IDs
+      const savedMessage = await storage.addModmailMessage({
         threadId: thread.id,
         authorId: message.author.id,
         content: replyContent,
         isStaff: "true",
+        channelMessageId: channelMessage.id,
+        dmMessageId: dmMessage.id,
       });
       
-      // React to confirm
-      await message.react("✅");
+      // Delete the original trigger message
+      try {
+        await message.delete();
+      } catch (e) {
+        console.log("Could not delete trigger message:", e);
+      }
     } catch (error) {
       console.log("Could not relay staff message to user:", error);
       await message.react("❌");
+    }
+    return;
+  }
+  
+  // Handle !edit (message_id) (new_message) or !edit (new_message) for most recent
+  if (message.guild && message.content.toLowerCase().startsWith("!edit ")) {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    const args = message.content.substring(6).trim();
+    let modmailMsg: any;
+    let newContent: string;
+    
+    // Check if first arg looks like an ID (UUID format)
+    const parts = args.split(" ");
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    
+    if (parts[0] && uuidRegex.test(parts[0])) {
+      // First arg is message ID
+      modmailMsg = await storage.getModmailMessage(parts[0]);
+      newContent = parts.slice(1).join(" ");
+    } else {
+      // No ID provided, use most recent staff message
+      modmailMsg = await storage.getLatestStaffModmailMessage(thread.id);
+      newContent = args;
+    }
+    
+    if (!modmailMsg) {
+      await message.reply("❌ Could not find the message to edit.");
+      return;
+    }
+    
+    if (!newContent) {
+      await message.reply("❌ Please provide the new message content. Usage: `!edit (message_id) <new_message>`");
+      return;
+    }
+    
+    try {
+      const user = await client.users.fetch(thread.userId);
+      
+      // Edit the channel message if we have its ID
+      if (modmailMsg.channelMessageId) {
+        try {
+          const channelMsg = await (message.channel as any).messages.fetch(modmailMsg.channelMessageId);
+          const editedEmbed = new EmbedBuilder()
+            .setAuthor({ name: `Staff Response (Edited)`, iconURL: message.author.displayAvatarURL() })
+            .setDescription(newContent)
+            .setColor(0x5865f2)
+            .setFooter({ text: `Edited by ${message.author.tag}` })
+            .setTimestamp();
+          await channelMsg.edit({ embeds: [editedEmbed] });
+        } catch (e) {
+          console.log("Could not edit channel message:", e);
+        }
+      }
+      
+      // Edit the DM message if we have its ID
+      if (modmailMsg.dmMessageId) {
+        try {
+          const dmChannel = await user.createDM();
+          const dmMsg = await dmChannel.messages.fetch(modmailMsg.dmMessageId);
+          const editedEmbed = new EmbedBuilder()
+            .setAuthor({ name: `Staff Response (Edited)`, iconURL: message.author.displayAvatarURL() })
+            .setDescription(newContent)
+            .setColor(0x5865f2)
+            .setFooter({ text: `Edited by ${message.author.tag}` })
+            .setTimestamp();
+          await dmMsg.edit({ embeds: [editedEmbed] });
+        } catch (e) {
+          console.log("Could not edit DM message:", e);
+        }
+      }
+      
+      // Update in database
+      await storage.updateModmailMessage(modmailMsg.id, { content: newContent });
+      
+      // Delete the edit command message
+      try {
+        await message.delete();
+      } catch (e) {}
+      
+      // Send confirmation that auto-deletes
+      const confirmMsg = await (message.channel as any).send("✅ Message edited successfully.");
+      setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+    } catch (error) {
+      console.log("Could not edit modmail message:", error);
+      await message.reply("❌ Failed to edit message.");
+    }
+    return;
+  }
+  
+  // Handle !delete (message_id) or !delete for most recent
+  if (message.guild && message.content.toLowerCase().startsWith("!delete")) {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    const args = message.content.substring(7).trim();
+    let modmailMsg: any;
+    
+    // Check if arg looks like an ID (UUID format)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    
+    if (args && uuidRegex.test(args)) {
+      modmailMsg = await storage.getModmailMessage(args);
+    } else {
+      // No ID provided, use most recent staff message
+      modmailMsg = await storage.getLatestStaffModmailMessage(thread.id);
+    }
+    
+    if (!modmailMsg) {
+      await message.reply("❌ Could not find the message to delete.");
+      return;
+    }
+    
+    try {
+      const user = await client.users.fetch(thread.userId);
+      
+      // Delete the channel message if we have its ID
+      if (modmailMsg.channelMessageId) {
+        try {
+          const channelMsg = await (message.channel as any).messages.fetch(modmailMsg.channelMessageId);
+          await channelMsg.delete();
+        } catch (e) {
+          console.log("Could not delete channel message:", e);
+        }
+      }
+      
+      // Delete the DM message if we have its ID
+      if (modmailMsg.dmMessageId) {
+        try {
+          const dmChannel = await user.createDM();
+          const dmMsg = await dmChannel.messages.fetch(modmailMsg.dmMessageId);
+          await dmMsg.delete();
+        } catch (e) {
+          console.log("Could not delete DM message:", e);
+        }
+      }
+      
+      // Delete from database
+      await storage.deleteModmailMessage(modmailMsg.id);
+      
+      // Delete the delete command message
+      try {
+        await message.delete();
+      } catch (e) {}
+      
+      // Send confirmation that auto-deletes
+      const confirmMsg = await (message.channel as any).send("✅ Message deleted successfully.");
+      setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+    } catch (error) {
+      console.log("Could not delete modmail message:", error);
+      await message.reply("❌ Failed to delete message.");
     }
     return;
   }
