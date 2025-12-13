@@ -5548,8 +5548,11 @@ client.on("messageCreate", async (message) => {
         }
         
         if (!availableGuild || !availableConfig) {
-          // Silently ignore - user may need to try again, or they genuinely don't have access
-          // This prevents error spam when the bot is still loading guild data
+          // Log to help debug
+          console.log(`[DM] No available guild for user ${message.author.id} - cached guilds: ${client.guilds.cache.size}`);
+          for (const g of Array.from(client.guilds.cache.values())) {
+            console.log(`[DM] Guild: ${g.name} (${g.id})`);
+          }
           return;
         }
         
