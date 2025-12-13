@@ -17,6 +17,8 @@ import {
   type InsertModmailThread,
   type ModmailMessage,
   type InsertModmailMessage,
+  type ModmailBlock,
+  type InsertModmailBlock,
   guildConfigs,
   payoutRequests,
   roleSyncPairs,
@@ -25,7 +27,8 @@ import {
   staffIntroSubmissions,
   inactivityRequests,
   modmailThreads,
-  modmailMessages
+  modmailMessages,
+  modmailBlocks
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, or, sql } from "drizzle-orm";
@@ -81,6 +84,11 @@ export interface IStorage {
   addModmailMessage(message: InsertModmailMessage): Promise<ModmailMessage>;
   getModmailMessages(threadId: string): Promise<ModmailMessage[]>;
   getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  
+  createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock>;
+  getActiveModmailBlock(guildId: string, userId: string): Promise<ModmailBlock | undefined>;
+  removeModmailBlock(guildId: string, userId: string): Promise<void>;
+  getAllModmailBlocks(guildId: string): Promise<ModmailBlock[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -447,6 +455,40 @@ export class DatabaseStorage implements IStorage {
     return Object.entries(counts)
       .map(([userId, count]) => ({ userId, count }))
       .sort((a, b) => b.count - a.count);
+  }
+
+  async createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock> {
+    const result = await db.insert(modmailBlocks).values(block).returning();
+    return result[0];
+  }
+
+  async getActiveModmailBlock(guildId: string, userId: string): Promise<ModmailBlock | undefined> {
+    const now = new Date();
+    const result = await db.select().from(modmailBlocks).where(
+      and(
+        eq(modmailBlocks.guildId, guildId),
+        eq(modmailBlocks.userId, userId)
+      )
+    );
+    const block = result[0];
+    if (block && block.expiresAt && block.expiresAt <= now) {
+      await db.delete(modmailBlocks).where(eq(modmailBlocks.id, block.id));
+      return undefined;
+    }
+    return block;
+  }
+
+  async removeModmailBlock(guildId: string, userId: string): Promise<void> {
+    await db.delete(modmailBlocks).where(
+      and(
+        eq(modmailBlocks.guildId, guildId),
+        eq(modmailBlocks.userId, userId)
+      )
+    );
+  }
+
+  async getAllModmailBlocks(guildId: string): Promise<ModmailBlock[]> {
+    return await db.select().from(modmailBlocks).where(eq(modmailBlocks.guildId, guildId));
   }
 }
 
