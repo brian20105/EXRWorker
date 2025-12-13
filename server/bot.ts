@@ -5488,9 +5488,12 @@ client.on("messageCreate", async (message) => {
   
   // Handle DM messages
   if (!message.guild) {
+    console.log(`[DM] Received DM from ${message.author.id} (${message.author.tag}): "${message.content.substring(0, 50)}..."`);
+    
     // Check for active quiz first
     const quizState = activeQuizzes.get(message.author.id);
     if (quizState) {
+      console.log(`[DM] User has active quiz, processing answer`);
       const answer = message.content.trim();
       await processQuizAnswer(message.author.id, answer, message.channel);
       return;
@@ -5610,16 +5613,24 @@ client.on("messageCreate", async (message) => {
         
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
         
-        const sentMessage = await message.reply({
-          embeds: [embed],
-          components: [row],
-        });
-        
-        pendingDMTickets.set(message.author.id, {
-          messageId: sentMessage.id,
-          guildId: availableGuild.id,
-          sentAt: Date.now(),
-        });
+        console.log(`[DM] Sending category dropdown to user ${message.author.id}`);
+        try {
+          const sentMessage = await message.reply({
+            embeds: [embed],
+            components: [row],
+          });
+          
+          console.log(`[DM] Category dropdown sent successfully, message ID: ${sentMessage.id}`);
+          
+          pendingDMTickets.set(message.author.id, {
+            messageId: sentMessage.id,
+            guildId: availableGuild.id,
+            sentAt: Date.now(),
+          });
+        } catch (sendError: any) {
+          console.log(`[DM] Failed to send category dropdown: ${sendError.message}`);
+          console.log(`[DM] Full error:`, sendError);
+        }
         
         return;
       }
