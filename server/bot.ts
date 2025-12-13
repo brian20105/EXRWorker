@@ -4827,8 +4827,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
   
-  // Handle !or command (override/unclaim - Admin only)
-  if (message.guild && message.content.toLowerCase() === "!or") {
+  // Handle !or and !unclaim command (override/unclaim - Admin only)
+  if (message.guild && (message.content.toLowerCase() === "!or" || message.content.toLowerCase() === "!unclaim")) {
     // Check for admin permission first
     const member = message.member;
     const hasAdminPermission = member && member.permissions.has("Administrator");
