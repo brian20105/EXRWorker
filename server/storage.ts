@@ -98,6 +98,10 @@ export interface IStorage {
   updateSnippet(guildId: string, alias: string, content: string): Promise<Snippet | undefined>;
   deleteSnippet(guildId: string, alias: string): Promise<void>;
   getAllSnippets(guildId: string): Promise<Snippet[]>;
+  
+  addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void>;
+  removeModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<number>;
+  resetActivityStats(guildId: string, category?: string, userId?: string): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -542,6 +546,64 @@ export class DatabaseStorage implements IStorage {
 
   async getAllSnippets(guildId: string): Promise<Snippet[]> {
     return await db.select().from(snippets).where(eq(snippets.guildId, guildId)).orderBy(snippets.alias);
+  }
+
+  async addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
+    for (let i = 0; i < amount; i++) {
+      await db.insert(modmailThreads).values({
+        guildId,
+        userId: "manual_entry",
+        status: "closed",
+        closedById: userId,
+        closeReason: "Manual activity entry",
+        closedAt: new Date(),
+      });
+    }
+  }
+
+  async removeModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<number> {
+    const threads = await db.select().from(modmailThreads)
+      .where(and(
+        eq(modmailThreads.guildId, guildId),
+        eq(modmailThreads.closedById, userId),
+        eq(modmailThreads.status, "closed")
+      ))
+      .orderBy(desc(modmailThreads.closedAt));
+    
+    let removed = 0;
+    for (const thread of threads) {
+      if (removed >= amount) break;
+      await db.delete(modmailThreads).where(eq(modmailThreads.id, thread.id));
+      removed++;
+    }
+    return removed;
+  }
+
+  async resetActivityStats(guildId: string, category?: string, userId?: string): Promise<number> {
+    let count = 0;
+    
+    if (!category || category === "ban") {
+      const conditions = [eq(banRequests.guildId, guildId)];
+      if (userId) conditions.push(eq(banRequests.reviewedById, userId));
+      const result = await db.delete(banRequests).where(and(...conditions)).returning();
+      count += result.length;
+    }
+    
+    if (!category || category === "unban") {
+      const conditions = [eq(unbanRequests.guildId, guildId)];
+      if (userId) conditions.push(eq(unbanRequests.reviewedById, userId));
+      const result = await db.delete(unbanRequests).where(and(...conditions)).returning();
+      count += result.length;
+    }
+    
+    if (!category || category === "modmail") {
+      const conditions = [eq(modmailThreads.guildId, guildId), eq(modmailThreads.status, "closed")];
+      if (userId) conditions.push(eq(modmailThreads.closedById, userId));
+      const result = await db.delete(modmailThreads).where(and(...conditions)).returning();
+      count += result.length;
+    }
+    
+    return count;
   }
 }
 
