@@ -2740,127 +2740,85 @@ client.on("interactionCreate", async (interaction) => {
         const guildId = interaction.customId.split("_")[2];
         const ticketCategory = interaction.values[0];
         const user = interaction.user;
-        const guild = interaction.guild;
         
-        // For modal-requiring categories, do all validation BEFORE any reply
-        // to avoid "interaction already acknowledged" errors
-        const modalCategories = ["competitive", "contentcreator", "gfx"];
-        const requiresModal = modalCategories.includes(ticketCategory);
-        
-        // Collect validation errors without replying yet
-        let validationError: string | null = null;
-        
-        if (!guild) {
-          validationError = "❌ This can only be used in a server.";
-        }
-        
-        if (!validationError) {
-          const config = await storage.getGuildConfig(guildId);
-          if (!config?.modmailCategoryId) {
-            validationError = "❌ Modmail is not configured for this server.";
-          }
-        }
-        
-        if (!validationError) {
-          // Check if user is blocked
-          const block = await storage.getActiveModmailBlock(guildId, user.id);
-          if (block) {
-            const expiresText = block.expiresAt 
-              ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
-              : "You are permanently blocked.";
-            validationError = `❌ You are blocked from opening tickets. ${expiresText}`;
-          }
-        }
-        
-        if (!validationError) {
-          // Check for existing open thread
-          const existingThread = await storage.getOpenModmailThread(guildId, user.id);
-          if (existingThread) {
-            validationError = "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket.";
-          }
-        }
-        
-        // If there's a validation error, send it now
-        if (validationError) {
-          await safeReply(interaction, { content: validationError, flags: 64 });
-          return;
-        }
-        
-        // Categories that require application modals - show modal BEFORE any other response
+        // Categories that require application modals - show modal IMMEDIATELY (no async work first)
         if (ticketCategory === "competitive") {
-          const modal = new ModalBuilder()
-            .setCustomId(`ticket_modal_competitive_${guildId}`)
-            .setTitle("Apply For Competitive");
-          
-          const trackerInput = new TextInputBuilder()
-            .setCustomId("fortnite_tracker")
-            .setLabel("Send Your Fortnite Tracker")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("https://fortnitetracker.com/profile/...")
-            .setRequired(true);
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("apply_reason")
-            .setLabel("Why Do You Want To Apply For Thrills Esports")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Explain why you want to join...")
-            .setRequired(true);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(trackerInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
-          );
           try {
+            const modal = new ModalBuilder()
+              .setCustomId(`ticket_modal_competitive_${guildId}`)
+              .setTitle("Apply For Competitive");
+            
+            const trackerInput = new TextInputBuilder()
+              .setCustomId("fortnite_tracker")
+              .setLabel("Send Your Fortnite Tracker")
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder("https://fortnitetracker.com/profile/...")
+              .setRequired(true);
+            
+            const reasonInput = new TextInputBuilder()
+              .setCustomId("apply_reason")
+              .setLabel("Why Do You Want To Apply For Thrills Esports")
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder("Explain why you want to join...")
+              .setRequired(true);
+            
+            modal.addComponents(
+              new ActionRowBuilder<TextInputBuilder>().addComponents(trackerInput),
+              new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+            );
+            
             await interaction.showModal(modal);
           } catch (e: any) {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         } else if (ticketCategory === "contentcreator") {
-          const modal = new ModalBuilder()
-            .setCustomId(`ticket_modal_contentcreator_${guildId}`)
-            .setTitle("Apply For Content Creator");
-          
-          const followersInput = new TextInputBuilder()
-            .setCustomId("followers_count")
-            .setLabel("How many followers do you have?")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("e.g., 10,000 on TikTok, 5,000 on YouTube")
-            .setRequired(true);
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("apply_reason")
-            .setLabel("Why do you think you would be a good fit?")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Explain why you'd be a good content creator...")
-            .setRequired(true);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(followersInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
-          );
           try {
+            const modal = new ModalBuilder()
+              .setCustomId(`ticket_modal_contentcreator_${guildId}`)
+              .setTitle("Apply For Content Creator");
+            
+            const followersInput = new TextInputBuilder()
+              .setCustomId("followers_count")
+              .setLabel("How many followers do you have?")
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder("e.g., 10,000 on TikTok, 5,000 on YouTube")
+              .setRequired(true);
+            
+            const reasonInput = new TextInputBuilder()
+              .setCustomId("apply_reason")
+              .setLabel("Why do you think you would be a good fit?")
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder("Explain why you'd be a good content creator...")
+              .setRequired(true);
+            
+            modal.addComponents(
+              new ActionRowBuilder<TextInputBuilder>().addComponents(followersInput),
+              new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+            );
+            
             await interaction.showModal(modal);
           } catch (e: any) {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         } else if (ticketCategory === "gfx") {
-          const modal = new ModalBuilder()
-            .setCustomId(`ticket_modal_gfx_${guildId}`)
-            .setTitle("Apply For GFX Editor");
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("apply_reason")
-            .setLabel("Why are you a good GFX Editor?")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Describe your skills and experience...")
-            .setRequired(true);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
-          );
           try {
+            const modal = new ModalBuilder()
+              .setCustomId(`ticket_modal_gfx_${guildId}`)
+              .setTitle("Apply For GFX Editor");
+            
+            const reasonInput = new TextInputBuilder()
+              .setCustomId("apply_reason")
+              .setLabel("Why are you a good GFX Editor?")
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder("Describe your skills and experience...")
+              .setRequired(true);
+            
+            modal.addComponents(
+              new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+            );
+            
             await interaction.showModal(modal);
           } catch (e: any) {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
@@ -2868,13 +2826,35 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
-        // For general, report, partnerships - create ticket directly
+        // For general, report, partnerships - defer first, then validate and create ticket
         if (!await safeDeferReply(interaction)) return;
         
-        // Re-fetch config (we already validated it exists above)
+        const guild = interaction.guild;
+        if (!guild) {
+          await interaction.editReply({ content: "❌ This can only be used in a server." });
+          return;
+        }
+        
         const config = await storage.getGuildConfig(guildId);
-        if (!config?.modmailCategoryId || !guild) {
+        if (!config?.modmailCategoryId) {
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
+          return;
+        }
+        
+        // Check if user is blocked
+        const block = await storage.getActiveModmailBlock(guildId, user.id);
+        if (block) {
+          const expiresText = block.expiresAt 
+            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
+            : "You are permanently blocked.";
+          await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
+          return;
+        }
+        
+        // Check for existing open thread
+        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (existingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
         
