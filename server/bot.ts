@@ -79,7 +79,7 @@ async function safeDeferReply(interaction: any, ephemeral: boolean = true): Prom
     await interaction.deferReply({ flags: ephemeral ? 64 : undefined });
     return true;
   } catch (e) {
-    console.log(`Interaction expired before defer`);
+    // Silently ignore - interaction expired (bot restart, network delay, or double-click)
     return false;
   }
 }
@@ -1322,12 +1322,7 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
       } else if (commandName === "refresh_roster") {
-        try {
-          if (!await safeDeferReply(interaction)) return;
-        } catch (e) {
-          console.log("refresh_roster: deferReply failed");
-          return;
-        }
+        if (!await safeDeferReply(interaction)) return;
         
         await updateRosterMessages(interaction.guildId!);
         
@@ -2185,12 +2180,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `Reset **${count}** ${categoryText} activity entries for ${userText}.`,
         });
       } else if (commandName === "setup_staff_intro") {
-        try {
-          if (!await safeDeferReply(interaction)) return;
-        } catch (e) {
-          console.log("setup_staff_intro: deferReply failed, interaction may have timed out");
-          return;
-        }
+        if (!await safeDeferReply(interaction)) return;
         
         const config = await storage.getGuildConfig(interaction.guildId!);
         const embedTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
