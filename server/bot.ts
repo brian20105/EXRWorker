@@ -4702,7 +4702,7 @@ client.on("messageCreate", async (message) => {
     }
     
     const previousClaimer = thread.claimedById;
-    await storage.updateModmailThread(thread.id, { claimedById: undefined });
+    await storage.updateModmailThread(thread.id, { claimedById: null });
     await message.reply(`🔓 Ticket unclaimed. (Was claimed by <@${previousClaimer}>)`);
     return;
   }
