@@ -2947,7 +2947,90 @@ client.on("interactionCreate", async (interaction) => {
         // Clean up pending state
         pendingDMTickets.delete(user.id);
         
-        // Disable the dropdown
+        // Categories that require application modals - show modal FIRST before any other response
+        if (ticketCategory === "competitive") {
+          const modal = new ModalBuilder()
+            .setCustomId(`dm_ticket_modal_competitive_${guildId}`)
+            .setTitle("Apply For Competitive");
+          
+          const trackerInput = new TextInputBuilder()
+            .setCustomId("fortnite_tracker")
+            .setLabel("Send Your Fortnite Tracker")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("https://fortnitetracker.com/profile/...")
+            .setRequired(true);
+          
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("apply_reason")
+            .setLabel("Why Do You Want To Apply For Thrills Esports")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Explain why you want to join...")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(trackerInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062) console.log("Could not show modal:", e);
+          }
+          return;
+        } else if (ticketCategory === "contentcreator") {
+          const modal = new ModalBuilder()
+            .setCustomId(`dm_ticket_modal_contentcreator_${guildId}`)
+            .setTitle("Apply For Content Creator");
+          
+          const followersInput = new TextInputBuilder()
+            .setCustomId("followers_count")
+            .setLabel("How many followers do you have?")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("e.g., 10,000 on TikTok, 5,000 on YouTube")
+            .setRequired(true);
+          
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("apply_reason")
+            .setLabel("Why do you think you would be a good fit?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Explain why you'd be a good content creator...")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(followersInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062) console.log("Could not show modal:", e);
+          }
+          return;
+        } else if (ticketCategory === "gfx") {
+          const modal = new ModalBuilder()
+            .setCustomId(`dm_ticket_modal_gfx_${guildId}`)
+            .setTitle("Apply For GFX Editor");
+          
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("apply_reason")
+            .setLabel("Why are you a good GFX Editor?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Describe your skills and experience...")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062) console.log("Could not show modal:", e);
+          }
+          return;
+        }
+        
+        // For general, report, partnerships - create ticket directly
+        // Disable the dropdown first
         try {
           await interaction.update({
             components: [],
@@ -2987,11 +3070,8 @@ client.on("interactionCreate", async (interaction) => {
         
         const categoryLabels: { [key: string]: string } = {
           general: "General Inquiries",
-          competitive: "Apply For Competitive",
-          contentcreator: "Apply For Content Creator",
           report: "User Reports",
           partnerships: "Partnerships",
-          gfx: "Apply For GFX Editor",
         };
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
         
@@ -3015,11 +3095,8 @@ client.on("interactionCreate", async (interaction) => {
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
             general: config.categoryPingGeneral,
-            competitive: config.categoryPingCompetitive,
-            contentcreator: config.categoryPingContentcreator,
             report: config.categoryPingReport,
             partnerships: config.categoryPingPartnerships,
-            gfx: config.categoryPingGfx,
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -3845,6 +3922,135 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted! Check your DMs.` });
         } catch (error) {
           console.log("Could not create ticket channel:", error);
+          await interaction.editReply({ content: "❌ Failed to submit application. Please try again." });
+        }
+        return;
+      }
+      
+      // Handle DM ticket application modals
+      if (interaction.customId.startsWith("dm_ticket_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const parts = interaction.customId.split("_");
+        const ticketCategory = parts[3]; // competitive, contentcreator, or gfx
+        const guildId = parts[4];
+        const user = interaction.user;
+        
+        const guild = client.guilds.cache.get(guildId);
+        if (!guild) {
+          await interaction.editReply({ content: "❌ Could not find the server." });
+          return;
+        }
+        
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.modmailCategoryId) {
+          await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
+          return;
+        }
+        
+        // Check if user is blocked
+        const block = await storage.getActiveModmailBlock(guildId, user.id);
+        if (block) {
+          const expiresText = block.expiresAt 
+            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
+            : "You are permanently blocked.";
+          await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
+          return;
+        }
+        
+        // Check for existing open thread
+        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (existingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+        
+        const categoryLabels: { [key: string]: string } = {
+          competitive: "Apply For Competitive",
+          contentcreator: "Apply For Content Creator",
+          gfx: "Apply For GFX Editor",
+        };
+        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+        
+        // Get form data based on category
+        let applicationFields: { name: string; value: string }[] = [];
+        if (ticketCategory === "competitive") {
+          const tracker = interaction.fields.getTextInputValue("fortnite_tracker");
+          const reason = interaction.fields.getTextInputValue("apply_reason");
+          applicationFields = [
+            { name: "Fortnite Tracker", value: tracker },
+            { name: "Why They Want To Apply", value: reason },
+          ];
+        } else if (ticketCategory === "contentcreator") {
+          const followers = interaction.fields.getTextInputValue("followers_count");
+          const reason = interaction.fields.getTextInputValue("apply_reason");
+          applicationFields = [
+            { name: "Follower Count", value: followers },
+            { name: "Why They Would Be A Good Fit", value: reason },
+          ];
+        } else if (ticketCategory === "gfx") {
+          const reason = interaction.fields.getTextInputValue("apply_reason");
+          applicationFields = [
+            { name: "Why They're A Good GFX Editor", value: reason },
+          ];
+        }
+        
+        // Create thread and channel
+        const thread = await storage.createModmailThread({
+          guildId,
+          userId: user.id,
+          status: "open",
+        });
+        
+        try {
+          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const newChannel = await guild.channels.create({
+            name: channelName,
+            parent: config.modmailCategoryId!,
+            topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
+          });
+          
+          await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+          
+          // Get category-specific ping roles
+          const categoryPingMap: { [key: string]: string[] | null | undefined } = {
+            competitive: config.categoryPingCompetitive,
+            contentcreator: config.categoryPingContentcreator,
+            gfx: config.categoryPingGfx,
+          };
+          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
+          
+          const initialEmbed = new EmbedBuilder()
+            .setTitle(`New Application: ${categoryLabel}`)
+            .setDescription("**Submitted via DM**")
+            .setColor(0x5865f2)
+            .addFields(
+              { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
+              { name: "Category", value: categoryLabel, inline: true },
+              ...applicationFields
+            )
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+          
+          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_claim_${thread.id}`)
+              .setLabel("Claim")
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_close_${thread.id}`)
+              .setLabel("Close")
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji("🔒")
+          );
+          
+          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          
+          await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted to **${guild.name}**! Staff will respond shortly. Reply to this DM to communicate with them.` });
+        } catch (error) {
+          console.log("Could not create ticket channel from DM modal:", error);
           await interaction.editReply({ content: "❌ Failed to submit application. Please try again." });
         }
         return;
