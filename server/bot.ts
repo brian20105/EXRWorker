@@ -5463,8 +5463,20 @@ client.on("messageCreate", async (message) => {
           try {
             const user = await client.users.fetch(thread.userId);
             
+            // Get staff member's highest meaningful role name
+            let snippetRoleName = "Staff";
+            const snippetMember = message.member;
+            if (snippetMember && snippetMember.roles.cache.size > 0) {
+              const roles = snippetMember.roles.cache
+                .filter(r => r.id !== message.guild!.id)
+                .sort((a, b) => b.position - a.position);
+              if (roles.size > 0) {
+                snippetRoleName = roles.first()!.name;
+              }
+            }
+            
             const staffEmbed = new EmbedBuilder()
-              .setAuthor({ name: `Staff Response`, iconURL: message.author.displayAvatarURL() })
+              .setAuthor({ name: snippetRoleName, iconURL: message.author.displayAvatarURL() })
               .setDescription(snippet.content)
               .setColor(0x5865f2)
               .setFooter({ text: message.author.tag })
@@ -5750,8 +5762,21 @@ client.on("messageCreate", async (message) => {
     try {
       const user = await client.users.fetch(thread.userId);
       
+      // Get staff member's highest meaningful role name
+      let roleName = "Staff";
+      const member = message.member;
+      if (member && member.roles.cache.size > 0) {
+        // Get the highest role that isn't @everyone (position 0)
+        const roles = member.roles.cache
+          .filter(r => r.id !== message.guild!.id) // Exclude @everyone
+          .sort((a, b) => b.position - a.position);
+        if (roles.size > 0) {
+          roleName = roles.first()!.name;
+        }
+      }
+      
       const staffEmbed = new EmbedBuilder()
-        .setAuthor({ name: `Staff Response`, iconURL: message.author.displayAvatarURL() })
+        .setAuthor({ name: roleName, iconURL: message.author.displayAvatarURL() })
         .setDescription(replyContent || "(Attachment)")
         .setColor(0x5865f2)
         .setFooter({ text: message.author.tag })
@@ -5952,12 +5977,24 @@ client.on("messageCreate", async (message) => {
     try {
       const user = await client.users.fetch(thread.userId);
       
+      // Get staff member's highest meaningful role name
+      let editRoleName = "Staff";
+      const editMember = message.member;
+      if (editMember && editMember.roles.cache.size > 0) {
+        const roles = editMember.roles.cache
+          .filter(r => r.id !== message.guild!.id)
+          .sort((a, b) => b.position - a.position);
+        if (roles.size > 0) {
+          editRoleName = roles.first()!.name;
+        }
+      }
+      
       // Edit the channel message if we have its ID
       if (modmailMsg.channelMessageId) {
         try {
           const channelMsg = await (message.channel as any).messages.fetch(modmailMsg.channelMessageId);
           const editedEmbed = new EmbedBuilder()
-            .setAuthor({ name: `Staff Response (Edited)`, iconURL: message.author.displayAvatarURL() })
+            .setAuthor({ name: `${editRoleName} (Edited)`, iconURL: message.author.displayAvatarURL() })
             .setDescription(newContent)
             .setColor(0x5865f2)
             .setFooter({ text: `Edited by ${message.author.tag}` })
@@ -5974,7 +6011,7 @@ client.on("messageCreate", async (message) => {
           const dmChannel = await user.createDM();
           const dmMsg = await dmChannel.messages.fetch(modmailMsg.dmMessageId);
           const editedEmbed = new EmbedBuilder()
-            .setAuthor({ name: `Staff Response (Edited)`, iconURL: message.author.displayAvatarURL() })
+            .setAuthor({ name: `${editRoleName} (Edited)`, iconURL: message.author.displayAvatarURL() })
             .setDescription(newContent)
             .setColor(0x5865f2)
             .setFooter({ text: `Edited by ${message.author.tag}` })
