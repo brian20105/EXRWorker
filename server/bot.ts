@@ -798,6 +798,10 @@ const commands = [
     .addRoleOption((option) => option.setName("role3").setDescription("Role 3 to ping").setRequired(false))
     .addRoleOption((option) => option.setName("role4").setDescription("Role 4 to ping").setRequired(false))
     .addRoleOption((option) => option.setName("role5").setDescription("Role 5 to ping").setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("close_all_tickets")
+    .setDescription("Close all open modmail tickets (even if channels are deleted)")
+    .setDefaultMemberPermissions(0),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -2539,6 +2543,86 @@ client.on("interactionCreate", async (interaction) => {
         
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "Default staff role";
         await interaction.editReply({ content: `✅ **${categoryLabels[category]}** ping roles updated!\nRoles: ${roleMentions}` });
+      } else if (commandName === "close_all_tickets") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const allThreads = await storage.getAllModmailThreads(interaction.guildId!);
+        const openThreads = allThreads.filter(t => t.status === "open");
+        
+        if (openThreads.length === 0) {
+          await interaction.editReply({ content: "✅ No open tickets to close." });
+          return;
+        }
+        
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        let closedCount = 0;
+        let deletedChannelCount = 0;
+        
+        for (const thread of openThreads) {
+          // Close the thread in database
+          await storage.updateModmailThread(thread.id, {
+            status: "closed",
+            closedById: interaction.user.id,
+            closeReason: "Closed via /close_all_tickets",
+            closedAt: new Date(),
+          });
+          closedCount++;
+          
+          // Log to modmail log channel with transcript
+          if (config?.modmailLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const messages = await storage.getModmailMessages(thread.id);
+                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                
+                const logEmbed = new EmbedBuilder()
+                  .setTitle("Ticket Closed (Bulk)")
+                  .setColor(0xed4245)
+                  .addFields(
+                    { name: "User", value: `<@${thread.userId}>`, inline: true },
+                    { name: "Closed By", value: `<@${interaction.user.id}>`, inline: true },
+                    { name: "Transcript", value: transcript || "No messages", inline: false }
+                  )
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+              }
+            } catch (e) {
+              console.log("Could not send modmail log for bulk close");
+            }
+          }
+          
+          // Try to delete the channel if it exists
+          if (thread.channelId) {
+            try {
+              const channel = await client.channels.fetch(thread.channelId);
+              if (channel && "delete" in channel) {
+                await channel.delete();
+                deletedChannelCount++;
+              }
+            } catch (e) {
+              // Channel already deleted or doesn't exist - that's fine
+            }
+          }
+          
+          // Try to notify user
+          try {
+            const user = await client.users.fetch(thread.userId);
+            const closeEmbed = new EmbedBuilder()
+              .setTitle("Ticket Closed")
+              .setDescription("Your ticket has been closed by staff.")
+              .setColor(0xed4245)
+              .setTimestamp();
+            await user.send({ embeds: [closeEmbed] });
+          } catch (e) {
+            // Could not DM user
+          }
+        }
+        
+        await interaction.editReply({ 
+          content: `✅ Closed **${closedCount}** ticket(s). Deleted **${deletedChannelCount}** channel(s).` 
+        });
       }
     } else if (interaction.isStringSelectMenu()) {
       // Handle ticket dropdown selection
@@ -4422,6 +4506,76 @@ client.on("error", (error) => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+  
+  // Handle prefix commands (!close, !c) in guild channels
+  if (message.guild && (message.content.toLowerCase() === "!close" || message.content.toLowerCase() === "!c")) {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    // Close the thread
+    await storage.updateModmailThread(thread.id, {
+      status: "closed",
+      closedById: message.author.id,
+      closeReason: "Closed via !close command",
+      closedAt: new Date(),
+    });
+    
+    // Notify user
+    try {
+      const user = await client.users.fetch(thread.userId);
+      const closeEmbed = new EmbedBuilder()
+        .setTitle("Ticket Closed")
+        .setDescription("Your ticket has been closed by staff.")
+        .setColor(0xed4245)
+        .setTimestamp();
+      await user.send({ embeds: [closeEmbed] });
+    } catch (e) {
+      console.log("Could not DM user about ticket close");
+    }
+    
+    // Log to modmail log channel
+    const config = await storage.getGuildConfig(message.guild.id);
+    if (config?.modmailLogChannelId) {
+      try {
+        const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+        if (logChannel && "send" in logChannel) {
+          const messages = await storage.getModmailMessages(thread.id);
+          let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+          if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+          
+          const logEmbed = new EmbedBuilder()
+            .setTitle("Ticket Closed")
+            .setColor(0xed4245)
+            .addFields(
+              { name: "User", value: `<@${thread.userId}>`, inline: true },
+              { name: "Closed By", value: `<@${message.author.id}>`, inline: true },
+              { name: "Transcript", value: transcript || "No messages", inline: false }
+            )
+            .setTimestamp();
+          await logChannel.send({ embeds: [logEmbed] });
+        }
+      } catch (e) {
+        console.log("Could not send modmail log");
+      }
+    }
+    
+    // Delete channel after delay
+    await message.reply("✅ Ticket closed. Deleting channel...");
+    setTimeout(async () => {
+      try {
+        await (message.channel as any).delete();
+      } catch (e) {}
+    }, 3000);
+    return;
+  }
   
   // Handle DM messages
   if (!message.guild) {
