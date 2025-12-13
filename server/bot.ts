@@ -964,7 +964,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
   }
 }
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   console.log(`✅ Bot logged in as ${client.user?.tag}`);
 
   if (!APPLICATION_ID) {
@@ -2253,27 +2253,7 @@ client.on("interactionCreate", async (interaction) => {
         
         console.log(`[QUIZ START] Button clicked by ${user.id}, interaction: ${interaction.id}`);
         
-        // Prevent duplicate processing
-        if (processingQuizStart.has(user.id)) {
-          console.log(`[QUIZ START] Blocked duplicate for user ${user.id}`);
-          try {
-            await interaction.deferUpdate().catch(() => {});
-          } catch (e) {}
-          return;
-        }
-        
-        // Check if user already has an active quiz
-        if (activeQuizzes.has(user.id)) {
-          try {
-            await interaction.reply({
-              content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
-              flags: 64,
-            });
-          } catch (e) {}
-          return;
-        }
-        
-        // DEFER IMMEDIATELY before any async work
+        // DEFER IMMEDIATELY before any checks or async work
         try {
           if (!await safeDeferReply(interaction)) return;
         } catch (error: any) {
@@ -2282,6 +2262,25 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
           throw error;
+        }
+        
+        // Prevent duplicate processing (after deferring)
+        if (processingQuizStart.has(user.id)) {
+          console.log(`[QUIZ START] Blocked duplicate for user ${user.id}`);
+          try {
+            await interaction.editReply({
+              content: "⏳ Your quiz is already being started. Please wait...",
+            });
+          } catch (e) {}
+          return;
+        }
+        
+        // Check if user already has an active quiz (after deferring)
+        if (activeQuizzes.has(user.id)) {
+          await interaction.editReply({
+            content: "You already have an active quiz in progress. Please complete it first by replying in DMs!",
+          });
+          return;
         }
         
         processingQuizStart.add(user.id);
