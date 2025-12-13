@@ -4827,17 +4827,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
   
-  // Handle !or and !unclaim command (override/unclaim - Admin only)
+  // Handle !or and !unclaim command (claimer or admin can unclaim)
   if (message.guild && (message.content.toLowerCase() === "!or" || message.content.toLowerCase() === "!unclaim")) {
-    // Check for admin permission first
-    const member = message.member;
-    const hasAdminPermission = member && member.permissions.has("Administrator");
-    
-    if (!hasAdminPermission) {
-      await message.reply("❌ Only administrators can use the !or (override/unclaim) command.");
-      return;
-    }
-    
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       // Silent return if not a modmail channel (don't spam error in non-ticket channels)
@@ -4851,6 +4842,16 @@ client.on("messageCreate", async (message) => {
     
     if (!thread.claimedById) {
       await message.reply("❌ This ticket is not claimed by anyone.");
+      return;
+    }
+    
+    // Check permission: claimer can unclaim their own ticket, or admin can unclaim any ticket
+    const member = message.member;
+    const hasAdminPermission = member && member.permissions.has("Administrator");
+    const isClaimedByUser = thread.claimedById === message.author.id;
+    
+    if (!isClaimedByUser && !hasAdminPermission) {
+      await message.reply(`❌ Only <@${thread.claimedById}> (who claimed this ticket) or an administrator can unclaim it.`);
       return;
     }
     
