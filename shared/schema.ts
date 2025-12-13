@@ -221,6 +221,8 @@ export const modmailMessages = pgTable("modmail_messages", {
   authorId: text("author_id").notNull(),
   content: text("content").notNull(),
   isStaff: text("is_staff").notNull().default("false"),
+  channelMessageId: text("channel_message_id"),
+  dmMessageId: text("dm_message_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
