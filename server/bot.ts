@@ -4954,8 +4954,11 @@ client.on("messageCreate", async (message) => {
         return;
       }
       
-      const list = allSnippets.map(s => `\`!${s.alias}\``).join(", ");
-      await message.reply(`📝 **Available Snippets:** ${list}`);
+      const list = allSnippets.map((s, i) => {
+        const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
+        return `${i + 1}.) "${s.alias}", Response: "${truncatedContent}"`;
+      }).join("\n");
+      await message.reply(`📝 **Available Snippets:**\n${list}`);
       return;
     } else {
       await message.reply("❌ Unknown subcommand. Use `!snip create`, `!snip edit`, `!snip delete`, or `!snip list`.");
