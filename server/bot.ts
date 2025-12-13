@@ -4611,8 +4611,17 @@ client.on("error", (error) => {
 
 const pendingTimedCloses = new Map<string, NodeJS.Timeout>();
 
+// Prevent duplicate message processing (in case of multiple bot instances)
+const processedMessages = new Set<string>();
+const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+  
+  // Deduplicate messages to prevent double responses
+  if (processedMessages.has(message.id)) return;
+  processedMessages.add(message.id);
+  setTimeout(() => processedMessages.delete(message.id), MESSAGE_DEDUP_TIMEOUT);
   
   // Handle prefix commands (!close, !c) with optional time argument in guild channels
   const lowerContent = message.content.toLowerCase();
