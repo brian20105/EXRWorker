@@ -3041,6 +3041,11 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
+        if (thread.claimedById) {
+          await interaction.followUp({ content: `❌ This ticket is already claimed by <@${thread.claimedById}>.`, flags: 64 });
+          return;
+        }
+        
         const config = await storage.getGuildConfig(interaction.guildId!);
         const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
         const memberRoles = interaction.member?.roles;
