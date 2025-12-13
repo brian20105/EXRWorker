@@ -505,7 +505,8 @@ const commands = [
         .setRequired(false)
         .addChoices(
           { name: "Ban Requests", value: "ban" },
-          { name: "Unban Requests", value: "unban" }
+          { name: "Unban Requests", value: "unban" },
+          { name: "Modmail Responses", value: "modmail" }
         )
     )
     .addIntegerOption((option) =>
@@ -699,6 +700,43 @@ const commands = [
     .setName("terminate_quizzes")
     .setDescription("Terminate all active staff intro quizzes")
     .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("setup_modmail")
+    .setDescription("Configure the modmail system")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("category")
+        .setDescription("Category channel for modmail threads")
+        .setRequired(true)
+    )
+    .addChannelOption((option) =>
+      option
+        .setName("log_channel")
+        .setDescription("Channel for modmail logs")
+        .setRequired(true)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("staff_role")
+        .setDescription("Role that can respond to modmail")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("modmail")
+    .setDescription("Modmail management commands")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub
+        .setName("close")
+        .setDescription("Close the current modmail thread")
+        .addStringOption((opt) =>
+          opt.setName("reason").setDescription("Reason for closing")
+        )
+    )
+    .addSubcommand((sub) =>
+      sub.setName("claim").setDescription("Claim this modmail thread")
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -1890,6 +1928,9 @@ client.on("interactionCreate", async (interaction) => {
         const unbanStats = !category || category === "unban"
           ? await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays)
           : [];
+        const modmailStats = !category || category === "modmail"
+          ? await storage.getModmailStats(interaction.guildId!, fromDays, toDays)
+          : [];
         
         const combinedStats: { [userId: string]: number } = {};
         for (const stat of banStats) {
@@ -1898,13 +1939,16 @@ client.on("interactionCreate", async (interaction) => {
         for (const stat of unbanStats) {
           combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
         }
+        for (const stat of modmailStats) {
+          combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+        }
         
         const leaderboard = Object.entries(combinedStats)
           .map(([userId, count]) => ({ userId, count }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 10);
         
-        const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : "All Requests";
+        const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmail Responses" : "All Requests";
         const timeRange = fromDays !== undefined || toDays !== undefined
           ? ` (${fromDays ?? "∞"}d ago - ${toDays ?? "now"})`
           : "";
@@ -2238,6 +2282,112 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Terminated ${count} active quiz session${count !== 1 ? "s" : ""}.`,
         });
+      } else if (commandName === "setup_modmail") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const category = interaction.options.getChannel("category", true);
+        const logChannel = interaction.options.getChannel("log_channel", true);
+        const staffRole = interaction.options.getRole("staff_role", true);
+        
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          modmailCategoryId: category.id,
+          modmailLogChannelId: logChannel.id,
+          modmailStaffRoleIds: [staffRole.id],
+        });
+        
+        await interaction.editReply({
+          content: `✅ Modmail configured!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>\n\nUsers can now DM the bot to create a modmail ticket.`,
+        });
+      } else if (commandName === "modmail") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const subcommand = interaction.options.getSubcommand();
+        
+        const thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+        if (!thread) {
+          await interaction.editReply({
+            content: "❌ This command can only be used in a modmail thread channel.",
+          });
+          return;
+        }
+        
+        if (subcommand === "close") {
+          const reason = interaction.options.getString("reason") || "No reason provided";
+          
+          await storage.updateModmailThread(thread.id, {
+            status: "closed",
+            closedById: interaction.user.id,
+            closeReason: reason,
+            closedAt: new Date(),
+          });
+          
+          // Notify user
+          try {
+            const user = await client.users.fetch(thread.userId);
+            const closeEmbed = new EmbedBuilder()
+              .setTitle("Modmail Thread Closed")
+              .setDescription(`Your modmail thread has been closed.`)
+              .addFields({ name: "Reason", value: reason })
+              .setColor(0xed4245)
+              .setTimestamp();
+            await user.send({ embeds: [closeEmbed] });
+          } catch (error) {
+            console.log("Could not DM user about thread close");
+          }
+          
+          // Log to modmail log channel
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          if (config?.modmailLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const messages = await storage.getModmailMessages(thread.id);
+                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                
+                const logEmbed = new EmbedBuilder()
+                  .setTitle("Modmail Thread Closed")
+                  .setColor(0xed4245)
+                  .addFields(
+                    { name: "User", value: `<@${thread.userId}>`, inline: true },
+                    { name: "Closed By", value: `<@${interaction.user.id}>`, inline: true },
+                    { name: "Reason", value: reason, inline: false },
+                    { name: "Transcript", value: transcript || "No messages", inline: false }
+                  )
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+              }
+            } catch (error) {
+              console.log("Could not send modmail log");
+            }
+          }
+          
+          // Delete the channel
+          try {
+            const channel = interaction.channel;
+            if (channel && "delete" in channel) {
+              await interaction.editReply({ content: "✅ Thread closed. Deleting channel..." });
+              setTimeout(async () => {
+                try {
+                  await (channel as any).delete();
+                } catch (e) {
+                  console.log("Could not delete modmail channel");
+                }
+              }, 3000);
+            }
+          } catch (error) {
+            await interaction.editReply({ content: "✅ Thread closed." });
+          }
+        } else if (subcommand === "claim") {
+          await storage.updateModmailThread(thread.id, {
+            claimedById: interaction.user.id,
+          });
+          
+          await interaction.editReply({
+            content: `✅ Thread claimed by <@${interaction.user.id}>`,
+          });
+        }
       }
     } else if (interaction.isButton()) {
       if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
@@ -3585,13 +3735,160 @@ client.on("error", (error) => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-  if (message.guild) return;
   
-  const quizState = activeQuizzes.get(message.author.id);
-  if (!quizState) return;
+  // Handle DM messages
+  if (!message.guild) {
+    // Check for active quiz first
+    const quizState = activeQuizzes.get(message.author.id);
+    if (quizState) {
+      const answer = message.content.trim();
+      await processQuizAnswer(message.author.id, answer, message.channel);
+      return;
+    }
+    
+    // Handle modmail DMs
+    try {
+      // Find a guild where the user is a member and modmail is configured
+      let targetGuild = null;
+      let targetConfig = null;
+      
+      for (const guild of client.guilds.cache.values()) {
+        try {
+          const member = await guild.members.fetch(message.author.id);
+          if (member) {
+            const config = await storage.getGuildConfig(guild.id);
+            if (config?.modmailCategoryId) {
+              targetGuild = guild;
+              targetConfig = config;
+              break;
+            }
+          }
+        } catch (e) {
+          // User not in this guild
+        }
+      }
+      
+      if (!targetGuild || !targetConfig) {
+        return; // No modmail-configured guild found
+      }
+      
+      // Check for existing open thread
+      let thread = await storage.getOpenModmailThread(targetGuild.id, message.author.id);
+      
+      if (!thread) {
+        // Create new thread
+        thread = await storage.createModmailThread({
+          guildId: targetGuild.id,
+          userId: message.author.id,
+          status: "open",
+        });
+        
+        // Create channel in modmail category
+        try {
+          const category = await targetGuild.channels.fetch(targetConfig.modmailCategoryId!);
+          if (category && category.type === 4) { // ChannelType.GuildCategory = 4
+            const channelName = `modmail-${message.author.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+            const newChannel = await targetGuild.channels.create({
+              name: channelName,
+              parent: targetConfig.modmailCategoryId!,
+              topic: `Modmail thread with ${message.author.tag} (${message.author.id})`,
+            });
+            
+            await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+            thread.channelId = newChannel.id;
+            
+            // Send initial embed
+            const staffRoleMentions = targetConfig.modmailStaffRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
+            const initialEmbed = new EmbedBuilder()
+              .setTitle("New Modmail Thread")
+              .setColor(0x5865f2)
+              .addFields(
+                { name: "User", value: `<@${message.author.id}> (${message.author.tag})`, inline: true },
+                { name: "User ID", value: message.author.id, inline: true }
+              )
+              .setThumbnail(message.author.displayAvatarURL())
+              .setTimestamp();
+            
+            await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed] });
+          }
+        } catch (error) {
+          console.log("Could not create modmail channel:", error);
+          return;
+        }
+        
+        // Confirm to user
+        await message.reply("✅ Your message has been received. A staff member will respond shortly.");
+      }
+      
+      // Relay message to modmail channel
+      if (thread.channelId) {
+        try {
+          const modmailChannel = await client.channels.fetch(thread.channelId);
+          if (modmailChannel && "send" in modmailChannel) {
+            const userEmbed = new EmbedBuilder()
+              .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+              .setDescription(message.content)
+              .setColor(0x57f287)
+              .setTimestamp();
+            
+            await modmailChannel.send({ embeds: [userEmbed] });
+            
+            // Save message
+            await storage.addModmailMessage({
+              threadId: thread.id,
+              authorId: message.author.id,
+              content: message.content,
+              isStaff: "false",
+            });
+            
+            // React to confirm
+            await message.react("✅");
+          }
+        } catch (error) {
+          console.log("Could not relay modmail message:", error);
+        }
+      }
+    } catch (error) {
+      console.log("Modmail DM handler error:", error);
+    }
+    return;
+  }
   
-  const answer = message.content.trim();
-  await processQuizAnswer(message.author.id, answer, message.channel);
+  // Handle staff replies in modmail channels
+  try {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (thread && thread.status === "open") {
+      // This is a modmail channel, relay to user
+      try {
+        const user = await client.users.fetch(thread.userId);
+        
+        const staffEmbed = new EmbedBuilder()
+          .setAuthor({ name: `Staff Response`, iconURL: message.author.displayAvatarURL() })
+          .setDescription(message.content)
+          .setColor(0x5865f2)
+          .setFooter({ text: message.author.tag })
+          .setTimestamp();
+        
+        await user.send({ embeds: [staffEmbed] });
+        
+        // Save message
+        await storage.addModmailMessage({
+          threadId: thread.id,
+          authorId: message.author.id,
+          content: message.content,
+          isStaff: "true",
+        });
+        
+        // React to confirm
+        await message.react("✅");
+      } catch (error) {
+        console.log("Could not relay staff message to user:", error);
+        await message.react("❌");
+      }
+    }
+  } catch (error) {
+    // Not a modmail channel, ignore
+  }
 });
 
 const syncingUsers = new Set<string>();
