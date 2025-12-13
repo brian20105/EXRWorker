@@ -19,6 +19,8 @@ import {
   type InsertModmailMessage,
   type ModmailBlock,
   type InsertModmailBlock,
+  type Snippet,
+  type InsertSnippet,
   guildConfigs,
   payoutRequests,
   roleSyncPairs,
@@ -28,7 +30,8 @@ import {
   inactivityRequests,
   modmailThreads,
   modmailMessages,
-  modmailBlocks
+  modmailBlocks,
+  snippets
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, or, sql } from "drizzle-orm";
@@ -89,6 +92,12 @@ export interface IStorage {
   getActiveModmailBlock(guildId: string, userId: string): Promise<ModmailBlock | undefined>;
   removeModmailBlock(guildId: string, userId: string): Promise<void>;
   getAllModmailBlocks(guildId: string): Promise<ModmailBlock[]>;
+  
+  createSnippet(snippet: InsertSnippet): Promise<Snippet>;
+  getSnippet(guildId: string, alias: string): Promise<Snippet | undefined>;
+  updateSnippet(guildId: string, alias: string, content: string): Promise<Snippet | undefined>;
+  deleteSnippet(guildId: string, alias: string): Promise<void>;
+  getAllSnippets(guildId: string): Promise<Snippet[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -429,27 +438,30 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
-    const threads = await db.select().from(modmailThreads).where(eq(modmailThreads.guildId, guildId));
-    const threadIds = threads.map(t => t.id);
+    let threads = await db.select().from(modmailThreads).where(
+      and(
+        eq(modmailThreads.guildId, guildId),
+        eq(modmailThreads.status, "closed")
+      )
+    );
     
-    if (threadIds.length === 0) return [];
-    
-    let messages = await db.select().from(modmailMessages).where(eq(modmailMessages.isStaff, "true"));
-    messages = messages.filter(m => threadIds.includes(m.threadId));
+    if (threads.length === 0) return [];
     
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
-      messages = messages.filter(m => m.createdAt >= fromDate);
+      threads = threads.filter(t => t.closedAt && t.closedAt >= fromDate);
     }
     if (toDays !== undefined) {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
-      messages = messages.filter(m => m.createdAt <= toDate);
+      threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
     }
     
     const counts: { [userId: string]: number } = {};
-    for (const m of messages) {
-      counts[m.authorId] = (counts[m.authorId] || 0) + 1;
+    for (const t of threads) {
+      if (t.closedById) {
+        counts[t.closedById] = (counts[t.closedById] || 0) + 1;
+      }
     }
     
     return Object.entries(counts)
@@ -489,6 +501,47 @@ export class DatabaseStorage implements IStorage {
 
   async getAllModmailBlocks(guildId: string): Promise<ModmailBlock[]> {
     return await db.select().from(modmailBlocks).where(eq(modmailBlocks.guildId, guildId));
+  }
+
+  async createSnippet(snippet: InsertSnippet): Promise<Snippet> {
+    const result = await db.insert(snippets).values(snippet).returning();
+    return result[0];
+  }
+
+  async getSnippet(guildId: string, alias: string): Promise<Snippet | undefined> {
+    const result = await db.select().from(snippets).where(
+      and(
+        eq(snippets.guildId, guildId),
+        eq(snippets.alias, alias.toLowerCase())
+      )
+    );
+    return result[0];
+  }
+
+  async updateSnippet(guildId: string, alias: string, content: string): Promise<Snippet | undefined> {
+    const result = await db.update(snippets)
+      .set({ content, updatedAt: new Date() })
+      .where(
+        and(
+          eq(snippets.guildId, guildId),
+          eq(snippets.alias, alias.toLowerCase())
+        )
+      )
+      .returning();
+    return result[0];
+  }
+
+  async deleteSnippet(guildId: string, alias: string): Promise<void> {
+    await db.delete(snippets).where(
+      and(
+        eq(snippets.guildId, guildId),
+        eq(snippets.alias, alias.toLowerCase())
+      )
+    );
+  }
+
+  async getAllSnippets(guildId: string): Promise<Snippet[]> {
+    return await db.select().from(snippets).where(eq(snippets.guildId, guildId)).orderBy(snippets.alias);
   }
 }
 

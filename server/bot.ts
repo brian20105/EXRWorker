@@ -508,7 +508,7 @@ const commands = [
         .addChoices(
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
-          { name: "Modmail Responses", value: "modmail" }
+          { name: "Modmails handled", value: "modmail" }
         )
     )
     .addIntegerOption((option) =>
@@ -2013,7 +2013,7 @@ client.on("interactionCreate", async (interaction) => {
           .sort((a, b) => b.count - a.count)
           .slice(0, 10);
         
-        const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmail Responses" : "All Requests";
+        const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails handled" : "All Requests";
         const timeRange = fromDays !== undefined || toDays !== undefined
           ? ` (${fromDays ?? "∞"}d ago - ${toDays ?? "now"})`
           : "";
@@ -2971,6 +2971,12 @@ client.on("interactionCreate", async (interaction) => {
         
         if (!thread) {
           await interaction.editReply({ content: "❌ Thread not found." });
+          return;
+        }
+        
+        // Check if ticket is claimed and if the closer is the claimer
+        if (thread.claimedById && thread.claimedById !== interaction.user.id) {
+          await interaction.editReply({ content: `❌ Only <@${thread.claimedById}> (who claimed this ticket) can close it.` });
           return;
         }
         
@@ -4507,7 +4513,7 @@ client.on("error", (error) => {
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   
-  // Handle prefix commands (!close, !c) in guild channels
+  // Handle prefix commands (!close, !c, !claim, !or) in guild channels
   if (message.guild && (message.content.toLowerCase() === "!close" || message.content.toLowerCase() === "!c")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
@@ -4517,6 +4523,12 @@ client.on("messageCreate", async (message) => {
     
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    // Check if ticket is claimed and if the closer is the claimer
+    if (thread.claimedById && thread.claimedById !== message.author.id) {
+      await message.reply(`❌ Only <@${thread.claimedById}> (who claimed this ticket) can close it.`);
       return;
     }
     
@@ -4575,6 +4587,218 @@ client.on("messageCreate", async (message) => {
       } catch (e) {}
     }, 3000);
     return;
+  }
+  
+  // Handle !claim command
+  if (message.guild && message.content.toLowerCase() === "!claim") {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    if (thread.claimedById) {
+      await message.reply(`❌ This ticket is already claimed by <@${thread.claimedById}>.`);
+      return;
+    }
+    
+    // Check claim permission
+    const config = await storage.getGuildConfig(message.guild.id);
+    const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
+    const member = message.member;
+    const hasClaimPermission = claimRoleIds.length === 0 || 
+      (member && member.roles.cache.some(role => claimRoleIds.includes(role.id)));
+    
+    if (!hasClaimPermission) {
+      await message.reply("❌ You don't have permission to claim tickets.");
+      return;
+    }
+    
+    await storage.updateModmailThread(thread.id, { claimedById: message.author.id });
+    await message.reply(`🙋 Ticket claimed by <@${message.author.id}>`);
+    return;
+  }
+  
+  // Handle !or command (override/unclaim - Admin only)
+  if (message.guild && message.content.toLowerCase() === "!or") {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    // Check for admin permission
+    const member = message.member;
+    const hasAdminPermission = member && member.permissions.has("Administrator");
+    
+    if (!hasAdminPermission) {
+      await message.reply("❌ Only administrators can use the !or (override/unclaim) command.");
+      return;
+    }
+    
+    if (!thread.claimedById) {
+      await message.reply("❌ This ticket is not claimed by anyone.");
+      return;
+    }
+    
+    const previousClaimer = thread.claimedById;
+    await storage.updateModmailThread(thread.id, { claimedById: undefined });
+    await message.reply(`🔓 Ticket unclaimed. (Was claimed by <@${previousClaimer}>)`);
+    return;
+  }
+  
+  // Handle !snip commands for snippet management
+  if (message.guild && message.content.toLowerCase().startsWith("!snip ")) {
+    const args = message.content.substring(6).trim();
+    const spaceIndex = args.indexOf(" ");
+    const subCommand = spaceIndex === -1 ? args.toLowerCase() : args.substring(0, spaceIndex).toLowerCase();
+    const rest = spaceIndex === -1 ? "" : args.substring(spaceIndex + 1).trim();
+    
+    // Check for admin permission for create/edit/delete
+    const member = message.member;
+    const hasAdminPermission = member && member.permissions.has("Administrator");
+    
+    if (subCommand === "create") {
+      if (!hasAdminPermission) {
+        await message.reply("❌ Only administrators can create snippets.");
+        return;
+      }
+      
+      // Parse: !snip create <alias> "<text>"
+      const aliasMatch = rest.match(/^(\S+)\s+"([\s\S]+)"$/);
+      if (!aliasMatch) {
+        await message.reply("❌ Usage: `!snip create <alias> \"<text>\"`");
+        return;
+      }
+      
+      const alias = aliasMatch[1].toLowerCase();
+      const content = aliasMatch[2];
+      
+      const existing = await storage.getSnippet(message.guild.id, alias);
+      if (existing) {
+        await message.reply(`❌ Snippet \`${alias}\` already exists. Use \`!snip edit\` to modify it.`);
+        return;
+      }
+      
+      await storage.createSnippet({
+        guildId: message.guild.id,
+        alias: alias,
+        content: content,
+        createdById: message.author.id,
+      });
+      
+      await message.reply(`✅ Snippet \`${alias}\` created. Use \`!${alias}\` in ticket channels to send it.`);
+      return;
+    } else if (subCommand === "edit") {
+      if (!hasAdminPermission) {
+        await message.reply("❌ Only administrators can edit snippets.");
+        return;
+      }
+      
+      // Parse: !snip edit <alias> "<text>"
+      const aliasMatch = rest.match(/^(\S+)\s+"([\s\S]+)"$/);
+      if (!aliasMatch) {
+        await message.reply("❌ Usage: `!snip edit <alias> \"<text>\"`");
+        return;
+      }
+      
+      const alias = aliasMatch[1].toLowerCase();
+      const content = aliasMatch[2];
+      
+      const updated = await storage.updateSnippet(message.guild.id, alias, content);
+      if (!updated) {
+        await message.reply(`❌ Snippet \`${alias}\` not found.`);
+        return;
+      }
+      
+      await message.reply(`✅ Snippet \`${alias}\` updated.`);
+      return;
+    } else if (subCommand === "delete") {
+      if (!hasAdminPermission) {
+        await message.reply("❌ Only administrators can delete snippets.");
+        return;
+      }
+      
+      const alias = rest.toLowerCase();
+      if (!alias) {
+        await message.reply("❌ Usage: `!snip delete <alias>`");
+        return;
+      }
+      
+      const existing = await storage.getSnippet(message.guild.id, alias);
+      if (!existing) {
+        await message.reply(`❌ Snippet \`${alias}\` not found.`);
+        return;
+      }
+      
+      await storage.deleteSnippet(message.guild.id, alias);
+      await message.reply(`✅ Snippet \`${alias}\` deleted.`);
+      return;
+    } else if (subCommand === "list") {
+      const allSnippets = await storage.getAllSnippets(message.guild.id);
+      if (allSnippets.length === 0) {
+        await message.reply("📝 No snippets configured. Use `!snip create <alias> \"<text>\"` to create one.");
+        return;
+      }
+      
+      const list = allSnippets.map(s => `\`!${s.alias}\``).join(", ");
+      await message.reply(`📝 **Available Snippets:** ${list}`);
+      return;
+    } else {
+      await message.reply("❌ Unknown subcommand. Use `!snip create`, `!snip edit`, `!snip delete`, or `!snip list`.");
+      return;
+    }
+  }
+  
+  // Handle !<alias> snippet usage in modmail ticket channels
+  if (message.guild && message.content.startsWith("!") && !message.content.startsWith("!snip") && 
+      !message.content.toLowerCase().startsWith("!close") && !message.content.toLowerCase().startsWith("!c") &&
+      !message.content.toLowerCase().startsWith("!claim") && !message.content.toLowerCase().startsWith("!or") &&
+      !message.content.toLowerCase().startsWith("!r ")) {
+    const alias = message.content.substring(1).toLowerCase().split(" ")[0];
+    if (alias) {
+      const thread = await storage.getModmailThreadByChannel(message.channel.id);
+      if (thread && thread.status === "open") {
+        const snippet = await storage.getSnippet(message.guild.id, alias);
+        if (snippet) {
+          try {
+            const user = await client.users.fetch(thread.userId);
+            
+            const staffEmbed = new EmbedBuilder()
+              .setAuthor({ name: `Staff Response`, iconURL: message.author.displayAvatarURL() })
+              .setDescription(snippet.content)
+              .setColor(0x5865f2)
+              .setFooter({ text: message.author.tag })
+              .setTimestamp();
+            
+            await user.send({ embeds: [staffEmbed] });
+            
+            await storage.addModmailMessage({
+              threadId: thread.id,
+              authorId: message.author.id,
+              content: snippet.content,
+              isStaff: "true",
+            });
+            
+            await message.react("✅");
+          } catch (error) {
+            console.log("Could not send snippet to user:", error);
+            await message.react("❌");
+          }
+          return;
+        }
+      }
+    }
   }
   
   // Handle DM messages
@@ -4645,41 +4869,56 @@ client.on("messageCreate", async (message) => {
     return;
   }
   
-  // Handle staff replies in modmail channels
-  try {
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
-    if (thread && thread.status === "open") {
-      // This is a modmail channel, relay to user
-      try {
-        const user = await client.users.fetch(thread.userId);
-        
-        const staffEmbed = new EmbedBuilder()
-          .setAuthor({ name: `Staff Response`, iconURL: message.author.displayAvatarURL() })
-          .setDescription(message.content)
-          .setColor(0x5865f2)
-          .setFooter({ text: message.author.tag })
-          .setTimestamp();
-        
-        await user.send({ embeds: [staffEmbed] });
-        
-        // Save message
-        await storage.addModmailMessage({
-          threadId: thread.id,
-          authorId: message.author.id,
-          content: message.content,
-          isStaff: "true",
-        });
-        
-        // React to confirm
-        await message.react("✅");
-      } catch (error) {
-        console.log("Could not relay staff message to user:", error);
-        await message.react("❌");
-      }
+  // Handle !r <message> reply command in modmail channels
+  if (message.guild && message.content.toLowerCase().startsWith("!r ")) {
+    const replyContent = message.content.substring(3).trim();
+    if (!replyContent) {
+      await message.reply("❌ Please provide a message to send. Usage: `!r <message>`");
+      return;
     }
-  } catch (error) {
-    // Not a modmail channel, ignore
+    
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    try {
+      const user = await client.users.fetch(thread.userId);
+      
+      const staffEmbed = new EmbedBuilder()
+        .setAuthor({ name: `Staff Response`, iconURL: message.author.displayAvatarURL() })
+        .setDescription(replyContent)
+        .setColor(0x5865f2)
+        .setFooter({ text: message.author.tag })
+        .setTimestamp();
+      
+      await user.send({ embeds: [staffEmbed] });
+      
+      // Save message
+      await storage.addModmailMessage({
+        threadId: thread.id,
+        authorId: message.author.id,
+        content: replyContent,
+        isStaff: "true",
+      });
+      
+      // React to confirm
+      await message.react("✅");
+    } catch (error) {
+      console.log("Could not relay staff message to user:", error);
+      await message.react("❌");
+    }
+    return;
   }
+  
+  // Staff messages in modmail channels WITHOUT !r prefix are NOT sent to user
+  // This allows staff to discuss in the channel privately
 });
 
 const syncingUsers = new Set<string>();

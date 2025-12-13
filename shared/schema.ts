@@ -247,3 +247,22 @@ export const insertModmailBlockSchema = createInsertSchema(modmailBlocks).omit({
 
 export type InsertModmailBlock = z.infer<typeof insertModmailBlockSchema>;
 export type ModmailBlock = typeof modmailBlocks.$inferSelect;
+
+export const snippets = pgTable("snippets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  alias: text("alias").notNull(),
+  content: text("content").notNull(),
+  createdById: text("created_by_id").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertSnippetSchema = createInsertSchema(snippets).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertSnippet = z.infer<typeof insertSnippetSchema>;
+export type Snippet = typeof snippets.$inferSelect;
