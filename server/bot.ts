@@ -3574,6 +3574,8 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       }
+      // Silently ignore unhandled button interactions (e.g., Discord's native attachment buttons)
+      return;
     } else if (interaction.isModalSubmit()) {
       // Handle ticket application modals
       if (interaction.customId.startsWith("ticket_modal_")) {
