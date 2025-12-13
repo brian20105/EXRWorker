@@ -5548,7 +5548,8 @@ client.on("messageCreate", async (message) => {
         }
         
         if (!availableGuild || !availableConfig) {
-          await message.reply("❌ You don't have access to any servers with modmail configured, or you may be blocked.");
+          // Silently ignore - user may need to try again, or they genuinely don't have access
+          // This prevents error spam when the bot is still loading guild data
           return;
         }
         
