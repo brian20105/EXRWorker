@@ -33,6 +33,9 @@ export const guildConfigs = pgTable("guild_configs", {
   quizQuestion4: text("quiz_question_4"),
   quizQuestion5: text("quiz_question_5"),
   quizQuestion5Options: text("quiz_question_5_options"),
+  modmailCategoryId: text("modmail_category_id"),
+  modmailLogChannelId: text("modmail_log_channel_id"),
+  modmailStaffRoleIds: text("modmail_staff_role_ids").array(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -180,3 +183,41 @@ export const insertInactivityRequestSchema = createInsertSchema(inactivityReques
 
 export type InsertInactivityRequest = z.infer<typeof insertInactivityRequestSchema>;
 export type InactivityRequest = typeof inactivityRequests.$inferSelect;
+
+export const modmailThreads = pgTable("modmail_threads", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  channelId: text("channel_id"),
+  status: text("status").notNull().default("open"),
+  claimedById: text("claimed_by_id"),
+  closedById: text("closed_by_id"),
+  closeReason: text("close_reason"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  closedAt: timestamp("closed_at"),
+});
+
+export const insertModmailThreadSchema = createInsertSchema(modmailThreads).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertModmailThread = z.infer<typeof insertModmailThreadSchema>;
+export type ModmailThread = typeof modmailThreads.$inferSelect;
+
+export const modmailMessages = pgTable("modmail_messages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  threadId: text("thread_id").notNull(),
+  authorId: text("author_id").notNull(),
+  content: text("content").notNull(),
+  isStaff: text("is_staff").notNull().default("false"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertModmailMessageSchema = createInsertSchema(modmailMessages).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertModmailMessage = z.infer<typeof insertModmailMessageSchema>;
+export type ModmailMessage = typeof modmailMessages.$inferSelect;
