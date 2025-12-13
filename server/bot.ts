@@ -4877,15 +4877,16 @@ client.on("messageCreate", async (message) => {
         return;
       }
       
-      // Parse: !snip create <alias> "<text>"
-      const aliasMatch = rest.match(/^(\S+)\s+"([\s\S]+)"$/);
-      if (!aliasMatch) {
-        await message.reply("❌ Usage: `!snip create <alias> \"<text>\"`");
+      // Parse: !snip create <alias> <text> (quotes optional)
+      // Support regular quotes, smart quotes, or no quotes
+      const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
+      if (!aliasMatch || !aliasMatch[2]?.trim()) {
+        await message.reply("❌ Usage: `!snip create <alias> <text>`");
         return;
       }
       
       const alias = aliasMatch[1].toLowerCase();
-      const content = aliasMatch[2];
+      const content = aliasMatch[2].trim();
       
       const existing = await storage.getSnippet(message.guild.id, alias);
       if (existing) {
@@ -4908,15 +4909,15 @@ client.on("messageCreate", async (message) => {
         return;
       }
       
-      // Parse: !snip edit <alias> "<text>"
-      const aliasMatch = rest.match(/^(\S+)\s+"([\s\S]+)"$/);
-      if (!aliasMatch) {
-        await message.reply("❌ Usage: `!snip edit <alias> \"<text>\"`");
+      // Parse: !snip edit <alias> <text> (quotes optional)
+      const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
+      if (!aliasMatch || !aliasMatch[2]?.trim()) {
+        await message.reply("❌ Usage: `!snip edit <alias> <text>`");
         return;
       }
       
       const alias = aliasMatch[1].toLowerCase();
-      const content = aliasMatch[2];
+      const content = aliasMatch[2].trim();
       
       const updated = await storage.updateSnippet(message.guild.id, alias, content);
       if (!updated) {
