@@ -84,6 +84,18 @@ async function safeDeferReply(interaction: any, ephemeral: boolean = true): Prom
   }
 }
 
+// Helper to safely reply to interactions - returns false if interaction expired
+async function safeReply(interaction: any, options: any): Promise<boolean> {
+  try {
+    await interaction.reply(options);
+    return true;
+  } catch (e: any) {
+    // Silently ignore expired interactions (code 10062)
+    if (e.code !== 10062) console.log("Error replying to interaction:", e);
+    return false;
+  }
+}
+
 interface QuizQuestion {
   text: string;
 }
@@ -2717,13 +2729,13 @@ client.on("interactionCreate", async (interaction) => {
         const guild = interaction.guild;
         
         if (!guild) {
-          await interaction.reply({ content: "❌ This can only be used in a server.", flags: 64 });
+          await safeReply(interaction, { content: "❌ This can only be used in a server.", flags: 64 });
           return;
         }
         
         const config = await storage.getGuildConfig(guildId);
         if (!config?.modmailCategoryId) {
-          await interaction.reply({ content: "❌ Modmail is not configured for this server.", flags: 64 });
+          await safeReply(interaction, { content: "❌ Modmail is not configured for this server.", flags: 64 });
           return;
         }
         
@@ -2733,14 +2745,14 @@ client.on("interactionCreate", async (interaction) => {
           const expiresText = block.expiresAt 
             ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
             : "You are permanently blocked.";
-          await interaction.reply({ content: `❌ You are blocked from opening tickets. ${expiresText}`, flags: 64 });
+          await safeReply(interaction, { content: `❌ You are blocked from opening tickets. ${expiresText}`, flags: 64 });
           return;
         }
         
         // Check for existing open thread
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
-          await interaction.reply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket.", flags: 64 });
+          await safeReply(interaction, { content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket.", flags: 64 });
           return;
         }
         
