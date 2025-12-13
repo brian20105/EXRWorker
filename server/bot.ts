@@ -4604,8 +4604,98 @@ client.on("error", (error) => {
   console.error("Discord client error:", error);
 });
 
+const pendingTimedCloses = new Map<string, NodeJS.Timeout>();
+
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+  
+  // Handle ?c or ?close (time) - silent timed close without notifying user
+  if (message.guild && (message.content.toLowerCase().startsWith("?c ") || message.content.toLowerCase().startsWith("?close "))) {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+    
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    if (thread.claimedById && thread.claimedById !== message.author.id) {
+      await message.reply(`❌ Only <@${thread.claimedById}> (who claimed this ticket) can close it.`);
+      return;
+    }
+    
+    const timeArg = message.content.split(" ").slice(1).join(" ").trim();
+    const timeMatch = timeArg.match(/^(\d+)\s*(s|sec|second|seconds|m|min|minute|minutes|h|hr|hour|hours)?$/i);
+    
+    if (!timeMatch) {
+      await message.reply("❌ Invalid time format. Use: `?c 5m`, `?c 30s`, `?c 1h`");
+      return;
+    }
+    
+    const amount = parseInt(timeMatch[1]);
+    const unit = (timeMatch[2] || "m").toLowerCase();
+    
+    let ms: number;
+    if (unit.startsWith("s")) ms = amount * 1000;
+    else if (unit.startsWith("h")) ms = amount * 60 * 60 * 1000;
+    else ms = amount * 60 * 1000;
+    
+    if (pendingTimedCloses.has(thread.id)) {
+      clearTimeout(pendingTimedCloses.get(thread.id));
+    }
+    
+    const timeoutId = setTimeout(async () => {
+      pendingTimedCloses.delete(thread.id);
+      
+      const currentThread = await storage.getModmailThread(thread.id);
+      if (!currentThread || currentThread.status !== "open") return;
+      
+      await storage.updateModmailThread(thread.id, {
+        status: "closed",
+        closedById: message.author.id,
+        closeReason: "Silent timed close",
+        closedAt: new Date(),
+      });
+      
+      const config = await storage.getGuildConfig(message.guild!.id);
+      if (config?.modmailLogChannelId) {
+        try {
+          const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+          if (logChannel && "send" in logChannel) {
+            const messages = await storage.getModmailMessages(thread.id);
+            let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+            if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+            
+            const logEmbed = new EmbedBuilder()
+              .setTitle("Ticket Closed (Silent)")
+              .setColor(0xed4245)
+              .addFields(
+                { name: "User", value: `<@${currentThread.userId}>`, inline: true },
+                { name: "Closed By", value: `<@${message.author.id}>`, inline: true },
+                { name: "Transcript", value: transcript || "No messages", inline: false }
+              )
+              .setTimestamp();
+            await logChannel.send({ embeds: [logEmbed] });
+          }
+        } catch (e) {}
+      }
+      
+      try {
+        await (message.channel as any).delete();
+      } catch (e) {}
+    }, ms);
+    
+    pendingTimedCloses.set(thread.id, timeoutId);
+    
+    const timeText = unit.startsWith("s") ? `${amount} second${amount !== 1 ? "s" : ""}` : 
+                     unit.startsWith("h") ? `${amount} hour${amount !== 1 ? "s" : ""}` : 
+                     `${amount} minute${amount !== 1 ? "s" : ""}`;
+    await message.reply(`⏱️ Ticket will close silently in **${timeText}** (user will not be notified).`);
+    return;
+  }
   
   // Handle prefix commands (!close, !c, !claim, !or) in guild channels
   if (message.guild && (message.content.toLowerCase() === "!close" || message.content.toLowerCase() === "!c")) {
