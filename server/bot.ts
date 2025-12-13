@@ -2849,7 +2849,7 @@ client.on("interactionCreate", async (interaction) => {
             
             const clipsInput = new TextInputBuilder()
               .setCustomId("creative_clips")
-              .setLabel("Are you able to provide 2-5 clips in creative?")
+              .setLabel("Can you provide 2-5 creative clips?")
               .setStyle(TextInputStyle.Short)
               .setPlaceholder("Yes/No and any details...")
               .setRequired(true);
