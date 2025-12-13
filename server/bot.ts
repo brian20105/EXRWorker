@@ -1627,6 +1627,52 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
           
+          // Validate IDs are snowflakes (Discord IDs)
+          const snowflakeRegex = /^\d{17,19}$/;
+          if (!snowflakeRegex.test(sourceRoleId) || !snowflakeRegex.test(targetRoleId) || 
+              !snowflakeRegex.test(sourceGuildId) || !snowflakeRegex.test(targetGuildId)) {
+            await interaction.editReply({
+              content: "❌ Invalid ID format. All IDs must be valid Discord snowflakes (17-19 digit numbers).",
+            });
+            return;
+          }
+          
+          // Verify guilds exist
+          const sourceGuild = client.guilds.cache.get(sourceGuildId);
+          const targetGuild = client.guilds.cache.get(targetGuildId);
+          
+          if (!sourceGuild) {
+            await interaction.editReply({
+              content: `❌ Source guild ${sourceGuildId} not found. The bot must be in both guilds.`,
+            });
+            return;
+          }
+          
+          if (!targetGuild) {
+            await interaction.editReply({
+              content: `❌ Target guild ${targetGuildId} not found. The bot must be in both guilds.`,
+            });
+            return;
+          }
+          
+          // Verify roles exist in their respective guilds
+          const sourceRole = sourceGuild.roles.cache.get(sourceRoleId);
+          const targetRole = targetGuild.roles.cache.get(targetRoleId);
+          
+          if (!sourceRole) {
+            await interaction.editReply({
+              content: `❌ Source role ${sourceRoleId} not found in guild ${sourceGuild.name}.`,
+            });
+            return;
+          }
+          
+          if (!targetRole) {
+            await interaction.editReply({
+              content: `❌ Target role ${targetRoleId} not found in guild ${targetGuild.name}.`,
+            });
+            return;
+          }
+          
           const pair1 = await storage.addRoleSyncPair({
             sourceGuildId,
             sourceRoleId,
@@ -1642,7 +1688,7 @@ client.on("interactionCreate", async (interaction) => {
           });
           
           await interaction.editReply({
-            content: `✅ Role sync pair added!\n**Source:** <@&${sourceRoleId}> (Server: ${sourceGuildId})\n**Target:** <@&${targetRoleId}> (Server: ${targetGuildId})\n\nPair IDs: \`${pair1.id}\`, \`${pair2.id}\``,
+            content: `✅ Role sync pair added!\n**Source:** ${sourceRole.name} (<@&${sourceRoleId}>) in ${sourceGuild.name}\n**Target:** ${targetRole.name} (<@&${targetRoleId}>) in ${targetGuild.name}\n\nPair IDs: \`${pair1.id}\`, \`${pair2.id}\``,
           });
         } else if (action === "remove") {
           const pairId = interaction.options.getString("pair_id");
@@ -3622,13 +3668,24 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         continue;
       }
       
+      // Verify target role exists in target guild
+      const targetRoleExists = targetGuild.roles.cache.has(pair.targetRoleId);
+      if (!targetRoleExists) {
+        console.log(`[ROLE SYNC] ERROR: Target role ${pair.targetRoleId} does not exist in guild ${targetGuild.name} (${targetGuild.id}). Sync pair ID: ${pair.id} is misconfigured. Please delete this pair and recreate it with valid role IDs.`);
+        continue;
+      }
+      
       if (addedRoles.includes(pair.sourceRoleId)) {
         if (!targetMember.roles.cache.has(pair.targetRoleId)) {
           try {
             await targetMember.roles.add(pair.targetRoleId);
             console.log(`[ROLE SYNC] Added role ${pair.targetRoleId} to ${newMember.user.tag} in ${targetGuild.name}`);
-          } catch (error) {
-            console.log(`[ROLE SYNC] Failed to add role ${pair.targetRoleId}:`, error);
+          } catch (error: any) {
+            if (error.code === 10011) {
+              console.log(`[ROLE SYNC] ERROR: Role ${pair.targetRoleId} not found in guild ${targetGuild.name}. Sync pair ${pair.id} is invalid - delete and recreate with correct role IDs.`);
+            } else {
+              console.log(`[ROLE SYNC] Failed to add role ${pair.targetRoleId}:`, error);
+            }
           }
         }
       }
@@ -3638,8 +3695,12 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
           try {
             await targetMember.roles.remove(pair.targetRoleId);
             console.log(`[ROLE SYNC] Removed role ${pair.targetRoleId} from ${newMember.user.tag} in ${targetGuild.name}`);
-          } catch (error) {
-            console.log(`[ROLE SYNC] Failed to remove role ${pair.targetRoleId}:`, error);
+          } catch (error: any) {
+            if (error.code === 10011) {
+              console.log(`[ROLE SYNC] ERROR: Role ${pair.targetRoleId} not found in guild ${targetGuild.name}. Sync pair ${pair.id} is invalid - delete and recreate with correct role IDs.`);
+            } else {
+              console.log(`[ROLE SYNC] Failed to remove role ${pair.targetRoleId}:`, error);
+            }
           }
         }
       }
