@@ -2742,35 +2742,51 @@ client.on("interactionCreate", async (interaction) => {
         const user = interaction.user;
         const guild = interaction.guild;
         
+        // For modal-requiring categories, do all validation BEFORE any reply
+        // to avoid "interaction already acknowledged" errors
+        const modalCategories = ["competitive", "contentcreator", "gfx"];
+        const requiresModal = modalCategories.includes(ticketCategory);
+        
+        // Collect validation errors without replying yet
+        let validationError: string | null = null;
+        
         if (!guild) {
-          await safeReply(interaction, { content: "❌ This can only be used in a server.", flags: 64 });
+          validationError = "❌ This can only be used in a server.";
+        }
+        
+        if (!validationError) {
+          const config = await storage.getGuildConfig(guildId);
+          if (!config?.modmailCategoryId) {
+            validationError = "❌ Modmail is not configured for this server.";
+          }
+        }
+        
+        if (!validationError) {
+          // Check if user is blocked
+          const block = await storage.getActiveModmailBlock(guildId, user.id);
+          if (block) {
+            const expiresText = block.expiresAt 
+              ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
+              : "You are permanently blocked.";
+            validationError = `❌ You are blocked from opening tickets. ${expiresText}`;
+          }
+        }
+        
+        if (!validationError) {
+          // Check for existing open thread
+          const existingThread = await storage.getOpenModmailThread(guildId, user.id);
+          if (existingThread) {
+            validationError = "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket.";
+          }
+        }
+        
+        // If there's a validation error, send it now
+        if (validationError) {
+          await safeReply(interaction, { content: validationError, flags: 64 });
           return;
         }
         
-        const config = await storage.getGuildConfig(guildId);
-        if (!config?.modmailCategoryId) {
-          await safeReply(interaction, { content: "❌ Modmail is not configured for this server.", flags: 64 });
-          return;
-        }
-        
-        // Check if user is blocked
-        const block = await storage.getActiveModmailBlock(guildId, user.id);
-        if (block) {
-          const expiresText = block.expiresAt 
-            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
-            : "You are permanently blocked.";
-          await safeReply(interaction, { content: `❌ You are blocked from opening tickets. ${expiresText}`, flags: 64 });
-          return;
-        }
-        
-        // Check for existing open thread
-        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
-        if (existingThread) {
-          await safeReply(interaction, { content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket.", flags: 64 });
-          return;
-        }
-        
-        // Categories that require application modals
+        // Categories that require application modals - show modal BEFORE any other response
         if (ticketCategory === "competitive") {
           const modal = new ModalBuilder()
             .setCustomId(`ticket_modal_competitive_${guildId}`)
@@ -2797,7 +2813,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             await interaction.showModal(modal);
           } catch (e: any) {
-            if (e.code !== 10062) console.log("Could not show modal:", e);
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         } else if (ticketCategory === "contentcreator") {
@@ -2826,7 +2842,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             await interaction.showModal(modal);
           } catch (e: any) {
-            if (e.code !== 10062) console.log("Could not show modal:", e);
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         } else if (ticketCategory === "gfx") {
@@ -2847,13 +2863,20 @@ client.on("interactionCreate", async (interaction) => {
           try {
             await interaction.showModal(modal);
           } catch (e: any) {
-            if (e.code !== 10062) console.log("Could not show modal:", e);
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         }
         
         // For general, report, partnerships - create ticket directly
         if (!await safeDeferReply(interaction)) return;
+        
+        // Re-fetch config (we already validated it exists above)
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.modmailCategoryId || !guild) {
+          await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
+          return;
+        }
         
         const categoryLabels: { [key: string]: string } = {
           general: "General Inquiries",
@@ -2974,7 +2997,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             await interaction.showModal(modal);
           } catch (e: any) {
-            if (e.code !== 10062) console.log("Could not show modal:", e);
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         } else if (ticketCategory === "contentcreator") {
@@ -3003,7 +3026,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             await interaction.showModal(modal);
           } catch (e: any) {
-            if (e.code !== 10062) console.log("Could not show modal:", e);
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         } else if (ticketCategory === "gfx") {
@@ -3024,7 +3047,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             await interaction.showModal(modal);
           } catch (e: any) {
-            if (e.code !== 10062) console.log("Could not show modal:", e);
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         }
