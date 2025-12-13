@@ -2778,7 +2778,11 @@ client.on("interactionCreate", async (interaction) => {
             new ActionRowBuilder<TextInputBuilder>().addComponents(trackerInput),
             new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
           );
-          await interaction.showModal(modal);
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062) console.log("Could not show modal:", e);
+          }
           return;
         } else if (ticketCategory === "contentcreator") {
           const modal = new ModalBuilder()
@@ -2803,7 +2807,11 @@ client.on("interactionCreate", async (interaction) => {
             new ActionRowBuilder<TextInputBuilder>().addComponents(followersInput),
             new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
           );
-          await interaction.showModal(modal);
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062) console.log("Could not show modal:", e);
+          }
           return;
         } else if (ticketCategory === "gfx") {
           const modal = new ModalBuilder()
@@ -2820,7 +2828,11 @@ client.on("interactionCreate", async (interaction) => {
           modal.addComponents(
             new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
           );
-          await interaction.showModal(modal);
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062) console.log("Could not show modal:", e);
+          }
           return;
         }
         
