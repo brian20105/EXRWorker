@@ -46,6 +46,8 @@ export const guildConfigs = pgTable("guild_configs", {
   categoryPingReport: text("category_ping_report").array(),
   categoryPingPartnerships: text("category_ping_partnerships").array(),
   categoryPingGfx: text("category_ping_gfx").array(),
+  categoryPingCreativewarrior: text("category_ping_creativewarrior").array(),
+  categoryPingVfxeditor: text("category_ping_vfxeditor").array(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
