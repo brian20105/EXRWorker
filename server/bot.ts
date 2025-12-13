@@ -855,7 +855,9 @@ const commands = [
           { name: "Apply For Content Creator", value: "contentcreator" },
           { name: "User Reports", value: "report" },
           { name: "Partnerships", value: "partnerships" },
-          { name: "Apply For GFX Editor", value: "gfx" }
+          { name: "Apply For GFX Editor", value: "gfx" },
+          { name: "Apply For Creative Warrior", value: "creativewarrior" },
+          { name: "Apply For VFX Editor", value: "vfxeditor" }
         )
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1 to ping").setRequired(false))
@@ -970,6 +972,7 @@ const PLAYER_ROLE_IDS = [
   "1447116224432570469",
   "1447416759266050108",
   "1447144088054005761",
+  "1449540579791863971", // VFX Editor
 ];
 
 const STAFF_ROLE_IDS = [
@@ -2481,7 +2484,17 @@ client.on("interactionCreate", async (interaction) => {
               .setLabel("Apply For GFX Editor")
               .setDescription("Apply to become a GFX editor")
               .setValue("gfx")
-              .setEmoji("📝")
+              .setEmoji("📝"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For Creative Warrior")
+              .setDescription("Apply for creative warrior role")
+              .setValue("creativewarrior")
+              .setEmoji("⚔️"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For VFX Editor")
+              .setDescription("Apply for VFX editor role")
+              .setValue("vfxeditor")
+              .setEmoji("✨")
           );
         
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
@@ -2638,6 +2651,8 @@ client.on("interactionCreate", async (interaction) => {
           report: "User Reports",
           partnerships: "Partnerships",
           gfx: "Apply For GFX Editor",
+          creativewarrior: "Apply For Creative Warrior",
+          vfxeditor: "Apply For VFX Editor",
         };
         
         const updateField: { [key: string]: string } = {
@@ -2647,6 +2662,8 @@ client.on("interactionCreate", async (interaction) => {
           report: "categoryPingReport",
           partnerships: "categoryPingPartnerships",
           gfx: "categoryPingGfx",
+          creativewarrior: "categoryPingCreativewarrior",
+          vfxeditor: "categoryPingVfxeditor",
         };
         
         await storage.upsertGuildConfig({ guildId: interaction.guildId!, [updateField[category]]: roles });
@@ -2824,6 +2841,58 @@ client.on("interactionCreate", async (interaction) => {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
+        } else if (ticketCategory === "creativewarrior") {
+          try {
+            const modal = new ModalBuilder()
+              .setCustomId(`ticket_modal_creativewarrior_${guildId}`)
+              .setTitle("Apply For Creative Warrior");
+            
+            const clipsInput = new TextInputBuilder()
+              .setCustomId("creative_clips")
+              .setLabel("Are you able to provide 2-5 clips in creative?")
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder("Yes/No and any details...")
+              .setRequired(true);
+            
+            const earningsInput = new TextInputBuilder()
+              .setCustomId("creative_earnings")
+              .setLabel("Have you made earnings in creative?")
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder("Yes/No and any details...")
+              .setRequired(true);
+            
+            modal.addComponents(
+              new ActionRowBuilder<TextInputBuilder>().addComponents(clipsInput),
+              new ActionRowBuilder<TextInputBuilder>().addComponents(earningsInput)
+            );
+            
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
+          }
+          return;
+        } else if (ticketCategory === "vfxeditor") {
+          try {
+            const modal = new ModalBuilder()
+              .setCustomId(`ticket_modal_vfxeditor_${guildId}`)
+              .setTitle("Apply For VFX Editor");
+            
+            const reasonInput = new TextInputBuilder()
+              .setCustomId("apply_reason")
+              .setLabel("Why are you a good VFX Editor?")
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder("Describe your skills and experience...")
+              .setRequired(true);
+            
+            modal.addComponents(
+              new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+            );
+            
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
+          }
+          return;
         }
         
         // For general, report, partnerships - defer first, then validate and create ticket
@@ -2865,6 +2934,8 @@ client.on("interactionCreate", async (interaction) => {
           report: "User Reports",
           partnerships: "Partnerships",
           gfx: "Apply For GFX Editor",
+          creativewarrior: "Apply For Creative Warrior",
+          vfxeditor: "Apply For VFX Editor",
         };
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
         
@@ -2893,6 +2964,8 @@ client.on("interactionCreate", async (interaction) => {
             report: config.categoryPingReport,
             partnerships: config.categoryPingPartnerships,
             gfx: config.categoryPingGfx,
+            creativewarrior: config.categoryPingCreativewarrior,
+            vfxeditor: config.categoryPingVfxeditor,
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -3030,6 +3103,56 @@ client.on("interactionCreate", async (interaction) => {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
+        } else if (ticketCategory === "creativewarrior") {
+          const modal = new ModalBuilder()
+            .setCustomId(`dm_ticket_modal_creativewarrior_${guildId}`)
+            .setTitle("Apply For Creative Warrior");
+          
+          const clipsInput = new TextInputBuilder()
+            .setCustomId("creative_clips")
+            .setLabel("Are you able to provide 2-5 clips in creative?")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Yes/No and any details...")
+            .setRequired(true);
+          
+          const earningsInput = new TextInputBuilder()
+            .setCustomId("creative_earnings")
+            .setLabel("Have you made earnings in creative?")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Yes/No and any details...")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(clipsInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(earningsInput)
+          );
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
+          }
+          return;
+        } else if (ticketCategory === "vfxeditor") {
+          const modal = new ModalBuilder()
+            .setCustomId(`dm_ticket_modal_vfxeditor_${guildId}`)
+            .setTitle("Apply For VFX Editor");
+          
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("apply_reason")
+            .setLabel("Why are you a good VFX Editor?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Describe your skills and experience...")
+            .setRequired(true);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
+          }
+          return;
         }
         
         // For general, report, partnerships - create ticket directly
@@ -3098,8 +3221,13 @@ client.on("interactionCreate", async (interaction) => {
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
             general: config.categoryPingGeneral,
+            competitive: config.categoryPingCompetitive,
+            contentcreator: config.categoryPingContentcreator,
             report: config.categoryPingReport,
             partnerships: config.categoryPingPartnerships,
+            gfx: config.categoryPingGfx,
+            creativewarrior: config.categoryPingCreativewarrior,
+            vfxeditor: config.categoryPingVfxeditor,
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -3219,6 +3347,8 @@ client.on("interactionCreate", async (interaction) => {
             report: config.categoryPingReport,
             partnerships: config.categoryPingPartnerships,
             gfx: config.categoryPingGfx,
+            creativewarrior: config.categoryPingCreativewarrior,
+            vfxeditor: config.categoryPingVfxeditor,
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -3831,6 +3961,8 @@ client.on("interactionCreate", async (interaction) => {
           competitive: "Apply For Competitive",
           contentcreator: "Apply For Content Creator",
           gfx: "Apply For GFX Editor",
+          creativewarrior: "Apply For Creative Warrior",
+          vfxeditor: "Apply For VFX Editor",
         };
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
         
@@ -3854,6 +3986,18 @@ client.on("interactionCreate", async (interaction) => {
           const reason = interaction.fields.getTextInputValue("apply_reason");
           applicationFields = [
             { name: "Why They're A Good GFX Editor", value: reason },
+          ];
+        } else if (ticketCategory === "creativewarrior") {
+          const clips = interaction.fields.getTextInputValue("creative_clips");
+          const earnings = interaction.fields.getTextInputValue("creative_earnings");
+          applicationFields = [
+            { name: "Can Provide 2-5 Clips in Creative", value: clips },
+            { name: "Has Made Earnings in Creative", value: earnings },
+          ];
+        } else if (ticketCategory === "vfxeditor") {
+          const reason = interaction.fields.getTextInputValue("apply_reason");
+          applicationFields = [
+            { name: "Why They're A Good VFX Editor", value: reason },
           ];
         }
         
@@ -3879,6 +4023,8 @@ client.on("interactionCreate", async (interaction) => {
             competitive: config.categoryPingCompetitive,
             contentcreator: config.categoryPingContentcreator,
             gfx: config.categoryPingGfx,
+            creativewarrior: config.categoryPingCreativewarrior,
+            vfxeditor: config.categoryPingVfxeditor,
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -3972,6 +4118,8 @@ client.on("interactionCreate", async (interaction) => {
           competitive: "Apply For Competitive",
           contentcreator: "Apply For Content Creator",
           gfx: "Apply For GFX Editor",
+          creativewarrior: "Apply For Creative Warrior",
+          vfxeditor: "Apply For VFX Editor",
         };
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
         
@@ -3995,6 +4143,18 @@ client.on("interactionCreate", async (interaction) => {
           const reason = interaction.fields.getTextInputValue("apply_reason");
           applicationFields = [
             { name: "Why They're A Good GFX Editor", value: reason },
+          ];
+        } else if (ticketCategory === "creativewarrior") {
+          const clips = interaction.fields.getTextInputValue("creative_clips");
+          const earnings = interaction.fields.getTextInputValue("creative_earnings");
+          applicationFields = [
+            { name: "Can Provide 2-5 Clips in Creative", value: clips },
+            { name: "Has Made Earnings in Creative", value: earnings },
+          ];
+        } else if (ticketCategory === "vfxeditor") {
+          const reason = interaction.fields.getTextInputValue("apply_reason");
+          applicationFields = [
+            { name: "Why They're A Good VFX Editor", value: reason },
           ];
         }
         
@@ -4020,6 +4180,8 @@ client.on("interactionCreate", async (interaction) => {
             competitive: config.categoryPingCompetitive,
             contentcreator: config.categoryPingContentcreator,
             gfx: config.categoryPingGfx,
+            creativewarrior: config.categoryPingCreativewarrior,
+            vfxeditor: config.categoryPingVfxeditor,
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -5633,7 +5795,17 @@ client.on("messageCreate", async (message) => {
               .setLabel("Apply For GFX Editor")
               .setDescription("Apply for graphics editor role")
               .setValue("gfx")
-              .setEmoji("🎨")
+              .setEmoji("🎨"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For Creative Warrior")
+              .setDescription("Apply for creative warrior role")
+              .setValue("creativewarrior")
+              .setEmoji("⚔️"),
+            new StringSelectMenuOptionBuilder()
+              .setLabel("Apply For VFX Editor")
+              .setDescription("Apply for VFX editor role")
+              .setValue("vfxeditor")
+              .setEmoji("✨")
           );
         
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
@@ -5950,13 +6122,18 @@ client.on("messageCreate", async (message) => {
     let modmailMsg: any;
     let newContent: string;
     
-    // Check if first arg looks like an ID (UUID format)
+    // Check if first arg looks like an ID (UUID format or Discord snowflake)
     const parts = args.split(" ");
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const discordIdRegex = /^\d{17,20}$/;
     
     if (parts[0] && uuidRegex.test(parts[0])) {
-      // First arg is message ID
+      // First arg is UUID database ID
       modmailMsg = await storage.getModmailMessage(parts[0]);
+      newContent = parts.slice(1).join(" ");
+    } else if (parts[0] && discordIdRegex.test(parts[0])) {
+      // First arg is Discord message ID (snowflake)
+      modmailMsg = await storage.getModmailMessageByChannelMessageId(parts[0]);
       newContent = parts.slice(1).join(" ");
     } else {
       // No ID provided, use most recent staff message
@@ -5965,7 +6142,7 @@ client.on("messageCreate", async (message) => {
     }
     
     if (!modmailMsg) {
-      await message.reply("❌ Could not find the message to edit.");
+      await message.reply("❌ Could not find the message to edit. You can use the Discord message ID or leave blank to edit your most recent message.");
       return;
     }
     
@@ -6056,18 +6233,23 @@ client.on("messageCreate", async (message) => {
     const args = message.content.substring(7).trim();
     let modmailMsg: any;
     
-    // Check if arg looks like an ID (UUID format)
+    // Check if arg looks like an ID (UUID format or Discord snowflake)
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const discordIdRegex = /^\d{17,20}$/;
     
     if (args && uuidRegex.test(args)) {
+      // UUID database ID
       modmailMsg = await storage.getModmailMessage(args);
+    } else if (args && discordIdRegex.test(args)) {
+      // Discord message ID (snowflake)
+      modmailMsg = await storage.getModmailMessageByChannelMessageId(args);
     } else {
       // No ID provided, use most recent staff message
       modmailMsg = await storage.getLatestStaffModmailMessage(thread.id);
     }
     
     if (!modmailMsg) {
-      await message.reply("❌ Could not find the message to delete.");
+      await message.reply("❌ Could not find the message to delete. You can use the Discord message ID or leave blank to delete your most recent message.");
       return;
     }
     
