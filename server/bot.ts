@@ -3425,31 +3425,30 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       } else if (interaction.customId.startsWith("approve_") || interaction.customId.startsWith("deny_")) {
+        const [action, requestId] = interaction.customId.split("_");
+        
+        // Build and show modal immediately to prevent timeout - NO async work before this
+        const modal = new ModalBuilder()
+          .setCustomId(`action_reason_${action}_${requestId}`)
+          .setTitle(action === "approve" ? "Approve Payout" : "Deny Payout");
+
+        const reasonInput = new TextInputBuilder()
+          .setCustomId("action_reason")
+          .setLabel(action === "approve" ? "Note (Optional)" : "Reason (Optional)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setPlaceholder(action === "approve" ? "Add a note..." : "Why are you denying this?")
+          .setRequired(false);
+
+        const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+        modal.addComponents(row);
+
+        // Show modal immediately - permission check will happen in modal submit
         try {
-          const [action, requestId] = interaction.customId.split("_");
-          
-          // Build and show modal immediately to prevent timeout
-          const modal = new ModalBuilder()
-            .setCustomId(`action_reason_${action}_${requestId}`)
-            .setTitle(action === "approve" ? "Approve Payout" : "Deny Payout");
-
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("action_reason")
-            .setLabel(action === "approve" ? "Note (Optional)" : "Reason (Optional)")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder(action === "approve" ? "Add a note..." : "Why are you denying this?")
-            .setRequired(false);
-
-          const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
-          modal.addComponents(row);
-
-          // Show modal immediately - permission check will happen in modal submit
           await interaction.showModal(modal);
         } catch (error: any) {
-          if (error.code === 10062 || error.code === 40060) {
-            console.log('Interaction expired or already acknowledged:', interaction.id);
-          } else {
-            throw error;
+          // Silently handle expired interactions
+          if (error.code !== 10062 && error.code !== 40060) {
+            console.log('Error showing modal:', error.message);
           }
         }
         return;
