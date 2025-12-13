@@ -5527,32 +5527,42 @@ client.on("messageCreate", async (message) => {
         let availableGuild = null;
         let availableConfig = null;
         
-        for (const guild of client.guilds.cache.values()) {
+        console.log(`[DM] Searching for guild for user ${message.author.id} (${message.author.tag}) - cached guilds: ${client.guilds.cache.size}`);
+        
+        for (const guild of Array.from(client.guilds.cache.values())) {
+          console.log(`[DM] Checking guild: ${guild.name} (${guild.id})`);
           try {
-            const member = await guild.members.fetch(message.author.id).catch(() => null);
-            if (!member) continue;
+            const member = await guild.members.fetch(message.author.id).catch((e) => {
+              console.log(`[DM] Failed to fetch member in ${guild.name}: ${e.message}`);
+              return null;
+            });
+            if (!member) {
+              console.log(`[DM] User not a member of ${guild.name}`);
+              continue;
+            }
             
+            console.log(`[DM] User IS a member of ${guild.name}`);
             const config = await storage.getGuildConfig(guild.id);
+            console.log(`[DM] Config for ${guild.name}: modmailCategoryId=${config?.modmailCategoryId}`);
             if (config?.modmailCategoryId) {
               // Check if user is blocked
               const block = await storage.getActiveModmailBlock(guild.id, message.author.id);
               if (!block) {
+                console.log(`[DM] Found available guild: ${guild.name}`);
                 availableGuild = guild;
                 availableConfig = config;
                 break;
+              } else {
+                console.log(`[DM] User is blocked in ${guild.name}`);
               }
             }
-          } catch (e) {
-            // Skip this guild
+          } catch (e: any) {
+            console.log(`[DM] Error checking guild ${guild.name}: ${e.message}`);
           }
         }
         
         if (!availableGuild || !availableConfig) {
-          // Log to help debug
-          console.log(`[DM] No available guild for user ${message.author.id} - cached guilds: ${client.guilds.cache.size}`);
-          for (const g of Array.from(client.guilds.cache.values())) {
-            console.log(`[DM] Guild: ${g.name} (${g.id})`);
-          }
+          console.log(`[DM] No available guild found for user ${message.author.id}`);
           return;
         }
         
