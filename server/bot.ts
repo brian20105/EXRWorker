@@ -1026,15 +1026,18 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Configuration saved! Payout requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_payment_logs") {
+        if (!await safeDeferReply(interaction)) return;
+        
         const channel = interaction.options.getChannel("channel", true);
         
         await storage.updateLogChannel(interaction.guildId!, channel.id);
         
-        await interaction.reply({
+        await interaction.editReply({
           content: `✅ Configuration saved! Payment logs will be sent to <#${channel.id}>.`,
-          flags: 64,
         });
       } else if (commandName === "payout_permission") {
+        if (!await safeDeferReply(interaction)) return;
+        
         const roles: string[] = [];
         const roleNames: string[] = [];
         
@@ -1048,9 +1051,8 @@ client.on("interactionCreate", async (interaction) => {
         
         await storage.updateAllowedRoles(interaction.guildId!, roles);
         
-        await interaction.reply({
+        await interaction.editReply({
           content: `✅ Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
-          flags: 64,
         });
       } else if (commandName === "list_payouts") {
         const isPrivate = interaction.options.getBoolean("private") ?? true;
@@ -1193,6 +1195,8 @@ client.on("interactionCreate", async (interaction) => {
           });
         } catch (e) {}
       } else if (commandName === "user_payouts") {
+        if (!await safeDeferReply(interaction)) return;
+        
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
@@ -1203,14 +1207,11 @@ client.on("interactionCreate", async (interaction) => {
         
         const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
         if (!hasPermission) {
-          await interaction.reply({
+          await interaction.editReply({
             content: "❌ You don't have permission to view payout requests.",
-            flags: 64,
           });
           return;
         }
-        
-        if (!await safeDeferReply(interaction)) return;
         
         const targetUser = interaction.options.getUser("user", true);
         const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
@@ -1246,6 +1247,8 @@ client.on("interactionCreate", async (interaction) => {
           embeds: [embed],
         });
       } else if (commandName === "payout") {
+        if (!await safeDeferReply(interaction)) return;
+        
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
@@ -1256,9 +1259,8 @@ client.on("interactionCreate", async (interaction) => {
         
         const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
         if (!hasPermission) {
-          await interaction.reply({
+          await interaction.editReply({
             content: "❌ You don't have permission to manage payout requests.",
-            flags: 64,
           });
           return;
         }
@@ -1266,8 +1268,6 @@ client.on("interactionCreate", async (interaction) => {
         const action = interaction.options.getString("action", true);
         const targetUser = interaction.options.getUser("user");
         const payoutId = interaction.options.getString("payout_id");
-        
-        if (!await safeDeferReply(interaction)) return;
         
         if (action === "add") {
           if (!targetUser) {
@@ -1567,6 +1567,8 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
       } else if (commandName === "sync_roles") {
+        if (!await safeDeferReply(interaction)) return;
+        
         const member = interaction.member;
         const memberPermissions = member && 'permissions' in member 
           ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
@@ -1579,14 +1581,11 @@ client.on("interactionCreate", async (interaction) => {
         const isAdmin = (permBits & ADMINISTRATOR) === ADMINISTRATOR;
         
         if (!isAdmin) {
-          await interaction.reply({
+          await interaction.editReply({
             content: "❌ You need Administrator permission to manage role sync pairs.",
-            flags: 64,
           });
           return;
         }
-        
-        if (!await safeDeferReply(interaction)) return;
         
         const action = interaction.options.getString("action", true);
         
@@ -1784,6 +1783,8 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Unban request channel configured! Requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_permissions") {
+        if (!await safeDeferReply(interaction)) return;
+        
         const roles: string[] = [];
         const roleNames: string[] = [];
         
@@ -1800,11 +1801,12 @@ client.on("interactionCreate", async (interaction) => {
           modRoleIds: roles,
         });
         
-        await interaction.reply({
+        await interaction.editReply({
           content: `✅ Moderation permissions updated! The following roles can now approve/deny ban/unban requests:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
-          flags: 64,
         });
       } else if (commandName === "setup_ban_logs") {
+        if (!await safeDeferReply(interaction)) return;
+        
         const channel = interaction.options.getChannel("channel", true);
         
         await storage.upsertGuildConfig({
@@ -1812,11 +1814,12 @@ client.on("interactionCreate", async (interaction) => {
           banLogChannelId: channel.id,
         });
         
-        await interaction.reply({
+        await interaction.editReply({
           content: `✅ Configuration saved! Ban request logs will be sent to <#${channel.id}>.`,
-          flags: 64,
         });
       } else if (commandName === "setup_unban_logs") {
+        if (!await safeDeferReply(interaction)) return;
+        
         const channel = interaction.options.getChannel("channel", true);
         
         await storage.upsertGuildConfig({
@@ -1824,9 +1827,8 @@ client.on("interactionCreate", async (interaction) => {
           unbanLogChannelId: channel.id,
         });
         
-        await interaction.reply({
+        await interaction.editReply({
           content: `✅ Configuration saved! Unban request logs will be sent to <#${channel.id}>.`,
-          flags: 64,
         });
       } else if (commandName === "activity") {
         const isPrivate = interaction.options.getBoolean("private") ?? false;
