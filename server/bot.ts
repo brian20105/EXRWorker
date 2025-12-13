@@ -725,6 +725,22 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("config_modmail")
+    .setDescription("Configure the modmail ticket embed title and description")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("title")
+        .setDescription("The embed title")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("description")
+        .setDescription("The embed description")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
     .setName("block")
     .setDescription("Block a user from opening modmail tickets")
     .setDefaultMemberPermissions(0)
@@ -2361,10 +2377,15 @@ client.on("interactionCreate", async (interaction) => {
           modmailStaffRoleIds: [staffRole.id],
         });
         
+        // Fetch config for custom embed title/description
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const embedTitle = config?.modmailEmbedTitle || "Support Tickets";
+        const embedDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
+        
         // Post the ticket embed with dropdown menu
         const ticketEmbed = new EmbedBuilder()
-          .setTitle("Support Tickets")
-          .setDescription("Select a category below to create a ticket.")
+          .setTitle(embedTitle)
+          .setDescription(embedDescription)
           .setColor(0x2f3136);
         
         const selectMenu = new StringSelectMenuBuilder()
@@ -2414,6 +2435,35 @@ client.on("interactionCreate", async (interaction) => {
         
         await interaction.editReply({
           content: `✅ Modmail configured and ticket embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
+        });
+      } else if (commandName === "config_modmail") {
+        if (!await safeDeferReply(interaction)) return;
+        
+        const title = interaction.options.getString("title");
+        const description = interaction.options.getString("description");
+        
+        if (!title && !description) {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const currentTitle = config?.modmailEmbedTitle || "Support Tickets";
+          const currentDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
+          await interaction.editReply({
+            content: `**Current Modmail Embed Settings:**\n• Title: ${currentTitle}\n• Description: ${currentDescription}\n\nUse the title and description options to update these values.`,
+          });
+          return;
+        }
+        
+        const updateData: any = { guildId: interaction.guildId! };
+        if (title) updateData.modmailEmbedTitle = title;
+        if (description) updateData.modmailEmbedDescription = description;
+        
+        await storage.upsertGuildConfig(updateData);
+        
+        const updates: string[] = [];
+        if (title) updates.push(`Title: ${title}`);
+        if (description) updates.push(`Description: ${description}`);
+        
+        await interaction.editReply({
+          content: `✅ Modmail embed updated:\n• ${updates.join("\n• ")}\n\nRun /setup_modmail again to post the updated embed.`,
         });
       } else if (commandName === "block") {
         if (!await safeDeferReply(interaction)) return;
