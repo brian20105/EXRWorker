@@ -559,12 +559,6 @@ const commands = [
         .setName("to")
         .setDescription("End time in days ago (e.g., 0 for today, leave empty for all time)")
         .setRequired(false)
-    )
-    .addBooleanOption((option) =>
-      option
-        .setName("private")
-        .setDescription("Show the leaderboard only to you")
-        .setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("clear-role")
@@ -2061,8 +2055,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Configuration saved! Unban request logs will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "activity") {
-        const isPrivate = interaction.options.getBoolean("private") ?? false;
-        if (!await safeDeferReply(interaction, isPrivate)) return;
+        if (!await safeDeferReply(interaction, false)) return;
         
         const category = interaction.options.getString("category");
         const fromDays = interaction.options.getInteger("from") ?? undefined;
