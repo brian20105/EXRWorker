@@ -1043,9 +1043,17 @@ async function updateRosterMessages(guildId: string): Promise<void> {
         config = await storage.getGuildConfig(guildId);
         break;
       } catch (dbError: any) {
-        if (attempt < 3 && (dbError.message?.includes('searchParams') || dbError.code === 'ECONNRESET')) {
+        const isConnError = dbError.message?.includes('searchParams') || 
+                           dbError.code === 'ECONNRESET' || 
+                           dbError.message?.includes('ECONNREFUSED') ||
+                           dbError.message?.includes('Connection terminated');
+        
+        if (attempt < 3 && isConnError) {
           console.log(`[ROSTER] Database connection attempt ${attempt} failed, retrying...`);
-          await new Promise(r => setTimeout(r, 500 * attempt));
+          await new Promise(r => setTimeout(r, 1000 * attempt));
+        } else if (isConnError) {
+          console.log("[ROSTER] Database unavailable after 3 attempts, skipping roster update");
+          return;
         } else {
           throw dbError;
         }
@@ -5233,7 +5241,14 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-client.on("error", (error) => {
+client.on("error", (error: any) => {
+  // Suppress database connection errors that are already logged elsewhere
+  if (error.message?.includes('searchParams') || 
+      error.message?.includes('ECONNRESET') ||
+      error.message?.includes('Connection terminated')) {
+    console.log("[DISCORD] Suppressing database connection error (already logged)");
+    return;
+  }
   console.error("Discord client error:", error);
 });
 
