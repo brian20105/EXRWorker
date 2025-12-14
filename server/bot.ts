@@ -6607,10 +6607,24 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       console.log(`[ROLE SYNC] Syncing to ${targetGuild.name}`);
       
       let targetMember;
-      try {
-        targetMember = await targetGuild.members.fetch(newMember.id);
-      } catch (error) {
-        console.log(`[ROLE SYNC] User ${newMember.user.tag} not found in target guild`);
+      let fetchError = null;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          targetMember = await targetGuild.members.fetch(newMember.id);
+          break;
+        } catch (error: any) {
+          fetchError = error;
+          if (error.message?.includes('searchParams') || error.code === 'ECONNRESET') {
+            console.log(`[ROLE SYNC] Fetch attempt ${attempt} failed (network issue), retrying...`);
+            if (attempt < 2) await new Promise(r => setTimeout(r, 500));
+          } else {
+            break;
+          }
+        }
+      }
+      
+      if (!targetMember) {
+        console.log(`[ROLE SYNC] User ${newMember.user.tag} not found in target guild or fetch failed: ${fetchError?.message || 'unknown'}`);
         continue;
       }
       
