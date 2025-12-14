@@ -1016,7 +1016,7 @@ async function generatePlayerRoster(guild: any): Promise<string> {
     const members = getMembersWithRole(guild, roleId);
     playerRoster += `<@&${roleId}>\n\n`;
     if (members.length === 0) {
-      playerRoster += "None\n";
+      playerRoster += "N/A\n";
     } else {
       playerRoster += members.join("\n") + "\n";
     }
@@ -1032,7 +1032,7 @@ async function generateStaffRoster(guild: any): Promise<string> {
     const members = getMembersWithRole(guild, roleId);
     staffRoster += `<@&${roleId}>\n\n`;
     if (members.length === 0) {
-      staffRoster += "None\n";
+      staffRoster += "N/A\n";
     } else {
       staffRoster += members.join("\n") + "\n";
     }
