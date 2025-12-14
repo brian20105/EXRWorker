@@ -3426,6 +3426,40 @@ client.on("interactionCreate", async (interaction) => {
         
         await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
         await interaction.channel?.send({ content: `🙋 Ticket claimed by <@${interaction.user.id}>` });
+        
+        // Start 15-minute claim expiry timer
+        if (interaction.channel) {
+          const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
+          const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
+          if (existingClaimTimer) {
+            clearTimeout(existingClaimTimer.timeout);
+          }
+          
+          const channelId = interaction.channel.id;
+          const claimerId = interaction.user.id;
+          const claimExpiryTimeout = setTimeout(async () => {
+            pendingClaimExpiry.delete(channelId);
+            
+            const currentThread = await storage.getModmailThreadByChannel(channelId);
+            if (!currentThread || currentThread.status !== "open") return;
+            if (currentThread.claimedById !== claimerId) return;
+            
+            await storage.updateModmailThread(currentThread.id, { claimedById: null });
+            try {
+              const channel = await client.channels.fetch(channelId);
+              if (channel && "send" in channel) {
+                await channel.send(`⏰ Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
+              }
+            } catch (e) {
+              console.log("Could not send auto-unclaim message");
+            }
+          }, CLAIM_EXPIRY_TIME);
+          
+          pendingClaimExpiry.set(channelId, {
+            timeout: claimExpiryTimeout,
+            claimerId: claimerId,
+          });
+        }
         return;
       } else if (interaction.customId.startsWith("modmail_close_")) {
         if (!await safeDeferReply(interaction)) return;
@@ -3450,6 +3484,15 @@ client.on("interactionCreate", async (interaction) => {
           closeReason: "Closed via button",
           closedAt: new Date(),
         });
+        
+        // Clear claim expiry timer on close
+        if (interaction.channel) {
+          const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
+          if (existingClaimTimer) {
+            clearTimeout(existingClaimTimer.timeout);
+            pendingClaimExpiry.delete(interaction.channel.id);
+          }
+        }
         
         // Notify user
         try {
@@ -5148,6 +5191,14 @@ interface InactivityTimer {
 const pendingInactivityWarnings = new Map<string, InactivityTimer>();
 const pendingInactivityCloses = new Map<string, InactivityTimer>();
 
+// Track claim expiry timers - auto-unclaim after 15 minutes if claimer doesn't respond
+// Key: channelId, Value: { timeout, claimerId }
+interface ClaimExpiryTimer {
+  timeout: NodeJS.Timeout;
+  claimerId: string;
+}
+const pendingClaimExpiry = new Map<string, ClaimExpiryTimer>();
+
 // Prevent duplicate message processing (in case of multiple bot instances)
 const processedMessages = new Set<string>();
 const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
@@ -5237,6 +5288,13 @@ client.on("messageCreate", async (message) => {
         const currentThread = await storage.getModmailThreadByChannel(message.channel.id);
         if (!currentThread || currentThread.status !== "open") return;
         
+        // Clear claim expiry timer on close
+        const timedClaimTimer = pendingClaimExpiry.get(message.channel.id);
+        if (timedClaimTimer) {
+          clearTimeout(timedClaimTimer.timeout);
+          pendingClaimExpiry.delete(message.channel.id);
+        }
+        
         // Close the thread silently
         await storage.updateModmailThread(currentThread.id, {
           status: "closed",
@@ -5279,6 +5337,13 @@ client.on("messageCreate", async (message) => {
       
       pendingTimedCloses.set(message.channel.id, timeout);
       return;
+    }
+    
+    // Clear claim expiry timer on close
+    const immediateClaimTimer = pendingClaimExpiry.get(message.channel.id);
+    if (immediateClaimTimer) {
+      clearTimeout(immediateClaimTimer.timeout);
+      pendingClaimExpiry.delete(message.channel.id);
     }
     
     // Immediate close (with notification to user)
@@ -5370,6 +5435,66 @@ client.on("messageCreate", async (message) => {
     
     await storage.updateModmailThread(thread.id, { claimedById: message.author.id });
     await message.reply(`🙋 Ticket claimed by <@${message.author.id}>`);
+    
+    // Start 15-minute claim expiry timer
+    const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
+    const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
+    if (existingClaimTimer) {
+      clearTimeout(existingClaimTimer.timeout);
+    }
+    
+    const claimExpiryTimeout = setTimeout(async () => {
+      pendingClaimExpiry.delete(message.channel.id);
+      
+      const currentThread = await storage.getModmailThreadByChannel(message.channel.id);
+      if (!currentThread || currentThread.status !== "open") return;
+      if (currentThread.claimedById !== message.author.id) return;
+      
+      await storage.updateModmailThread(currentThread.id, { claimedById: null });
+      try {
+        const channel = await client.channels.fetch(message.channel.id);
+        if (channel && "send" in channel) {
+          await channel.send(`⏰ Ticket auto-unclaimed. <@${message.author.id}> did not respond within 15 minutes.`);
+        }
+      } catch (e) {
+        console.log("Could not send auto-unclaim message");
+      }
+    }, CLAIM_EXPIRY_TIME);
+    
+    pendingClaimExpiry.set(message.channel.id, {
+      timeout: claimExpiryTimeout,
+      claimerId: message.author.id,
+    });
+    return;
+  }
+  
+  // Handle ?ignore command to disable inactivity warnings for a ticket
+  if (message.guild && message.content.toLowerCase() === "?ignore") {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+    
+    await storage.updateModmailThread(thread.id, { ignoreInactivity: "true" });
+    
+    // Cancel any pending inactivity timers
+    const existingWarning = pendingInactivityWarnings.get(message.channel.id);
+    if (existingWarning) {
+      clearTimeout(existingWarning.timeout);
+      pendingInactivityWarnings.delete(message.channel.id);
+    }
+    const existingClose = pendingInactivityCloses.get(message.channel.id);
+    if (existingClose) {
+      clearTimeout(existingClose.timeout);
+      pendingInactivityCloses.delete(message.channel.id);
+    }
+    
+    await message.reply("✅ Inactivity warnings disabled for this ticket.");
     return;
   }
   
@@ -5403,6 +5528,14 @@ client.on("messageCreate", async (message) => {
     
     const previousClaimer = thread.claimedById;
     await storage.updateModmailThread(thread.id, { claimedById: null });
+    
+    // Clear claim expiry timer
+    const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
+    if (existingClaimTimer) {
+      clearTimeout(existingClaimTimer.timeout);
+      pendingClaimExpiry.delete(message.channel.id);
+    }
+    
     await message.reply(`🔓 Ticket unclaimed. (Was claimed by <@${previousClaimer}>)`);
     return;
   }
@@ -5983,6 +6116,13 @@ client.on("messageCreate", async (message) => {
         dmMessageId: dmMessage.id,
       });
       
+      // Clear claim expiry timer when any staff responds (ticket is being actively handled)
+      const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
+      if (existingClaimTimer) {
+        clearTimeout(existingClaimTimer.timeout);
+        pendingClaimExpiry.delete(message.channel.id);
+      }
+      
       // Cancel any existing inactivity timers for this channel
       const existingWarning = pendingInactivityWarnings.get(message.channel.id);
       if (existingWarning) {
@@ -5993,6 +6133,17 @@ client.on("messageCreate", async (message) => {
       if (existingClose) {
         clearTimeout(existingClose.timeout);
         pendingInactivityCloses.delete(message.channel.id);
+      }
+      
+      // Only start inactivity timer if ignoreInactivity is not set
+      if (thread.ignoreInactivity === "true") {
+        // Skip inactivity timer for this ticket
+        try {
+          await message.delete();
+        } catch (e) {
+          console.log("Could not delete trigger message:", e);
+        }
+        return;
       }
       
       // Start 15-minute inactivity warning timer
@@ -6032,6 +6183,13 @@ client.on("messageCreate", async (message) => {
             
             const threadToClose = await storage.getModmailThreadByChannel(message.channel.id);
             if (!threadToClose || threadToClose.status !== "open") return;
+            
+            // Clear claim expiry timer on inactivity close
+            const inactivityClaimTimer = pendingClaimExpiry.get(message.channel.id);
+            if (inactivityClaimTimer) {
+              clearTimeout(inactivityClaimTimer.timeout);
+              pendingClaimExpiry.delete(message.channel.id);
+            }
             
             // Close the thread
             await storage.updateModmailThread(threadToClose.id, {
