@@ -2156,7 +2156,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `Cleared **${removed}** members from the role **${guildRole.name}**.${failed > 0 ? ` (${failed} failed)` : ""}`,
         });
       } else if (commandName === "activity_add") {
-        if (!await safeDeferReply(interaction)) return;
+        if (!await safeDeferReply(interaction, false)) return;
         
         const user = interaction.options.getUser("user", true);
         const amount = interaction.options.getInteger("amount", true);
@@ -2195,7 +2195,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
         });
       } else if (commandName === "activity_remove") {
-        if (!await safeDeferReply(interaction)) return;
+        if (!await safeDeferReply(interaction, false)) return;
         
         const user = interaction.options.getUser("user", true);
         const amount = interaction.options.getInteger("amount", true);
