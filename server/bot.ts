@@ -2984,12 +2984,7 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_close_${thread.id}`)
-              .setLabel("Close")
-              .setStyle(ButtonStyle.Danger)
-              .setEmoji("🔒")
+              .setEmoji("🙋")
           );
           
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
@@ -3248,12 +3243,7 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_close_${thread.id}`)
-              .setLabel("Close")
-              .setStyle(ButtonStyle.Danger)
-              .setEmoji("🔒")
+              .setEmoji("🙋")
           );
           
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
@@ -3367,12 +3357,7 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_close_${thread.id}`)
-              .setLabel("Close")
-              .setStyle(ButtonStyle.Danger)
-              .setEmoji("🔒")
+              .setEmoji("🙋")
           );
           
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
@@ -4089,12 +4074,7 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_close_${thread.id}`)
-              .setLabel("Close")
-              .setStyle(ButtonStyle.Danger)
-              .setEmoji("🔒")
+              .setEmoji("🙋")
           );
           
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
@@ -4246,12 +4226,7 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_close_${thread.id}`)
-              .setLabel("Close")
-              .setStyle(ButtonStyle.Danger)
-              .setEmoji("🔒")
+              .setEmoji("🙋")
           );
           
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
