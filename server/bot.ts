@@ -1037,7 +1037,20 @@ async function generateStaffRoster(guild: any): Promise<string> {
 
 async function updateRosterMessages(guildId: string): Promise<void> {
   try {
-    const config = await storage.getGuildConfig(guildId);
+    let config = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        config = await storage.getGuildConfig(guildId);
+        break;
+      } catch (dbError: any) {
+        if (attempt < 3 && (dbError.message?.includes('searchParams') || dbError.code === 'ECONNRESET')) {
+          console.log(`[ROSTER] Database connection attempt ${attempt} failed, retrying...`);
+          await new Promise(r => setTimeout(r, 500 * attempt));
+        } else {
+          throw dbError;
+        }
+      }
+    }
     if (!config) {
       console.log("[ROSTER] No config found for guild", guildId);
       return;
