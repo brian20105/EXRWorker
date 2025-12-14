@@ -2057,57 +2057,62 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "activity") {
         if (!await safeDeferReply(interaction, false)) return;
         
-        const category = interaction.options.getString("category");
-        const fromDays = interaction.options.getInteger("from") ?? undefined;
-        const toDays = interaction.options.getInteger("to") ?? undefined;
-        
-        const banStats = !category || category === "ban" 
-          ? await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays) 
-          : [];
-        const unbanStats = !category || category === "unban"
-          ? await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays)
-          : [];
-        const modmailStats = !category || category === "modmail"
-          ? await storage.getModmailStats(interaction.guildId!, fromDays, toDays)
-          : [];
-        
-        const combinedStats: { [userId: string]: number } = {};
-        for (const stat of banStats) {
-          combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+        try {
+          const category = interaction.options.getString("category");
+          const fromDays = interaction.options.getInteger("from") ?? undefined;
+          const toDays = interaction.options.getInteger("to") ?? undefined;
+          
+          const banStats = !category || category === "ban" 
+            ? await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays) 
+            : [];
+          const unbanStats = !category || category === "unban"
+            ? await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays)
+            : [];
+          const modmailStats = !category || category === "modmail"
+            ? await storage.getModmailStats(interaction.guildId!, fromDays, toDays)
+            : [];
+          
+          const combinedStats: { [userId: string]: number } = {};
+          for (const stat of banStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of unbanStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of modmailStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          
+          const leaderboard = Object.entries(combinedStats)
+            .map(([userId, count]) => ({ userId, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
+          
+          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails handled" : "All Requests";
+          const timeRange = fromDays !== undefined || toDays !== undefined
+            ? ` (${fromDays ?? "∞"}d ago - ${toDays ?? "now"})`
+            : "";
+          
+          const embed = new EmbedBuilder()
+            .setTitle(`📊 Activity Leaderboard - ${categoryText}${timeRange}`)
+            .setColor(0x5865f2)
+            .setTimestamp();
+          
+          if (leaderboard.length === 0) {
+            embed.setDescription("No activity found for the specified filters.");
+          } else {
+            let description = "";
+            leaderboard.forEach((entry, index) => {
+              description += `**${index + 1}.)** <@${entry.userId}> - **${entry.count}** reviews\n`;
+            });
+            embed.setDescription(description);
+          }
+          
+          await interaction.editReply({ embeds: [embed] });
+        } catch (error: any) {
+          console.log("Error in /activity command:", error.message);
+          await interaction.editReply({ content: "❌ Failed to fetch activity stats. Please try again." }).catch(() => {});
         }
-        for (const stat of unbanStats) {
-          combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-        }
-        for (const stat of modmailStats) {
-          combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-        }
-        
-        const leaderboard = Object.entries(combinedStats)
-          .map(([userId, count]) => ({ userId, count }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 10);
-        
-        const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails handled" : "All Requests";
-        const timeRange = fromDays !== undefined || toDays !== undefined
-          ? ` (${fromDays ?? "∞"}d ago - ${toDays ?? "now"})`
-          : "";
-        
-        const embed = new EmbedBuilder()
-          .setTitle(`📊 Activity Leaderboard - ${categoryText}${timeRange}`)
-          .setColor(0x5865f2)
-          .setTimestamp();
-        
-        if (leaderboard.length === 0) {
-          embed.setDescription("No activity found for the specified filters.");
-        } else {
-          let description = "";
-          leaderboard.forEach((entry, index) => {
-            description += `**${index + 1}.)** <@${entry.userId}> - **${entry.count}** reviews\n`;
-          });
-          embed.setDescription(description);
-        }
-        
-        await interaction.editReply({ embeds: [embed] });
       } else if (commandName === "clear-role") {
         if (!await safeDeferReply(interaction)) return;
         
