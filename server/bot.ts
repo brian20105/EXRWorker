@@ -3410,7 +3410,12 @@ client.on("interactionCreate", async (interaction) => {
         }
         
         await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
-        await interaction.channel?.send({ content: `🙋 Ticket claimed by <@${interaction.user.id}>` });
+        
+        const claimEmbed = new EmbedBuilder()
+          .setDescription(`🙋 Ticket claimed by <@${interaction.user.id}>`)
+          .setColor(0x5865f2)
+          .setTimestamp();
+        await interaction.channel?.send({ embeds: [claimEmbed] });
         
         // Start 15-minute claim expiry timer
         if (interaction.channel) {
@@ -5409,7 +5414,12 @@ client.on("messageCreate", async (message) => {
     }
     
     await storage.updateModmailThread(thread.id, { claimedById: message.author.id });
-    await message.reply(`🙋 Ticket claimed by <@${message.author.id}>`);
+    
+    const claimEmbed = new EmbedBuilder()
+      .setDescription(`🙋 Ticket claimed by <@${message.author.id}>`)
+      .setColor(0x5865f2)
+      .setTimestamp();
+    await (message.channel as any).send({ embeds: [claimEmbed] });
     
     // Start 15-minute claim expiry timer
     const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
@@ -5469,7 +5479,11 @@ client.on("messageCreate", async (message) => {
       pendingInactivityCloses.delete(message.channel.id);
     }
     
-    await message.reply("✅ Inactivity warnings disabled for this ticket.");
+    const ignoreEmbed = new EmbedBuilder()
+      .setDescription("✅ Inactivity warnings disabled for this ticket.")
+      .setColor(0x57f287)
+      .setTimestamp();
+    await (message.channel as any).send({ embeds: [ignoreEmbed] });
     return;
   }
   
@@ -5511,7 +5525,11 @@ client.on("messageCreate", async (message) => {
       pendingClaimExpiry.delete(message.channel.id);
     }
     
-    await message.reply(`🔓 Ticket unclaimed. (Was claimed by <@${previousClaimer}>)`);
+    const unclaimEmbed = new EmbedBuilder()
+      .setDescription(`🔓 Ticket unclaimed. (Was claimed by <@${previousClaimer}>)`)
+      .setColor(0xf0b232)
+      .setTimestamp();
+    await (message.channel as any).send({ embeds: [unclaimEmbed] });
     return;
   }
   
