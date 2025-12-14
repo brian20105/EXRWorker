@@ -3399,7 +3399,7 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       } else if (interaction.customId.startsWith("modmail_claim_")) {
-        await interaction.deferUpdate();
+        if (!await safeDeferUpdate(interaction)) return;
         
         const threadId = interaction.customId.replace("modmail_claim_", "");
         const thread = await storage.getModmailThread(threadId);
@@ -3566,7 +3566,7 @@ client.on("interactionCreate", async (interaction) => {
         
         return;
       } else if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
-        await interaction.deferUpdate();
+        if (!await safeDeferUpdate(interaction)) return;
         
         const parts = interaction.customId.split("_");
         const direction = parts[1];
@@ -3667,7 +3667,26 @@ client.on("interactionCreate", async (interaction) => {
             startedAt: Date.now(),
           });
           
-          const dmChannel = await user.createDM();
+          // Retry DM creation up to 2 times to handle intermittent Discord API issues
+          let dmChannel = null;
+          let lastError = null;
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              dmChannel = await user.createDM();
+              break;
+            } catch (dmError: any) {
+              lastError = dmError;
+              console.log(`[QUIZ START] DM creation attempt ${attempt} failed for ${user.id}: ${dmError.message}`);
+              if (attempt < 2) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+              }
+            }
+          }
+          
+          if (!dmChannel) {
+            throw lastError || new Error("Failed to create DM channel");
+          }
+          
           console.log(`[QUIZ START] Sending combined intro + Q1 to ${user.id}`);
           await sendQuizQuestion(user.id, dmChannel, true);
           console.log(`[QUIZ START] Q1 sent to ${user.id}`);
@@ -3677,7 +3696,7 @@ client.on("interactionCreate", async (interaction) => {
           });
         } catch (error: any) {
           activeQuizzes.delete(user.id);
-          console.log("Error starting quiz - DM failed:", error.message);
+          console.log("Error starting quiz - DM failed:", error.message, error.stack?.split('\n').slice(0, 3).join(' '));
           
           await interaction.editReply({
             content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",

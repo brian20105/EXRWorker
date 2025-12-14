@@ -1,0 +1,156 @@
+2025-12-14 11:50:05.05
+0872bac5
+User
+at handleErrors (/home/runner/workspace/node_modules/@discordjs/rest/dist/index.js:762:13)
+2025-12-14 11:50:05.05
+0872bac5
+User
+Error handling interaction: DiscordAPIError[40060]: Interaction has already been acknowledged.
+2025-12-14 11:50:05.05
+0872bac5
+User
+at async ButtonInteraction.deferUpdate (/home/runner/workspace/node_modules/discord.js/src/structures/interfaces/InteractionResponses.js:305:22)
+2025-12-14 11:50:05.05
+0872bac5
+User
+status: 400,
+2025-12-14 11:50:05.05
+0872bac5
+User
+at async BurstHandler.runRequest (/home/runner/workspace/node_modules/@discordjs/rest/dist/index.js:866:23)
+2025-12-14 11:50:13.55
+0872bac5
+User
+code: '42703',
+2025-12-14 11:50:13.55
+0872bac5
+User
+column: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+constraint: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+table: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+at async /home/runner/workspace/dist/index.cjs:70:28638
+2025-12-14 11:50:13.55
+0872bac5
+User
+at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+2025-12-14 11:50:13.55
+0872bac5
+User
+file: 'parse_relation.c',
+2025-12-14 11:50:13.55
+0872bac5
+User
+internalQuery: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+at async Client. (/home/runner/workspace/dist/index.cjs:164:599) {
+2025-12-14 11:50:13.55
+0872bac5
+User
+dataType: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+length: 120,
+2025-12-14 11:50:13.55
+0872bac5
+User
+Discord client error: error: column "subscribed_user_ids" does not exist
+2025-12-14 11:50:13.55
+0872bac5
+User
+where: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+at /home/runner/workspace/dist/index.cjs:70:13326
+2025-12-14 11:50:13.55
+0872bac5
+User
+routine: 'errorMissingColumn'
+2025-12-14 11:50:13.55
+0872bac5
+User
+severity: 'ERROR',
+2025-12-14 11:50:13.55
+0872bac5
+User
+internalPosition: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+position: '110',
+2025-12-14 11:50:13.55
+0872bac5
+User
+hint: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+at async nh.getModmailThreadByChannel (/home/runner/workspace/dist/index.cjs:70:36472)
+2025-12-14 11:50:13.55
+0872bac5
+User
+detail: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+}
+2025-12-14 11:50:13.55
+0872bac5
+User
+line: '3722',
+2025-12-14 11:50:13.55
+0872bac5
+User
+schema: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+schema: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+line: '3722',
+2025-12-14 11:50:13.55
+0872bac5
+User
+}
+2025-12-14 11:50:13.55
+0872bac5
+User
+detail: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+at async nh.getModmailThreadByChannel (/home/runner/workspace/dist/index.cjs:70:36472)
+2025-12-14 11:50:13.55
+0872bac5
+User
+hint: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+position: '110',
+2025-12-14 11:50:13.55
+0872bac5
+User
+internalPosition: undefined,
+2025-12-14 11:50:13.55
+0872bac5
+User
+severity: 'ERROR',
+2025-12-14 11:50:13.55
+0872bac5
+User
+routine: 'errorMissingColumn'
