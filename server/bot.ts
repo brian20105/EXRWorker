@@ -6192,11 +6192,16 @@ client.on("messageCreate", async (message) => {
       const warningTime = Date.now() + FIFTEEN_MINUTES;
       const closeTime = Date.now() + (30 * 60 * 1000); // 30 minutes total
       
+      // Capture references synchronously before async timeouts
+      const channelId = message.channel.id;
+      const guildId = message.guild?.id;
+      const staffId = message.author.id;
+      
       const warningTimeout = setTimeout(async () => {
-        pendingInactivityWarnings.delete(message.channel.id);
+        pendingInactivityWarnings.delete(channelId);
         
         // Re-fetch thread to make sure it's still open
-        const currentThread = await storage.getModmailThreadByChannel(message.channel.id);
+        const currentThread = await storage.getModmailThreadByChannel(channelId);
         if (!currentThread || currentThread.status !== "open") return;
         
         // Send warning message with hammer time timestamp
@@ -6208,7 +6213,10 @@ client.on("messageCreate", async (message) => {
             .setColor(0xf0b232)
             .setTimestamp();
           
-          const warningMsg = await (message.channel as any).send({ embeds: [warningEmbed] });
+          const channel = await client.channels.fetch(channelId);
+          if (!channel || !("send" in channel)) return;
+          
+          const warningMsg = await (channel as any).send({ embeds: [warningEmbed] });
           
           // Also notify the user in DM
           try {
@@ -6220,75 +6228,78 @@ client.on("messageCreate", async (message) => {
           
           // Schedule auto-close after another 15 minutes
           const closeTimeout = setTimeout(async () => {
-            pendingInactivityCloses.delete(message.channel.id);
+            pendingInactivityCloses.delete(channelId);
             
-            const threadToClose = await storage.getModmailThreadByChannel(message.channel.id);
+            const threadToClose = await storage.getModmailThreadByChannel(channelId);
             if (!threadToClose || threadToClose.status !== "open") return;
             
             // Clear claim expiry timer on inactivity close
-            const inactivityClaimTimer = pendingClaimExpiry.get(message.channel.id);
+            const inactivityClaimTimer = pendingClaimExpiry.get(channelId);
             if (inactivityClaimTimer) {
               clearTimeout(inactivityClaimTimer.timeout);
-              pendingClaimExpiry.delete(message.channel.id);
+              pendingClaimExpiry.delete(channelId);
             }
             
             // Close the thread
             await storage.updateModmailThread(threadToClose.id, {
               status: "closed",
-              closedById: message.author.id,
+              closedById: staffId,
               closeReason: "Closed due to inactivity",
               closedAt: new Date(),
             });
             
             // Award 1 activity point to the staff member who handled it
-            if (message.guild) {
-              await storage.addModmailActivityEntries(message.guild.id, message.author.id, 1);
+            if (guildId) {
+              await storage.addModmailActivityEntries(guildId, staffId, 1);
             }
             
             // Log to modmail log channel
-            const config = await storage.getGuildConfig(message.guild!.id);
-            if (config?.modmailLogChannelId) {
-              try {
-                const logChannel = await client.channels.fetch(config.modmailLogChannelId);
-                if (logChannel && "send" in logChannel) {
-                  const messages = await storage.getModmailMessages(threadToClose.id);
-                  let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                  if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-                  
-                  const logEmbed = new EmbedBuilder()
-                    .setTitle("Ticket Closed (Inactivity)")
-                    .setColor(0xed4245)
-                    .addFields(
-                      { name: "User", value: `<@${threadToClose.userId}>`, inline: true },
-                      { name: "Closed By", value: `<@${message.author.id}> (auto)`, inline: true },
-                      { name: "Transcript", value: transcript || "No messages", inline: false }
-                    )
-                    .setTimestamp();
-                  await logChannel.send({ embeds: [logEmbed] });
+            if (guildId) {
+              const config = await storage.getGuildConfig(guildId);
+              if (config?.modmailLogChannelId) {
+                try {
+                  const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+                  if (logChannel && "send" in logChannel) {
+                    const messages = await storage.getModmailMessages(threadToClose.id);
+                    let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                    if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                    
+                    const logEmbed = new EmbedBuilder()
+                      .setTitle("Ticket Closed (Inactivity)")
+                      .setColor(0xed4245)
+                      .addFields(
+                        { name: "User", value: `<@${threadToClose.userId}>`, inline: true },
+                        { name: "Closed By", value: `<@${staffId}> (auto)`, inline: true },
+                        { name: "Transcript", value: transcript || "No messages", inline: false }
+                      )
+                      .setTimestamp();
+                    await logChannel.send({ embeds: [logEmbed] });
+                  }
+                } catch (e) {
+                  console.log("Could not send modmail log");
                 }
-              } catch (e) {
-                console.log("Could not send modmail log");
               }
             }
             
             // Delete the channel
             try {
-              await (message.channel as any).delete();
-            } catch (e) {}
+              const chanToDelete = await client.channels.fetch(channelId);
+              if (chanToDelete) await chanToDelete.delete();
+            } catch (e) { console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
           }, FIFTEEN_MINUTES);
           
-          pendingInactivityCloses.set(message.channel.id, {
+          pendingInactivityCloses.set(channelId, {
             timeout: closeTimeout,
-            staffId: message.author.id,
+            staffId: staffId,
           });
         } catch (e) {
           console.log("Could not send inactivity warning:", e);
         }
       }, FIFTEEN_MINUTES);
       
-      pendingInactivityWarnings.set(message.channel.id, {
+      pendingInactivityWarnings.set(channelId, {
         timeout: warningTimeout,
-        staffId: message.author.id,
+        staffId: staffId,
       });
       
       // Delete the original trigger message
