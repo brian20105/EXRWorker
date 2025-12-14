@@ -110,6 +110,17 @@ async function safeReply(interaction: any, options: any): Promise<boolean> {
   }
 }
 
+// Helper to safely defer update for button interactions - returns false if interaction expired
+async function safeDeferUpdate(interaction: any): Promise<boolean> {
+  try {
+    await interaction.deferUpdate();
+    return true;
+  } catch (e) {
+    // Silently ignore - interaction expired
+    return false;
+  }
+}
+
 interface QuizQuestion {
   text: string;
 }
@@ -3468,6 +3479,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
         
+        // Update thread status and clear timer
         await storage.updateModmailThread(threadId, {
           status: "closed",
           closedById: interaction.user.id,
@@ -3475,7 +3487,6 @@ client.on("interactionCreate", async (interaction) => {
           closedAt: new Date(),
         });
         
-        // Clear claim expiry timer on close
         if (interaction.channel) {
           const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
           if (existingClaimTimer) {
@@ -3484,56 +3495,68 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
         
-        // Notify user
-        try {
-          const user = await client.users.fetch(thread.userId);
-          const closeEmbed = new EmbedBuilder()
-            .setTitle("Ticket Closed")
-            .setDescription("Your ticket has been closed by staff.")
-            .setColor(0xed4245)
-            .setTimestamp();
-          await user.send({ embeds: [closeEmbed] });
-        } catch (e) {
-          console.log("Could not DM user about ticket close");
-        }
+        // Reply immediately, then do background work
+        await interaction.editReply({ content: "✅ Ticket closed. Deleting channel..." });
         
-        // Log to modmail log channel
-        const config = await storage.getGuildConfig(interaction.guildId!);
-        if (config?.modmailLogChannelId) {
+        // Capture references synchronously before async work
+        const guildId = interaction.guildId!;
+        const closerId = interaction.user.id;
+        const channelId = interaction.channel?.id;
+        const threadUserId = thread.userId;
+        const threadIdForLog = thread.id;
+        
+        // Background: DM user, log, and delete channel
+        (async () => {
+          // DM user notification
           try {
-            const logChannel = await client.channels.fetch(config.modmailLogChannelId);
-            if (logChannel && "send" in logChannel) {
-              const messages = await storage.getModmailMessages(thread.id);
-              let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-              if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-              
-              const logEmbed = new EmbedBuilder()
-                .setTitle("Ticket Closed")
-                .setColor(0xed4245)
-                .addFields(
-                  { name: "User", value: `<@${thread.userId}>`, inline: true },
-                  { name: "Closed By", value: `<@${interaction.user.id}>`, inline: true },
-                  { name: "Transcript", value: transcript || "No messages", inline: false }
-                )
-                .setTimestamp();
-              await logChannel.send({ embeds: [logEmbed] });
+            const user = await client.users.fetch(threadUserId);
+            const closeEmbed = new EmbedBuilder()
+              .setTitle("Ticket Closed")
+              .setDescription("Your ticket has been closed by staff.")
+              .setColor(0xed4245)
+              .setTimestamp();
+            await user.send({ embeds: [closeEmbed] });
+          } catch (e) {
+            console.log("Could not DM user about ticket close");
+          }
+          
+          // Log to modmail log channel
+          try {
+            const config = await storage.getGuildConfig(guildId);
+            if (config?.modmailLogChannelId) {
+              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const messages = await storage.getModmailMessages(threadIdForLog);
+                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                
+                const logEmbed = new EmbedBuilder()
+                  .setTitle("Ticket Closed")
+                  .setColor(0xed4245)
+                  .addFields(
+                    { name: "User", value: `<@${threadUserId}>`, inline: true },
+                    { name: "Closed By", value: `<@${closerId}>`, inline: true },
+                    { name: "Transcript", value: transcript || "No messages", inline: false }
+                  )
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+              }
             }
           } catch (e) {
             console.log("Could not send modmail log");
           }
-        }
+          
+          // Delete channel after delay using captured ID
+          if (channelId) {
+            setTimeout(async () => {
+              try {
+                const chan = await client.channels.fetch(channelId);
+                if (chan) await chan.delete();
+              } catch (e) { console.log("[MODMAIL] Failed to delete channel:", e); }
+            }, 3000);
+          }
+        })().catch(e => console.log("[MODMAIL] Background task error:", e));
         
-        // Delete channel
-        try {
-          await interaction.editReply({ content: "✅ Ticket closed. Deleting channel..." });
-          setTimeout(async () => {
-            try {
-              await (interaction.channel as any).delete();
-            } catch (e) {}
-          }, 3000);
-        } catch (e) {
-          await interaction.editReply({ content: "✅ Ticket closed." });
-        }
         return;
       } else if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
         await interaction.deferUpdate();
@@ -4408,48 +4431,60 @@ client.on("interactionCreate", async (interaction) => {
           .setFooter({ text: `Request ID: ${requestId}` })
           .setTimestamp();
 
-        await message.edit({
-          embeds: [updatedEmbed],
-          components: [],
-        });
+        // Update message and reply immediately
+        await Promise.all([
+          message.edit({ embeds: [updatedEmbed], components: [] }),
+          interaction.editReply({ content: `Request ${action === "approve" ? "approved" : "denied"} successfully.` })
+        ]);
 
-        await interaction.editReply({
-          content: `Request ${action === "approve" ? "approved" : "denied"} successfully.`,
-        });
-
+        // Background: Send DMs and log
         const dmStatus = action === "approve" ? "approved" : "denied";
-        await sendDMToUser(userId, dmStatus, reason, moneyOwed, paypal, actionReason);
-        await sendDMToStaff(requestedById, dmStatus, userId, moneyOwed, paypal, actionReason);
-
-        const config = await storage.getGuildConfig(interaction.guildId!);
-        if (config?.logChannelId) {
-          const logChannel = await client.channels.fetch(config.logChannelId);
-          if (logChannel && "send" in logChannel) {
-            const logTitle = action === "approve" ? "Payment Logged" : "Payment Denied";
-            const logDescription = action === "approve" 
-              ? `Payment successfully processed for User ID: ${userId} (<@${userId}>)`
-              : `Payment request denied for User ID: ${userId} (<@${userId}>)`;
-            const logColor = action === "approve" ? 0x23a559 : 0xda373c;
-            
-            const logFields: any[] = [
-              { name: "Amount", value: moneyOwedField, inline: true },
-              { name: "Recipient", value: paypal, inline: true }
-            ];
-            
-            if (actionReason) {
-              logFields.push({ name: action === "approve" ? "Note" : "Denial Reason", value: actionReason, inline: false });
-            }
-            
-            const logEmbed = new EmbedBuilder()
-              .setTitle(logTitle)
-              .setDescription(logDescription)
-              .setColor(logColor)
-              .addFields(logFields)
-              .setTimestamp();
-
-            await logChannel.send({ embeds: [logEmbed] });
+        const guildId = interaction.guildId!;
+        
+        (async () => {
+          try {
+            await Promise.all([
+              sendDMToUser(userId, dmStatus, reason, moneyOwed, paypal, actionReason),
+              sendDMToStaff(requestedById, dmStatus, userId, moneyOwed, paypal, actionReason)
+            ]);
+          } catch (e) {
+            console.log("Could not send payout DMs:", e);
           }
-        }
+
+          try {
+            const config = await storage.getGuildConfig(guildId);
+            if (config?.logChannelId) {
+              const logChannel = await client.channels.fetch(config.logChannelId);
+              if (logChannel && "send" in logChannel) {
+                const logTitle = action === "approve" ? "Payment Logged" : "Payment Denied";
+                const logDescription = action === "approve" 
+                  ? `Payment successfully processed for User ID: ${userId} (<@${userId}>)`
+                  : `Payment request denied for User ID: ${userId} (<@${userId}>)`;
+                const logColor = action === "approve" ? 0x23a559 : 0xda373c;
+                
+                const logFields: any[] = [
+                  { name: "Amount", value: moneyOwedField, inline: true },
+                  { name: "Recipient", value: paypal, inline: true }
+                ];
+                
+                if (actionReason) {
+                  logFields.push({ name: action === "approve" ? "Note" : "Denial Reason", value: actionReason, inline: false });
+                }
+                
+                const logEmbed = new EmbedBuilder()
+                  .setTitle(logTitle)
+                  .setDescription(logDescription)
+                  .setColor(logColor)
+                  .addFields(logFields)
+                  .setTimestamp();
+
+                await logChannel.send({ embeds: [logEmbed] });
+              }
+            }
+          } catch (e) {
+            console.log("Could not send payout log:", e);
+          }
+        })().catch(e => console.log("[PAYOUT] Background task error:", e));
       } else if (interaction.customId === "ban_request_modal") {
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -4674,68 +4709,71 @@ client.on("interactionCreate", async (interaction) => {
           content: `Ban request ${action === "approve" ? "approved" : "denied"} successfully.`,
         });
 
-        const guild = interaction.guild;
+        // Background: Send DMs and log (fire-and-forget)
+        const guildName = interaction.guild?.name || "Unknown";
+        const reviewerUsername = interaction.user.username;
+        const reviewerId = interaction.user.id;
         
-        // Send DM to the requester
-        try {
-          const requester = await client.users.fetch(banRequest.requestedById);
-          const dmEmbed = new EmbedBuilder()
-            .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
-            .setDescription(`Your ban request has been **${action === "approve" ? "approved" : "denied"}**.`)
-            .setColor(action === "approve" ? 0x23a559 : 0xda373c)
-            .addFields(
-              { name: "Reviewed by", value: interaction.user.username, inline: true },
-              { name: "Server", value: guild?.name || "Unknown", inline: true },
-              { name: "Reason", value: actionReason || "No reason provided", inline: false }
-            )
-            .setTimestamp();
-          await requester.send({ embeds: [dmEmbed] });
-        } catch (error) {
-          console.log("Could not DM requester");
-        }
+        (async () => {
+          // Send DMs in parallel
+          await Promise.all([
+            (async () => {
+              try {
+                const requester = await client.users.fetch(banRequest.requestedById);
+                const dmEmbed = new EmbedBuilder()
+                  .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
+                  .setDescription(`Your ban request has been **${action === "approve" ? "approved" : "denied"}**.`)
+                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                  .addFields(
+                    { name: "Reviewed by", value: reviewerUsername, inline: true },
+                    { name: "Server", value: guildName, inline: true },
+                    { name: "Reason", value: actionReason || "No reason provided", inline: false }
+                  )
+                  .setTimestamp();
+                await requester.send({ embeds: [dmEmbed] });
+              } catch (e) { console.log("[BAN] Failed to DM requester:", e); }
+            })(),
+            (async () => {
+              try {
+                const targetUser = await client.users.fetch(banRequest.targetUserId);
+                const targetDmEmbed = new EmbedBuilder()
+                  .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
+                  .setDescription(`A ban request regarding you has been **${action === "approve" ? "approved" : "denied"}**.`)
+                  .setColor(action === "approve" ? 0xda373c : 0x23a559)
+                  .addFields(
+                    { name: "Server", value: guildName, inline: true },
+                    { name: "Reason", value: actionReason || "No reason provided", inline: false }
+                  )
+                  .setTimestamp();
+                await targetUser.send({ embeds: [targetDmEmbed] });
+              } catch (e) { console.log("[BAN] Failed to DM target user:", e); }
+            })()
+          ]);
 
-        // Send DM to the target user
-        try {
-          const targetUser = await client.users.fetch(banRequest.targetUserId);
-          const targetDmEmbed = new EmbedBuilder()
-            .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
-            .setDescription(`A ban request regarding you has been **${action === "approve" ? "approved" : "denied"}**.`)
-            .setColor(action === "approve" ? 0xda373c : 0x23a559)
-            .addFields(
-              { name: "Server", value: guild?.name || "Unknown", inline: true },
-              { name: "Reason", value: actionReason || "No reason provided", inline: false }
-            )
-            .setTimestamp();
-          await targetUser.send({ embeds: [targetDmEmbed] });
-        } catch (error) {
-          console.log("Could not DM target user");
-        }
-
-        // Post to log channel
-        if (config?.banLogChannelId) {
-          try {
-            const logChannel = await client.channels.fetch(config.banLogChannelId);
-            if (logChannel && "send" in logChannel) {
-              const logEmbed = new EmbedBuilder()
-                .setTitle(action === "approve" ? "Ban Request Approved" : "Ban Request Denied")
-                .setDescription(`Ban request for <@${banRequest.targetUserId}> has been ${action === "approve" ? "approved" : "denied"}.`)
-                .setColor(action === "approve" ? 0x23a559 : 0xda373c)
-                .addFields(
-                  { name: "Target User", value: `<@${banRequest.targetUserId}>`, inline: true },
-                  { name: "Requested by", value: `<@${banRequest.requestedById}>`, inline: true },
-                  { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: true },
-                  { name: "Ban Reason", value: banRequest.reason, inline: false }
-                )
-                .setTimestamp();
-              if (actionReason) {
-                logEmbed.addFields({ name: "Review Note", value: actionReason, inline: false });
+          // Post to log channel
+          if (config?.banLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.banLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const logEmbed = new EmbedBuilder()
+                  .setTitle(action === "approve" ? "Ban Request Approved" : "Ban Request Denied")
+                  .setDescription(`Ban request for <@${banRequest.targetUserId}> has been ${action === "approve" ? "approved" : "denied"}.`)
+                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                  .addFields(
+                    { name: "Target User", value: `<@${banRequest.targetUserId}>`, inline: true },
+                    { name: "Requested by", value: `<@${banRequest.requestedById}>`, inline: true },
+                    { name: "Reviewed by", value: `<@${reviewerId}>`, inline: true },
+                    { name: "Ban Reason", value: banRequest.reason, inline: false }
+                  )
+                  .setTimestamp();
+                if (actionReason) {
+                  logEmbed.addFields({ name: "Review Note", value: actionReason, inline: false });
+                }
+                await logChannel.send({ embeds: [logEmbed] });
               }
-              await logChannel.send({ embeds: [logEmbed] });
-            }
-          } catch (error) {
-            console.log("Could not post to ban log channel");
+            } catch (e) { console.log("[BAN] Failed to post to log channel:", e); }
           }
-        }
+        })().catch(e => console.log("[BAN] Background task error:", e));
       } else if (interaction.customId.startsWith("unban_action_")) {
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -4816,68 +4854,71 @@ client.on("interactionCreate", async (interaction) => {
           content: `Unban request ${action === "approve" ? "approved" : "denied"} successfully.`,
         });
 
-        const guild = interaction.guild;
+        // Background: Send DMs and log (fire-and-forget)
+        const guildName = interaction.guild?.name || "Unknown";
+        const reviewerUsername = interaction.user.username;
+        const reviewerId = interaction.user.id;
         
-        // Send DM to the requester
-        try {
-          const requester = await client.users.fetch(unbanRequest.requestedById);
-          const dmEmbed = new EmbedBuilder()
-            .setTitle(`Unban Request ${action === "approve" ? "Approved" : "Denied"}`)
-            .setDescription(`Your unban request has been **${action === "approve" ? "approved" : "denied"}**.`)
-            .setColor(action === "approve" ? 0x23a559 : 0xda373c)
-            .addFields(
-              { name: "Reviewed by", value: interaction.user.username, inline: true },
-              { name: "Server", value: guild?.name || "Unknown", inline: true },
-              { name: "Reason", value: actionReason || "No reason provided", inline: false }
-            )
-            .setTimestamp();
-          await requester.send({ embeds: [dmEmbed] });
-        } catch (error) {
-          console.log("Could not DM requester");
-        }
+        (async () => {
+          // Send DMs in parallel
+          await Promise.all([
+            (async () => {
+              try {
+                const requester = await client.users.fetch(unbanRequest.requestedById);
+                const dmEmbed = new EmbedBuilder()
+                  .setTitle(`Unban Request ${action === "approve" ? "Approved" : "Denied"}`)
+                  .setDescription(`Your unban request has been **${action === "approve" ? "approved" : "denied"}**.`)
+                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                  .addFields(
+                    { name: "Reviewed by", value: reviewerUsername, inline: true },
+                    { name: "Server", value: guildName, inline: true },
+                    { name: "Reason", value: actionReason || "No reason provided", inline: false }
+                  )
+                  .setTimestamp();
+                await requester.send({ embeds: [dmEmbed] });
+              } catch (e) { console.log("[UNBAN] Failed to DM requester:", e); }
+            })(),
+            (async () => {
+              try {
+                const targetUser = await client.users.fetch(unbanRequest.targetUserId);
+                const targetDmEmbed = new EmbedBuilder()
+                  .setTitle(`Unban Request ${action === "approve" ? "Approved" : "Denied"}`)
+                  .setDescription(`An unban request regarding you has been **${action === "approve" ? "approved" : "denied"}**.`)
+                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                  .addFields(
+                    { name: "Server", value: guildName, inline: true },
+                    { name: "Reason", value: actionReason || "No reason provided", inline: false }
+                  )
+                  .setTimestamp();
+                await targetUser.send({ embeds: [targetDmEmbed] });
+              } catch (e) { console.log("[UNBAN] Failed to DM target user:", e); }
+            })()
+          ]);
 
-        // Send DM to the target user
-        try {
-          const targetUser = await client.users.fetch(unbanRequest.targetUserId);
-          const targetDmEmbed = new EmbedBuilder()
-            .setTitle(`Unban Request ${action === "approve" ? "Approved" : "Denied"}`)
-            .setDescription(`An unban request regarding you has been **${action === "approve" ? "approved" : "denied"}**.`)
-            .setColor(action === "approve" ? 0x23a559 : 0xda373c)
-            .addFields(
-              { name: "Server", value: guild?.name || "Unknown", inline: true },
-              { name: "Reason", value: actionReason || "No reason provided", inline: false }
-            )
-            .setTimestamp();
-          await targetUser.send({ embeds: [targetDmEmbed] });
-        } catch (error) {
-          console.log("Could not DM target user");
-        }
-
-        // Post to log channel
-        if (config?.unbanLogChannelId) {
-          try {
-            const logChannel = await client.channels.fetch(config.unbanLogChannelId);
-            if (logChannel && "send" in logChannel) {
-              const logEmbed = new EmbedBuilder()
-                .setTitle(action === "approve" ? "Unban Request Approved" : "Unban Request Denied")
-                .setDescription(`Unban request for <@${unbanRequest.targetUserId}> has been ${action === "approve" ? "approved" : "denied"}.`)
-                .setColor(action === "approve" ? 0x23a559 : 0xda373c)
-                .addFields(
-                  { name: "Target User", value: `<@${unbanRequest.targetUserId}>`, inline: true },
-                  { name: "Requested by", value: `<@${unbanRequest.requestedById}>`, inline: true },
-                  { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: true },
-                  { name: "Unban Reason", value: unbanRequest.reason, inline: false }
-                )
-                .setTimestamp();
-              if (actionReason) {
-                logEmbed.addFields({ name: "Review Note", value: actionReason, inline: false });
+          // Post to log channel
+          if (config?.unbanLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.unbanLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const logEmbed = new EmbedBuilder()
+                  .setTitle(action === "approve" ? "Unban Request Approved" : "Unban Request Denied")
+                  .setDescription(`Unban request for <@${unbanRequest.targetUserId}> has been ${action === "approve" ? "approved" : "denied"}.`)
+                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                  .addFields(
+                    { name: "Target User", value: `<@${unbanRequest.targetUserId}>`, inline: true },
+                    { name: "Requested by", value: `<@${unbanRequest.requestedById}>`, inline: true },
+                    { name: "Reviewed by", value: `<@${reviewerId}>`, inline: true },
+                    { name: "Unban Reason", value: unbanRequest.reason, inline: false }
+                  )
+                  .setTimestamp();
+                if (actionReason) {
+                  logEmbed.addFields({ name: "Review Note", value: actionReason, inline: false });
+                }
+                await logChannel.send({ embeds: [logEmbed] });
               }
-              await logChannel.send({ embeds: [logEmbed] });
-            }
-          } catch (error) {
-            console.log("Could not post to unban log channel");
+            } catch (e) { console.log("[UNBAN] Failed to post to log channel:", e); }
           }
-        }
+        })().catch(e => console.log("[UNBAN] Background task error:", e));
       } else if (interaction.customId.startsWith("inactivity_review_")) {
         try {
           if (!await safeDeferReply(interaction)) return;
