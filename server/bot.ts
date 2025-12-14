@@ -5890,6 +5890,12 @@ client.on("messageCreate", async (message) => {
       
       if (!targetThread || !targetGuild) {
         // No existing open ticket - offer to create one via DM
+        // Skip if user is in an active quiz (double-check to prevent overlap)
+        if (activeQuizzes.has(message.author.id)) {
+          console.log(`[DM] User ${message.author.id} has active quiz, skipping modmail prompt`);
+          return;
+        }
+        
         // Check if user already has a pending category selection
         if (pendingDMTickets.has(message.author.id)) {
           return; // Already waiting for category selection
