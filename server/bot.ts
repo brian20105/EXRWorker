@@ -5468,8 +5468,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
   
-  // Handle ?ignore command to disable inactivity warnings for a ticket
-  if (message.guild && message.content.toLowerCase() === "?ignore") {
+  // Handle !ignore command to disable inactivity warnings for a ticket
+  if (message.guild && message.content.toLowerCase() === "!ignore") {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
