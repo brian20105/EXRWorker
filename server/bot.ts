@@ -5308,62 +5308,70 @@ client.on("messageCreate", async (message) => {
       // Send timed close message
       await (message.channel as any).send(`⏰ This ticket will close ${timeString}.`);
       
+      // Capture references synchronously before async timeout
+      const timedChannelId = message.channel.id;
+      const timedGuildId = message.guild?.id;
+      const timedStaffId = message.author.id;
+      
       // Schedule the close (silent - no notification to user)
       const timeout = setTimeout(async () => {
-        pendingTimedCloses.delete(message.channel.id);
+        pendingTimedCloses.delete(timedChannelId);
         
         // Re-fetch thread to make sure it's still open
-        const currentThread = await storage.getModmailThreadByChannel(message.channel.id);
+        const currentThread = await storage.getModmailThreadByChannel(timedChannelId);
         if (!currentThread || currentThread.status !== "open") return;
         
         // Clear claim expiry timer on close
-        const timedClaimTimer = pendingClaimExpiry.get(message.channel.id);
+        const timedClaimTimer = pendingClaimExpiry.get(timedChannelId);
         if (timedClaimTimer) {
           clearTimeout(timedClaimTimer.timeout);
-          pendingClaimExpiry.delete(message.channel.id);
+          pendingClaimExpiry.delete(timedChannelId);
         }
         
         // Close the thread silently
         await storage.updateModmailThread(currentThread.id, {
           status: "closed",
-          closedById: message.author.id,
+          closedById: timedStaffId,
           closeReason: `Timed close (${timeArg})`,
           closedAt: new Date(),
         });
         
         // Log to modmail log channel (no notification to user for timed close)
-        const config = await storage.getGuildConfig(message.guild!.id);
-        if (config?.modmailLogChannelId) {
-          try {
-            const logChannel = await client.channels.fetch(config.modmailLogChannelId);
-            if (logChannel && "send" in logChannel) {
-              const messages = await storage.getModmailMessages(currentThread.id);
-              let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-              if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-              
-              const logEmbed = new EmbedBuilder()
-                .setTitle("Ticket Closed (Timed)")
-                .setColor(0xed4245)
-                .addFields(
-                  { name: "User", value: `<@${currentThread.userId}>`, inline: true },
-                  { name: "Closed By", value: `<@${message.author.id}>`, inline: true },
-                  { name: "Transcript", value: transcript || "No messages", inline: false }
-                )
-                .setTimestamp();
-              await logChannel.send({ embeds: [logEmbed] });
+        if (timedGuildId) {
+          const config = await storage.getGuildConfig(timedGuildId);
+          if (config?.modmailLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const messages = await storage.getModmailMessages(currentThread.id);
+                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                
+                const logEmbed = new EmbedBuilder()
+                  .setTitle("Ticket Closed (Timed)")
+                  .setColor(0xed4245)
+                  .addFields(
+                    { name: "User", value: `<@${currentThread.userId}>`, inline: true },
+                    { name: "Closed By", value: `<@${timedStaffId}>`, inline: true },
+                    { name: "Transcript", value: transcript || "No messages", inline: false }
+                  )
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+              }
+            } catch (e) {
+              console.log("Could not send modmail log");
             }
-          } catch (e) {
-            console.log("Could not send modmail log");
           }
         }
         
         // Delete the channel
         try {
-          await (message.channel as any).delete();
-        } catch (e) {}
+          const chanToDelete = await client.channels.fetch(timedChannelId);
+          if (chanToDelete) await chanToDelete.delete();
+        } catch (e) { console.log("[MODMAIL] Failed to delete channel on timed close:", e); }
       }, delayMs);
       
-      pendingTimedCloses.set(message.channel.id, timeout);
+      pendingTimedCloses.set(timedChannelId, timeout);
       return;
     }
     
