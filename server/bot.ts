@@ -5506,7 +5506,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle !snip commands for snippet management
-  if (message.guild && message.content.toLowerCase().startsWith("!snip ")) {
+  if (message.guild && message.content.toLowerCase().startsWith(".snip ")) {
     const args = message.content.substring(6).trim();
     const spaceIndex = args.indexOf(" ");
     const subCommand = spaceIndex === -1 ? args.toLowerCase() : args.substring(0, spaceIndex).toLowerCase();
@@ -5613,11 +5613,11 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle !<alias> snippet usage in modmail ticket channels
-  if (message.guild && message.content.startsWith("!") && !message.content.startsWith("!snip") && 
-      !message.content.toLowerCase().startsWith("!close") && !message.content.toLowerCase().startsWith("!c") &&
-      !message.content.toLowerCase().startsWith("!claim") && !message.content.toLowerCase().startsWith("!or") &&
-      !message.content.toLowerCase().startsWith("!r ") && !message.content.toLowerCase().startsWith("!edit ") &&
-      !message.content.toLowerCase().startsWith("!delete")) {
+  if (message.guild && message.content.startsWith(".") && !message.content.startsWith("!snip") && 
+      !message.content.toLowerCase().startsWith(".close") && !message.content.toLowerCase().startsWith(".c") &&
+      !message.content.toLowerCase().startsWith(".claim") && !message.content.toLowerCase().startsWith(".or") &&
+      !message.content.toLowerCase().startsWith(".r ") && !message.content.toLowerCase().startsWith(".edit ") &&
+      !message.content.toLowerCase().startsWith(".delete")) {
     const alias = message.content.substring(1).toLowerCase().split(" ")[0];
     if (alias) {
       const thread = await storage.getModmailThreadByChannel(message.channel.id);
