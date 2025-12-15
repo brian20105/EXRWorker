@@ -835,7 +835,8 @@ const commands = [
           { name: "Ban/Unban Approval", value: "moderation" },
           { name: "Inactivity Approval", value: "inactivity" },
           { name: "Modmail Block", value: "block" },
-          { name: "Modmail Claim", value: "claim" }
+          { name: "Modmail Claim", value: "claim" },
+          { name: "Activity Reset", value: "activity_reset" }
         )
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
@@ -2232,7 +2233,17 @@ client.on("interactionCreate", async (interaction) => {
           content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
         });
       } else if (commandName === "activity_reset") {
-        if (!await safeDeferReply(interaction)) return;
+        if (!await safeDeferReply(interaction, false)) return;
+        
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const activityResetRoleIds = config?.activityResetRoleIds || [];
+        const hasPermission = activityResetRoleIds.length === 0 || 
+          (interaction.member as any)?.roles?.cache?.some((r: any) => activityResetRoleIds.includes(r.id));
+        
+        if (activityResetRoleIds.length > 0 && !hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to reset activity stats." });
+          return;
+        }
         
         const category = interaction.options.getString("category");
         const user = interaction.options.getUser("user");
@@ -2655,6 +2666,7 @@ client.on("interactionCreate", async (interaction) => {
           inactivity: "Inactivity Approval",
           block: "Modmail Block",
           claim: "Modmail Claim",
+          activity_reset: "Activity Reset",
         };
         
         if (permType === "payout") {
@@ -2667,6 +2679,8 @@ client.on("interactionCreate", async (interaction) => {
           await storage.upsertGuildConfig({ guildId: interaction.guildId!, modmailBlockRoleIds: roles });
         } else if (permType === "claim") {
           await storage.upsertGuildConfig({ guildId: interaction.guildId!, modmailClaimRoleIds: roles });
+        } else if (permType === "activity_reset") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, activityResetRoleIds: roles });
         }
         
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
