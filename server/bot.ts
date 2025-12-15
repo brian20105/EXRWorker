@@ -6566,6 +6566,17 @@ client.on("messageCreate", async (message) => {
   
   // Staff messages in modmail channels WITHOUT !r prefix are NOT sent to user
   // This allows staff to discuss in the channel privately
+  // BUT we should still clear the claim expiry timer if any staff member sends a message
+  if (message.guild && !message.author.bot) {
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (thread && thread.status === "open") {
+      const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
+      if (existingClaimTimer) {
+        clearTimeout(existingClaimTimer.timeout);
+        pendingClaimExpiry.delete(message.channel.id);
+      }
+    }
+  }
 });
 
 const syncingUsers = new Set<string>();
