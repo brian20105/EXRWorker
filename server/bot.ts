@@ -646,6 +646,10 @@ const commands = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName("restore_activity")
+    .setDescription("Restore activity stats from the last reset")
+    .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
     .setName("setup_staff_intro")
     .setDescription("Post the staff introduction quiz in the current channel")
     .setDefaultMemberPermissions(0),
@@ -2248,13 +2252,37 @@ client.on("interactionCreate", async (interaction) => {
         const category = interaction.options.getString("category");
         const user = interaction.options.getUser("user");
         
-        const count = await storage.resetActivityStats(interaction.guildId!, category || undefined, user?.id);
+        const count = await storage.resetActivityStats(interaction.guildId!, interaction.user.id, category || undefined, user?.id);
         
         const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "modmail" ? "modmail" : "all";
         const userText = user ? `<@${user.id}>` : "everyone";
         
         await interaction.editReply({
           content: `Reset **${count}** ${categoryText} activity entries for ${userText}.`,
+        });
+      } else if (commandName === "restore_activity") {
+        if (!await safeDeferReply(interaction, false)) return;
+        
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const activityResetRoleIds = config?.activityResetRoleIds || [];
+        const hasPermission = activityResetRoleIds.length === 0 || 
+          (interaction.member as any)?.roles?.cache?.some((r: any) => activityResetRoleIds.includes(r.id));
+        
+        if (activityResetRoleIds.length > 0 && !hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to restore activity stats." });
+          return;
+        }
+        
+        const backup = await storage.getLatestActivityResetBackup(interaction.guildId!);
+        if (!backup) {
+          await interaction.editReply({ content: "❌ No activity reset backup found to restore." });
+          return;
+        }
+        
+        const restoredCount = await storage.restoreActivityStats(interaction.guildId!);
+        
+        await interaction.editReply({
+          content: `✅ Restored **${restoredCount}** activity entries from the last reset.`,
         });
       } else if (commandName === "setup_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
