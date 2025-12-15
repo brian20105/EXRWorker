@@ -5066,9 +5066,9 @@ client.on("messageCreate", async (message) => {
   processedMessages.add(message.id);
   setTimeout(() => processedMessages.delete(message.id), MESSAGE_DEDUP_TIMEOUT);
 
-  // Handle prefix commands (!close, !c) with optional time argument in guild channels
+  // Handle prefix commands (.close, .c) with optional time argument in guild channels
   const lowerContent = message.content.toLowerCase();
-  if (message.guild && (lowerContent === "!close" || lowerContent === "!c" || lowerContent.startsWith("!close ") || lowerContent.startsWith("!c "))) {
+  if (message.guild && (lowerContent === ".close" || lowerContent === ".c" || lowerContent.startsWith(".close ") || lowerContent.startsWith(".c "))) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
@@ -5088,7 +5088,7 @@ client.on("messageCreate", async (message) => {
 
     // Parse optional time argument
     let timeArg = "";
-    if (lowerContent.startsWith("!close ")) {
+    if (lowerContent.startsWith(".close ")) {
       timeArg = message.content.substring(7).trim();
     } else if (lowerContent.startsWith("!c ")) {
       timeArg = message.content.substring(3).trim();
@@ -5099,7 +5099,7 @@ client.on("messageCreate", async (message) => {
       // Parse time like "1m", "5m", "30s", "1h"
       const timeMatch = timeArg.match(/^(\d+)\s*(s|m|h)$/i);
       if (!timeMatch) {
-        await message.reply("❌ Invalid time format. Use like: `!close 5m`, `!c 30s`, `!close 1h`");
+        await message.reply("❌ Invalid time format. Use like: `.close 5m`, `.c 30s`, `.close 1h`");
         return;
       }
 
@@ -5259,8 +5259,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !claim command
-  if (message.guild && message.content.toLowerCase() === "!claim") {
+  // Handle .claim command
+  if (message.guild && message.content.toLowerCase() === ".claim") {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
@@ -5329,8 +5329,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !ignore command to disable inactivity warnings for a ticket
-  if (message.guild && message.content.toLowerCase() === "!ignore") {
+  // Handle .ignore command to disable inactivity warnings for a ticket
+  if (message.guild && message.content.toLowerCase() === ".ignore") {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
@@ -5364,7 +5364,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle !or and !unclaim command (claimer or admin can unclaim)
-  if (message.guild && (message.content.toLowerCase() === "!or" || message.content.toLowerCase() === "!unclaim")) {
+  if (message.guild && (message.content.toLowerCase() === ".or" || message.content.toLowerCase() === ".unclaim")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       // Silent return if not a modmail channel (don't spam error in non-ticket channels)
@@ -5410,7 +5410,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle !sub command (subscribe to ticket notifications)
-  if (message.guild && message.content.toLowerCase().startsWith("!sub")) {
+  if (message.guild && message.content.toLowerCase().startsWith(".sub")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       return; // Silent return if not a modmail channel
@@ -5457,8 +5457,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !unsub command (unsubscribe from ticket notifications)
-  if (message.guild && message.content.toLowerCase().startsWith("!unsub")) {
+  // Handle .unsub command (unsubscribe from ticket notifications)
+  if (message.guild && message.content.toLowerCase().startsWith(".unsub")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       return; // Silent return if not a modmail channel
@@ -5505,7 +5505,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !snip commands for snippet management
+  // Handle .snip commands for snippet management
   if (message.guild && message.content.toLowerCase().startsWith(".snip ")) {
     const args = message.content.substring(6).trim();
     const spaceIndex = args.indexOf(" ");
@@ -5522,11 +5522,11 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Parse: !snip create <alias> <text> (quotes optional)
+      // Parse: .snip create <alias> <text> (quotes optional)
       // Support regular quotes, smart quotes, or no quotes
       const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
       if (!aliasMatch || !aliasMatch[2]?.trim()) {
-        await message.reply("❌ Usage: `!snip create <alias> <text>`");
+        await message.reply("❌ Usage: `.snip create <alias> <text>`");
         return;
       }
 
@@ -5535,7 +5535,7 @@ client.on("messageCreate", async (message) => {
 
       const existing = await storage.getSnippet(message.guild.id, alias);
       if (existing) {
-        await message.reply(`❌ Snippet \`${alias}\` already exists. Use \`!snip edit\` to modify it.`);
+        await message.reply(`❌ Snippet \`${alias}\` already exists. Use \`.snip edit\` to modify it.`);
         return;
       }
 
@@ -5554,10 +5554,10 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Parse: !snip edit <alias> <text> (quotes optional)
+      // Parse: .snip edit <alias> <text> (quotes optional)
       const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
       if (!aliasMatch || !aliasMatch[2]?.trim()) {
-        await message.reply("❌ Usage: `!snip edit <alias> <text>`");
+        await message.reply("❌ Usage: `.snip edit <alias> <text>`");
         return;
       }
 
@@ -5580,7 +5580,7 @@ client.on("messageCreate", async (message) => {
 
       const alias = rest.toLowerCase();
       if (!alias) {
-        await message.reply("❌ Usage: `!snip delete <alias>`");
+        await message.reply("❌ Usage: `.snip delete <alias>`");
         return;
       }
 
@@ -5596,7 +5596,7 @@ client.on("messageCreate", async (message) => {
     } else if (subCommand === "list") {
       const allSnippets = await storage.getAllSnippets(message.guild.id);
       if (allSnippets.length === 0) {
-        await message.reply("📝 No snippets configured. Use `!snip create <alias> \"<text>\"` to create one.");
+        await message.reply("📝 No snippets configured. Use `.snip create <alias> \"<text>\"` to create one.");
         return;
       }
 
@@ -5607,16 +5607,16 @@ client.on("messageCreate", async (message) => {
       await message.reply(`📝 **Available Snippets:**\n${list}`);
       return;
     } else {
-      await message.reply("❌ Unknown subcommand. Use `!snip create`, `!snip edit`, `!snip delete`, or `!snip list`.");
+      await message.reply("❌ Unknown subcommand. Use `.snip create`, `.snip edit`, `.snip delete`, or `.snip list`.");
       return;
     }
   }
 
-  // Handle !<alias> snippet usage in modmail ticket channels
-  if (message.guild && message.content.startsWith(".") && !message.content.startsWith("!snip") && 
+  // Handle .<alias> snippet usage in modmail ticket channels
+  if (message.guild && message.content.startsWith(".") && !message.content.startsWith(".snip") && 
       !message.content.toLowerCase().startsWith(".close") && !message.content.toLowerCase().startsWith(".c") &&
       !message.content.toLowerCase().startsWith(".claim") && !message.content.toLowerCase().startsWith(".or") &&
-      !message.content.toLowerCase().startsWith(".r ") && !message.content.toLowerCase().startsWith(".edit ") &&
+      !message.content.toLowerCase().startsWith(".r") && !message.content.toLowerCase().startsWith(".edit ") &&
       !message.content.toLowerCase().startsWith(".delete")) {
     const alias = message.content.substring(1).toLowerCase().split(" ")[0];
     if (alias) {
