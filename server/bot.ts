@@ -6149,8 +6149,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !edit (message_id) (new_message) or !edit (new_message) for most recent
-  if (message.guild && message.content.toLowerCase().startsWith("!edit ")) {
+  // Handle .edit (message_id) (new_message) or .edit (new_message) for most recent
+  if (message.guild && message.content.toLowerCase().startsWith(".edit ")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
@@ -6191,7 +6191,7 @@ client.on("messageCreate", async (message) => {
     }
 
     if (!newContent) {
-      await message.reply("❌ Please provide the new message content. Usage: `!edit (message_id) <new_message>`");
+      await message.reply("❌ Please provide the new message content. Usage: `.edit (message_id) <new_message>`");
       return;
     }
 
@@ -6261,8 +6261,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !delete (message_id) or !delete for most recent
-  if (message.guild && message.content.toLowerCase().startsWith("!delete")) {
+  // Handle .delete (message_id) or .delete for most recent
+  if (message.guild && message.content.toLowerCase().startsWith(".delete")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
