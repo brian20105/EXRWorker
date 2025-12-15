@@ -275,3 +275,24 @@ export const insertSnippetSchema = createInsertSchema(snippets).omit({
 
 export type InsertSnippet = z.infer<typeof insertSnippetSchema>;
 export type Snippet = typeof snippets.$inferSelect;
+
+export const activityResetBackups = pgTable("activity_reset_backups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  resetById: text("reset_by_id").notNull(),
+  category: text("category"),
+  targetUserId: text("target_user_id"),
+  banRequestsData: text("ban_requests_data"),
+  unbanRequestsData: text("unban_requests_data"),
+  modmailThreadsData: text("modmail_threads_data"),
+  entryCount: text("entry_count").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertActivityResetBackupSchema = createInsertSchema(activityResetBackups).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertActivityResetBackup = z.infer<typeof insertActivityResetBackupSchema>;
+export type ActivityResetBackup = typeof activityResetBackups.$inferSelect;

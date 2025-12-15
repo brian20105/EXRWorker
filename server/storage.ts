@@ -21,6 +21,8 @@ import {
   type InsertModmailBlock,
   type Snippet,
   type InsertSnippet,
+  type ActivityResetBackup,
+  type InsertActivityResetBackup,
   guildConfigs,
   payoutRequests,
   roleSyncPairs,
@@ -31,7 +33,8 @@ import {
   modmailThreads,
   modmailMessages,
   modmailBlocks,
-  snippets
+  snippets,
+  activityResetBackups
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, or, sql } from "drizzle-orm";
@@ -106,7 +109,10 @@ export interface IStorage {
   
   addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void>;
   removeModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<number>;
-  resetActivityStats(guildId: string, category?: string, userId?: string): Promise<number>;
+  resetActivityStats(guildId: string, resetById: string, category?: string, userId?: string): Promise<number>;
+  getLatestActivityResetBackup(guildId: string): Promise<ActivityResetBackup | undefined>;
+  restoreActivityStats(guildId: string): Promise<number>;
+  deleteActivityResetBackup(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -613,12 +619,16 @@ export class DatabaseStorage implements IStorage {
     return removed;
   }
 
-  async resetActivityStats(guildId: string, category?: string, userId?: string): Promise<number> {
+  async resetActivityStats(guildId: string, resetById: string, category?: string, userId?: string): Promise<number> {
     let count = 0;
+    let banData: any[] = [];
+    let unbanData: any[] = [];
+    let modmailData: any[] = [];
     
     if (!category || category === "ban") {
       const conditions = [eq(banRequests.guildId, guildId)];
       if (userId) conditions.push(eq(banRequests.reviewedById, userId));
+      banData = await db.select().from(banRequests).where(and(...conditions));
       const result = await db.delete(banRequests).where(and(...conditions)).returning();
       count += result.length;
     }
@@ -626,6 +636,7 @@ export class DatabaseStorage implements IStorage {
     if (!category || category === "unban") {
       const conditions = [eq(unbanRequests.guildId, guildId)];
       if (userId) conditions.push(eq(unbanRequests.reviewedById, userId));
+      unbanData = await db.select().from(unbanRequests).where(and(...conditions));
       const result = await db.delete(unbanRequests).where(and(...conditions)).returning();
       count += result.length;
     }
@@ -633,11 +644,75 @@ export class DatabaseStorage implements IStorage {
     if (!category || category === "modmail") {
       const conditions = [eq(modmailThreads.guildId, guildId), eq(modmailThreads.status, "closed")];
       if (userId) conditions.push(eq(modmailThreads.closedById, userId));
+      modmailData = await db.select().from(modmailThreads).where(and(...conditions));
       const result = await db.delete(modmailThreads).where(and(...conditions)).returning();
       count += result.length;
     }
     
+    if (count > 0) {
+      await db.insert(activityResetBackups).values({
+        guildId,
+        resetById,
+        category: category || null,
+        targetUserId: userId || null,
+        banRequestsData: banData.length > 0 ? JSON.stringify(banData) : null,
+        unbanRequestsData: unbanData.length > 0 ? JSON.stringify(unbanData) : null,
+        modmailThreadsData: modmailData.length > 0 ? JSON.stringify(modmailData) : null,
+        entryCount: count.toString(),
+      });
+    }
+    
     return count;
+  }
+
+  async getLatestActivityResetBackup(guildId: string): Promise<ActivityResetBackup | undefined> {
+    const result = await db.select().from(activityResetBackups)
+      .where(eq(activityResetBackups.guildId, guildId))
+      .orderBy(desc(activityResetBackups.createdAt))
+      .limit(1);
+    return result[0];
+  }
+
+  async restoreActivityStats(guildId: string): Promise<number> {
+    const backup = await this.getLatestActivityResetBackup(guildId);
+    if (!backup) return 0;
+    
+    let restoredCount = 0;
+    
+    if (backup.banRequestsData) {
+      const banData = JSON.parse(backup.banRequestsData);
+      for (const item of banData) {
+        delete item.id;
+        await db.insert(banRequests).values(item);
+        restoredCount++;
+      }
+    }
+    
+    if (backup.unbanRequestsData) {
+      const unbanData = JSON.parse(backup.unbanRequestsData);
+      for (const item of unbanData) {
+        delete item.id;
+        await db.insert(unbanRequests).values(item);
+        restoredCount++;
+      }
+    }
+    
+    if (backup.modmailThreadsData) {
+      const modmailData = JSON.parse(backup.modmailThreadsData);
+      for (const item of modmailData) {
+        delete item.id;
+        await db.insert(modmailThreads).values(item);
+        restoredCount++;
+      }
+    }
+    
+    await this.deleteActivityResetBackup(backup.id);
+    
+    return restoredCount;
+  }
+
+  async deleteActivityResetBackup(id: string): Promise<void> {
+    await db.delete(activityResetBackups).where(eq(activityResetBackups.id, id));
   }
 }
 
