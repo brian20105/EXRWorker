@@ -852,7 +852,17 @@ const commands = [
     .addRoleOption((option) => option.setName("role7").setDescription("Role 7").setRequired(false))
     .addRoleOption((option) => option.setName("role8").setDescription("Role 8").setRequired(false))
     .addRoleOption((option) => option.setName("role9").setDescription("Role 9").setRequired(false))
-    .addRoleOption((option) => option.setName("role10").setDescription("Role 10").setRequired(false)),
+    .addRoleOption((option) => option.setName("role10").setDescription("Role 10").setRequired(false))
+    .addRoleOption((option) => option.setName("role11").setDescription("Role 11").setRequired(false))
+    .addRoleOption((option) => option.setName("role12").setDescription("Role 12").setRequired(false))
+    .addRoleOption((option) => option.setName("role13").setDescription("Role 13").setRequired(false))
+    .addRoleOption((option) => option.setName("role14").setDescription("Role 14").setRequired(false))
+    .addRoleOption((option) => option.setName("role15").setDescription("Role 15").setRequired(false))
+    .addRoleOption((option) => option.setName("role16").setDescription("Role 16").setRequired(false))
+    .addRoleOption((option) => option.setName("role17").setDescription("Role 17").setRequired(false))
+    .addRoleOption((option) => option.setName("role18").setDescription("Role 18").setRequired(false))
+    .addRoleOption((option) => option.setName("role19").setDescription("Role 19").setRequired(false))
+    .addRoleOption((option) => option.setName("role20").setDescription("Role 20").setRequired(false)),
   new SlashCommandBuilder()
     .setName("category_ping")
     .setDescription("Set which roles get pinged for each ticket category")
@@ -2683,7 +2693,7 @@ client.on("interactionCreate", async (interaction) => {
         
         const permType = interaction.options.getString("type", true);
         const roles: string[] = [];
-        for (let i = 1; i <= 10; i++) {
+        for (let i = 1; i <= 20; i++) {
           const role = interaction.options.getRole(`role${i}`);
           if (role) roles.push(role.id);
         }
