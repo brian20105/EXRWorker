@@ -5920,11 +5920,11 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !r <message> reply command in modmail channels (also allows !r with just attachments)
-  if (message.guild && (message.content.toLowerCase().startsWith("!r ") || (message.content.toLowerCase() === "!r" && message.attachments.size > 0))) {
-    const replyContent = message.content.toLowerCase() === "!r" ? "" : message.content.substring(3).trim();
+  // Handle .r <message> reply command in modmail channels (also allows .r with just attachments)
+  if (message.guild && (message.content.toLowerCase().startsWith(".r ") || (message.content.toLowerCase() === ".r" && message.attachments.size > 0))) {
+    const replyContent = message.content.toLowerCase() === ".r" ? "" : message.content.substring(3).trim();
     if (!replyContent && message.attachments.size === 0) {
-      await message.reply("❌ Please provide a message or attach files. Usage: `!r <message>` or `!r` with attachments");
+      await message.reply("❌ Please provide a message or attach files. Usage: `.r <message>` or `.r` with attachments");
       return;
     }
 
@@ -5962,7 +5962,7 @@ client.on("messageCreate", async (message) => {
         .setFooter({ text: message.author.tag })
         .setTimestamp();
 
-      // Collect attachment URLs from the !r message
+      // Collect attachment URLs from the .r message
       const attachmentUrls = message.attachments.map(a => a.url);
 
       // Add attachment info to embed if there are any
