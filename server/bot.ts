@@ -5546,7 +5546,7 @@ client.on("messageCreate", async (message) => {
         createdById: message.author.id,
       });
 
-      await message.reply(`✅ Snippet \`${alias}\` created. Use \`!${alias}\` in ticket channels to send it.`);
+      await message.reply(`✅ Snippet \`${alias}\` created. Use \`.${alias}\` in ticket channels to send it.`);
       return;
     } else if (subCommand === "edit") {
       if (!hasAdminPermission) {
