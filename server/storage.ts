@@ -515,34 +515,43 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getModmailStatsByCategory(guildId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]> {
-    let threads = await db.select().from(modmailThreads).where(
-      and(
-        eq(modmailThreads.guildId, guildId),
-        eq(modmailThreads.status, "closed")
-      )
-    );
-    
-    if (threads.length === 0) return [];
-    
-    const now = new Date();
-    if (fromDays !== undefined) {
-      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
-      threads = threads.filter(t => t.closedAt && t.closedAt >= fromDate);
+    try {
+      let threads = await db.select().from(modmailThreads).where(
+        and(
+          eq(modmailThreads.guildId, guildId),
+          eq(modmailThreads.status, "closed")
+        )
+      );
+      
+      if (threads.length === 0) return [];
+      
+      const now = new Date();
+      if (fromDays !== undefined) {
+        const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+        threads = threads.filter(t => t.closedAt && t.closedAt >= fromDate);
+      }
+      if (toDays !== undefined) {
+        const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+        threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
+      }
+      
+      const counts: { [category: string]: number } = {};
+      for (const t of threads) {
+        const cat = t.category || "unknown";
+        counts[cat] = (counts[cat] || 0) + 1;
+      }
+      
+      return Object.entries(counts)
+        .map(([category, count]) => ({ category, count }))
+        .sort((a, b) => b.count - a.count);
+    } catch (error: any) {
+      // If category column doesn't exist yet, return empty array
+      if (error.message?.includes('category') || error.message?.includes('column')) {
+        console.log('Category column not yet migrated, skipping category stats');
+        return [];
+      }
+      throw error;
     }
-    if (toDays !== undefined) {
-      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
-      threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
-    }
-    
-    const counts: { [category: string]: number } = {};
-    for (const t of threads) {
-      const cat = t.category || "unknown";
-      counts[cat] = (counts[cat] || 0) + 1;
-    }
-    
-    return Object.entries(counts)
-      .map(([category, count]) => ({ category, count }))
-      .sort((a, b) => b.count - a.count);
   }
 
   async createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock> {
