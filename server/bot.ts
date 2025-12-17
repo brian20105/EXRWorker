@@ -6339,7 +6339,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Staff messages in modmail channels WITHOUT !r prefix are NOT sent to user
+  // Staff messages in modmail channels WITHOUT .r prefix are NOT sent to user
   // This allows staff to discuss in the channel privately
   // BUT we should still clear the claim expiry timer if any staff member sends a message
   if (message.guild && !message.author.bot) {
