@@ -2153,10 +2153,10 @@ client.on("interactionCreate", async (interaction) => {
             
             // Add total and category breakdown
             let statsText = `**Total in the specified time:** ${totalCount}`;
-            if (!category) {
-              statsText += `\nBan Requests: ${banTotal}`;
-              statsText += `\nUnban Requests: ${unbanTotal}`;
-              statsText += `\nModmails Handled: ${modmailTotal}`;
+            if (!category || category === "modmail") {
+              if (banTotal > 0) statsText += `\nBan Requests: ${banTotal}`;
+              if (unbanTotal > 0) statsText += `\nUnban Requests: ${unbanTotal}`;
+              if (modmailTotal > 0) statsText += `\nModmails Handled: ${modmailTotal}`;
             }
             embed.addFields({ name: "\u200B", value: statsText, inline: false });
           }
@@ -5036,19 +5036,22 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
     }
-  } catch (error) {
+  } catch (error: any) {
+    // Silently handle expired/unknown interactions
+    if (error.code === 10062 || error.code === 40060) {
+      return;
+    }
     console.error("Error handling interaction:", error);
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      try {
-        await interaction.reply({
-          content: "An error occurred while processing your request.",
-          flags: 64,
-        });
-      } catch (replyError: any) {
-        if (replyError.code !== 10062 && replyError.code !== 40060) {
-          console.error("Failed to send error message:", replyError);
+    try {
+      if (interaction.isRepliable()) {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply({ content: "An error occurred while processing your request." }).catch(() => {});
+        } else {
+          await interaction.reply({ content: "An error occurred while processing your request.", flags: 64 }).catch(() => {});
         }
       }
+    } catch (replyError: any) {
+      // Silently ignore - interaction is gone
     }
   }
 });
