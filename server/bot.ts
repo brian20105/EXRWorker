@@ -1242,42 +1242,52 @@ client.on("interactionCreate", async (interaction) => {
 
       if (commandName === "setup_pay_request") {
         if (!await safeDeferReply(interaction)) return;
-        const channel = interaction.options.getChannel("channel", true);
+        try {
+          const channel = interaction.options.getChannel("channel", true);
 
-        await storage.updateRequestChannel(interaction.guildId!, channel.id);
+          await storage.updateRequestChannel(interaction.guildId!, channel.id);
 
-        const embed = new EmbedBuilder()
-          .setTitle("Payout Request System")
-          .setDescription("Click the button below to request a payout.")
-          .setColor(0x5865f2);
+          const embed = new EmbedBuilder()
+            .setTitle("Payout Request System")
+            .setDescription("Click the button below to request a payout.")
+            .setColor(0x5865f2);
 
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId("request_payout")
-            .setLabel("Request Payout")
-            .setStyle(ButtonStyle.Primary)
-        );
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId("request_payout")
+              .setLabel("Request Payout")
+              .setStyle(ButtonStyle.Primary)
+          );
 
-        if (interaction.channel && "send" in interaction.channel) {
-          await interaction.channel.send({
-            embeds: [embed],
-            components: [row],
+          if (interaction.channel && "send" in interaction.channel) {
+            await interaction.channel.send({
+              embeds: [embed],
+              components: [row],
+            });
+          }
+
+          await interaction.editReply({
+            content: `Configuration saved! Payout requests will be sent to <#${channel.id}>.`,
           });
+        } catch (error: any) {
+          console.log("Error in setup_pay_request:", error.message);
+          await interaction.editReply({ content: "Failed to set up payout request. Please try again." }).catch(() => {});
         }
-
-        await interaction.editReply({
-          content: `✅ Configuration saved! Payout requests will be sent to <#${channel.id}>.`,
-        });
       } else if (commandName === "setup_payment_logs") {
         if (!await safeDeferReply(interaction)) return;
 
-        const channel = interaction.options.getChannel("channel", true);
+        try {
+          const channel = interaction.options.getChannel("channel", true);
 
-        await storage.updateLogChannel(interaction.guildId!, channel.id);
+          await storage.updateLogChannel(interaction.guildId!, channel.id);
 
-        await interaction.editReply({
-          content: `✅ Configuration saved! Payment logs will be sent to <#${channel.id}>.`,
-        });
+          await interaction.editReply({
+            content: `Configuration saved! Payment logs will be sent to <#${channel.id}>.`,
+          });
+        } catch (error: any) {
+          console.log("Error in setup_payment_logs:", error.message);
+          await interaction.editReply({ content: "Failed to set up payment logs. Please try again." }).catch(() => {});
+        }
       } else if (commandName === "payout_permission") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -5414,13 +5424,14 @@ client.on("interactionCreate", async (interaction) => {
     if (error.code === 10062 || error.code === 40060) {
       return;
     }
-    console.error("Error handling interaction:", error);
+    console.log("Error handling interaction:", error.message || error);
     try {
       if (interaction.isRepliable()) {
+        const errorMsg = "Something went wrong. Please try again in a moment.";
         if (interaction.deferred || interaction.replied) {
-          await interaction.editReply({ content: "An error occurred while processing your request." }).catch(() => {});
+          await interaction.editReply({ content: errorMsg }).catch(() => {});
         } else {
-          await interaction.reply({ content: "An error occurred while processing your request.", flags: 64 }).catch(() => {});
+          await interaction.reply({ content: errorMsg, flags: 64 }).catch(() => {});
         }
       }
     } catch (replyError: any) {
