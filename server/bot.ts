@@ -2114,25 +2114,42 @@ client.on("interactionCreate", async (interaction) => {
             .sort((a, b) => b.count - a.count)
             .slice(0, 10);
 
-          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails handled" : "All Requests";
-          const timeRange = fromDays !== undefined || toDays !== undefined
-            ? ` (${fromDays ?? "∞"}d ago - ${toDays ?? "now"})`
-            : "";
+          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : "All Activity";
+          
+          // Build time range description like the reference image
+          const now = new Date();
+          let timeRangeDesc = "";
+          if (fromDays !== undefined || toDays !== undefined) {
+            const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
+            const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
+            const formatDate = (d: Date) => d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) + " at " + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+            timeRangeDesc = fromDate ? `From ${formatDate(fromDate)} to ${formatDate(toDate)}` : `Up to ${formatDate(toDate)}`;
+          }
 
           const embed = new EmbedBuilder()
-            .setTitle(`📊 Activity Leaderboard - ${categoryText}${timeRange}`)
-            .setColor(0x5865f2)
-            .setTimestamp();
+            .setTitle(`${categoryText} Leaderboard`)
+            .setColor(0x5865f2);
+
+          if (timeRangeDesc) {
+            embed.setDescription(timeRangeDesc);
+          }
+
+          // Calculate total
+          const totalCount = leaderboard.reduce((sum, e) => sum + e.count, 0);
 
           if (leaderboard.length === 0) {
-            embed.setDescription("No activity found for the specified filters.");
+            embed.addFields({ name: "\u200B", value: "No activity found for the specified filters.", inline: false });
           } else {
             let description = "";
             leaderboard.forEach((entry, index) => {
-              description += `**${index + 1}.)** <@${entry.userId}> - **${entry.count}** reviews\n`;
+              description += `${index + 1}. <@${entry.userId}> - ${entry.count}\n`;
             });
-            embed.setDescription(description);
+            embed.addFields({ name: "\u200B", value: description, inline: false });
+            embed.addFields({ name: "Total in the specified time:", value: totalCount.toString(), inline: false });
           }
+
+          // Add footer with page and timestamp
+          embed.setFooter({ text: `Page 1 of 1 | ${now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}` });
 
           await interaction.editReply({ embeds: [embed] });
         } catch (error: any) {
@@ -5140,7 +5157,7 @@ client.on("messageCreate", async (message) => {
       const timedGuildId = message.guild?.id;
       const timedStaffId = message.author.id;
 
-      // Schedule the close (silent - no notification to user)
+      // Schedule the close
       const timeout = setTimeout(async () => {
         pendingTimedCloses.delete(timedChannelId);
 
@@ -5155,15 +5172,28 @@ client.on("messageCreate", async (message) => {
           pendingClaimExpiry.delete(timedChannelId);
         }
 
-        // Close the thread silently
+        // Close the thread
         await storage.updateModmailThread(currentThread.id, {
           status: "closed",
           closedById: timedStaffId,
-          closeReason: "Closed via .close command", // <<< UPDATED REASON
+          closeReason: "Closed via .close command",
           closedAt: new Date(),
         });
 
-        // Log to modmail log channel (no notification to user for timed close)
+        // Notify user via DM
+        try {
+          const user = await client.users.fetch(currentThread.userId);
+          const closeEmbed = new EmbedBuilder()
+            .setTitle("Ticket Closed")
+            .setDescription("Your ticket has been closed by staff.")
+            .setColor(0xed4245)
+            .setTimestamp();
+          await user.send({ embeds: [closeEmbed] });
+        } catch (e) {
+          console.log("Could not DM user about timed ticket close");
+        }
+
+        // Log to modmail log channel
         if (timedGuildId) {
           const config = await storage.getGuildConfig(timedGuildId);
           if (config?.modmailLogChannelId) {
