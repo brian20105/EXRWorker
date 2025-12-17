@@ -2116,14 +2116,16 @@ client.on("interactionCreate", async (interaction) => {
 
           const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : "All Activity";
           
-          // Build time range description like the reference image
+          // Build time range description with Discord timestamps (hammer times)
           const now = new Date();
+          const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
+          const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
+          
           let timeRangeDesc = "";
-          if (fromDays !== undefined || toDays !== undefined) {
-            const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
-            const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
-            const formatDate = (d: Date) => d.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) + " at " + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-            timeRangeDesc = fromDate ? `From ${formatDate(fromDate)} to ${formatDate(toDate)}` : `Up to ${formatDate(toDate)}`;
+          if (fromDate || toDays !== undefined) {
+            const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
+            const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
+            timeRangeDesc = fromTimestamp ? `From ${fromTimestamp} to ${toTimestamp}` : `Up to ${toTimestamp}`;
           }
 
           const embed = new EmbedBuilder()
@@ -2134,8 +2136,11 @@ client.on("interactionCreate", async (interaction) => {
             embed.setDescription(timeRangeDesc);
           }
 
-          // Calculate total
+          // Calculate totals
           const totalCount = leaderboard.reduce((sum, e) => sum + e.count, 0);
+          const banTotal = banStats.reduce((sum, e) => sum + e.count, 0);
+          const unbanTotal = unbanStats.reduce((sum, e) => sum + e.count, 0);
+          const modmailTotal = modmailStats.reduce((sum, e) => sum + e.count, 0);
 
           if (leaderboard.length === 0) {
             embed.addFields({ name: "\u200B", value: "No activity found for the specified filters.", inline: false });
@@ -2145,7 +2150,15 @@ client.on("interactionCreate", async (interaction) => {
               description += `${index + 1}. <@${entry.userId}> - ${entry.count}\n`;
             });
             embed.addFields({ name: "\u200B", value: description, inline: false });
-            embed.addFields({ name: "Total in the specified time:", value: totalCount.toString(), inline: false });
+            
+            // Add total and category breakdown
+            let statsText = `**Total in the specified time:** ${totalCount}`;
+            if (!category) {
+              statsText += `\nBan Requests: ${banTotal}`;
+              statsText += `\nUnban Requests: ${unbanTotal}`;
+              statsText += `\nModmails Handled: ${modmailTotal}`;
+            }
+            embed.addFields({ name: "\u200B", value: statsText, inline: false });
           }
 
           // Add footer with page and timestamp
