@@ -537,6 +537,12 @@ const commands = [
   new SlashCommandBuilder()
     .setName("activity")
     .setDescription("View the activity leaderboard")
+    .addUserOption((option) =>
+      option
+        .setName("member")
+        .setDescription("View activity for a specific member")
+        .setRequired(false)
+    )
     .addStringOption((option) =>
       option
         .setName("category")
@@ -2102,10 +2108,80 @@ client.on("interactionCreate", async (interaction) => {
         if (!await safeDeferReply(interaction, false)) return;
 
         try {
+          const targetMember = interaction.options.getUser("member");
           const category = interaction.options.getString("category");
           const fromDays = interaction.options.getInteger("from") ?? undefined;
           const toDays = interaction.options.getInteger("to") ?? undefined;
 
+          // Build time range description with Discord timestamps (hammer times)
+          const now = new Date();
+          const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
+          const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
+          
+          let timeRangeDesc = "";
+          if (fromDate || toDays !== undefined) {
+            const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
+            const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
+            timeRangeDesc = fromTimestamp ? `From ${fromTimestamp} to ${toTimestamp}` : `Up to ${toTimestamp}`;
+          }
+
+          // If a specific member is requested, show their individual stats
+          if (targetMember) {
+            const memberBanStats = await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "ban", fromDays, toDays);
+            const memberUnbanStats = await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "unban", fromDays, toDays);
+            const memberModmailStats = await storage.getModmailStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+            let memberModmailCategoryStats: { category: string; count: number }[] = [];
+            try {
+              memberModmailCategoryStats = await storage.getModmailStatsByCategoryForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+            } catch (e) {
+              console.log("Could not fetch member modmail category stats");
+            }
+
+            const totalActivity = memberBanStats + memberUnbanStats + memberModmailStats;
+
+            const embed = new EmbedBuilder()
+              .setTitle(`Activity for ${targetMember.tag}`)
+              .setThumbnail(targetMember.displayAvatarURL())
+              .setColor(0x5865f2);
+
+            if (timeRangeDesc) {
+              embed.setDescription(timeRangeDesc);
+            }
+
+            let statsText = `**Total Activity:** ${totalActivity}\n\n`;
+            statsText += `**Ban Requests:** ${memberBanStats}\n`;
+            statsText += `**Unban Requests:** ${memberUnbanStats}\n`;
+            statsText += `**Modmails Handled:** ${memberModmailStats}`;
+
+            // Add modmail category breakdown if available
+            if (memberModmailStats > 0 && memberModmailCategoryStats.length > 0) {
+              const categoryLabels: { [key: string]: string } = {
+                general: "General Inquiries",
+                competitive: "Competitive",
+                contentcreator: "Content Creator",
+                report: "User Reports",
+                partnerships: "Partnerships",
+                gfx: "GFX Editor",
+                creativewarrior: "Creative Warrior",
+                vfxeditor: "VFX Editor",
+              };
+              statsText += "\n\n**Modmail Category Breakdown:**";
+              for (const catStat of memberModmailCategoryStats) {
+                // Skip unknown/null categories
+                if (catStat.category === "unknown" || !catStat.category) continue;
+                const label = categoryLabels[catStat.category] || catStat.category;
+                statsText += `\n• ${label}: ${catStat.count}`;
+              }
+            }
+
+            embed.addFields({ name: "\u200B", value: statsText, inline: false });
+            embed.setFooter({ text: `${now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}` });
+
+            await interaction.editReply({ embeds: [embed] });
+            return;
+          }
+
+          // Otherwise show the leaderboard
           const banStats = !category || category === "ban" 
             ? await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays) 
             : [];
@@ -2141,18 +2217,6 @@ client.on("interactionCreate", async (interaction) => {
             .slice(0, 10);
 
           const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : "All Activity";
-          
-          // Build time range description with Discord timestamps (hammer times)
-          const now = new Date();
-          const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
-          const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
-          
-          let timeRangeDesc = "";
-          if (fromDate || toDays !== undefined) {
-            const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
-            const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
-            timeRangeDesc = fromTimestamp ? `From ${fromTimestamp} to ${toTimestamp}` : `Up to ${toTimestamp}`;
-          }
 
           const embed = new EmbedBuilder()
             .setTitle(`${categoryText} Leaderboard`)
@@ -2199,7 +2263,8 @@ client.on("interactionCreate", async (interaction) => {
                 };
                 statsText += "\n\n**Category Breakdown:**";
                 for (const catStat of modmailCategoryStats) {
-                  // Skip unknown categories, use label or raw category name
+                  // Skip unknown/null categories
+                  if (catStat.category === "unknown" || !catStat.category) continue;
                   const label = categoryLabels[catStat.category] || catStat.category;
                   statsText += `\n• ${label}: ${catStat.count}`;
                 }
@@ -5283,9 +5348,9 @@ client.on("messageCreate", async (message) => {
   // Handle prefix commands (.close, .c) with optional time argument in guild channels
   const lowerContent = message.content.toLowerCase();
   if (message.guild && (lowerContent === ".close" || lowerContent === ".c" || lowerContent.startsWith(".close ") || lowerContent.startsWith(".c "))) {
+    // Silently ignore if not in a modmail channel
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
-      await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
 
@@ -5488,9 +5553,9 @@ client.on("messageCreate", async (message) => {
 
   // Handle .claim command
   if (message.guild && message.content.toLowerCase() === ".claim") {
+    // Silently ignore if not in a modmail channel
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
-      await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
 
@@ -5822,6 +5887,11 @@ client.on("messageCreate", async (message) => {
       await message.reply(`✅ Snippet \`${alias}\` deleted.`);
       return;
     } else if (subCommand === "list") {
+      // Only admins can list snippets - silently ignore otherwise
+      if (!hasAdminPermission) {
+        return;
+      }
+
       const allSnippets = await storage.getAllSnippets(message.guild.id);
       if (allSnippets.length === 0) {
         await message.reply("📝 No snippets configured. Use `.snip create <alias> \"<text>\"` to create one.");
@@ -6150,15 +6220,15 @@ client.on("messageCreate", async (message) => {
 
   // Handle .r <message> reply command in modmail channels (also allows .r with just attachments)
   if (message.guild && (message.content.toLowerCase().startsWith(".r ") || (message.content.toLowerCase() === ".r" && message.attachments.size > 0))) {
-    const replyContent = message.content.toLowerCase() === ".r" ? "" : message.content.substring(3).trim();
-    if (!replyContent && message.attachments.size === 0) {
-      await message.reply("❌ Please provide a message or attach files. Usage: `.r <message>` or `.r` with attachments");
+    // Silently ignore if not in a modmail channel
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
       return;
     }
 
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
-    if (!thread) {
-      await message.reply("❌ This is not a modmail ticket channel.");
+    const replyContent = message.content.toLowerCase() === ".r" ? "" : message.content.substring(3).trim();
+    if (!replyContent && message.attachments.size === 0) {
+      await message.reply("❌ Please provide a message or attach files. Usage: `.r <message>` or `.r` with attachments");
       return;
     }
 
@@ -6379,15 +6449,15 @@ client.on("messageCreate", async (message) => {
 
   // Handle .ar <message> anonymous reply command in modmail channels
   if (message.guild && (message.content.toLowerCase().startsWith(".ar ") || (message.content.toLowerCase() === ".ar" && message.attachments.size > 0))) {
-    const replyContent = message.content.toLowerCase() === ".ar" ? "" : message.content.substring(4).trim();
-    if (!replyContent && message.attachments.size === 0) {
-      await message.reply("❌ Please provide a message or attach files. Usage: `.ar <message>` or `.ar` with attachments");
+    // Silently ignore if not in a modmail channel
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
       return;
     }
 
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
-    if (!thread) {
-      await message.reply("❌ This is not a modmail ticket channel.");
+    const replyContent = message.content.toLowerCase() === ".ar" ? "" : message.content.substring(4).trim();
+    if (!replyContent && message.attachments.size === 0) {
+      await message.reply("❌ Please provide a message or attach files. Usage: `.ar <message>` or `.ar` with attachments");
       return;
     }
 
@@ -6601,9 +6671,9 @@ client.on("messageCreate", async (message) => {
 
   // Handle .edit (message_id) (new_message) or .edit (new_message) for most recent
   if (message.guild && message.content.toLowerCase().startsWith(".edit ")) {
+    // Silently ignore if not in a modmail channel
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
-      await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
 
@@ -6713,9 +6783,9 @@ client.on("messageCreate", async (message) => {
 
   // Handle .delete (message_id) or .delete for most recent
   if (message.guild && message.content.toLowerCase().startsWith(".delete")) {
+    // Silently ignore if not in a modmail channel
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
-      await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
 
