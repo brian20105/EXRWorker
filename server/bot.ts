@@ -5844,8 +5844,8 @@ client.on("messageCreate", async (message) => {
   if (message.guild && message.content.startsWith(".") && !message.content.startsWith(".snip") && 
       !message.content.toLowerCase().startsWith(".close") && !message.content.toLowerCase().startsWith(".c") &&
       !message.content.toLowerCase().startsWith(".claim") && !message.content.toLowerCase().startsWith(".or") &&
-      !message.content.toLowerCase().startsWith(".r") && !message.content.toLowerCase().startsWith(".edit ") &&
-      !message.content.toLowerCase().startsWith(".delete")) {
+      !message.content.toLowerCase().startsWith(".r") && !message.content.toLowerCase().startsWith(".ar") &&
+      !message.content.toLowerCase().startsWith(".edit ") && !message.content.toLowerCase().startsWith(".delete")) {
     const alias = message.content.substring(1).toLowerCase().split(" ")[0];
     if (alias) {
       const thread = await storage.getModmailThreadByChannel(message.channel.id);
@@ -6372,6 +6372,228 @@ client.on("messageCreate", async (message) => {
       }
     } catch (error) {
       console.log("Could not relay staff message to user:", error);
+      await message.react("❌");
+    }
+    return;
+  }
+
+  // Handle .ar <message> anonymous reply command in modmail channels
+  if (message.guild && (message.content.toLowerCase().startsWith(".ar ") || (message.content.toLowerCase() === ".ar" && message.attachments.size > 0))) {
+    const replyContent = message.content.toLowerCase() === ".ar" ? "" : message.content.substring(4).trim();
+    if (!replyContent && message.attachments.size === 0) {
+      await message.reply("❌ Please provide a message or attach files. Usage: `.ar <message>` or `.ar` with attachments");
+      return;
+    }
+
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) {
+      await message.reply("❌ This is not a modmail ticket channel.");
+      return;
+    }
+
+    if (thread.status !== "open") {
+      await message.reply("❌ This ticket is already closed.");
+      return;
+    }
+
+    try {
+      const user = await client.users.fetch(thread.userId);
+
+      // Anonymous reply - use "Staff Team" instead of individual staff info
+      const staffEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Staff Team" })
+        .setDescription(replyContent || "(Attachment)")
+        .setColor(0x5865f2)
+        .setTimestamp();
+
+      // Collect attachment URLs from the .ar message
+      const attachmentUrls = message.attachments.map(a => a.url);
+
+      // Add attachment info to embed if there are any
+      if (attachmentUrls.length > 0) {
+        staffEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
+        const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
+        if (firstImageAttachment) {
+          staffEmbed.setImage(firstImageAttachment.url);
+        }
+      }
+
+      // Send to user DM
+      const dmMessage = await user.send({ embeds: [staffEmbed] });
+
+      // For channel message, show who sent it (for staff visibility)
+      const channelEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Staff Team (Anonymous)", iconURL: message.author.displayAvatarURL() })
+        .setDescription(replyContent || "(Attachment)")
+        .setColor(0x5865f2)
+        .setFooter({ text: `Sent by ${message.author.tag}` })
+        .setTimestamp();
+
+      if (attachmentUrls.length > 0) {
+        channelEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
+        const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
+        if (firstImageAttachment) {
+          channelEmbed.setImage(firstImageAttachment.url);
+        }
+      }
+
+      // Send to channel
+      const channelMessage = await (message.channel as any).send({ embeds: [channelEmbed] });
+
+      // Save message with message IDs
+      await storage.addModmailMessage({
+        threadId: thread.id,
+        authorId: message.author.id,
+        content: `[Anonymous] ${replyContent}`,
+        isStaff: "true",
+        channelMessageId: channelMessage.id,
+        dmMessageId: dmMessage.id,
+      });
+
+      // Clear claim expiry timer when any staff responds
+      const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
+      if (existingClaimTimer) {
+        clearTimeout(existingClaimTimer.timeout);
+        pendingClaimExpiry.delete(message.channel.id);
+      }
+
+      // Cancel any existing inactivity timers for this channel
+      const existingWarning = pendingInactivityWarnings.get(message.channel.id);
+      if (existingWarning) {
+        clearTimeout(existingWarning.timeout);
+        pendingInactivityWarnings.delete(message.channel.id);
+      }
+      const existingClose = pendingInactivityCloses.get(message.channel.id);
+      if (existingClose) {
+        clearTimeout(existingClose.timeout);
+        pendingInactivityCloses.delete(message.channel.id);
+      }
+
+      // Only start inactivity timer if ignoreInactivity is not set
+      if (thread.ignoreInactivity === "true") {
+        try {
+          await message.delete();
+        } catch (e) {
+          console.log("Could not delete trigger message:", e);
+        }
+        return;
+      }
+
+      // Start 15-minute inactivity warning timer
+      const FIFTEEN_MINUTES = 15 * 60 * 1000;
+      const warningTime = Date.now() + FIFTEEN_MINUTES;
+      const closeTime = Date.now() + (30 * 60 * 1000);
+
+      const channelId = message.channel.id;
+      const guildId = message.guild?.id;
+      const staffId = message.author.id;
+
+      const warningTimeout = setTimeout(async () => {
+        pendingInactivityWarnings.delete(channelId);
+
+        const currentThread = await storage.getModmailThreadByChannel(channelId);
+        if (!currentThread || currentThread.status !== "open") return;
+
+        const closeTimestamp = Math.floor(closeTime / 1000);
+        try {
+          const warningEmbed = new EmbedBuilder()
+            .setTitle("⚠️ Inactivity Warning")
+            .setDescription(`Due to inactivity, this ticket will be closed <t:${closeTimestamp}:R>.`)
+            .setColor(0xf0b232)
+            .setTimestamp();
+
+          const channel = await client.channels.fetch(channelId);
+          if (!channel || !("send" in channel)) return;
+
+          await (channel as any).send({ embeds: [warningEmbed] });
+
+          try {
+            const ticketUser = await client.users.fetch(currentThread.userId);
+            await ticketUser.send({ embeds: [warningEmbed] });
+          } catch (e) {
+            console.log("Could not DM user about inactivity warning");
+          }
+
+          const closeTimeout = setTimeout(async () => {
+            pendingInactivityCloses.delete(channelId);
+
+            const threadToClose = await storage.getModmailThreadByChannel(channelId);
+            if (!threadToClose || threadToClose.status !== "open") return;
+
+            const inactivityClaimTimer = pendingClaimExpiry.get(channelId);
+            if (inactivityClaimTimer) {
+              clearTimeout(inactivityClaimTimer.timeout);
+              pendingClaimExpiry.delete(channelId);
+            }
+
+            await storage.updateModmailThread(threadToClose.id, { status: "closed" });
+
+            try {
+              const closedUser = await client.users.fetch(threadToClose.userId);
+              const closeEmbed = new EmbedBuilder()
+                .setTitle("Ticket Closed")
+                .setDescription("Your ticket has been closed due to inactivity. If you need further assistance, please open a new ticket.")
+                .setColor(0xed4245)
+                .setTimestamp();
+              await closedUser.send({ embeds: [closeEmbed] });
+            } catch (e) {
+              console.log("Could not notify user of ticket closure");
+            }
+
+            if (guildId) {
+              const threadConfig = await storage.getGuildConfig(guildId);
+              if (threadConfig?.modmailLogChannelId) {
+                try {
+                  const logChannel = await client.channels.fetch(threadConfig.modmailLogChannelId);
+                  if (logChannel && "send" in logChannel) {
+                    const messages = await storage.getModmailMessages(threadToClose.id);
+                    let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                    if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+
+                    const logEmbed = new EmbedBuilder()
+                      .setTitle("Ticket Closed (Inactivity)")
+                      .setColor(0xed4245)
+                      .addFields(
+                        { name: "User", value: `<@${threadToClose.userId}>`, inline: true },
+                        { name: "Closed By", value: `<@${staffId}> (auto)`, inline: true },
+                        { name: "Transcript", value: transcript || "No messages", inline: false }
+                      )
+                      .setTimestamp();
+                    await logChannel.send({ embeds: [logEmbed] });
+                  }
+                } catch (e) {
+                  console.log("Could not send modmail log");
+                }
+              }
+            }
+
+            try {
+              const chanToDelete = await client.channels.fetch(channelId);
+              if (chanToDelete) await chanToDelete.delete();
+            } catch (e) { console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
+          }, FIFTEEN_MINUTES);
+
+          pendingInactivityCloses.set(channelId, {
+            timeout: closeTimeout,
+            staffId: staffId,
+          });
+        } catch (e) {
+          console.log("Could not send inactivity warning:", e);
+        }
+      }, FIFTEEN_MINUTES);
+
+      pendingInactivityWarnings.set(channelId, {
+        timeout: warningTimeout,
+        staffId: staffId,
+      });
+
+      try {
+        await message.delete();
+      } catch (e) {
+        console.log("Could not delete trigger message:", e);
+      }
+    } catch (error) {
+      console.log("Could not relay anonymous staff message to user:", error);
       await message.react("❌");
     }
     return;
