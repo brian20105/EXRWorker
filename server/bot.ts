@@ -2097,9 +2097,14 @@ client.on("interactionCreate", async (interaction) => {
           const modmailStats = !category || category === "modmail"
             ? await storage.getModmailStats(interaction.guildId!, fromDays, toDays)
             : [];
-          const modmailCategoryStats = !category || category === "modmail"
-            ? await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays)
-            : [];
+          let modmailCategoryStats: { category: string; count: number }[] = [];
+          try {
+            modmailCategoryStats = !category || category === "modmail"
+              ? await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays)
+              : [];
+          } catch (catError) {
+            console.log("Could not fetch modmail category stats (column may not exist)");
+          }
 
           const combinedStats: { [userId: string]: number } = {};
           for (const stat of banStats) {
