@@ -49,6 +49,7 @@ export const guildConfigs = pgTable("guild_configs", {
   categoryPingGfx: text("category_ping_gfx").array(),
   categoryPingCreativewarrior: text("category_ping_creativewarrior").array(),
   categoryPingVfxeditor: text("category_ping_vfxeditor").array(),
+  customModmailCategories: text("custom_modmail_categories"), // JSON array of {id, label, description, emoji}
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
