@@ -2127,14 +2127,30 @@ client.on("interactionCreate", async (interaction) => {
 
           // If a specific member is requested, show their individual stats
           if (targetMember) {
-            const memberBanStats = await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "ban", fromDays, toDays);
-            const memberUnbanStats = await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "unban", fromDays, toDays);
-            const memberModmailStats = await storage.getModmailStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+            let memberBanStats = 0;
+            let memberUnbanStats = 0;
+            let memberModmailStats = 0;
             let memberModmailCategoryStats: { category: string; count: number }[] = [];
+
+            try {
+              memberBanStats = await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "ban", fromDays, toDays);
+            } catch (e) {
+              console.log("Could not fetch member ban stats:", e);
+            }
+            try {
+              memberUnbanStats = await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "unban", fromDays, toDays);
+            } catch (e) {
+              console.log("Could not fetch member unban stats:", e);
+            }
+            try {
+              memberModmailStats = await storage.getModmailStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+            } catch (e) {
+              console.log("Could not fetch member modmail stats:", e);
+            }
             try {
               memberModmailCategoryStats = await storage.getModmailStatsByCategoryForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
-              console.log("Could not fetch member modmail category stats");
+              console.log("Could not fetch member modmail category stats:", e);
             }
 
             const totalActivity = memberBanStats + memberUnbanStats + memberModmailStats;
@@ -2181,23 +2197,42 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          // Otherwise show the leaderboard
-          const banStats = !category || category === "ban" 
-            ? await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays) 
-            : [];
-          const unbanStats = !category || category === "unban"
-            ? await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays)
-            : [];
-          const modmailStats = !category || category === "modmail"
-            ? await storage.getModmailStats(interaction.guildId!, fromDays, toDays)
-            : [];
+          // Otherwise show the leaderboard - fetch each stat type independently
+          let banStats: { userId: string; count: number }[] = [];
+          let unbanStats: { userId: string; count: number }[] = [];
+          let modmailStats: { userId: string; count: number }[] = [];
           let modmailCategoryStats: { category: string; count: number }[] = [];
+
           try {
-            modmailCategoryStats = !category || category === "modmail"
-              ? await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays)
-              : [];
-          } catch (catError) {
-            console.log("Could not fetch modmail category stats (column may not exist)");
+            if (!category || category === "ban") {
+              banStats = await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
+            }
+          } catch (e) {
+            console.log("Could not fetch ban stats:", e);
+          }
+
+          try {
+            if (!category || category === "unban") {
+              unbanStats = await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
+            }
+          } catch (e) {
+            console.log("Could not fetch unban stats:", e);
+          }
+
+          try {
+            if (!category || category === "modmail") {
+              modmailStats = await storage.getModmailStats(interaction.guildId!, fromDays, toDays);
+            }
+          } catch (e) {
+            console.log("Could not fetch modmail stats:", e);
+          }
+
+          try {
+            if (!category || category === "modmail") {
+              modmailCategoryStats = await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays);
+            }
+          } catch (e) {
+            console.log("Could not fetch modmail category stats:", e);
           }
 
           const combinedStats: { [userId: string]: number } = {};
