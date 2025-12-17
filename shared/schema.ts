@@ -203,6 +203,7 @@ export const modmailThreads = pgTable("modmail_threads", {
   userId: text("user_id").notNull(),
   channelId: text("channel_id"),
   status: text("status").notNull().default("open"),
+  category: text("category"), // ticket category: general, competitive, contentcreator, report, partnerships, gfx, creativewarrior, vfxeditor
   claimedById: text("claimed_by_id"),
   closedById: text("closed_by_id"),
   closeReason: text("close_reason"),
