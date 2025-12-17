@@ -2389,108 +2389,161 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "activity_add") {
         if (!await safeDeferReply(interaction, false)) return;
 
-        const user = interaction.options.getUser("user", true);
-        const amount = interaction.options.getInteger("amount", true);
-        const category = interaction.options.getString("category", true);
+        try {
+          const user = interaction.options.getUser("user", true);
+          const amount = interaction.options.getInteger("amount", true);
+          const category = interaction.options.getString("category", true);
 
-        if (category === "modmail") {
-          await storage.addModmailActivityEntries(interaction.guildId!, user.id, amount);
-        } else {
-          for (let i = 0; i < amount; i++) {
-            if (category === "ban") {
-              await storage.createBanRequest({
-                guildId: interaction.guildId!,
-                targetUserId: "manual_entry",
-                requestedById: "manual_entry",
-                reason: "Manual activity entry",
-                status: "approved",
-                reviewedById: user.id,
-                reviewReason: "Manual entry by admin",
-              });
+          try {
+            if (category === "modmail") {
+              await storage.addModmailActivityEntries(interaction.guildId!, user.id, amount);
             } else {
-              await storage.createUnbanRequest({
-                guildId: interaction.guildId!,
-                targetUserId: "manual_entry",
-                requestedById: "manual_entry",
-                reason: "Manual activity entry",
-                status: "approved",
-                reviewedById: user.id,
-                reviewReason: "Manual entry by admin",
-              });
+              for (let i = 0; i < amount; i++) {
+                if (category === "ban") {
+                  await storage.createBanRequest({
+                    guildId: interaction.guildId!,
+                    targetUserId: "manual_entry",
+                    requestedById: "manual_entry",
+                    reason: "Manual activity entry",
+                    status: "approved",
+                    reviewedById: user.id,
+                    reviewReason: "Manual entry by admin",
+                  });
+                } else {
+                  await storage.createUnbanRequest({
+                    guildId: interaction.guildId!,
+                    targetUserId: "manual_entry",
+                    requestedById: "manual_entry",
+                    reason: "Manual activity entry",
+                    status: "approved",
+                    reviewedById: user.id,
+                    reviewReason: "Manual entry by admin",
+                  });
+                }
+              }
             }
+          } catch (e) {
+            console.log("Could not add activity entries:", e);
           }
-        }
 
-        const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
-        await interaction.editReply({
-          content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
-        });
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
+          await interaction.editReply({
+            content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
+          });
+        } catch (error: any) {
+          console.log("Error in /activity_add command:", error.message);
+          await interaction.editReply({ content: "Failed to add activity entries. Please try again." }).catch(() => {});
+        }
       } else if (commandName === "activity_remove") {
         if (!await safeDeferReply(interaction, false)) return;
 
-        const user = interaction.options.getUser("user", true);
-        const amount = interaction.options.getInteger("amount", true);
-        const category = interaction.options.getString("category", true);
+        try {
+          const user = interaction.options.getUser("user", true);
+          const amount = interaction.options.getInteger("amount", true);
+          const category = interaction.options.getString("category", true);
 
-        let removed: number;
-        if (category === "modmail") {
-          removed = await storage.removeModmailActivityEntries(interaction.guildId!, user.id, amount);
-        } else {
-          removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
+          let removed = 0;
+          try {
+            if (category === "modmail") {
+              removed = await storage.removeModmailActivityEntries(interaction.guildId!, user.id, amount);
+            } else {
+              removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
+            }
+          } catch (e) {
+            console.log("Could not remove activity entries:", e);
+          }
+
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
+          await interaction.editReply({
+            content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
+          });
+        } catch (error: any) {
+          console.log("Error in /activity_remove command:", error.message);
+          await interaction.editReply({ content: "Failed to remove activity entries. Please try again." }).catch(() => {});
         }
-
-        const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
-        await interaction.editReply({
-          content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
-        });
       } else if (commandName === "activity_reset") {
         if (!await safeDeferReply(interaction, false)) return;
 
-        const config = await storage.getGuildConfig(interaction.guildId!);
-        const activityResetRoleIds = config?.activityResetRoleIds || [];
-        const hasPermission = activityResetRoleIds.length === 0 || 
-          (interaction.member as any)?.roles?.cache?.some((r: any) => activityResetRoleIds.includes(r.id));
+        try {
+          let config = null;
+          try {
+            config = await storage.getGuildConfig(interaction.guildId!);
+          } catch (e) {
+            console.log("Could not fetch guild config:", e);
+          }
+          const activityResetRoleIds = config?.activityResetRoleIds || [];
+          const hasPermission = activityResetRoleIds.length === 0 || 
+            (interaction.member as any)?.roles?.cache?.some((r: any) => activityResetRoleIds.includes(r.id));
 
-        if (activityResetRoleIds.length > 0 && !hasPermission) {
-          await interaction.editReply({ content: "❌ You don't have permission to reset activity stats." });
-          return;
+          if (activityResetRoleIds.length > 0 && !hasPermission) {
+            await interaction.editReply({ content: "You don't have permission to reset activity stats." });
+            return;
+          }
+
+          const category = interaction.options.getString("category");
+          const user = interaction.options.getUser("user");
+
+          let count = 0;
+          try {
+            count = await storage.resetActivityStats(interaction.guildId!, interaction.user.id, category || undefined, user?.id);
+          } catch (e) {
+            console.log("Could not reset activity stats:", e);
+          }
+
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "modmail" ? "modmail" : "all";
+          const userText = user ? `<@${user.id}>` : "everyone";
+
+          await interaction.editReply({
+            content: `Reset **${count}** ${categoryText} activity entries for ${userText}.`,
+          });
+        } catch (error: any) {
+          console.log("Error in /activity_reset command:", error.message);
+          await interaction.editReply({ content: "Failed to reset activity stats. Please try again." }).catch(() => {});
         }
-
-        const category = interaction.options.getString("category");
-        const user = interaction.options.getUser("user");
-
-        const count = await storage.resetActivityStats(interaction.guildId!, interaction.user.id, category || undefined, user?.id);
-
-        const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "modmail" ? "modmail" : "all";
-        const userText = user ? `<@${user.id}>` : "everyone";
-
-        await interaction.editReply({
-          content: `Reset **${count}** ${categoryText} activity entries for ${userText}.`,
-        });
       } else if (commandName === "restore_activity") {
         if (!await safeDeferReply(interaction, false)) return;
 
-        const config = await storage.getGuildConfig(interaction.guildId!);
-        const activityResetRoleIds = config?.activityResetRoleIds || [];
-        const hasPermission = activityResetRoleIds.length === 0 || 
-          (interaction.member as any)?.roles?.cache?.some((r: any) => activityResetRoleIds.includes(r.id));
+        try {
+          let config = null;
+          try {
+            config = await storage.getGuildConfig(interaction.guildId!);
+          } catch (e) {
+            console.log("Could not fetch guild config:", e);
+          }
+          const activityResetRoleIds = config?.activityResetRoleIds || [];
+          const hasPermission = activityResetRoleIds.length === 0 || 
+            (interaction.member as any)?.roles?.cache?.some((r: any) => activityResetRoleIds.includes(r.id));
 
-        if (activityResetRoleIds.length > 0 && !hasPermission) {
-          await interaction.editReply({ content: "❌ You don't have permission to restore activity stats." });
-          return;
+          if (activityResetRoleIds.length > 0 && !hasPermission) {
+            await interaction.editReply({ content: "You don't have permission to restore activity stats." });
+            return;
+          }
+
+          let backup = null;
+          try {
+            backup = await storage.getLatestActivityResetBackup(interaction.guildId!);
+          } catch (e) {
+            console.log("Could not fetch activity backup:", e);
+          }
+          if (!backup) {
+            await interaction.editReply({ content: "No activity reset backup found to restore." });
+            return;
+          }
+
+          let restoredCount = 0;
+          try {
+            restoredCount = await storage.restoreActivityStats(interaction.guildId!);
+          } catch (e) {
+            console.log("Could not restore activity stats:", e);
+          }
+
+          await interaction.editReply({
+            content: `Restored **${restoredCount}** activity entries from the last reset.`,
+          });
+        } catch (error: any) {
+          console.log("Error in /restore_activity command:", error.message);
+          await interaction.editReply({ content: "Failed to restore activity stats. Please try again." }).catch(() => {});
         }
-
-        const backup = await storage.getLatestActivityResetBackup(interaction.guildId!);
-        if (!backup) {
-          await interaction.editReply({ content: "❌ No activity reset backup found to restore." });
-          return;
-        }
-
-        const restoredCount = await storage.restoreActivityStats(interaction.guildId!);
-
-        await interaction.editReply({
-          content: `✅ Restored **${restoredCount}** activity entries from the last reset.`,
-        });
       } else if (commandName === "setup_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
 
