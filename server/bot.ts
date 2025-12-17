@@ -131,7 +131,7 @@ function getQuizQuestions(config: any): QuizQuestion[] {
   const q3Text = config?.quizQuestion3 || "If you are unsure about a situation, who should you ask?";
   const q4Text = config?.quizQuestion4 || "If somebody makes a partnership ticket, who do you bring to handle it?";
   const q5Text = config?.quizQuestion5 || "You understand that this is a paid position and any unprofessionalism/arguing will get you removed?";
-  
+
   return [
     { text: `**Question 1:** ${q1Text}` },
     { text: `**Question 2:** ${q2Text}` },
@@ -154,17 +154,17 @@ function getFullQuestions(config: any): string[] {
 async function sendQuizQuestion(userId: string, dmChannel: any, isFirst: boolean = false): Promise<void> {
   const quizState = activeQuizzes.get(userId);
   if (!quizState) return;
-  
+
   const config = await storage.getGuildConfig(quizState.guildId);
   const questions = getQuizQuestions(config);
   const question = questions[quizState.currentQuestion];
-  
+
   const content = isFirst 
     ? `**Staff Introduction Quiz**\n\nPlease answer all 5 questions.\n\n${question.text}`
     : question.text;
-  
+
   console.log(`[QUIZ] Sending message to ${userId}: "${content.substring(0, 50)}..."`);
-  
+
   await dmChannel.send({
     content: content,
   });
@@ -173,25 +173,25 @@ async function sendQuizQuestion(userId: string, dmChannel: any, isFirst: boolean
 async function processQuizAnswer(userId: string, answer: string, dmChannel: any): Promise<void> {
   const quizState = activeQuizzes.get(userId);
   if (!quizState) return;
-  
+
   quizState.answers.push(answer);
   quizState.currentQuestion++;
-  
+
   const config = await storage.getGuildConfig(quizState.guildId);
   const questions = getQuizQuestions(config);
-  
+
   if (quizState.currentQuestion < questions.length) {
     await sendQuizQuestion(userId, dmChannel);
   } else {
     activeQuizzes.delete(userId);
-    
+
     if (!config?.staffIntroSubmissionsChannelId) {
       await dmChannel.send({
         content: "Thank you for completing the quiz! Your answers have been recorded, but the submissions channel hasn't been set up yet. Please contact an admin.",
       });
       return;
     }
-    
+
     const submission = await storage.createStaffIntroSubmission({
       guildId: quizState.guildId,
       userId: userId,
@@ -202,9 +202,9 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
       answer5: quizState.answers[4] || "",
       status: "pending",
     });
-    
+
     const fullQuestions = getFullQuestions(config);
-    
+
     try {
       const submissionsChannel = await client.channels.fetch(config.staffIntroSubmissionsChannelId);
       if (submissionsChannel && "send" in submissionsChannel) {
@@ -221,7 +221,7 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
           )
           .setFooter({ text: `Submission ID: ${submission.id}` })
           .setTimestamp();
-        
+
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`quiz_approve_${submission.id}`)
@@ -234,12 +234,12 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
             .setStyle(ButtonStyle.Danger)
             .setEmoji("❌")
         );
-        
+
         const sentMessage = await submissionsChannel.send({
           embeds: [embed],
           components: [row],
         });
-        
+
         await storage.updateStaffIntroSubmission(submission.id, {
           messageId: sentMessage.id,
         });
@@ -247,7 +247,7 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
     } catch (error) {
       console.log("Could not send submission to channel:", error);
     }
-    
+
     await dmChannel.send({
       content: "✅ Thank you for completing the quiz! Your submission has been sent for review. You will receive a DM once it has been reviewed.",
     });
@@ -741,21 +741,11 @@ const commands = [
     .setName("setup_inactivity_ping")
     .setDescription("Set roles to ping when inactivity is submitted (up to 5)")
     .setDefaultMemberPermissions(0)
-    .addRoleOption((option) =>
-      option.setName("role1").setDescription("Role 1 to ping").setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option.setName("role2").setDescription("Role 2 to ping").setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option.setName("role3").setDescription("Role 3 to ping").setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option.setName("role4").setDescription("Role 4 to ping").setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option.setName("role5").setDescription("Role 5 to ping").setRequired(false)
-    ),
+    .addRoleOption((option) => option.setName("role1").setDescription("Role 1 to ping").setRequired(false))
+    .addRoleOption((option) => option.setName("role2").setDescription("Role 2 to ping").setRequired(false))
+    .addRoleOption((option) => option.setName("role3").setDescription("Role 3 to ping").setRequired(false))
+    .addRoleOption((option) => option.setName("role4").setDescription("Role 4 to ping").setRequired(false))
+    .addRoleOption((option) => option.setName("role5").setDescription("Role 5 to ping").setRequired(false)),
   new SlashCommandBuilder()
     .setName("terminate_quizzes")
     .setDescription("Terminate all active staff intro quizzes")
@@ -897,7 +887,7 @@ async function hasPayoutPermission(
   guildId: string
 ): Promise<boolean> {
   const config = await storage.getGuildConfig(guildId);
-  
+
   if (!config?.allowedRoleIds || config.allowedRoleIds.length === 0) {
     const permBits = typeof memberPermissions === 'string' 
       ? BigInt(memberPermissions) 
@@ -905,7 +895,7 @@ async function hasPayoutPermission(
     const ADMINISTRATOR = BigInt(1) << BigInt(3);
     return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
   }
-  
+
   if (!memberRoles) return false;
   return config.allowedRoleIds.some(roleId => memberRoles.includes(roleId));
 }
@@ -917,30 +907,30 @@ async function sendDMToUser(userId: string, status: "approved" | "denied", reaso
       console.log(`Invalid user ID format: ${userId}`);
       return;
     }
-    
+
     const user = await client.users.fetch(userId);
     const statusEmoji = status === "approved" ? "✅" : "❌";
     const statusText = status === "approved" ? "Approved" : "Denied";
     const color = status === "approved" ? 0x23a559 : 0xda373c;
-    
+
     const fields: any[] = [
       { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
       { name: "Money Owed", value: `$${moneyOwed}`, inline: true },
       { name: "PayPal", value: paypal, inline: false },
       { name: "Request Reason", value: reason, inline: false }
     ];
-    
+
     if (actionReason) {
       fields.push({ name: status === "approved" ? "Approval Note" : "Denial Reason", value: actionReason, inline: false });
     }
-    
+
     const embed = new EmbedBuilder()
       .setTitle(`Payout Request ${statusText}`)
       .setDescription(`Your payout request has been ${statusText.toLowerCase()}.`)
       .setColor(color)
       .addFields(fields)
       .setTimestamp();
-    
+
     await user.send({ embeds: [embed] });
   } catch (error) {
     console.log(`Could not DM user ${userId}:`, error);
@@ -954,30 +944,30 @@ async function sendDMToStaff(staffUserId: string, status: "approved" | "denied",
       console.log(`Invalid staff user ID format: ${staffUserId}`);
       return;
     }
-    
+
     const user = await client.users.fetch(staffUserId);
     const statusEmoji = status === "approved" ? "✅" : "❌";
     const statusText = status === "approved" ? "Approved" : "Denied";
     const color = status === "approved" ? 0x23a559 : 0xda373c;
-    
+
     const fields: any[] = [
       { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
       { name: "User to be Paid", value: `<@${targetUserId}>`, inline: true },
       { name: "Money Owed", value: `$${moneyOwed}`, inline: true },
       { name: "PayPal", value: paypal, inline: false }
     ];
-    
+
     if (actionReason) {
       fields.push({ name: status === "approved" ? "Approval Note" : "Denial Reason", value: actionReason, inline: false });
     }
-    
+
     const embed = new EmbedBuilder()
       .setTitle(`Payout Request ${statusText}`)
       .setDescription(`The payout request you submitted has been ${statusText.toLowerCase()}.`)
       .setColor(color)
       .addFields(fields)
       .setTimestamp();
-    
+
     await user.send({ embeds: [embed] });
   } catch (error) {
     console.log(`Could not DM staff ${staffUserId}:`, error);
@@ -1020,7 +1010,7 @@ function getMembersWithRole(guild: any, roleId: string): string[] {
 
 async function generatePlayerRoster(guild: any): Promise<string> {
   let playerRoster = "**Thrill's Competitive Roster**\n\n";
-  
+
   for (const roleId of PLAYER_ROLE_IDS) {
     const members = getMembersWithRole(guild, roleId);
     playerRoster += `<@&${roleId}>\n\n`;
@@ -1030,13 +1020,13 @@ async function generatePlayerRoster(guild: any): Promise<string> {
       playerRoster += members.join("\n") + "\n";
     }
   }
-  
+
   return playerRoster;
 }
 
 async function generateStaffRoster(guild: any): Promise<string> {
   let staffRoster = "**Thrill's Staff Roster**\n\n";
-  
+
   for (const roleId of STAFF_ROLE_IDS) {
     const members = getMembersWithRole(guild, roleId);
     staffRoster += `<@&${roleId}>\n\n`;
@@ -1046,7 +1036,7 @@ async function generateStaffRoster(guild: any): Promise<string> {
       staffRoster += members.join("\n") + "\n";
     }
   }
-  
+
   return staffRoster;
 }
 
@@ -1062,7 +1052,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
                            dbError.code === 'ECONNRESET' || 
                            dbError.message?.includes('ECONNREFUSED') ||
                            dbError.message?.includes('Connection terminated');
-        
+
         if (attempt < 3 && isConnError) {
           console.log(`[ROSTER] Database connection attempt ${attempt} failed, retrying...`);
           await new Promise(r => setTimeout(r, 1000 * attempt));
@@ -1078,13 +1068,13 @@ async function updateRosterMessages(guildId: string): Promise<void> {
       console.log("[ROSTER] No config found for guild", guildId);
       return;
     }
-    
+
     const guild = client.guilds.cache.get(guildId);
     if (!guild) {
       console.log("[ROSTER] Guild not in cache", guildId);
       return;
     }
-    
+
     // Always fetch fresh member data
     try {
       await guild.members.fetch({ time: 30000 });
@@ -1092,7 +1082,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
     } catch (error) {
       console.log("[ROSTER] Could not fetch all members, using cached");
     }
-    
+
     // Update player roster
     if (config.playerRosterChannelId) {
       console.log("[ROSTER] Updating player roster...", config.playerRosterChannelId, config.playerRosterMessageId);
@@ -1100,7 +1090,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
         const channel = await client.channels.fetch(config.playerRosterChannelId);
         if (channel && "send" in channel) {
           const newContent = await generatePlayerRoster(guild);
-          
+
           // Try to edit existing message
           if (config.playerRosterMessageId) {
             try {
@@ -1135,7 +1125,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
     } else {
       console.log("[ROSTER] No player roster channel configured");
     }
-    
+
     // Update staff roster
     if (config.staffRosterChannelId) {
       console.log("[ROSTER] Updating staff roster...", config.staffRosterChannelId, config.staffRosterMessageId);
@@ -1143,7 +1133,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
         const channel = await client.channels.fetch(config.staffRosterChannelId);
         if (channel && "send" in channel) {
           const newContent = await generateStaffRoster(guild);
-          
+
           // Try to edit existing message
           if (config.staffRosterMessageId) {
             try {
@@ -1194,11 +1184,11 @@ client.once("clientReady", async () => {
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN!);
     console.log("🔄 Registering slash commands...");
-    
+
     await rest.put(Routes.applicationCommands(APPLICATION_ID), {
       body: commands,
     });
-    
+
     console.log("✅ Slash commands registered successfully!");
   } catch (error) {
     console.error("❌ Error registering commands:", error);
@@ -1212,14 +1202,14 @@ client.on("interactionCreate", async (interaction) => {
       console.log('Interaction already replied to:', interaction.id);
       return;
     }
-    
+
     if (interaction.isChatInputCommand()) {
       const { commandName } = interaction;
 
       if (commandName === "setup_pay_request") {
         if (!await safeDeferReply(interaction)) return;
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.updateRequestChannel(interaction.guildId!, channel.id);
 
         const embed = new EmbedBuilder()
@@ -1240,26 +1230,26 @@ client.on("interactionCreate", async (interaction) => {
             components: [row],
           });
         }
-        
+
         await interaction.editReply({
           content: `✅ Configuration saved! Payout requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_payment_logs") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.updateLogChannel(interaction.guildId!, channel.id);
-        
+
         await interaction.editReply({
           content: `✅ Configuration saved! Payment logs will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "payout_permission") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const roles: string[] = [];
         const roleNames: string[] = [];
-        
+
         for (let i = 1; i <= 5; i++) {
           const role = interaction.options.getRole(`role${i}`);
           if (role) {
@@ -1267,16 +1257,16 @@ client.on("interactionCreate", async (interaction) => {
             roleNames.push(role.name);
           }
         }
-        
+
         await storage.updateAllowedRoles(interaction.guildId!, roles);
-        
+
         await interaction.editReply({
           content: `✅ Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
         });
       } else if (commandName === "list_payouts") {
         const isPrivate = interaction.options.getBoolean("private") ?? true;
         if (!await safeDeferReply(interaction, isPrivate)) return;
-        
+
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
@@ -1284,7 +1274,7 @@ client.on("interactionCreate", async (interaction) => {
         const memberPermissions = member && 'permissions' in member 
           ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
           : undefined;
-        
+
         const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
         if (!hasPermission) {
           await interaction.editReply({
@@ -1292,26 +1282,26 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        
+
         const allPayouts = await storage.getAllPayouts(interaction.guildId!);
-        
+
         if (allPayouts.length === 0) {
           await interaction.editReply({
             content: "No payout requests found.",
           });
           return;
         }
-        
+
         const pending = allPayouts.filter(p => p.status === "pending");
         const approved = allPayouts.filter(p => p.status === "approved");
         const denied = allPayouts.filter(p => p.status === "denied");
-        
+
         const totalPending = pending.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
         const totalApproved = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
         const totalDenied = denied.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
-        
+
         const embeds: EmbedBuilder[] = [];
-        
+
         const summaryEmbed = new EmbedBuilder()
           .setTitle("📋 All Payout Requests")
           .setColor(0x5865f2)
@@ -1323,10 +1313,10 @@ client.on("interactionCreate", async (interaction) => {
           )
           .setTimestamp();
         embeds.push(summaryEmbed);
-        
+
         const formatPayoutList = (payouts: typeof allPayouts, title: string, emoji: string, color: number) => {
           if (payouts.length === 0) return null;
-          
+
           let description = "";
           payouts.forEach((payout, index) => {
             const line = `**${index + 1}.)** <@${payout.userId}>\n> **ID:** ${payout.userId}\n> **Reason:** ${payout.reason || "No reason"}\n> **Amount:** $${payout.moneyOwed}\n> **Email:** ${payout.email}\n\n`;
@@ -1334,39 +1324,39 @@ client.on("interactionCreate", async (interaction) => {
               description += line;
             }
           });
-          
+
           return new EmbedBuilder()
             .setTitle(`${emoji} ${title}`)
             .setColor(color)
             .setDescription(description || "None");
         };
-        
+
         const pendingEmbed = formatPayoutList(pending, "Pending Requests", "⏳", 0xf0b232);
         const approvedEmbed = formatPayoutList(approved, "Approved Requests", "✅", 0x23a559);
         const deniedEmbed = formatPayoutList(denied, "Denied Requests", "❌", 0xda373c);
-        
+
         if (pendingEmbed) embeds.push(pendingEmbed);
         if (approvedEmbed) embeds.push(approvedEmbed);
         if (deniedEmbed) embeds.push(deniedEmbed);
-        
+
         await interaction.editReply({ embeds: embeds.slice(0, 10) });
       } else if (commandName === "setup") {
         const rosterType = interaction.options.getString("roster", true);
-        
+
         if (!await safeDeferReply(interaction)) return;
-        
+
         const guild = interaction.guild;
         if (!guild) {
           await interaction.editReply({ content: "❌ Could not fetch guild information." });
           return;
         }
-        
+
         try {
           await guild.members.fetch({ time: 30000 });
         } catch (error) {
           console.log("Could not fetch all members, using cached members");
         }
-        
+
         if (rosterType === "player") {
           const playerRoster = await generatePlayerRoster(guild);
 
@@ -1378,7 +1368,7 @@ client.on("interactionCreate", async (interaction) => {
               playerRosterChannelId: interaction.channelId,
             });
           }
-          
+
           await interaction.editReply({
             content: "✅ Player roster has been posted! It will update automatically when roles change.",
           });
@@ -1393,16 +1383,16 @@ client.on("interactionCreate", async (interaction) => {
               staffRosterChannelId: interaction.channelId,
             });
           }
-          
+
           await interaction.editReply({
             content: "✅ Staff roster has been posted! It will update automatically when roles change.",
           });
         }
       } else if (commandName === "refresh_roster") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         await updateRosterMessages(interaction.guildId!);
-        
+
         try {
           await interaction.editReply({
             content: "✅ Rosters have been refreshed!",
@@ -1410,7 +1400,7 @@ client.on("interactionCreate", async (interaction) => {
         } catch (e) {}
       } else if (commandName === "user_payouts") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
@@ -1418,7 +1408,7 @@ client.on("interactionCreate", async (interaction) => {
         const memberPermissions = member && 'permissions' in member 
           ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
           : undefined;
-        
+
         const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
         if (!hasPermission) {
           await interaction.editReply({
@@ -1426,24 +1416,24 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        
+
         const targetUser = interaction.options.getUser("user", true);
         const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
-        
+
         if (userPayouts.length === 0) {
           await interaction.editReply({
             content: `No payout requests found for <@${targetUser.id}>.`,
           });
           return;
         }
-        
+
         const pending = userPayouts.filter(p => p.status === "pending");
         const approved = userPayouts.filter(p => p.status === "approved");
         const denied = userPayouts.filter(p => p.status === "denied");
-        
+
         const totalOwed = pending.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
         const totalPaid = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
-        
+
         const embed = new EmbedBuilder()
           .setTitle(`Payout History for ${targetUser.username}`)
           .setColor(0x5865f2)
@@ -1456,13 +1446,13 @@ client.on("interactionCreate", async (interaction) => {
             { name: "Total Paid", value: `$${totalPaid.toFixed(2)}`, inline: true }
           )
           .setTimestamp();
-        
+
         await interaction.editReply({
           embeds: [embed],
         });
       } else if (commandName === "payout") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
@@ -1470,7 +1460,7 @@ client.on("interactionCreate", async (interaction) => {
         const memberPermissions = member && 'permissions' in member 
           ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
           : undefined;
-        
+
         const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
         if (!hasPermission) {
           await interaction.editReply({
@@ -1478,11 +1468,11 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        
+
         const action = interaction.options.getString("action", true);
         const targetUser = interaction.options.getUser("user");
         const payoutId = interaction.options.getString("payout_id");
-        
+
         if (action === "add") {
           if (!targetUser) {
             await interaction.editReply({
@@ -1494,7 +1484,7 @@ client.on("interactionCreate", async (interaction) => {
           const email = interaction.options.getString("email") || "Not provided";
           const reason = interaction.options.getString("reason") || "Added via command";
           const status = interaction.options.getString("status") || "pending";
-          
+
           const payoutRequest = await storage.createPayoutRequest({
             guildId: interaction.guildId!,
             userId: targetUser.id,
@@ -1504,7 +1494,7 @@ client.on("interactionCreate", async (interaction) => {
             email,
             status,
           });
-          
+
           const config = await storage.getGuildConfig(interaction.guildId!);
           if (config?.requestChannelId) {
             try {
@@ -1513,7 +1503,7 @@ client.on("interactionCreate", async (interaction) => {
                 const statusEmoji = status === "pending" ? "⏳" : status === "approved" ? "✅" : "❌";
                 const statusText = status.charAt(0).toUpperCase() + status.slice(1);
                 const embedColor = status === "pending" ? 0xf0b232 : status === "approved" ? 0x57f287 : 0xed4245;
-                
+
                 const embed = new EmbedBuilder()
                   .setTitle("Payout Request")
                   .setColor(embedColor)
@@ -1556,13 +1546,13 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not send to request channel:", error);
             }
           }
-          
+
           await interaction.editReply({
             content: `✅ Payout request added for <@${targetUser.id}> - $${amount}`,
           });
         } else if (action === "edit") {
           let payout;
-          
+
           if (payoutId) {
             payout = await storage.getPayoutRequest(payoutId);
             if (!payout) {
@@ -1586,27 +1576,27 @@ client.on("interactionCreate", async (interaction) => {
             });
             return;
           }
-          
+
           const amount = interaction.options.getString("amount");
           const email = interaction.options.getString("email");
           const reason = interaction.options.getString("reason");
           const status = interaction.options.getString("status");
-          
+
           if (!amount && !email && !reason && !status) {
             await interaction.editReply({
               content: `❌ Please provide at least one field to update (amount, email, reason, or status).`,
             });
             return;
           }
-          
+
           const updates: { moneyOwed?: string; email?: string; reason?: string; status?: string } = {};
           if (amount) updates.moneyOwed = amount;
           if (email) updates.email = email;
           if (reason) updates.reason = reason;
           if (status) updates.status = status;
-          
+
           const updatedPayout = await storage.updatePayoutRequest(payout.id, updates);
-          
+
           if (payout.messageId) {
             try {
               const config = await storage.getGuildConfig(interaction.guildId!);
@@ -1614,11 +1604,11 @@ client.on("interactionCreate", async (interaction) => {
                 const channel = await client.channels.fetch(config.requestChannelId);
                 if (channel && "messages" in channel) {
                   const message = await channel.messages.fetch(payout.messageId);
-                  
+
                   const statusEmoji = updatedPayout.status === "pending" ? "⏳" : updatedPayout.status === "approved" ? "✅" : "❌";
                   const statusText = updatedPayout.status!.charAt(0).toUpperCase() + updatedPayout.status!.slice(1);
                   const embedColor = updatedPayout.status === "pending" ? 0xf0b232 : updatedPayout.status === "approved" ? 0x57f287 : 0xed4245;
-                  
+
                   const updatedEmbed = new EmbedBuilder()
                     .setTitle("Payout Request")
                     .setColor(embedColor)
@@ -1660,19 +1650,19 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not update payout message:", error);
             }
           }
-          
+
           const changedFields = [];
           if (amount) changedFields.push(`Amount: $${amount}`);
           if (email) changedFields.push(`Email: ${email}`);
           if (reason) changedFields.push(`Reason: ${reason}`);
           if (status) changedFields.push(`Status: ${status}`);
-          
+
           await interaction.editReply({
             content: `✅ Updated payout request for <@${payout.userId}>.\n**Changes:** ${changedFields.join(", ")}`,
           });
         } else if (action === "remove") {
           const removeAll = interaction.options.getBoolean("remove_all") ?? false;
-          
+
           if (removeAll) {
             if (targetUser) {
               const userPayouts = await storage.getUserPayouts(interaction.guildId!, targetUser.id);
@@ -1682,7 +1672,7 @@ client.on("interactionCreate", async (interaction) => {
                 });
                 return;
               }
-              
+
               const config = await storage.getGuildConfig(interaction.guildId!);
               for (const payout of userPayouts) {
                 if (payout.messageId && config?.requestChannelId) {
@@ -1697,7 +1687,7 @@ client.on("interactionCreate", async (interaction) => {
                   }
                 }
               }
-              
+
               const count = await storage.deleteUserPayouts(interaction.guildId!, targetUser.id);
               await interaction.editReply({
                 content: `✅ Removed all ${count} payout request(s) for <@${targetUser.id}>.`,
@@ -1710,7 +1700,7 @@ client.on("interactionCreate", async (interaction) => {
                 });
                 return;
               }
-              
+
               const config = await storage.getGuildConfig(interaction.guildId!);
               for (const payout of allPayouts) {
                 if (payout.messageId && config?.requestChannelId) {
@@ -1725,7 +1715,7 @@ client.on("interactionCreate", async (interaction) => {
                   }
                 }
               }
-              
+
               const count = await storage.deleteAllPayouts(interaction.guildId!);
               await interaction.editReply({
                 content: `✅ Removed all ${count} payout request(s) from this server.`,
@@ -1733,7 +1723,7 @@ client.on("interactionCreate", async (interaction) => {
             }
           } else {
             let payout;
-            
+
             if (payoutId) {
               payout = await storage.getPayoutRequest(payoutId);
               if (!payout) {
@@ -1757,9 +1747,9 @@ client.on("interactionCreate", async (interaction) => {
               });
               return;
             }
-            
+
             await storage.deletePayoutRequest(payout.id);
-            
+
             if (payout.messageId) {
               try {
                 const config = await storage.getGuildConfig(interaction.guildId!);
@@ -1774,7 +1764,7 @@ client.on("interactionCreate", async (interaction) => {
                 console.log("Could not delete payout message:", error);
               }
             }
-            
+
             await interaction.editReply({
               content: `✅ Removed payout request for <@${payout.userId}>.`,
             });
@@ -1782,43 +1772,43 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (commandName === "sync_roles") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const member = interaction.member;
         const memberPermissions = member && 'permissions' in member 
           ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
           : undefined;
-        
+
         const permBits = typeof memberPermissions === 'string' 
           ? BigInt(memberPermissions) 
           : (memberPermissions ?? BigInt(0));
         const ADMINISTRATOR = BigInt(1) << BigInt(3);
         const isAdmin = (permBits & ADMINISTRATOR) === ADMINISTRATOR;
-        
+
         if (!isAdmin) {
           await interaction.editReply({
             content: "❌ You need Administrator permission to manage role sync pairs.",
           });
           return;
         }
-        
+
         const action = interaction.options.getString("action", true);
-        
+
         if (action === "list") {
           const pairs = await storage.getAllRoleSyncPairs();
-          
+
           if (pairs.length === 0) {
             await interaction.editReply({
               content: "No role sync pairs configured. Use `/sync_roles action:Add` to add one.",
             });
             return;
           }
-          
+
           const embed = new EmbedBuilder()
             .setTitle("Role Sync Pairs")
             .setColor(0x5865f2)
             .setDescription("These roles are synced between servers. When a role is added/removed in one server, it syncs to the paired role in the other server.")
             .setTimestamp();
-          
+
           for (const pair of pairs) {
             embed.addFields({
               name: `Pair ID: ${pair.id}`,
@@ -1826,21 +1816,21 @@ client.on("interactionCreate", async (interaction) => {
               inline: false,
             });
           }
-          
+
           await interaction.editReply({ embeds: [embed] });
         } else if (action === "add") {
           const sourceRoleId = interaction.options.getString("source_role_id");
           const targetRoleId = interaction.options.getString("target_role_id");
           const sourceGuildId = interaction.options.getString("source_guild_id");
           const targetGuildId = interaction.options.getString("target_guild_id");
-          
+
           if (!sourceRoleId || !targetRoleId || !sourceGuildId || !targetGuildId) {
             await interaction.editReply({
               content: "❌ You must provide source_role_id, target_role_id, source_guild_id, and target_guild_id to add a sync pair.",
             });
             return;
           }
-          
+
           // Validate IDs are snowflakes (Discord IDs)
           const snowflakeRegex = /^\d{17,19}$/;
           if (!snowflakeRegex.test(sourceRoleId) || !snowflakeRegex.test(targetRoleId) || 
@@ -1850,113 +1840,113 @@ client.on("interactionCreate", async (interaction) => {
             });
             return;
           }
-          
+
           // Verify guilds exist
           const sourceGuild = client.guilds.cache.get(sourceGuildId);
           const targetGuild = client.guilds.cache.get(targetGuildId);
-          
+
           if (!sourceGuild) {
             await interaction.editReply({
               content: `❌ Source guild ${sourceGuildId} not found. The bot must be in both guilds.`,
             });
             return;
           }
-          
+
           if (!targetGuild) {
             await interaction.editReply({
               content: `❌ Target guild ${targetGuildId} not found. The bot must be in both guilds.`,
             });
             return;
           }
-          
+
           // Verify roles exist in their respective guilds
           const sourceRole = sourceGuild.roles.cache.get(sourceRoleId);
           const targetRole = targetGuild.roles.cache.get(targetRoleId);
-          
+
           if (!sourceRole) {
             await interaction.editReply({
               content: `❌ Source role ${sourceRoleId} not found in guild ${sourceGuild.name}.`,
             });
             return;
           }
-          
+
           if (!targetRole) {
             await interaction.editReply({
               content: `❌ Target role ${targetRoleId} not found in guild ${targetGuild.name}.`,
             });
             return;
           }
-          
+
           const pair1 = await storage.addRoleSyncPair({
             sourceGuildId,
             sourceRoleId,
             targetGuildId,
             targetRoleId,
           });
-          
+
           const pair2 = await storage.addRoleSyncPair({
             sourceGuildId: targetGuildId,
             sourceRoleId: targetRoleId,
             targetGuildId: sourceGuildId,
             targetRoleId: sourceRoleId,
           });
-          
+
           await interaction.editReply({
             content: `✅ Role sync pair added!\n**Source:** ${sourceRole.name} (<@&${sourceRoleId}>) in ${sourceGuild.name}\n**Target:** ${targetRole.name} (<@&${targetRoleId}>) in ${targetGuild.name}\n\nPair IDs: \`${pair1.id}\`, \`${pair2.id}\``,
           });
         } else if (action === "remove") {
           const pairId = interaction.options.getString("pair_id");
-          
+
           if (!pairId) {
             await interaction.editReply({
               content: "❌ You must provide a pair_id to remove. Use `/sync_roles action:List` to see all pairs.",
             });
             return;
           }
-          
+
           await storage.removeRoleSyncPair(pairId);
-          
+
           await interaction.editReply({
             content: `✅ Removed role sync pair \`${pairId}\`.`,
           });
         }
       } else if (commandName === "members") {
         if (!await safeDeferReply(interaction, false)) return;
-        
+
         const role = interaction.options.getRole("role", true);
         const guild = interaction.guild;
-        
+
         if (!guild) {
           await interaction.editReply({ content: "❌ This command must be used in a server." });
           return;
         }
-        
+
         try {
           await guild.members.fetch({ time: 30000 });
         } catch (error) {
           console.log("Could not fully fetch members");
         }
-        
+
         const guildRole = guild.roles.cache.get(role.id);
         if (!guildRole) {
           await interaction.editReply({ content: "❌ Role not found in this server." });
           return;
         }
-        
+
         const members = guildRole.members.map((m) => `<@${m.id}>`);
         const pageSize = 10;
         const totalPages = Math.ceil(members.length / pageSize) || 1;
         const currentPage = 0;
-        
+
         const pageMembers = members.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
-        
+
         const embed = new EmbedBuilder()
           .setTitle(`Members with ${guildRole.name}`)
           .setColor(guildRole.color || 0x5865f2)
           .setDescription(pageMembers.length > 0 ? pageMembers.join("\n") : "No members have this role.")
           .setFooter({ text: `Page ${currentPage + 1}/${totalPages} • Total: ${members.length} member(s)` })
           .setTimestamp();
-        
+
         if (members.length > pageSize) {
           const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
@@ -1976,9 +1966,9 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (commandName === "setup_ban") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           banChannelId: channel.id,
@@ -2004,15 +1994,15 @@ client.on("interactionCreate", async (interaction) => {
             components: [row],
           });
         }
-        
+
         await interaction.editReply({
           content: `✅ Ban request channel configured! Requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_unban") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           unbanChannelId: channel.id,
@@ -2038,16 +2028,16 @@ client.on("interactionCreate", async (interaction) => {
             components: [row],
           });
         }
-        
+
         await interaction.editReply({
           content: `✅ Unban request channel configured! Requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_permissions") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const roles: string[] = [];
         const roleNames: string[] = [];
-        
+
         for (let i = 1; i <= 5; i++) {
           const role = interaction.options.getRole(`role${i}`);
           if (role) {
@@ -2055,49 +2045,49 @@ client.on("interactionCreate", async (interaction) => {
             roleNames.push(role.name);
           }
         }
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           modRoleIds: roles,
         });
-        
+
         await interaction.editReply({
           content: `✅ Moderation permissions updated! The following roles can now approve/deny ban/unban requests:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
         });
       } else if (commandName === "setup_ban_logs") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           banLogChannelId: channel.id,
         });
-        
+
         await interaction.editReply({
           content: `✅ Configuration saved! Ban request logs will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_unban_logs") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           unbanLogChannelId: channel.id,
         });
-        
+
         await interaction.editReply({
           content: `✅ Configuration saved! Unban request logs will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "activity") {
         if (!await safeDeferReply(interaction, false)) return;
-        
+
         try {
           const category = interaction.options.getString("category");
           const fromDays = interaction.options.getInteger("from") ?? undefined;
           const toDays = interaction.options.getInteger("to") ?? undefined;
-          
+
           const banStats = !category || category === "ban" 
             ? await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays) 
             : [];
@@ -2107,7 +2097,7 @@ client.on("interactionCreate", async (interaction) => {
           const modmailStats = !category || category === "modmail"
             ? await storage.getModmailStats(interaction.guildId!, fromDays, toDays)
             : [];
-          
+
           const combinedStats: { [userId: string]: number } = {};
           for (const stat of banStats) {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
@@ -2118,22 +2108,22 @@ client.on("interactionCreate", async (interaction) => {
           for (const stat of modmailStats) {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
-          
+
           const leaderboard = Object.entries(combinedStats)
             .map(([userId, count]) => ({ userId, count }))
             .sort((a, b) => b.count - a.count)
             .slice(0, 10);
-          
+
           const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails handled" : "All Requests";
           const timeRange = fromDays !== undefined || toDays !== undefined
             ? ` (${fromDays ?? "∞"}d ago - ${toDays ?? "now"})`
             : "";
-          
+
           const embed = new EmbedBuilder()
             .setTitle(`📊 Activity Leaderboard - ${categoryText}${timeRange}`)
             .setColor(0x5865f2)
             .setTimestamp();
-          
+
           if (leaderboard.length === 0) {
             embed.setDescription("No activity found for the specified filters.");
           } else {
@@ -2143,7 +2133,7 @@ client.on("interactionCreate", async (interaction) => {
             });
             embed.setDescription(description);
           }
-          
+
           await interaction.editReply({ embeds: [embed] });
         } catch (error: any) {
           console.log("Error in /activity command:", error.message);
@@ -2151,31 +2141,31 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (commandName === "clear-role") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const role = interaction.options.getRole("role", true);
         const guild = interaction.guild;
-        
+
         if (!guild) {
           await interaction.editReply({ content: "This command must be used in a server." });
           return;
         }
-        
+
         try {
           await guild.members.fetch({ time: 30000 });
         } catch (error) {
           console.log("Could not fully fetch members");
         }
-        
+
         const guildRole = guild.roles.cache.get(role.id);
         if (!guildRole) {
           await interaction.editReply({ content: "Role not found in this server." });
           return;
         }
-        
+
         const members = Array.from(guildRole.members.values());
         let removed = 0;
         let failed = 0;
-        
+
         for (const member of members) {
           try {
             await member.roles.remove(guildRole);
@@ -2185,17 +2175,17 @@ client.on("interactionCreate", async (interaction) => {
             console.log(`Failed to remove role from ${member.id}`);
           }
         }
-        
+
         await interaction.editReply({
           content: `Cleared **${removed}** members from the role **${guildRole.name}**.${failed > 0 ? ` (${failed} failed)` : ""}`,
         });
       } else if (commandName === "activity_add") {
         if (!await safeDeferReply(interaction, false)) return;
-        
+
         const user = interaction.options.getUser("user", true);
         const amount = interaction.options.getInteger("amount", true);
         const category = interaction.options.getString("category", true);
-        
+
         if (category === "modmail") {
           await storage.addModmailActivityEntries(interaction.guildId!, user.id, amount);
         } else {
@@ -2223,90 +2213,90 @@ client.on("interactionCreate", async (interaction) => {
             }
           }
         }
-        
+
         const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
         await interaction.editReply({
           content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
         });
       } else if (commandName === "activity_remove") {
         if (!await safeDeferReply(interaction, false)) return;
-        
+
         const user = interaction.options.getUser("user", true);
         const amount = interaction.options.getInteger("amount", true);
         const category = interaction.options.getString("category", true);
-        
+
         let removed: number;
         if (category === "modmail") {
           removed = await storage.removeModmailActivityEntries(interaction.guildId!, user.id, amount);
         } else {
           removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
         }
-        
+
         const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
         await interaction.editReply({
           content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
         });
       } else if (commandName === "activity_reset") {
         if (!await safeDeferReply(interaction, false)) return;
-        
+
         const config = await storage.getGuildConfig(interaction.guildId!);
         const activityResetRoleIds = config?.activityResetRoleIds || [];
         const hasPermission = activityResetRoleIds.length === 0 || 
           (interaction.member as any)?.roles?.cache?.some((r: any) => activityResetRoleIds.includes(r.id));
-        
+
         if (activityResetRoleIds.length > 0 && !hasPermission) {
           await interaction.editReply({ content: "❌ You don't have permission to reset activity stats." });
           return;
         }
-        
+
         const category = interaction.options.getString("category");
         const user = interaction.options.getUser("user");
-        
+
         const count = await storage.resetActivityStats(interaction.guildId!, interaction.user.id, category || undefined, user?.id);
-        
+
         const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "modmail" ? "modmail" : "all";
         const userText = user ? `<@${user.id}>` : "everyone";
-        
+
         await interaction.editReply({
           content: `Reset **${count}** ${categoryText} activity entries for ${userText}.`,
         });
       } else if (commandName === "restore_activity") {
         if (!await safeDeferReply(interaction, false)) return;
-        
+
         const config = await storage.getGuildConfig(interaction.guildId!);
         const activityResetRoleIds = config?.activityResetRoleIds || [];
         const hasPermission = activityResetRoleIds.length === 0 || 
           (interaction.member as any)?.roles?.cache?.some((r: any) => activityResetRoleIds.includes(r.id));
-        
+
         if (activityResetRoleIds.length > 0 && !hasPermission) {
           await interaction.editReply({ content: "❌ You don't have permission to restore activity stats." });
           return;
         }
-        
+
         const backup = await storage.getLatestActivityResetBackup(interaction.guildId!);
         if (!backup) {
           await interaction.editReply({ content: "❌ No activity reset backup found to restore." });
           return;
         }
-        
+
         const restoredCount = await storage.restoreActivityStats(interaction.guildId!);
-        
+
         await interaction.editReply({
           content: `✅ Restored **${restoredCount}** activity entries from the last reset.`,
         });
       } else if (commandName === "setup_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const config = await storage.getGuildConfig(interaction.guildId!);
         const embedTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
         const embedDesc = config?.staffIntroEmbedDescription || "Welcome to the staff introduction quiz! This quiz will help you understand our policies and procedures.\n\nClick the button below to start the quiz. You will receive 5 questions in your DMs.";
-        
+
         const embed = new EmbedBuilder()
           .setTitle(embedTitle)
           .setDescription(embedDesc)
           .setColor(0x5865f2)
           .setFooter({ text: "Make sure your DMs are open!" });
-        
+
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`start_quiz_${interaction.guildId}`)
@@ -2314,19 +2304,19 @@ client.on("interactionCreate", async (interaction) => {
             .setStyle(ButtonStyle.Primary)
             .setEmoji("📝")
         );
-        
+
         if (interaction.channel && "send" in interaction.channel) {
           await interaction.channel.send({
             embeds: [embed],
             components: [row],
           });
-          
+
           await storage.upsertGuildConfig({
             guildId: interaction.guildId!,
             staffIntroChannelId: interaction.channelId,
           });
         }
-        
+
         try {
           await interaction.editReply({
             content: "✅ Staff introduction quiz has been posted!",
@@ -2334,93 +2324,93 @@ client.on("interactionCreate", async (interaction) => {
         } catch (e) {}
       } else if (commandName === "setup_staff_intro_submissions") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           staffIntroSubmissionsChannelId: channel.id,
         });
-        
+
         await interaction.editReply({
           content: `✅ Staff intro submissions will be sent to <#${channel.id}>!`,
         });
       } else if (commandName === "config_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const title = interaction.options.getString("title");
         let description = interaction.options.getString("description");
-        
+
         // Convert \n to actual newlines for spacing
         if (description) {
           description = description.replace(/\\n/g, "\n");
         }
-        
+
         if (!title && !description) {
           const config = await storage.getGuildConfig(interaction.guildId!);
           const currentTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
           const currentDesc = config?.staffIntroEmbedDescription || "Welcome! Click the button below to start your staff introduction quiz.";
-          
+
           await interaction.editReply({
             content: `**Current Staff Intro Embed Settings:**\n\n**Title:** ${currentTitle}\n**Description:**\n${currentDesc}\n\nUse this command with the \`title\` or \`description\` options to change them.\n\n*Tip: Use \\\\n in your description to add line breaks!*`,
           });
           return;
         }
-        
+
         const updateData: any = { guildId: interaction.guildId! };
         if (title !== null) updateData.staffIntroEmbedTitle = title;
         if (description !== null) updateData.staffIntroEmbedDescription = description;
-        
+
         await storage.upsertGuildConfig(updateData);
-        
+
         const config = await storage.getGuildConfig(interaction.guildId!);
         const newTitle = config?.staffIntroEmbedTitle || "Staff Introduction Quiz";
         const newDesc = config?.staffIntroEmbedDescription || "Welcome! Click the button below to start your staff introduction quiz.";
-        
+
         await interaction.editReply({
           content: `✅ Staff intro embed updated!\n\n**Title:** ${newTitle}\n**Description:**\n${newDesc}`,
         });
       } else if (commandName === "setup_intro_questions") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const q1 = interaction.options.getString("question1");
         const q2 = interaction.options.getString("question2");
         const q3 = interaction.options.getString("question3");
         const q4 = interaction.options.getString("question4");
         const q5 = interaction.options.getString("question5");
-        
+
         const updateData: any = { guildId: interaction.guildId! };
-        
+
         if (q1 !== null) updateData.quizQuestion1 = q1;
         if (q2 !== null) updateData.quizQuestion2 = q2;
         if (q3 !== null) updateData.quizQuestion3 = q3;
         if (q4 !== null) updateData.quizQuestion4 = q4;
         if (q5 !== null) updateData.quizQuestion5 = q5;
-        
+
         await storage.upsertGuildConfig(updateData);
-        
+
         const config = await storage.getGuildConfig(interaction.guildId!);
-        
+
         const currentQuestions = getQuizQuestions(config);
-        
+
         let summary = "**Current Quiz Questions:**\n\n";
         for (let i = 0; i < currentQuestions.length; i++) {
           const q = currentQuestions[i];
           summary += `**Q${i + 1}:** ${q.text.replace(/\*\*/g, "")}\n\n`;
         }
-        
+
         await interaction.editReply({
           content: `✅ Quiz questions updated!\n\n${summary}`,
         });
       } else if (commandName === "setup_inactivity") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const embed = new EmbedBuilder()
           .setTitle("Inactivity Request")
           .setDescription("Need to take a break? Click the button below to submit an inactivity request.\n\nPlease provide the dates you'll be inactive and your reason.")
           .setColor(0x5865f2)
           .setFooter({ text: "All requests require approval" });
-        
+
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`request_inactivity_${interaction.guildId}`)
@@ -2428,60 +2418,60 @@ client.on("interactionCreate", async (interaction) => {
             .setStyle(ButtonStyle.Primary)
             .setEmoji("📋")
         );
-        
+
         const channel = interaction.channel;
         if (channel && "send" in channel) {
           await channel.send({ embeds: [embed], components: [row] });
         }
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           inactivityChannelId: interaction.channelId,
         });
-        
+
         await interaction.editReply({
           content: "✅ Inactivity request embed has been posted!",
         });
       } else if (commandName === "setup_inactivity_submissions") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           inactivitySubmissionsChannelId: channel.id,
         });
-        
+
         await interaction.editReply({
           content: `✅ Inactivity submissions will be sent to <#${channel.id}>!`,
         });
       } else if (commandName === "setup_inactivity_logs") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const channel = interaction.options.getChannel("channel", true);
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           inactivityLogChannelId: channel.id,
         });
-        
+
         await interaction.editReply({
           content: `✅ Inactivity logs will be sent to <#${channel.id}>!`,
         });
       } else if (commandName === "setup_inactivity_ping") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const roles: string[] = [];
         for (let i = 1; i <= 5; i++) {
           const role = interaction.options.getRole(`role${i}`);
           if (role) roles.push(role.id);
         }
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           inactivityPingRoleIds: roles,
         });
-        
+
         if (roles.length === 0) {
           await interaction.editReply({
             content: "✅ Inactivity ping roles cleared. No roles will be pinged.",
@@ -2494,9 +2484,9 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (commandName === "terminate_quizzes") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const count = activeQuizzes.size;
-        
+
         // Send termination message to all active quiz users
         for (const [userId, quizState] of Array.from(activeQuizzes.entries())) {
           try {
@@ -2506,37 +2496,37 @@ client.on("interactionCreate", async (interaction) => {
             console.log(`Could not DM user ${userId} about quiz termination`);
           }
         }
-        
+
         activeQuizzes.clear();
-        
+
         await interaction.editReply({
           content: `✅ Terminated ${count} active quiz session${count !== 1 ? "s" : ""}.`,
         });
       } else if (commandName === "setup_modmail") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const category = interaction.options.getChannel("category", true);
         const logChannel = interaction.options.getChannel("log_channel", true);
         const staffRole = interaction.options.getRole("staff_role", true);
-        
+
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           modmailCategoryId: category.id,
           modmailLogChannelId: logChannel.id,
           modmailStaffRoleIds: [staffRole.id],
         });
-        
+
         // Fetch config for custom embed title/description
         const config = await storage.getGuildConfig(interaction.guildId!);
         const embedTitle = config?.modmailEmbedTitle || "Support Tickets";
         const embedDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
-        
+
         // Post the ticket embed with dropdown menu
         const ticketEmbed = new EmbedBuilder()
           .setTitle(embedTitle)
           .setDescription(embedDescription)
           .setColor(0x2f3136);
-        
+
         const selectMenu = new StringSelectMenuBuilder()
           .setCustomId(`ticket_select_${interaction.guildId}`)
           .setPlaceholder("Select a ticket category...")
@@ -2582,25 +2572,25 @@ client.on("interactionCreate", async (interaction) => {
               .setValue("vfxeditor")
               .setEmoji("✨")
           );
-        
+
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
-        
+
         if (interaction.channel && "send" in interaction.channel) {
           await interaction.channel.send({
             embeds: [ticketEmbed],
             components: [row],
           });
         }
-        
+
         await interaction.editReply({
           content: `✅ Modmail configured and ticket embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
         });
       } else if (commandName === "config_modmail") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const title = interaction.options.getString("title");
         const description = interaction.options.getString("description");
-        
+
         if (!title && !description) {
           const config = await storage.getGuildConfig(interaction.guildId!);
           const currentTitle = config?.modmailEmbedTitle || "Support Tickets";
@@ -2610,28 +2600,28 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        
+
         const updateData: any = { guildId: interaction.guildId! };
         if (title) updateData.modmailEmbedTitle = title;
         if (description) updateData.modmailEmbedDescription = description;
-        
+
         await storage.upsertGuildConfig(updateData);
-        
+
         const updates: string[] = [];
         if (title) updates.push(`Title: ${title}`);
         if (description) updates.push(`Description: ${description}`);
-        
+
         await interaction.editReply({
           content: `✅ Modmail embed updated:\n• ${updates.join("\n• ")}\n\nRun /setup_modmail again to post the updated embed.`,
         });
       } else if (commandName === "block") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const targetUser = interaction.options.getUser("user", true);
         const duration = interaction.options.getInteger("duration", true);
         const timeUnit = interaction.options.getString("time", true);
         const reason = interaction.options.getString("reason") || undefined;
-        
+
         // Check if user has block permission
         const config = await storage.getGuildConfig(interaction.guildId!);
         const blockRoleIds = config?.modmailBlockRoleIds || [];
@@ -2640,12 +2630,12 @@ client.on("interactionCreate", async (interaction) => {
           (memberRoles && Array.isArray(memberRoles) 
             ? blockRoleIds.some(id => memberRoles.includes(id))
             : memberRoles && 'cache' in memberRoles && blockRoleIds.some(id => memberRoles.cache.has(id)));
-        
+
         if (blockRoleIds.length > 0 && !hasBlockPermission) {
           await interaction.editReply({ content: "❌ You don't have permission to block users." });
           return;
         }
-        
+
         let expiresAt: Date | undefined = undefined;
         if (timeUnit !== "permanent") {
           const multipliers: { [key: string]: number } = {
@@ -2656,7 +2646,7 @@ client.on("interactionCreate", async (interaction) => {
           };
           expiresAt = new Date(Date.now() + duration * multipliers[timeUnit]);
         }
-        
+
         await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
         await storage.createModmailBlock({
           guildId: interaction.guildId!,
@@ -2665,14 +2655,14 @@ client.on("interactionCreate", async (interaction) => {
           reason,
           expiresAt,
         });
-        
+
         const durationText = timeUnit === "permanent" ? "permanently" : `for ${duration} ${timeUnit}`;
         await interaction.editReply({ content: `✅ <@${targetUser.id}> has been blocked from modmail ${durationText}.${reason ? ` Reason: ${reason}` : ""}` });
       } else if (commandName === "unblock") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const targetUser = interaction.options.getUser("user", true);
-        
+
         const config = await storage.getGuildConfig(interaction.guildId!);
         const blockRoleIds = config?.modmailBlockRoleIds || [];
         const memberRoles = interaction.member?.roles;
@@ -2680,24 +2670,24 @@ client.on("interactionCreate", async (interaction) => {
           (memberRoles && Array.isArray(memberRoles) 
             ? blockRoleIds.some(id => memberRoles.includes(id))
             : memberRoles && 'cache' in memberRoles && blockRoleIds.some(id => memberRoles.cache.has(id)));
-        
+
         if (blockRoleIds.length > 0 && !hasBlockPermission) {
           await interaction.editReply({ content: "❌ You don't have permission to unblock users." });
           return;
         }
-        
+
         await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
         await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.` });
       } else if (commandName === "permissions") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const permType = interaction.options.getString("type", true);
         const roles: string[] = [];
         for (let i = 1; i <= 20; i++) {
           const role = interaction.options.getRole(`role${i}`);
           if (role) roles.push(role.id);
         }
-        
+
         const typeLabels: { [key: string]: string } = {
           payout: "Payout Approval",
           moderation: "Ban/Unban Approval",
@@ -2706,7 +2696,7 @@ client.on("interactionCreate", async (interaction) => {
           claim: "Modmail Claim",
           activity_reset: "Activity Reset",
         };
-        
+
         if (permType === "payout") {
           await storage.upsertGuildConfig({ guildId: interaction.guildId!, allowedRoleIds: roles });
         } else if (permType === "moderation") {
@@ -2720,19 +2710,19 @@ client.on("interactionCreate", async (interaction) => {
         } else if (permType === "activity_reset") {
           await storage.upsertGuildConfig({ guildId: interaction.guildId!, activityResetRoleIds: roles });
         }
-        
+
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
         await interaction.editReply({ content: `✅ **${typeLabels[permType]}** permissions updated!\nRoles: ${roleMentions}` });
       } else if (commandName === "category_ping") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const category = interaction.options.getString("category", true);
         const roles: string[] = [];
         for (let i = 1; i <= 5; i++) {
           const role = interaction.options.getRole(`role${i}`);
           if (role) roles.push(role.id);
         }
-        
+
         const categoryLabels: { [key: string]: string } = {
           general: "General Inquiries",
           competitive: "Apply For Competitive",
@@ -2743,7 +2733,7 @@ client.on("interactionCreate", async (interaction) => {
           creativewarrior: "Apply For Creative Warrior",
           vfxeditor: "Apply For VFX Editor",
         };
-        
+
         const updateField: { [key: string]: string } = {
           general: "categoryPingGeneral",
           competitive: "categoryPingCompetitive",
@@ -2754,26 +2744,26 @@ client.on("interactionCreate", async (interaction) => {
           creativewarrior: "categoryPingCreativewarrior",
           vfxeditor: "categoryPingVfxeditor",
         };
-        
+
         await storage.upsertGuildConfig({ guildId: interaction.guildId!, [updateField[category]]: roles });
-        
+
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "Default staff role";
         await interaction.editReply({ content: `✅ **${categoryLabels[category]}** ping roles updated!\nRoles: ${roleMentions}` });
       } else if (commandName === "close_all_tickets") {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const allThreads = await storage.getAllModmailThreads(interaction.guildId!);
         const openThreads = allThreads.filter(t => t.status === "open");
-        
+
         if (openThreads.length === 0) {
           await interaction.editReply({ content: "✅ No open tickets to close." });
           return;
         }
-        
+
         const config = await storage.getGuildConfig(interaction.guildId!);
         let closedCount = 0;
         let deletedChannelCount = 0;
-        
+
         for (const thread of openThreads) {
           // Close the thread in database
           await storage.updateModmailThread(thread.id, {
@@ -2783,7 +2773,7 @@ client.on("interactionCreate", async (interaction) => {
             closedAt: new Date(),
           });
           closedCount++;
-          
+
           // Log to modmail log channel with transcript
           if (config?.modmailLogChannelId) {
             try {
@@ -2792,7 +2782,7 @@ client.on("interactionCreate", async (interaction) => {
                 const messages = await storage.getModmailMessages(thread.id);
                 let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
                 if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-                
+
                 const logEmbed = new EmbedBuilder()
                   .setTitle("Ticket Closed (Bulk)")
                   .setColor(0xed4245)
@@ -2808,7 +2798,7 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not send modmail log for bulk close");
             }
           }
-          
+
           // Try to delete the channel if it exists
           if (thread.channelId) {
             try {
@@ -2821,7 +2811,7 @@ client.on("interactionCreate", async (interaction) => {
               // Channel already deleted or doesn't exist - that's fine
             }
           }
-          
+
           // Try to notify user
           try {
             const user = await client.users.fetch(thread.userId);
@@ -2835,7 +2825,7 @@ client.on("interactionCreate", async (interaction) => {
             // Could not DM user
           }
         }
-        
+
         await interaction.editReply({ 
           content: `✅ Closed **${closedCount}** ticket(s). Deleted **${deletedChannelCount}** channel(s).` 
         });
@@ -2846,33 +2836,33 @@ client.on("interactionCreate", async (interaction) => {
         const guildId = interaction.customId.split("_")[2];
         const ticketCategory = interaction.values[0];
         const user = interaction.user;
-        
+
         // Categories that require application modals - show modal IMMEDIATELY (no async work first)
         if (ticketCategory === "competitive") {
           try {
             const modal = new ModalBuilder()
               .setCustomId(`ticket_modal_competitive_${guildId}`)
               .setTitle("Apply For Competitive");
-            
+
             const trackerInput = new TextInputBuilder()
               .setCustomId("fortnite_tracker")
               .setLabel("Send Your Fortnite Tracker")
               .setStyle(TextInputStyle.Short)
               .setPlaceholder("https://fortnitetracker.com/profile/...")
               .setRequired(true);
-            
+
             const reasonInput = new TextInputBuilder()
               .setCustomId("apply_reason")
               .setLabel("Why Do You Want To Apply For Thrills Esports")
               .setStyle(TextInputStyle.Paragraph)
               .setPlaceholder("Explain why you want to join...")
               .setRequired(true);
-            
+
             modal.addComponents(
               new ActionRowBuilder<TextInputBuilder>().addComponents(trackerInput),
               new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
             );
-            
+
             await interaction.showModal(modal);
           } catch (e: any) {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
@@ -2883,26 +2873,26 @@ client.on("interactionCreate", async (interaction) => {
             const modal = new ModalBuilder()
               .setCustomId(`ticket_modal_contentcreator_${guildId}`)
               .setTitle("Apply For Content Creator");
-            
+
             const followersInput = new TextInputBuilder()
               .setCustomId("followers_count")
               .setLabel("How many followers do you have?")
               .setStyle(TextInputStyle.Short)
               .setPlaceholder("e.g., 10,000 on TikTok, 5,000 on YouTube")
               .setRequired(true);
-            
+
             const reasonInput = new TextInputBuilder()
               .setCustomId("apply_reason")
               .setLabel("Why do you think you would be a good fit?")
               .setStyle(TextInputStyle.Paragraph)
               .setPlaceholder("Explain why you'd be a good content creator...")
               .setRequired(true);
-            
+
             modal.addComponents(
               new ActionRowBuilder<TextInputBuilder>().addComponents(followersInput),
               new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
             );
-            
+
             await interaction.showModal(modal);
           } catch (e: any) {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
@@ -2913,18 +2903,18 @@ client.on("interactionCreate", async (interaction) => {
             const modal = new ModalBuilder()
               .setCustomId(`ticket_modal_gfx_${guildId}`)
               .setTitle("Apply For GFX Editor");
-            
+
             const reasonInput = new TextInputBuilder()
               .setCustomId("apply_reason")
               .setLabel("Why are you a good GFX Editor?")
               .setStyle(TextInputStyle.Paragraph)
               .setPlaceholder("Describe your skills and experience...")
               .setRequired(true);
-            
+
             modal.addComponents(
               new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
             );
-            
+
             await interaction.showModal(modal);
           } catch (e: any) {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
@@ -2935,26 +2925,26 @@ client.on("interactionCreate", async (interaction) => {
             const modal = new ModalBuilder()
               .setCustomId(`ticket_modal_creativewarrior_${guildId}`)
               .setTitle("Apply For Creative Warrior");
-            
+
             const clipsInput = new TextInputBuilder()
               .setCustomId("creative_clips")
               .setLabel("Can you provide 2-5 creative clips?")
               .setStyle(TextInputStyle.Short)
               .setPlaceholder("Yes/No and any details...")
               .setRequired(true);
-            
+
             const earningsInput = new TextInputBuilder()
               .setCustomId("creative_earnings")
               .setLabel("Have you made earnings in creative?")
               .setStyle(TextInputStyle.Short)
               .setPlaceholder("Yes/No and any details...")
               .setRequired(true);
-            
+
             modal.addComponents(
               new ActionRowBuilder<TextInputBuilder>().addComponents(clipsInput),
               new ActionRowBuilder<TextInputBuilder>().addComponents(earningsInput)
             );
-            
+
             await interaction.showModal(modal);
           } catch (e: any) {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
@@ -2965,40 +2955,40 @@ client.on("interactionCreate", async (interaction) => {
             const modal = new ModalBuilder()
               .setCustomId(`ticket_modal_vfxeditor_${guildId}`)
               .setTitle("Apply For VFX Editor");
-            
+
             const reasonInput = new TextInputBuilder()
               .setCustomId("apply_reason")
               .setLabel("Why are you a good VFX Editor?")
               .setStyle(TextInputStyle.Paragraph)
               .setPlaceholder("Describe your skills and experience...")
               .setRequired(true);
-            
+
             modal.addComponents(
               new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
             );
-            
+
             await interaction.showModal(modal);
           } catch (e: any) {
             if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
           }
           return;
         }
-        
+
         // For general, report, partnerships - defer first, then validate and create ticket
         if (!await safeDeferReply(interaction)) return;
-        
+
         const guild = interaction.guild;
         if (!guild) {
           await interaction.editReply({ content: "❌ This can only be used in a server." });
           return;
         }
-        
+
         const config = await storage.getGuildConfig(guildId);
         if (!config?.modmailCategoryId) {
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
           return;
         }
-        
+
         // Check if user is blocked
         const block = await storage.getActiveModmailBlock(guildId, user.id);
         if (block) {
@@ -3008,33 +2998,28 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
           return;
         }
-        
+
         // Check for existing open thread
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
-        
+
         const categoryLabels: { [key: string]: string } = {
           general: "General Inquiries",
-          competitive: "Apply For Competitive",
-          contentcreator: "Apply For Content Creator",
           report: "User Reports",
           partnerships: "Partnerships",
-          gfx: "Apply For GFX Editor",
-          creativewarrior: "Apply For Creative Warrior",
-          vfxeditor: "Apply For VFX Editor",
         };
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
-        
+
         // Create thread and channel
         const thread = await storage.createModmailThread({
           guildId,
           userId: user.id,
           status: "open",
         });
-        
+
         try {
           const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
           const newChannel = await guild.channels.create({
@@ -3042,9 +3027,9 @@ client.on("interactionCreate", async (interaction) => {
             parent: config.modmailCategoryId!,
             topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
           });
-          
+
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
-          
+
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
             general: config.categoryPingGeneral,
@@ -3067,7 +3052,7 @@ client.on("interactionCreate", async (interaction) => {
             )
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
-          
+
           const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_claim_${thread.id}`)
@@ -3075,9 +3060,9 @@ client.on("interactionCreate", async (interaction) => {
               .setStyle(ButtonStyle.Primary)
               .setEmoji("🙋")
           );
-          
+
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
-          
+
           // DM user confirmation
           try {
             const dmEmbed = new EmbedBuilder()
@@ -3089,7 +3074,7 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {
             console.log("Could not DM user about ticket creation");
           }
-          
+
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
         } catch (error) {
           console.log("Could not create ticket channel:", error);
@@ -3097,293 +3082,28 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       }
-      
-      // Handle DM ticket category selection
-      if (interaction.customId.startsWith("dm_ticket_select_")) {
-        const guildId = interaction.customId.replace("dm_ticket_select_", "");
-        const ticketCategory = interaction.values[0];
-        const user = interaction.user;
-        
-        // Clean up pending state
-        pendingDMTickets.delete(user.id);
-        
-        // Categories that require application modals - show modal FIRST before any other response
-        if (ticketCategory === "competitive") {
-          const modal = new ModalBuilder()
-            .setCustomId(`dm_ticket_modal_competitive_${guildId}`)
-            .setTitle("Apply For Competitive");
-          
-          const trackerInput = new TextInputBuilder()
-            .setCustomId("fortnite_tracker")
-            .setLabel("Send Your Fortnite Tracker")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("https://fortnitetracker.com/profile/...")
-            .setRequired(true);
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("apply_reason")
-            .setLabel("Why Do You Want To Apply For Thrills Esports")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Explain why you want to join...")
-            .setRequired(true);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(trackerInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
-          );
-          try {
-            await interaction.showModal(modal);
-          } catch (e: any) {
-            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
-          }
-          return;
-        } else if (ticketCategory === "contentcreator") {
-          const modal = new ModalBuilder()
-            .setCustomId(`dm_ticket_modal_contentcreator_${guildId}`)
-            .setTitle("Apply For Content Creator");
-          
-          const followersInput = new TextInputBuilder()
-            .setCustomId("followers_count")
-            .setLabel("How many followers do you have?")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("e.g., 10,000 on TikTok, 5,000 on YouTube")
-            .setRequired(true);
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("apply_reason")
-            .setLabel("Why do you think you would be a good fit?")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Explain why you'd be a good content creator...")
-            .setRequired(true);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(followersInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
-          );
-          try {
-            await interaction.showModal(modal);
-          } catch (e: any) {
-            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
-          }
-          return;
-        } else if (ticketCategory === "gfx") {
-          const modal = new ModalBuilder()
-            .setCustomId(`dm_ticket_modal_gfx_${guildId}`)
-            .setTitle("Apply For GFX Editor");
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("apply_reason")
-            .setLabel("Why are you a good GFX Editor?")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Describe your skills and experience...")
-            .setRequired(true);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
-          );
-          try {
-            await interaction.showModal(modal);
-          } catch (e: any) {
-            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
-          }
-          return;
-        } else if (ticketCategory === "creativewarrior") {
-          const modal = new ModalBuilder()
-            .setCustomId(`dm_ticket_modal_creativewarrior_${guildId}`)
-            .setTitle("Apply For Creative Warrior");
-          
-          const clipsInput = new TextInputBuilder()
-            .setCustomId("creative_clips")
-            .setLabel("Are you able to provide 2-5 clips in creative?")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("Yes/No and any details...")
-            .setRequired(true);
-          
-          const earningsInput = new TextInputBuilder()
-            .setCustomId("creative_earnings")
-            .setLabel("Have you made earnings in creative?")
-            .setStyle(TextInputStyle.Short)
-            .setPlaceholder("Yes/No and any details...")
-            .setRequired(true);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(clipsInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(earningsInput)
-          );
-          try {
-            await interaction.showModal(modal);
-          } catch (e: any) {
-            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
-          }
-          return;
-        } else if (ticketCategory === "vfxeditor") {
-          const modal = new ModalBuilder()
-            .setCustomId(`dm_ticket_modal_vfxeditor_${guildId}`)
-            .setTitle("Apply For VFX Editor");
-          
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("apply_reason")
-            .setLabel("Why are you a good VFX Editor?")
-            .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder("Describe your skills and experience...")
-            .setRequired(true);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
-          );
-          try {
-            await interaction.showModal(modal);
-          } catch (e: any) {
-            if (e.code !== 10062 && e.code !== 40060) console.log("Could not show modal:", e);
-          }
-          return;
-        }
-        
-        // For general, report, partnerships - create ticket directly
-        // Disable the dropdown first
-        try {
-          await interaction.update({
-            components: [],
-          });
-        } catch (e) {
-          // Ignore update errors
-        }
-        
-        const guild = client.guilds.cache.get(guildId);
-        if (!guild) {
-          await interaction.followUp({ content: "❌ Could not find the server.", flags: 64 });
-          return;
-        }
-        
-        const config = await storage.getGuildConfig(guildId);
-        if (!config?.modmailCategoryId) {
-          await interaction.followUp({ content: "❌ Modmail is not configured for this server.", flags: 64 });
-          return;
-        }
-        
-        // Check if user is blocked
-        const block = await storage.getActiveModmailBlock(guildId, user.id);
-        if (block) {
-          const expiresText = block.expiresAt 
-            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
-            : "You are permanently blocked.";
-          await interaction.followUp({ content: `❌ You are blocked from opening tickets. ${expiresText}`, flags: 64 });
-          return;
-        }
-        
-        // Check for existing open thread
-        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
-        if (existingThread) {
-          await interaction.followUp({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket.", flags: 64 });
-          return;
-        }
-        
-        const categoryLabels: { [key: string]: string } = {
-          general: "General Inquiries",
-          report: "User Reports",
-          partnerships: "Partnerships",
-        };
-        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
-        
-        // Create thread and channel
-        const thread = await storage.createModmailThread({
-          guildId,
-          userId: user.id,
-          status: "open",
-        });
-        
-        try {
-          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-          const newChannel = await guild.channels.create({
-            name: channelName,
-            parent: config.modmailCategoryId!,
-            topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
-          });
-          
-          await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
-          
-          // Get category-specific ping roles or fall back to general staff roles
-          const categoryPingMap: { [key: string]: string[] | null | undefined } = {
-            general: config.categoryPingGeneral,
-            competitive: config.categoryPingCompetitive,
-            contentcreator: config.categoryPingContentcreator,
-            report: config.categoryPingReport,
-            partnerships: config.categoryPingPartnerships,
-            gfx: config.categoryPingGfx,
-            creativewarrior: config.categoryPingCreativewarrior,
-            vfxeditor: config.categoryPingVfxeditor,
-          };
-          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
-          const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
-          
-          const initialEmbed = new EmbedBuilder()
-            .setTitle(`New Ticket: ${categoryLabel}`)
-            .setDescription("**Opened via DM**")
-            .setColor(0x5865f2)
-            .addFields(
-              { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
-              { name: "Category", value: categoryLabel, inline: true }
-            )
-            .setThumbnail(user.displayAvatarURL())
-            .setTimestamp();
-          
-          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_claim_${thread.id}`)
-              .setLabel("Claim")
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋")
-          );
-          
-          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
-          
-          // Confirm to user in DM
-          const dmEmbed = new EmbedBuilder()
-            .setTitle("Ticket Created")
-            .setDescription(`Your **${categoryLabel}** ticket has been created in **${guild.name}**. A staff member will respond shortly.\n\nReply to this DM to send messages to staff.`)
-            .setColor(0x57f287)
-            .setTimestamp();
-          
-          await interaction.followUp({ embeds: [dmEmbed] });
-        } catch (error) {
-          console.log("Could not create ticket channel from DM:", error);
-          await interaction.followUp({ content: "❌ Failed to create ticket. Please try again.", flags: 64 });
-        }
-        return;
-      }
-    } else if (interaction.isButton()) {
+
       // Handle ticket category buttons
       if (interaction.customId.startsWith("ticket_")) {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const parts = interaction.customId.split("_");
         const ticketCategory = parts[1];
         const guildId = parts[2];
-        
-        const categoryLabels: { [key: string]: string } = {
-          general: "General Inquiries",
-          competitive: "Apply For Competitive",
-          contentcreator: "Apply For Content Creator",
-          report: "User Reports",
-          partnerships: "Partnerships",
-          gfx: "Apply For GFX Editor",
-        };
-        
-        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
         const user = interaction.user;
         const guild = interaction.guild;
-        
+
         if (!guild) {
           await interaction.editReply({ content: "❌ This can only be used in a server." });
           return;
         }
-        
+
         const config = await storage.getGuildConfig(guildId);
         if (!config?.modmailCategoryId) {
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
           return;
         }
-        
+
         // Check if user is blocked
         const block = await storage.getActiveModmailBlock(guildId, user.id);
         if (block) {
@@ -3393,21 +3113,31 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
           return;
         }
-        
+
         // Check for existing open thread
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
-        
+
+        const categoryLabels: { [key: string]: string } = {
+          general: "General Inquiries",
+          competitive: "Apply For Competitive",
+          contentcreator: "Apply For Content Creator",
+          report: "User Reports",
+          partnerships: "Partnerships",
+          gfx: "Apply For GFX Editor",
+        };
+        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+
         // Create thread and channel
         const thread = await storage.createModmailThread({
           guildId,
           userId: user.id,
           status: "open",
         });
-        
+
         try {
           const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
           const newChannel = await guild.channels.create({
@@ -3415,9 +3145,9 @@ client.on("interactionCreate", async (interaction) => {
             parent: config.modmailCategoryId!,
             topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
           });
-          
+
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
-          
+
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
             general: config.categoryPingGeneral,
@@ -3440,7 +3170,7 @@ client.on("interactionCreate", async (interaction) => {
             )
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
-          
+
           const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_claim_${thread.id}`)
@@ -3448,9 +3178,9 @@ client.on("interactionCreate", async (interaction) => {
               .setStyle(ButtonStyle.Primary)
               .setEmoji("🙋")
           );
-          
+
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
-          
+
           // DM user confirmation
           try {
             const dmEmbed = new EmbedBuilder()
@@ -3462,7 +3192,7 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {
             console.log("Could not DM user about ticket creation");
           }
-          
+
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
         } catch (error) {
           console.log("Could not create ticket channel:", error);
@@ -3471,20 +3201,20 @@ client.on("interactionCreate", async (interaction) => {
         return;
       } else if (interaction.customId.startsWith("modmail_claim_")) {
         if (!await safeDeferUpdate(interaction)) return;
-        
+
         const threadId = interaction.customId.replace("modmail_claim_", "");
         const thread = await storage.getModmailThread(threadId);
-        
+
         if (!thread) {
           await interaction.followUp({ content: "❌ Thread not found.", flags: 64 });
           return;
         }
-        
+
         if (thread.claimedById) {
           await interaction.followUp({ content: `❌ This ticket is already claimed by <@${thread.claimedById}>.`, flags: 64 });
           return;
         }
-        
+
         const config = await storage.getGuildConfig(interaction.guildId!);
         const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
         const memberRoles = interaction.member?.roles;
@@ -3492,20 +3222,20 @@ client.on("interactionCreate", async (interaction) => {
           (memberRoles && Array.isArray(memberRoles) 
             ? claimRoleIds.some(id => memberRoles.includes(id))
             : memberRoles && 'cache' in memberRoles && claimRoleIds.some(id => memberRoles.cache.has(id)));
-        
+
         if (!hasClaimPermission) {
           await interaction.followUp({ content: "❌ You don't have permission to claim tickets.", flags: 64 });
           return;
         }
-        
+
         await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
-        
+
         const claimEmbed = new EmbedBuilder()
           .setDescription(`🙋 Ticket claimed by <@${interaction.user.id}>`)
           .setColor(0x5865f2)
           .setTimestamp();
         await interaction.channel?.send({ embeds: [claimEmbed] });
-        
+
         // Start 15-minute claim expiry timer
         if (interaction.channel) {
           const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
@@ -3513,16 +3243,16 @@ client.on("interactionCreate", async (interaction) => {
           if (existingClaimTimer) {
             clearTimeout(existingClaimTimer.timeout);
           }
-          
+
           const channelId = interaction.channel.id;
           const claimerId = interaction.user.id;
           const claimExpiryTimeout = setTimeout(async () => {
             pendingClaimExpiry.delete(channelId);
-            
+
             const currentThread = await storage.getModmailThreadByChannel(channelId);
             if (!currentThread || currentThread.status !== "open") return;
             if (currentThread.claimedById !== claimerId) return;
-            
+
             await storage.updateModmailThread(currentThread.id, { claimedById: null });
             try {
               const channel = await client.channels.fetch(channelId);
@@ -3533,7 +3263,7 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not send auto-unclaim message");
             }
           }, CLAIM_EXPIRY_TIME);
-          
+
           pendingClaimExpiry.set(channelId, {
             timeout: claimExpiryTimeout,
             claimerId: claimerId,
@@ -3542,21 +3272,21 @@ client.on("interactionCreate", async (interaction) => {
         return;
       } else if (interaction.customId.startsWith("modmail_close_")) {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const threadId = interaction.customId.replace("modmail_close_", "");
         const thread = await storage.getModmailThread(threadId);
-        
+
         if (!thread) {
           await interaction.editReply({ content: "❌ Thread not found." });
           return;
         }
-        
+
         // Check if ticket is claimed and if the closer is the claimer
         if (thread.claimedById && thread.claimedById !== interaction.user.id) {
           await interaction.editReply({ content: `❌ Only <@${thread.claimedById}> (who claimed this ticket) can close it.` });
           return;
         }
-        
+
         // Update thread status and clear timer
         await storage.updateModmailThread(threadId, {
           status: "closed",
@@ -3564,7 +3294,7 @@ client.on("interactionCreate", async (interaction) => {
           closeReason: "Closed via button",
           closedAt: new Date(),
         });
-        
+
         if (interaction.channel) {
           const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
           if (existingClaimTimer) {
@@ -3572,17 +3302,17 @@ client.on("interactionCreate", async (interaction) => {
             pendingClaimExpiry.delete(interaction.channel.id);
           }
         }
-        
+
         // Reply immediately, then do background work
         await interaction.editReply({ content: "✅ Ticket closed. Deleting channel..." });
-        
+
         // Capture references synchronously before async work
         const guildId = interaction.guildId!;
         const closerId = interaction.user.id;
         const channelId = interaction.channel?.id;
         const threadUserId = thread.userId;
         const threadIdForLog = thread.id;
-        
+
         // Background: DM user, log, and delete channel
         (async () => {
           // DM user notification
@@ -3597,7 +3327,7 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {
             console.log("Could not DM user about ticket close");
           }
-          
+
           // Log to modmail log channel
           try {
             const config = await storage.getGuildConfig(guildId);
@@ -3607,7 +3337,7 @@ client.on("interactionCreate", async (interaction) => {
                 const messages = await storage.getModmailMessages(threadIdForLog);
                 let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
                 if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-                
+
                 const logEmbed = new EmbedBuilder()
                   .setTitle("Ticket Closed")
                   .setColor(0xed4245)
@@ -3623,7 +3353,7 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {
             console.log("Could not send modmail log");
           }
-          
+
           // Delete channel after delay using captured ID
           if (channelId) {
             setTimeout(async () => {
@@ -3634,48 +3364,48 @@ client.on("interactionCreate", async (interaction) => {
             }, 3000);
           }
         })().catch(e => console.log("[MODMAIL] Background task error:", e));
-        
+
         return;
       } else if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
         if (!await safeDeferUpdate(interaction)) return;
-        
+
         const parts = interaction.customId.split("_");
         const direction = parts[1];
         const roleId = parts[2];
         const currentPage = parseInt(parts[3]);
-        
+
         const guild = interaction.guild;
         if (!guild) return;
-        
+
         try {
           await guild.members.fetch({ time: 30000 });
         } catch (error) {
           console.log("Could not fully fetch members");
         }
-        
+
         const guildRole = guild.roles.cache.get(roleId);
         if (!guildRole) return;
-        
+
         const members = guildRole.members.map((m) => `<@${m.id}>`);
         const pageSize = 10;
         const totalPages = Math.ceil(members.length / pageSize) || 1;
-        
+
         let newPage = currentPage;
         if (direction === "next" && currentPage < totalPages - 1) {
           newPage = currentPage + 1;
         } else if (direction === "prev" && currentPage > 0) {
           newPage = currentPage - 1;
         }
-        
+
         const pageMembers = members.slice(newPage * pageSize, (newPage + 1) * pageSize);
-        
+
         const embed = new EmbedBuilder()
           .setTitle(`Members with ${guildRole.name}`)
           .setColor(guildRole.color || 0x5865f2)
           .setDescription(pageMembers.length > 0 ? pageMembers.join("\n") : "No members have this role.")
           .setFooter({ text: `Page ${newPage + 1}/${totalPages} • Total: ${members.length} member(s)` })
           .setTimestamp();
-        
+
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`members_prev_${roleId}_${newPage}`)
@@ -3688,15 +3418,15 @@ client.on("interactionCreate", async (interaction) => {
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(newPage >= totalPages - 1)
         );
-        
+
         await interaction.editReply({ embeds: [embed], components: [row] });
         return;
       } else if (interaction.customId.startsWith("start_quiz_")) {
         const guildId = interaction.customId.replace("start_quiz_", "");
         const user = interaction.user;
-        
+
         console.log(`[QUIZ START] Button clicked by ${user.id}, interaction: ${interaction.id}`);
-        
+
         // DEFER IMMEDIATELY before any checks or async work
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -3707,7 +3437,7 @@ client.on("interactionCreate", async (interaction) => {
           }
           throw error;
         }
-        
+
         // Prevent duplicate processing (after deferring)
         if (processingQuizStart.has(user.id)) {
           console.log(`[QUIZ START] Blocked duplicate for user ${user.id}`);
@@ -3718,7 +3448,7 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {}
           return;
         }
-        
+
         // Check if user already has an active quiz (after deferring)
         if (activeQuizzes.has(user.id)) {
           await interaction.editReply({
@@ -3726,10 +3456,10 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        
+
         processingQuizStart.add(user.id);
         console.log(`[QUIZ START] Processing quiz start for user ${user.id}`);
-        
+
         try {
           activeQuizzes.set(user.id, {
             guildId,
@@ -3737,7 +3467,7 @@ client.on("interactionCreate", async (interaction) => {
             answers: [],
             startedAt: Date.now(),
           });
-          
+
           // Retry DM creation up to 2 times to handle intermittent Discord API issues
           let dmChannel = null;
           let lastError = null;
@@ -3753,22 +3483,22 @@ client.on("interactionCreate", async (interaction) => {
               }
             }
           }
-          
+
           if (!dmChannel) {
             throw lastError || new Error("Failed to create DM channel");
           }
-          
+
           console.log(`[QUIZ START] Sending combined intro + Q1 to ${user.id}`);
           await sendQuizQuestion(user.id, dmChannel, true);
           console.log(`[QUIZ START] Q1 sent to ${user.id}`);
-          
+
           await interaction.editReply({
             content: "✅ Quiz started! Check your DMs for the questions.",
           });
         } catch (error: any) {
           activeQuizzes.delete(user.id);
           console.log("Error starting quiz - DM failed:", error.message, error.stack?.split('\n').slice(0, 3).join(' '));
-          
+
           await interaction.editReply({
             content: "❌ I couldn't send you a DM. Please make sure your DMs are open and try again!",
           });
@@ -3779,39 +3509,39 @@ client.on("interactionCreate", async (interaction) => {
         return;
       } else if (interaction.customId.startsWith("request_inactivity_")) {
         const guildId = interaction.customId.replace("request_inactivity_", "");
-        
+
         try {
           const modal = new ModalBuilder()
             .setCustomId(`inactivity_submit_${guildId}`)
             .setTitle("Inactivity Request");
-          
+
           const fromDate = new TextInputBuilder()
             .setCustomId("from_date")
             .setLabel("From")
             .setPlaceholder("Start date (e.g. 12/15/2024)")
             .setStyle(TextInputStyle.Short)
             .setRequired(true);
-          
+
           const toDate = new TextInputBuilder()
             .setCustomId("to_date")
             .setLabel("To")
             .setPlaceholder("End date (e.g. 12/22/2024)")
             .setStyle(TextInputStyle.Short)
             .setRequired(true);
-          
+
           const reason = new TextInputBuilder()
             .setCustomId("reason")
             .setLabel("Reason")
             .setPlaceholder("Reason for inactivity")
             .setStyle(TextInputStyle.Paragraph)
             .setRequired(true);
-          
+
           modal.addComponents(
             new ActionRowBuilder<TextInputBuilder>().addComponents(fromDate),
             new ActionRowBuilder<TextInputBuilder>().addComponents(toDate),
             new ActionRowBuilder<TextInputBuilder>().addComponents(reason)
           );
-          
+
           await interaction.showModal(modal);
         } catch (error: any) {
           console.log("Error showing inactivity modal:", error);
@@ -3820,23 +3550,23 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.customId.startsWith("inactivity_approve_") || interaction.customId.startsWith("inactivity_deny_")) {
         const isApprove = interaction.customId.startsWith("inactivity_approve_");
         const requestId = interaction.customId.replace(isApprove ? "inactivity_approve_" : "inactivity_deny_", "");
-        
+
         // Build modal immediately - no async work before this
         const modal = new ModalBuilder()
           .setCustomId(`inactivity_review_${isApprove ? "approve" : "deny"}_${requestId}`)
           .setTitle(isApprove ? "Approve Inactivity Request" : "Deny Inactivity Request");
-        
+
         const reasonInput = new TextInputBuilder()
           .setCustomId("reason")
           .setLabel("Reason (optional)")
           .setPlaceholder("Enter a reason for your decision...")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false);
-        
+
         modal.addComponents(
           new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
         );
-        
+
         try {
           await interaction.showModal(modal);
         } catch (error: any) {
@@ -3850,22 +3580,22 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
         const isApprove = interaction.customId.startsWith("quiz_approve_");
         const submissionId = interaction.customId.replace(isApprove ? "quiz_approve_" : "quiz_deny_", "");
-        
+
         // Build modal immediately - no async work before this
         const modal = new ModalBuilder()
           .setCustomId(`quiz_review_${isApprove ? "approve" : "deny"}_${submissionId}`)
           .setTitle(isApprove ? "Approve Submission" : "Deny Submission");
-        
+
         const reasonInput = new TextInputBuilder()
           .setCustomId("review_reason")
           .setLabel("Reason (optional)")
           .setStyle(TextInputStyle.Paragraph)
           .setPlaceholder(isApprove ? "Any notes for the user..." : "Why is this submission being denied?")
           .setRequired(false);
-        
+
         const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
         modal.addComponents(row);
-        
+
         try {
           await interaction.showModal(modal);
         } catch (error: any) {
@@ -3930,7 +3660,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       } else if (interaction.customId.startsWith("approve_") || interaction.customId.startsWith("deny_")) {
         const [action, requestId] = interaction.customId.split("_");
-        
+
         // Build and show modal immediately to prevent timeout - NO async work before this
         const modal = new ModalBuilder()
           .setCustomId(`action_reason_${action}_${requestId}`)
@@ -4027,7 +3757,7 @@ client.on("interactionCreate", async (interaction) => {
           const parts = interaction.customId.split("_");
           const action = parts[1]; // approve or deny
           const requestId = parts.slice(2).join("_");
-          
+
           const modal = new ModalBuilder()
             .setCustomId(`ban_action_${action}_${requestId}`)
             .setTitle(action === "approve" ? "Approve Request" : "Deny Request");
@@ -4055,7 +3785,7 @@ client.on("interactionCreate", async (interaction) => {
           const parts = interaction.customId.split("_");
           const action = parts[1]; // approve or deny
           const requestId = parts.slice(2).join("_");
-          
+
           const modal = new ModalBuilder()
             .setCustomId(`unban_action_${action}_${requestId}`)
             .setTitle(action === "approve" ? "Approve Request" : "Deny Request");
@@ -4085,31 +3815,31 @@ client.on("interactionCreate", async (interaction) => {
       // Handle ticket application modals
       if (interaction.customId.startsWith("ticket_modal_")) {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const parts = interaction.customId.split("_");
         const ticketCategory = parts[2]; // competitive, contentcreator, or gfx
         const guildId = parts[3];
         const user = interaction.user;
         const guild = interaction.guild;
-        
+
         if (!guild) {
           await interaction.editReply({ content: "❌ This can only be used in a server." });
           return;
         }
-        
+
         const config = await storage.getGuildConfig(guildId);
         if (!config?.modmailCategoryId) {
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
           return;
         }
-        
-        // Check for existing open thread again (in case one was created between modal show and submit)
+
+        // Check for existing open thread
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
-        
+
         const categoryLabels: { [key: string]: string } = {
           competitive: "Apply For Competitive",
           contentcreator: "Apply For Content Creator",
@@ -4118,7 +3848,7 @@ client.on("interactionCreate", async (interaction) => {
           vfxeditor: "Apply For VFX Editor",
         };
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
-        
+
         // Get form data based on category
         let applicationFields: { name: string; value: string }[] = [];
         if (ticketCategory === "competitive") {
@@ -4153,14 +3883,14 @@ client.on("interactionCreate", async (interaction) => {
             { name: "Why They're A Good VFX Editor", value: reason },
           ];
         }
-        
+
         // Create thread and channel
         const thread = await storage.createModmailThread({
           guildId,
           userId: user.id,
           status: "open",
         });
-        
+
         try {
           const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
           const newChannel = await guild.channels.create({
@@ -4168,9 +3898,9 @@ client.on("interactionCreate", async (interaction) => {
             parent: config.modmailCategoryId!,
             topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
           });
-          
+
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
-          
+
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
             competitive: config.categoryPingCompetitive,
@@ -4181,7 +3911,7 @@ client.on("interactionCreate", async (interaction) => {
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
-          
+
           // Create initial embed with application info
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Application: ${categoryLabel}`)
@@ -4193,7 +3923,7 @@ client.on("interactionCreate", async (interaction) => {
             )
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
-          
+
           const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_claim_${thread.id}`)
@@ -4201,9 +3931,9 @@ client.on("interactionCreate", async (interaction) => {
               .setStyle(ButtonStyle.Primary)
               .setEmoji("🙋")
           );
-          
+
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
-          
+
           // DM user confirmation
           try {
             const dmEmbed = new EmbedBuilder()
@@ -4215,7 +3945,7 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {
             console.log("Could not DM user about application submission");
           }
-          
+
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted! Check your DMs.` });
         } catch (error) {
           console.log("Could not create ticket channel:", error);
@@ -4223,28 +3953,28 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       }
-      
+
       // Handle DM ticket application modals
       if (interaction.customId.startsWith("dm_ticket_modal_")) {
         if (!await safeDeferReply(interaction)) return;
-        
+
         const parts = interaction.customId.split("_");
         const ticketCategory = parts[3]; // competitive, contentcreator, or gfx
         const guildId = parts[4];
         const user = interaction.user;
-        
+
         const guild = client.guilds.cache.get(guildId);
         if (!guild) {
           await interaction.editReply({ content: "❌ Could not find the server." });
           return;
         }
-        
+
         const config = await storage.getGuildConfig(guildId);
         if (!config?.modmailCategoryId) {
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
           return;
         }
-        
+
         // Check if user is blocked
         const block = await storage.getActiveModmailBlock(guildId, user.id);
         if (block) {
@@ -4254,14 +3984,14 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
           return;
         }
-        
+
         // Check for existing open thread
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
-        
+
         const categoryLabels: { [key: string]: string } = {
           competitive: "Apply For Competitive",
           contentcreator: "Apply For Content Creator",
@@ -4270,7 +4000,7 @@ client.on("interactionCreate", async (interaction) => {
           vfxeditor: "Apply For VFX Editor",
         };
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
-        
+
         // Get form data based on category
         let applicationFields: { name: string; value: string }[] = [];
         if (ticketCategory === "competitive") {
@@ -4305,14 +4035,14 @@ client.on("interactionCreate", async (interaction) => {
             { name: "Why They're A Good VFX Editor", value: reason },
           ];
         }
-        
+
         // Create thread and channel
         const thread = await storage.createModmailThread({
           guildId,
           userId: user.id,
           status: "open",
         });
-        
+
         try {
           const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
           const newChannel = await guild.channels.create({
@@ -4320,9 +4050,9 @@ client.on("interactionCreate", async (interaction) => {
             parent: config.modmailCategoryId!,
             topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
           });
-          
+
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
-          
+
           // Get category-specific ping roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
             competitive: config.categoryPingCompetitive,
@@ -4333,7 +4063,7 @@ client.on("interactionCreate", async (interaction) => {
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
-          
+
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Application: ${categoryLabel}`)
             .setDescription("**Submitted via DM**")
@@ -4345,7 +4075,7 @@ client.on("interactionCreate", async (interaction) => {
             )
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
-          
+
           const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_claim_${thread.id}`)
@@ -4353,9 +4083,9 @@ client.on("interactionCreate", async (interaction) => {
               .setStyle(ButtonStyle.Primary)
               .setEmoji("🙋")
           );
-          
+
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
-          
+
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted to **${guild.name}**! Staff will respond shortly. Reply to this DM to communicate with them.` });
         } catch (error) {
           console.log("Could not create ticket channel from DM modal:", error);
@@ -4373,7 +4103,7 @@ client.on("interactionCreate", async (interaction) => {
           }
           throw error;
         }
-        
+
         const userId = interaction.fields.getTextInputValue("user_id").trim();
         const reason = interaction.fields.getTextInputValue("reason");
         const moneyOwed = interaction.fields.getTextInputValue("money_owed");
@@ -4463,12 +4193,12 @@ client.on("interactionCreate", async (interaction) => {
           }
           throw error;
         }
-        
+
         const parts = interaction.customId.split("_");
         const action = parts[2];
         const requestId = parts[3];
         const actionReason = interaction.fields.getTextInputValue("action_reason") || undefined;
-        
+
         // Check permissions
         const member = interaction.member;
         const memberRoles = member && 'roles' in member 
@@ -4477,7 +4207,7 @@ client.on("interactionCreate", async (interaction) => {
         const memberPermissions = member && 'permissions' in member 
           ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
           : undefined;
-        
+
         const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
         if (!hasPermission) {
           await interaction.editReply({
@@ -4485,13 +4215,13 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        
+
         const message = interaction.message;
         if (!message || !message.embeds[0]) return;
-        
+
         const originalEmbed = message.embeds[0];
         const fields = originalEmbed.fields;
-        
+
         const userIdField = fields.find(f => f.name === "User ID")?.value || "Unknown";
         const userId = userIdField.replace(/<@|>/g, '').split(' ')[0];
         const requestedByField = fields.find(f => f.name === "Requested by")?.value || "Unknown";
@@ -4500,7 +4230,7 @@ client.on("interactionCreate", async (interaction) => {
         const moneyOwedField = fields.find(f => f.name === "Money Owed")?.value || "$0.00";
         const moneyOwed = moneyOwedField.replace('$', '');
         const paypal = fields.find(f => f.name === "Paypal")?.value || "Not provided";
-        
+
         const status = action === "approve" ? "✅ Approved" : "❌ Denied";
         const color = action === "approve" ? 0x23a559 : 0xda373c;
 
@@ -4514,11 +4244,11 @@ client.on("interactionCreate", async (interaction) => {
           { name: "Money Owed", value: moneyOwedField, inline: false },
           { name: "Paypal", value: paypal, inline: false }
         ];
-        
+
         if (actionReason) {
           updatedFields.push({ name: action === "approve" ? "Approval Note" : "Denial Reason", value: actionReason, inline: false });
         }
-        
+
         updatedFields.push({ name: "Actioned by", value: `<@${interaction.user.id}>`, inline: false });
 
         const updatedEmbed = new EmbedBuilder()
@@ -4537,7 +4267,7 @@ client.on("interactionCreate", async (interaction) => {
         // Background: Send DMs and log
         const dmStatus = action === "approve" ? "approved" : "denied";
         const guildId = interaction.guildId!;
-        
+
         (async () => {
           try {
             await Promise.all([
@@ -4558,16 +4288,16 @@ client.on("interactionCreate", async (interaction) => {
                   ? `Payment successfully processed for User ID: ${userId} (<@${userId}>)`
                   : `Payment request denied for User ID: ${userId} (<@${userId}>)`;
                 const logColor = action === "approve" ? 0x23a559 : 0xda373c;
-                
+
                 const logFields: any[] = [
                   { name: "Amount", value: moneyOwedField, inline: true },
                   { name: "Recipient", value: paypal, inline: true }
                 ];
-                
+
                 if (actionReason) {
                   logFields.push({ name: action === "approve" ? "Note" : "Denial Reason", value: actionReason, inline: false });
                 }
-                
+
                 const logEmbed = new EmbedBuilder()
                   .setTitle(logTitle)
                   .setDescription(logDescription)
@@ -4589,7 +4319,7 @@ client.on("interactionCreate", async (interaction) => {
           if (error.code === 10062 || error.code === 40060) return;
           throw error;
         }
-        
+
         const userId = interaction.fields.getTextInputValue("user_id").trim();
         const reason = interaction.fields.getTextInputValue("reason");
 
@@ -4666,7 +4396,7 @@ client.on("interactionCreate", async (interaction) => {
           if (error.code === 10062 || error.code === 40060) return;
           throw error;
         }
-        
+
         const userId = interaction.fields.getTextInputValue("user_id").trim();
         const reason = interaction.fields.getTextInputValue("reason");
 
@@ -4733,7 +4463,7 @@ client.on("interactionCreate", async (interaction) => {
           if (error.code === 10062 || error.code === 40060) return;
           throw error;
         }
-        
+
         const parts = interaction.customId.split("_");
         const action = parts[2]; // approve or deny
         const requestId = parts.slice(3).join("_");
@@ -4745,7 +4475,7 @@ client.on("interactionCreate", async (interaction) => {
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
           : [];
-        
+
         const hasModPermission = config?.modRoleIds?.some(roleId => memberRoles.includes(roleId)) || false;
         const memberPermissions = member && 'permissions' in member 
           ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
@@ -4755,7 +4485,7 @@ client.on("interactionCreate", async (interaction) => {
           : (memberPermissions ?? BigInt(0));
         const ADMINISTRATOR = BigInt(1) << BigInt(3);
         const isAdmin = (permBits & ADMINISTRATOR) === ADMINISTRATOR;
-        
+
         if (!hasModPermission && !isAdmin) {
           await interaction.editReply({
             content: "You don't have permission to approve or deny ban requests.",
@@ -4781,7 +4511,7 @@ client.on("interactionCreate", async (interaction) => {
         if (message && message.embeds[0]) {
           const status = action === "approve" ? "✅ Approved" : "❌ Denied";
           const color = action === "approve" ? 0x23a559 : 0xda373c;
-          
+
           const embed = new EmbedBuilder()
             .setTitle("Ban Request")
             .setColor(color)
@@ -4810,7 +4540,7 @@ client.on("interactionCreate", async (interaction) => {
         const guildName = interaction.guild?.name || "Unknown";
         const reviewerUsername = interaction.user.username;
         const reviewerId = interaction.user.id;
-        
+
         (async () => {
           // Send DMs in parallel
           await Promise.all([
@@ -4878,7 +4608,7 @@ client.on("interactionCreate", async (interaction) => {
           if (error.code === 10062 || error.code === 40060) return;
           throw error;
         }
-        
+
         const parts = interaction.customId.split("_");
         const action = parts[2]; // approve or deny
         const requestId = parts.slice(3).join("_");
@@ -4890,7 +4620,7 @@ client.on("interactionCreate", async (interaction) => {
         const memberRoles = member && 'roles' in member 
           ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
           : [];
-        
+
         const hasModPermission = config?.modRoleIds?.some(roleId => memberRoles.includes(roleId)) || false;
         const memberPermissions = member && 'permissions' in member 
           ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
@@ -4900,7 +4630,7 @@ client.on("interactionCreate", async (interaction) => {
           : (memberPermissions ?? BigInt(0));
         const ADMINISTRATOR = BigInt(1) << BigInt(3);
         const isAdmin = (permBits & ADMINISTRATOR) === ADMINISTRATOR;
-        
+
         if (!hasModPermission && !isAdmin) {
           await interaction.editReply({
             content: "You don't have permission to approve or deny unban requests.",
@@ -4926,7 +4656,7 @@ client.on("interactionCreate", async (interaction) => {
         if (message && message.embeds[0]) {
           const status = action === "approve" ? "✅ Approved" : "❌ Denied";
           const color = action === "approve" ? 0x23a559 : 0xda373c;
-          
+
           const embed = new EmbedBuilder()
             .setTitle("Unban Request")
             .setColor(color)
@@ -4955,7 +4685,7 @@ client.on("interactionCreate", async (interaction) => {
         const guildName = interaction.guild?.name || "Unknown";
         const reviewerUsername = interaction.user.username;
         const reviewerId = interaction.user.id;
-        
+
         (async () => {
           // Send DMs in parallel
           await Promise.all([
@@ -5026,27 +4756,27 @@ client.on("interactionCreate", async (interaction) => {
           }
           throw error;
         }
-        
+
         const parts = interaction.customId.split("_");
         const action = parts[2];
         const requestId = parts.slice(3).join("_");
         const isApprove = action === "approve";
-        
+
         const reviewReason = interaction.fields.getTextInputValue("reason") || undefined;
-        
+
         const request = await storage.getInactivityRequest(requestId);
         if (!request) {
           await interaction.editReply({ content: "Request not found." });
           return;
         }
-        
+
         const status = isApprove ? "approved" : "denied";
         await storage.updateInactivityRequest(requestId, {
           status,
           reviewedById: interaction.user.id,
           reviewReason,
         });
-        
+
         const embed = new EmbedBuilder()
           .setTitle(`Inactivity Request ${isApprove ? "Approved" : "Denied"}`)
           .setColor(isApprove ? 0x57f287 : 0xed4245)
@@ -5058,11 +4788,11 @@ client.on("interactionCreate", async (interaction) => {
             { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: false }
           )
           .setTimestamp();
-        
+
         if (reviewReason) {
           embed.addFields({ name: "Review Reason", value: reviewReason, inline: false });
         }
-        
+
         // Update the original message
         try {
           if (request.messageId && interaction.channel) {
@@ -5072,7 +4802,7 @@ client.on("interactionCreate", async (interaction) => {
         } catch (error) {
           console.log("Could not update original inactivity message");
         }
-        
+
         // Post to log channel
         const config = await storage.getGuildConfig(request.guildId);
         if (config?.inactivityLogChannelId) {
@@ -5085,7 +4815,7 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not post to inactivity log channel");
           }
         }
-        
+
         // DM the user
         try {
           const user = await client.users.fetch(request.userId);
@@ -5100,16 +4830,16 @@ client.on("interactionCreate", async (interaction) => {
               { name: "To", value: request.toDate, inline: true }
             )
             .setTimestamp();
-          
+
           if (reviewReason) {
             dmEmbed.addFields({ name: "Reason", value: reviewReason, inline: false });
           }
-          
+
           await user.send({ embeds: [dmEmbed] });
         } catch (error) {
           console.log("Could not DM user about inactivity decision");
         }
-        
+
         await interaction.editReply({
           content: `✅ Inactivity request ${isApprove ? "approved" : "denied"} successfully!`,
         });
@@ -5123,13 +4853,13 @@ client.on("interactionCreate", async (interaction) => {
           }
           throw error;
         }
-        
+
         const guildId = interaction.customId.replace("inactivity_submit_", "");
-        
+
         const fromDate = interaction.fields.getTextInputValue("from_date");
         const toDate = interaction.fields.getTextInputValue("to_date");
         const reason = interaction.fields.getTextInputValue("reason");
-        
+
         const config = await storage.getGuildConfig(guildId);
         if (!config?.inactivitySubmissionsChannelId) {
           await interaction.editReply({
@@ -5137,7 +4867,7 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        
+
         const request = await storage.createInactivityRequest({
           guildId,
           userId: interaction.user.id,
@@ -5146,7 +4876,7 @@ client.on("interactionCreate", async (interaction) => {
           reason,
           status: "pending",
         });
-        
+
         try {
           const submissionsChannel = await client.channels.fetch(config.inactivitySubmissionsChannelId);
           if (submissionsChannel && "send" in submissionsChannel) {
@@ -5161,7 +4891,7 @@ client.on("interactionCreate", async (interaction) => {
               )
               .setFooter({ text: `Request ID: ${request.id}` })
               .setTimestamp();
-            
+
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
               new ButtonBuilder()
                 .setCustomId(`inactivity_approve_${request.id}`)
@@ -5174,19 +4904,19 @@ client.on("interactionCreate", async (interaction) => {
                 .setStyle(ButtonStyle.Danger)
                 .setEmoji("❌")
             );
-            
+
             // Build ping content
             let pingContent = "";
             if (config.inactivityPingRoleIds && config.inactivityPingRoleIds.length > 0) {
               pingContent = config.inactivityPingRoleIds.map(id => `<@&${id}>`).join(" ");
             }
-            
+
             const sentMessage = await submissionsChannel.send({
               content: pingContent || undefined,
               embeds: [embed],
               components: [row],
             });
-            
+
             await storage.updateInactivityRequest(request.id, {
               messageId: sentMessage.id,
             });
@@ -5194,7 +4924,7 @@ client.on("interactionCreate", async (interaction) => {
         } catch (error) {
           console.log("Could not send inactivity request to channel:", error);
         }
-        
+
         await interaction.editReply({
           content: "✅ Your inactivity request has been submitted! You will receive a DM once it has been reviewed.",
         });
@@ -5208,12 +4938,12 @@ client.on("interactionCreate", async (interaction) => {
           }
           throw error;
         }
-        
+
         const parts = interaction.customId.split("_");
         const action = parts[2];
         const submissionId = parts.slice(3).join("_");
         const reviewReason = interaction.fields.getTextInputValue("review_reason") || undefined;
-        
+
         const submission = await storage.getStaffIntroSubmission(submissionId);
         if (!submission) {
           await interaction.editReply({
@@ -5221,18 +4951,18 @@ client.on("interactionCreate", async (interaction) => {
           });
           return;
         }
-        
+
         await storage.updateStaffIntroSubmission(submissionId, {
           status: action === "approve" ? "approved" : "denied",
           reviewedById: interaction.user.id,
           reviewReason,
         });
-        
+
         const message = interaction.message;
         if (message && message.embeds[0]) {
           const status = action === "approve" ? "✅ Approved" : "❌ Denied";
           const color = action === "approve" ? 0x23a559 : 0xda373c;
-          
+
           const oldEmbed = message.embeds[0];
           const embed = new EmbedBuilder()
             .setTitle(`Staff Intro Submission - ${action === "approve" ? "Approved" : "Denied"}`)
@@ -5244,14 +4974,14 @@ client.on("interactionCreate", async (interaction) => {
             )
             .setFooter({ text: `Submission ID: ${submissionId}` })
             .setTimestamp();
-          
+
           if (reviewReason) {
             embed.addFields({ name: "Review Note", value: reviewReason, inline: false });
           }
-          
+
           await message.edit({ embeds: [embed], components: [] });
         }
-        
+
         try {
           const user = await client.users.fetch(submission.userId);
           const dmEmbed = new EmbedBuilder()
@@ -5261,16 +4991,16 @@ client.on("interactionCreate", async (interaction) => {
               : "Unfortunately, your staff introduction quiz was not approved.")
             .setColor(action === "approve" ? 0x23a559 : 0xda373c)
             .setTimestamp();
-          
+
           if (reviewReason) {
             dmEmbed.addFields({ name: "Note from reviewer", value: reviewReason, inline: false });
           }
-          
+
           await user.send({ embeds: [dmEmbed] });
         } catch (error) {
           console.log("Could not DM user about quiz result");
         }
-        
+
         await interaction.editReply({
           content: `Submission ${action === "approve" ? "approved" : "denied"} successfully.`,
         });
@@ -5330,109 +5060,109 @@ const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
-  
+
   // Deduplicate messages to prevent double responses
   if (processedMessages.has(message.id)) return;
   processedMessages.add(message.id);
   setTimeout(() => processedMessages.delete(message.id), MESSAGE_DEDUP_TIMEOUT);
-  
-  // Handle prefix commands (!close, !c) with optional time argument in guild channels
+
+  // Handle prefix commands (.close, .c) with optional time argument in guild channels
   const lowerContent = message.content.toLowerCase();
-  if (message.guild && (lowerContent === "!close" || lowerContent === "!c" || lowerContent.startsWith("!close ") || lowerContent.startsWith("!c "))) {
+  if (message.guild && (lowerContent === ".close" || lowerContent === ".c" || lowerContent.startsWith(".close ") || lowerContent.startsWith(".c "))) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
-    
+
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     // Check if ticket is claimed and if the closer is the claimer
     if (thread.claimedById && thread.claimedById !== message.author.id) {
       await message.reply(`❌ Only <@${thread.claimedById}> (who claimed this ticket) can close it.`);
       return;
     }
-    
+
     // Parse optional time argument
     let timeArg = "";
-    if (lowerContent.startsWith("!close ")) {
+    if (lowerContent.startsWith(".close ")) {
       timeArg = message.content.substring(7).trim();
     } else if (lowerContent.startsWith("!c ")) {
       timeArg = message.content.substring(3).trim();
     }
-    
+
     // Check if timed close
     if (timeArg) {
       // Parse time like "1m", "5m", "30s", "1h"
       const timeMatch = timeArg.match(/^(\d+)\s*(s|m|h)$/i);
       if (!timeMatch) {
-        await message.reply("❌ Invalid time format. Use like: `!close 5m`, `!c 30s`, `!close 1h`");
+        await message.reply("❌ Invalid time format. Use like: `.close 5m`, `.c 30s`, `.close 1h`");
         return;
       }
-      
+
       const amount = parseInt(timeMatch[1]);
       const unit = timeMatch[2].toLowerCase();
-      
+
       let delayMs: number;
       if (unit === "s") delayMs = amount * 1000;
       else if (unit === "m") delayMs = amount * 60 * 1000;
       else if (unit === "h") delayMs = amount * 60 * 60 * 1000;
       else delayMs = amount * 60 * 1000;
-      
+
       // Max 24 hours
       if (delayMs > 24 * 60 * 60 * 1000) {
         await message.reply("❌ Maximum timed close is 24 hours.");
         return;
       }
-      
+
       // Cancel any existing timed close for this channel
       const existingTimeout = pendingTimedCloses.get(message.channel.id);
       if (existingTimeout) {
         clearTimeout(existingTimeout);
       }
-      
+
       const closeTime = new Date(Date.now() + delayMs);
       const timeString = `<t:${Math.floor(closeTime.getTime() / 1000)}:R>`;
-      
+
       // Delete the command message
       try {
         await message.delete();
       } catch (e) {}
-      
+
       // Send timed close message
       await (message.channel as any).send(`⏰ This ticket will close ${timeString}.`);
-      
+
       // Capture references synchronously before async timeout
       const timedChannelId = message.channel.id;
       const timedGuildId = message.guild?.id;
       const timedStaffId = message.author.id;
-      
+
       // Schedule the close (silent - no notification to user)
       const timeout = setTimeout(async () => {
         pendingTimedCloses.delete(timedChannelId);
-        
+
         // Re-fetch thread to make sure it's still open
         const currentThread = await storage.getModmailThreadByChannel(timedChannelId);
         if (!currentThread || currentThread.status !== "open") return;
-        
+
         // Clear claim expiry timer on close
         const timedClaimTimer = pendingClaimExpiry.get(timedChannelId);
         if (timedClaimTimer) {
           clearTimeout(timedClaimTimer.timeout);
           pendingClaimExpiry.delete(timedChannelId);
         }
-        
+
         // Close the thread silently
         await storage.updateModmailThread(currentThread.id, {
           status: "closed",
           closedById: timedStaffId,
-          closeReason: `Timed close (${timeArg})`,
+          closeReason: "Closed via .close command", // <<< UPDATED REASON
           closedAt: new Date(),
         });
-        
+
         // Log to modmail log channel (no notification to user for timed close)
         if (timedGuildId) {
           const config = await storage.getGuildConfig(timedGuildId);
@@ -5443,7 +5173,7 @@ client.on("messageCreate", async (message) => {
                 const messages = await storage.getModmailMessages(currentThread.id);
                 let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
                 if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-                
+
                 const logEmbed = new EmbedBuilder()
                   .setTitle("Ticket Closed (Timed)")
                   .setColor(0xed4245)
@@ -5460,33 +5190,26 @@ client.on("messageCreate", async (message) => {
             }
           }
         }
-        
+
         // Delete the channel
         try {
           const chanToDelete = await client.channels.fetch(timedChannelId);
           if (chanToDelete) await chanToDelete.delete();
         } catch (e) { console.log("[MODMAIL] Failed to delete channel on timed close:", e); }
       }, delayMs);
-      
+
       pendingTimedCloses.set(timedChannelId, timeout);
       return;
     }
-    
-    // Clear claim expiry timer on close
-    const immediateClaimTimer = pendingClaimExpiry.get(message.channel.id);
-    if (immediateClaimTimer) {
-      clearTimeout(immediateClaimTimer.timeout);
-      pendingClaimExpiry.delete(message.channel.id);
-    }
-    
+
     // Immediate close (with notification to user)
     await storage.updateModmailThread(thread.id, {
       status: "closed",
       closedById: message.author.id,
-      closeReason: "Closed via !close command",
+      closeReason: "Closed via .close command", // <<< UPDATED REASON
       closedAt: new Date(),
     });
-    
+
     // Notify user
     try {
       const user = await client.users.fetch(thread.userId);
@@ -5499,7 +5222,7 @@ client.on("messageCreate", async (message) => {
     } catch (e) {
       console.log("Could not DM user about ticket close");
     }
-    
+
     // Log to modmail log channel
     const config = await storage.getGuildConfig(message.guild.id);
     if (config?.modmailLogChannelId) {
@@ -5509,7 +5232,7 @@ client.on("messageCreate", async (message) => {
           const messages = await storage.getModmailMessages(thread.id);
           let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
           if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-          
+
           const logEmbed = new EmbedBuilder()
             .setTitle("Ticket Closed")
             .setColor(0xed4245)
@@ -5525,7 +5248,7 @@ client.on("messageCreate", async (message) => {
         console.log("Could not send modmail log");
       }
     }
-    
+
     // Delete channel after delay
     await message.reply("✅ Ticket closed. Deleting channel...");
     setTimeout(async () => {
@@ -5535,59 +5258,59 @@ client.on("messageCreate", async (message) => {
     }, 3000);
     return;
   }
-  
-  // Handle !claim command
-  if (message.guild && message.content.toLowerCase() === "!claim") {
+
+  // Handle .claim command
+  if (message.guild && message.content.toLowerCase() === ".claim") {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
-    
+
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     if (thread.claimedById) {
       await message.reply(`❌ This ticket is already claimed by <@${thread.claimedById}>.`);
       return;
     }
-    
+
     // Check claim permission
     const config = await storage.getGuildConfig(message.guild.id);
     const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
     const member = message.member;
     const hasClaimPermission = claimRoleIds.length === 0 || 
       (member && member.roles.cache.some(role => claimRoleIds.includes(role.id)));
-    
+
     if (!hasClaimPermission) {
       await message.reply("❌ You don't have permission to claim tickets.");
       return;
     }
-    
+
     await storage.updateModmailThread(thread.id, { claimedById: message.author.id });
-    
+
     const claimEmbed = new EmbedBuilder()
       .setDescription(`🙋 Ticket claimed by <@${message.author.id}>`)
       .setColor(0x5865f2)
       .setTimestamp();
     await (message.channel as any).send({ embeds: [claimEmbed] });
-    
+
     // Start 15-minute claim expiry timer
     const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
     const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
     if (existingClaimTimer) {
       clearTimeout(existingClaimTimer.timeout);
     }
-    
+
     const claimExpiryTimeout = setTimeout(async () => {
       pendingClaimExpiry.delete(message.channel.id);
-      
+
       const currentThread = await storage.getModmailThreadByChannel(message.channel.id);
       if (!currentThread || currentThread.status !== "open") return;
       if (currentThread.claimedById !== message.author.id) return;
-      
+
       await storage.updateModmailThread(currentThread.id, { claimedById: null });
       try {
         const channel = await client.channels.fetch(message.channel.id);
@@ -5598,16 +5321,16 @@ client.on("messageCreate", async (message) => {
         console.log("Could not send auto-unclaim message");
       }
     }, CLAIM_EXPIRY_TIME);
-    
+
     pendingClaimExpiry.set(message.channel.id, {
       timeout: claimExpiryTimeout,
       claimerId: message.author.id,
     });
     return;
   }
-  
-  // Handle !ignore command to disable inactivity warnings for a ticket
-  if (message.guild && message.content.toLowerCase() === "!ignore") {
+
+  // Handle .ignore command to disable inactivity warnings for a ticket
+  if (message.guild && message.content.toLowerCase() === ".ignore") {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
@@ -5617,9 +5340,9 @@ client.on("messageCreate", async (message) => {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     await storage.updateModmailThread(thread.id, { ignoreInactivity: "true" });
-    
+
     // Cancel any pending inactivity timers
     const existingWarning = pendingInactivityWarnings.get(message.channel.id);
     if (existingWarning) {
@@ -5631,7 +5354,7 @@ client.on("messageCreate", async (message) => {
       clearTimeout(existingClose.timeout);
       pendingInactivityCloses.delete(message.channel.id);
     }
-    
+
     const ignoreEmbed = new EmbedBuilder()
       .setDescription("✅ Inactivity warnings disabled for this ticket.")
       .setColor(0x57f287)
@@ -5639,45 +5362,45 @@ client.on("messageCreate", async (message) => {
     await (message.channel as any).send({ embeds: [ignoreEmbed] });
     return;
   }
-  
+
   // Handle !or and !unclaim command (claimer or admin can unclaim)
-  if (message.guild && (message.content.toLowerCase() === "!or" || message.content.toLowerCase() === "!unclaim")) {
+  if (message.guild && (message.content.toLowerCase() === ".or" || message.content.toLowerCase() === ".unclaim")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       // Silent return if not a modmail channel (don't spam error in non-ticket channels)
       return;
     }
-    
+
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     if (!thread.claimedById) {
       await message.reply("❌ This ticket is not claimed by anyone.");
       return;
     }
-    
+
     // Check permission: claimer can unclaim their own ticket, or admin can unclaim any ticket
     const member = message.member;
     const hasAdminPermission = member && member.permissions.has("Administrator");
     const isClaimedByUser = thread.claimedById === message.author.id;
-    
+
     if (!isClaimedByUser && !hasAdminPermission) {
       await message.reply(`❌ Only <@${thread.claimedById}> (who claimed this ticket) or an administrator can unclaim it.`);
       return;
     }
-    
+
     const previousClaimer = thread.claimedById;
     await storage.updateModmailThread(thread.id, { claimedById: null });
-    
+
     // Clear claim expiry timer
     const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
     if (existingClaimTimer) {
       clearTimeout(existingClaimTimer.timeout);
       pendingClaimExpiry.delete(message.channel.id);
     }
-    
+
     const unclaimEmbed = new EmbedBuilder()
       .setDescription(`🔓 Ticket unclaimed. (Was claimed by <@${previousClaimer}>)`)
       .setColor(0xf0b232)
@@ -5685,23 +5408,23 @@ client.on("messageCreate", async (message) => {
     await (message.channel as any).send({ embeds: [unclaimEmbed] });
     return;
   }
-  
+
   // Handle !sub command (subscribe to ticket notifications)
-  if (message.guild && (message.content.toLowerCase() === "!sub" || message.content.toLowerCase().startsWith("!sub "))) {
+  if (message.guild && message.content.toLowerCase().startsWith(".sub")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       return; // Silent return if not a modmail channel
     }
-    
+
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     // Parse target user (self or mentioned/ID)
     const args = message.content.substring(4).trim();
     let targetUserId = message.author.id;
-    
+
     if (args) {
       // Check for mention or user ID
       const mentionMatch = args.match(/<@!?(\d+)>/);
@@ -5712,7 +5435,7 @@ client.on("messageCreate", async (message) => {
         targetUserId = idMatch[1];
       }
     }
-    
+
     const currentSubs = thread.subscribedUserIds || [];
     if (currentSubs.includes(targetUserId)) {
       if (targetUserId === message.author.id) {
@@ -5722,10 +5445,10 @@ client.on("messageCreate", async (message) => {
       }
       return;
     }
-    
+
     const newSubs = [...currentSubs, targetUserId];
     await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
-    
+
     if (targetUserId === message.author.id) {
       await message.reply("🔔 You are now subscribed to this ticket. You'll be pinged when the user replies.");
     } else {
@@ -5733,23 +5456,23 @@ client.on("messageCreate", async (message) => {
     }
     return;
   }
-  
-  // Handle !unsub command (unsubscribe from ticket notifications)
-  if (message.guild && (message.content.toLowerCase() === "!unsub" || message.content.toLowerCase().startsWith("!unsub "))) {
+
+  // Handle .unsub command (unsubscribe from ticket notifications)
+  if (message.guild && message.content.toLowerCase().startsWith(".unsub")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       return; // Silent return if not a modmail channel
     }
-    
+
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     // Parse target user (self or mentioned/ID)
     const args = message.content.substring(6).trim();
     let targetUserId = message.author.id;
-    
+
     if (args) {
       // Check for mention or user ID
       const mentionMatch = args.match(/<@!?(\d+)>/);
@@ -5760,7 +5483,7 @@ client.on("messageCreate", async (message) => {
         targetUserId = idMatch[1];
       }
     }
-    
+
     const currentSubs = thread.subscribedUserIds || [];
     if (!currentSubs.includes(targetUserId)) {
       if (targetUserId === message.author.id) {
@@ -5770,10 +5493,10 @@ client.on("messageCreate", async (message) => {
       }
       return;
     }
-    
+
     const newSubs = currentSubs.filter(id => id !== targetUserId);
     await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
-    
+
     if (targetUserId === message.author.id) {
       await message.reply("🔕 You are now unsubscribed from this ticket.");
     } else {
@@ -5781,72 +5504,72 @@ client.on("messageCreate", async (message) => {
     }
     return;
   }
-  
-  // Handle !snip commands for snippet management
-  if (message.guild && message.content.toLowerCase().startsWith("!snip ")) {
+
+  // Handle .snip commands for snippet management
+  if (message.guild && message.content.toLowerCase().startsWith(".snip ")) {
     const args = message.content.substring(6).trim();
     const spaceIndex = args.indexOf(" ");
     const subCommand = spaceIndex === -1 ? args.toLowerCase() : args.substring(0, spaceIndex).toLowerCase();
     const rest = spaceIndex === -1 ? "" : args.substring(spaceIndex + 1).trim();
-    
+
     // Check for admin permission for create/edit/delete
     const member = message.member;
     const hasAdminPermission = member && member.permissions.has("Administrator");
-    
+
     if (subCommand === "create") {
       if (!hasAdminPermission) {
         await message.reply("❌ Only administrators can create snippets.");
         return;
       }
-      
-      // Parse: !snip create <alias> <text> (quotes optional)
+
+      // Parse: .snip create <alias> <text> (quotes optional)
       // Support regular quotes, smart quotes, or no quotes
       const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
       if (!aliasMatch || !aliasMatch[2]?.trim()) {
-        await message.reply("❌ Usage: `!snip create <alias> <text>`");
+        await message.reply("❌ Usage: `.snip create <alias> <text>`");
         return;
       }
-      
+
       const alias = aliasMatch[1].toLowerCase();
       const content = aliasMatch[2].trim();
-      
+
       const existing = await storage.getSnippet(message.guild.id, alias);
       if (existing) {
-        await message.reply(`❌ Snippet \`${alias}\` already exists. Use \`!snip edit\` to modify it.`);
+        await message.reply(`❌ Snippet \`${alias}\` already exists. Use \`.snip edit\` to modify it.`);
         return;
       }
-      
+
       await storage.createSnippet({
         guildId: message.guild.id,
         alias: alias,
         content: content,
         createdById: message.author.id,
       });
-      
-      await message.reply(`✅ Snippet \`${alias}\` created. Use \`!${alias}\` in ticket channels to send it.`);
+
+      await message.reply(`✅ Snippet \`${alias}\` created. Use \`.${alias}\` in ticket channels to send it.`);
       return;
     } else if (subCommand === "edit") {
       if (!hasAdminPermission) {
         await message.reply("❌ Only administrators can edit snippets.");
         return;
       }
-      
-      // Parse: !snip edit <alias> <text> (quotes optional)
+
+      // Parse: .snip edit <alias> <text> (quotes optional)
       const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
       if (!aliasMatch || !aliasMatch[2]?.trim()) {
-        await message.reply("❌ Usage: `!snip edit <alias> <text>`");
+        await message.reply("❌ Usage: `.snip edit <alias> <text>`");
         return;
       }
-      
+
       const alias = aliasMatch[1].toLowerCase();
       const content = aliasMatch[2].trim();
-      
+
       const updated = await storage.updateSnippet(message.guild.id, alias, content);
       if (!updated) {
         await message.reply(`❌ Snippet \`${alias}\` not found.`);
         return;
       }
-      
+
       await message.reply(`✅ Snippet \`${alias}\` updated.`);
       return;
     } else if (subCommand === "delete") {
@@ -5854,29 +5577,29 @@ client.on("messageCreate", async (message) => {
         await message.reply("❌ Only administrators can delete snippets.");
         return;
       }
-      
+
       const alias = rest.toLowerCase();
       if (!alias) {
-        await message.reply("❌ Usage: `!snip delete <alias>`");
+        await message.reply("❌ Usage: `.snip delete <alias>`");
         return;
       }
-      
+
       const existing = await storage.getSnippet(message.guild.id, alias);
       if (!existing) {
         await message.reply(`❌ Snippet \`${alias}\` not found.`);
         return;
       }
-      
+
       await storage.deleteSnippet(message.guild.id, alias);
       await message.reply(`✅ Snippet \`${alias}\` deleted.`);
       return;
     } else if (subCommand === "list") {
       const allSnippets = await storage.getAllSnippets(message.guild.id);
       if (allSnippets.length === 0) {
-        await message.reply("📝 No snippets configured. Use `!snip create <alias> \"<text>\"` to create one.");
+        await message.reply("📝 No snippets configured. Use `.snip create <alias> \"<text>\"` to create one.");
         return;
       }
-      
+
       const list = allSnippets.map((s, i) => {
         const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
         return `${i + 1}.) "${s.alias}", Response: "${truncatedContent}"`;
@@ -5884,17 +5607,17 @@ client.on("messageCreate", async (message) => {
       await message.reply(`📝 **Available Snippets:**\n${list}`);
       return;
     } else {
-      await message.reply("❌ Unknown subcommand. Use `!snip create`, `!snip edit`, `!snip delete`, or `!snip list`.");
+      await message.reply("❌ Unknown subcommand. Use `.snip create`, `.snip edit`, `.snip delete`, or `.snip list`.");
       return;
     }
   }
-  
-  // Handle !<alias> snippet usage in modmail ticket channels
-  if (message.guild && message.content.startsWith("!") && !message.content.startsWith("!snip") && 
-      !message.content.toLowerCase().startsWith("!close") && !message.content.toLowerCase().startsWith("!c") &&
-      !message.content.toLowerCase().startsWith("!claim") && !message.content.toLowerCase().startsWith("!or") &&
-      !message.content.toLowerCase().startsWith("!r ") && !message.content.toLowerCase().startsWith("!edit ") &&
-      !message.content.toLowerCase().startsWith("!delete")) {
+
+  // Handle .<alias> snippet usage in modmail ticket channels
+  if (message.guild && message.content.startsWith(".") && !message.content.startsWith(".snip") && 
+      !message.content.toLowerCase().startsWith(".close") && !message.content.toLowerCase().startsWith(".c") &&
+      !message.content.toLowerCase().startsWith(".claim") && !message.content.toLowerCase().startsWith(".or") &&
+      !message.content.toLowerCase().startsWith(".r") && !message.content.toLowerCase().startsWith(".edit ") &&
+      !message.content.toLowerCase().startsWith(".delete")) {
     const alias = message.content.substring(1).toLowerCase().split(" ")[0];
     if (alias) {
       const thread = await storage.getModmailThreadByChannel(message.channel.id);
@@ -5903,7 +5626,7 @@ client.on("messageCreate", async (message) => {
         if (snippet) {
           try {
             const user = await client.users.fetch(thread.userId);
-            
+
             // Get staff member's highest meaningful role name
             let snippetRoleName = "Staff";
             const snippetMember = message.member;
@@ -5915,20 +5638,20 @@ client.on("messageCreate", async (message) => {
                 snippetRoleName = roles.first()!.name;
               }
             }
-            
+
             const staffEmbed = new EmbedBuilder()
               .setAuthor({ name: snippetRoleName, iconURL: message.author.displayAvatarURL() })
               .setDescription(snippet.content)
               .setColor(0x5865f2)
               .setFooter({ text: message.author.tag })
               .setTimestamp();
-            
+
             // Send to user DM
             const dmMessage = await user.send({ embeds: [staffEmbed] });
-            
+
             // Send to channel as well
             const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
-            
+
             await storage.addModmailMessage({
               threadId: thread.id,
               authorId: message.author.id,
@@ -5937,7 +5660,7 @@ client.on("messageCreate", async (message) => {
               channelMessageId: channelMessage.id,
               dmMessageId: dmMessage.id,
             });
-            
+
             // Delete the trigger message
             try {
               await message.delete();
@@ -5951,11 +5674,11 @@ client.on("messageCreate", async (message) => {
       }
     }
   }
-  
+
   // Handle DM messages
   if (!message.guild) {
     console.log(`[DM] Received DM from ${message.author.id} (${message.author.tag}): "${message.content.substring(0, 50)}..."`);
-    
+
     // Check for active quiz first
     const quizState = activeQuizzes.get(message.author.id);
     if (quizState) {
@@ -5964,14 +5687,14 @@ client.on("messageCreate", async (message) => {
       await processQuizAnswer(message.author.id, answer, message.channel);
       return;
     }
-    
+
     // Handle modmail DMs - only relay to EXISTING open threads
     // New tickets must be created via the dropdown menu in the server
     try {
       // Find an existing open thread for this user across all guilds
       let targetThread = null;
       let targetGuild = null;
-      
+
       for (const guild of client.guilds.cache.values()) {
         try {
           const thread = await storage.getOpenModmailThread(guild.id, message.author.id);
@@ -5984,7 +5707,7 @@ client.on("messageCreate", async (message) => {
           // No thread in this guild
         }
       }
-      
+
       if (!targetThread || !targetGuild) {
         // No existing open ticket - offer to create one via DM
         // Skip if user is in an active quiz (double-check to prevent overlap)
@@ -5992,18 +5715,18 @@ client.on("messageCreate", async (message) => {
           console.log(`[DM] User ${message.author.id} has active quiz, skipping modmail prompt`);
           return;
         }
-        
+
         // Check if user already has a pending category selection
         if (pendingDMTickets.has(message.author.id)) {
           return; // Already waiting for category selection
         }
-        
+
         // Find a guild where modmail is configured and user is a member
         let availableGuild = null;
         let availableConfig = null;
-        
+
         console.log(`[DM] Searching for guild for user ${message.author.id} (${message.author.tag}) - cached guilds: ${client.guilds.cache.size}`);
-        
+
         for (const guild of Array.from(client.guilds.cache.values())) {
           console.log(`[DM] Checking guild: ${guild.name} (${guild.id})`);
           try {
@@ -6015,7 +5738,7 @@ client.on("messageCreate", async (message) => {
               console.log(`[DM] User not a member of ${guild.name}`);
               continue;
             }
-            
+
             console.log(`[DM] User IS a member of ${guild.name}`);
             const config = await storage.getGuildConfig(guild.id);
             console.log(`[DM] Config for ${guild.name}: modmailCategoryId=${config?.modmailCategoryId}`);
@@ -6035,18 +5758,18 @@ client.on("messageCreate", async (message) => {
             console.log(`[DM] Error checking guild ${guild.name}: ${e.message}`);
           }
         }
-        
+
         if (!availableGuild || !availableConfig) {
           console.log(`[DM] No available guild found for user ${message.author.id}`);
           return;
         }
-        
+
         // Send category selection dropdown
         const embed = new EmbedBuilder()
           .setTitle("Open a Support Ticket")
           .setDescription("Select a category below to open a new support ticket.")
           .setColor(0x5865f2);
-        
+
         const selectMenu = new StringSelectMenuBuilder()
           .setCustomId(`dm_ticket_select_${availableGuild.id}`)
           .setPlaceholder("Select a category...")
@@ -6092,18 +5815,18 @@ client.on("messageCreate", async (message) => {
               .setValue("vfxeditor")
               .setEmoji("✨")
           );
-        
+
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
-        
+
         console.log(`[DM] Sending category dropdown to user ${message.author.id}`);
         try {
           const sentMessage = await message.reply({
             embeds: [embed],
             components: [row],
           });
-          
+
           console.log(`[DM] Category dropdown sent successfully, message ID: ${sentMessage.id}`);
-          
+
           pendingDMTickets.set(message.author.id, {
             messageId: sentMessage.id,
             guildId: availableGuild.id,
@@ -6113,31 +5836,31 @@ client.on("messageCreate", async (message) => {
           console.log(`[DM] Failed to send category dropdown: ${sendError.message}`);
           console.log(`[DM] Full error:`, sendError);
         }
-        
+
         return;
       }
-      
+
       // Relay message to existing modmail channel
       try {
         const modmailChannel = await client.channels.fetch(targetThread.channelId!);
         if (modmailChannel && "send" in modmailChannel) {
           // Cancel any pending inactivity and timed close timers when user responds
           const channelId = targetThread.channelId!;
-          
+
           // Cancel inactivity warning timer
           const existingWarning = pendingInactivityWarnings.get(channelId);
           if (existingWarning) {
             clearTimeout(existingWarning.timeout);
             pendingInactivityWarnings.delete(channelId);
           }
-          
+
           // Cancel inactivity auto-close timer
           const existingClose = pendingInactivityCloses.get(channelId);
           if (existingClose) {
             clearTimeout(existingClose.timeout);
             pendingInactivityCloses.delete(channelId);
           }
-          
+
           // Cancel timed close (!c) timer
           const existingTimedClose = pendingTimedCloses.get(channelId);
           if (existingTimedClose) {
@@ -6146,16 +5869,16 @@ client.on("messageCreate", async (message) => {
             // Notify staff that timed close was cancelled
             await modmailChannel.send({ content: "⏰ Timed close cancelled - user responded." });
           }
-          
+
           const userEmbed = new EmbedBuilder()
             .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
             .setDescription(message.content || "(No text content)")
             .setColor(0x57f287)
             .setTimestamp();
-          
+
           // Collect attachment URLs
           const attachmentUrls = message.attachments.map(a => a.url);
-          
+
           // Add attachment info to embed if there are any
           if (attachmentUrls.length > 0) {
             userEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
@@ -6165,9 +5888,9 @@ client.on("messageCreate", async (message) => {
               userEmbed.setImage(firstImageAttachment.url);
             }
           }
-          
+
           await modmailChannel.send({ embeds: [userEmbed] });
-          
+
           // Ping subscribed users
           const subs = targetThread.subscribedUserIds || [];
           if (subs.length > 0) {
@@ -6176,7 +5899,7 @@ client.on("messageCreate", async (message) => {
             // Delete ping message after a short delay to keep channel clean
             setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
           }
-          
+
           // Save message
           await storage.addModmailMessage({
             threadId: targetThread.id,
@@ -6184,7 +5907,7 @@ client.on("messageCreate", async (message) => {
             content: message.content,
             isStaff: "false",
           });
-          
+
           // React to confirm
           await message.react("✅");
         }
@@ -6196,29 +5919,29 @@ client.on("messageCreate", async (message) => {
     }
     return;
   }
-  
-  // Handle !r <message> reply command in modmail channels (also allows !r with just attachments)
-  if (message.guild && (message.content.toLowerCase().startsWith("!r ") || (message.content.toLowerCase() === "!r" && message.attachments.size > 0))) {
-    const replyContent = message.content.toLowerCase() === "!r" ? "" : message.content.substring(3).trim();
+
+  // Handle .r <message> reply command in modmail channels (also allows .r with just attachments)
+  if (message.guild && (message.content.toLowerCase().startsWith(".r ") || (message.content.toLowerCase() === ".r" && message.attachments.size > 0))) {
+    const replyContent = message.content.toLowerCase() === ".r" ? "" : message.content.substring(3).trim();
     if (!replyContent && message.attachments.size === 0) {
-      await message.reply("❌ Please provide a message or attach files. Usage: `!r <message>` or `!r` with attachments");
+      await message.reply("❌ Please provide a message or attach files. Usage: `.r <message>` or `.r` with attachments");
       return;
     }
-    
+
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
-    
+
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     try {
       const user = await client.users.fetch(thread.userId);
-      
+
       // Get staff member's highest meaningful role name
       let roleName = "Staff";
       const member = message.member;
@@ -6231,17 +5954,17 @@ client.on("messageCreate", async (message) => {
           roleName = roles.first()!.name;
         }
       }
-      
+
       const staffEmbed = new EmbedBuilder()
         .setAuthor({ name: roleName, iconURL: message.author.displayAvatarURL() })
         .setDescription(replyContent || "(Attachment)")
         .setColor(0x5865f2)
         .setFooter({ text: message.author.tag })
         .setTimestamp();
-      
-      // Collect attachment URLs from the !r message
+
+      // Collect attachment URLs from the .r message
       const attachmentUrls = message.attachments.map(a => a.url);
-      
+
       // Add attachment info to embed if there are any
       if (attachmentUrls.length > 0) {
         staffEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
@@ -6251,13 +5974,13 @@ client.on("messageCreate", async (message) => {
           staffEmbed.setImage(firstImageAttachment.url);
         }
       }
-      
+
       // Send to user DM
       const dmMessage = await user.send({ embeds: [staffEmbed] });
-      
+
       // Send to channel as well
       const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
-      
+
       // Save message with message IDs
       const savedMessage = await storage.addModmailMessage({
         threadId: thread.id,
@@ -6267,14 +5990,14 @@ client.on("messageCreate", async (message) => {
         channelMessageId: channelMessage.id,
         dmMessageId: dmMessage.id,
       });
-      
+
       // Clear claim expiry timer when any staff responds (ticket is being actively handled)
       const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
       if (existingClaimTimer) {
         clearTimeout(existingClaimTimer.timeout);
         pendingClaimExpiry.delete(message.channel.id);
       }
-      
+
       // Cancel any existing inactivity timers for this channel
       const existingWarning = pendingInactivityWarnings.get(message.channel.id);
       if (existingWarning) {
@@ -6286,7 +6009,7 @@ client.on("messageCreate", async (message) => {
         clearTimeout(existingClose.timeout);
         pendingInactivityCloses.delete(message.channel.id);
       }
-      
+
       // Only start inactivity timer if ignoreInactivity is not set
       if (thread.ignoreInactivity === "true") {
         // Skip inactivity timer for this ticket
@@ -6297,24 +6020,24 @@ client.on("messageCreate", async (message) => {
         }
         return;
       }
-      
+
       // Start 15-minute inactivity warning timer
       const FIFTEEN_MINUTES = 15 * 60 * 1000;
       const warningTime = Date.now() + FIFTEEN_MINUTES;
       const closeTime = Date.now() + (30 * 60 * 1000); // 30 minutes total
-      
+
       // Capture references synchronously before async timeouts
       const channelId = message.channel.id;
       const guildId = message.guild?.id;
       const staffId = message.author.id;
-      
+
       const warningTimeout = setTimeout(async () => {
         pendingInactivityWarnings.delete(channelId);
-        
+
         // Re-fetch thread to make sure it's still open
         const currentThread = await storage.getModmailThreadByChannel(channelId);
         if (!currentThread || currentThread.status !== "open") return;
-        
+
         // Send warning message with hammer time timestamp
         const closeTimestamp = Math.floor(closeTime / 1000);
         try {
@@ -6323,12 +6046,12 @@ client.on("messageCreate", async (message) => {
             .setDescription(`Due to inactivity, this ticket will be closed <t:${closeTimestamp}:R>.`)
             .setColor(0xf0b232)
             .setTimestamp();
-          
+
           const channel = await client.channels.fetch(channelId);
           if (!channel || !("send" in channel)) return;
-          
+
           const warningMsg = await (channel as any).send({ embeds: [warningEmbed] });
-          
+
           // Also notify the user in DM
           try {
             const ticketUser = await client.users.fetch(currentThread.userId);
@@ -6336,21 +6059,21 @@ client.on("messageCreate", async (message) => {
           } catch (e) {
             console.log("Could not DM user about inactivity warning");
           }
-          
+
           // Schedule auto-close after another 15 minutes
           const closeTimeout = setTimeout(async () => {
             pendingInactivityCloses.delete(channelId);
-            
+
             const threadToClose = await storage.getModmailThreadByChannel(channelId);
             if (!threadToClose || threadToClose.status !== "open") return;
-            
+
             // Clear claim expiry timer on inactivity close
             const inactivityClaimTimer = pendingClaimExpiry.get(channelId);
             if (inactivityClaimTimer) {
               clearTimeout(inactivityClaimTimer.timeout);
               pendingClaimExpiry.delete(channelId);
             }
-            
+
             // Close the thread
             await storage.updateModmailThread(threadToClose.id, {
               status: "closed",
@@ -6358,12 +6081,12 @@ client.on("messageCreate", async (message) => {
               closeReason: "Closed due to inactivity",
               closedAt: new Date(),
             });
-            
+
             // Award 1 activity point to the staff member who handled it
             if (guildId) {
               await storage.addModmailActivityEntries(guildId, staffId, 1);
             }
-            
+
             // Log to modmail log channel
             if (guildId) {
               const config = await storage.getGuildConfig(guildId);
@@ -6374,7 +6097,7 @@ client.on("messageCreate", async (message) => {
                     const messages = await storage.getModmailMessages(threadToClose.id);
                     let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
                     if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-                    
+
                     const logEmbed = new EmbedBuilder()
                       .setTitle("Ticket Closed (Inactivity)")
                       .setColor(0xed4245)
@@ -6391,14 +6114,14 @@ client.on("messageCreate", async (message) => {
                 }
               }
             }
-            
+
             // Delete the channel
             try {
               const chanToDelete = await client.channels.fetch(channelId);
               if (chanToDelete) await chanToDelete.delete();
             } catch (e) { console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
           }, FIFTEEN_MINUTES);
-          
+
           pendingInactivityCloses.set(channelId, {
             timeout: closeTimeout,
             staffId: staffId,
@@ -6407,12 +6130,12 @@ client.on("messageCreate", async (message) => {
           console.log("Could not send inactivity warning:", e);
         }
       }, FIFTEEN_MINUTES);
-      
+
       pendingInactivityWarnings.set(channelId, {
         timeout: warningTimeout,
         staffId: staffId,
       });
-      
+
       // Delete the original trigger message
       try {
         await message.delete();
@@ -6425,29 +6148,29 @@ client.on("messageCreate", async (message) => {
     }
     return;
   }
-  
-  // Handle !edit (message_id) (new_message) or !edit (new_message) for most recent
-  if (message.guild && message.content.toLowerCase().startsWith("!edit ")) {
+
+  // Handle .edit (message_id) (new_message) or .edit (new_message) for most recent
+  if (message.guild && message.content.toLowerCase().startsWith(".edit ")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
-    
+
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     const args = message.content.substring(6).trim();
     let modmailMsg: any;
     let newContent: string;
-    
+
     // Check if first arg looks like an ID (UUID format or Discord snowflake)
     const parts = args.split(" ");
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const discordIdRegex = /^\d{17,20}$/;
-    
+
     if (parts[0] && uuidRegex.test(parts[0])) {
       // First arg is UUID database ID
       modmailMsg = await storage.getModmailMessage(parts[0]);
@@ -6461,20 +6184,20 @@ client.on("messageCreate", async (message) => {
       modmailMsg = await storage.getLatestStaffModmailMessage(thread.id);
       newContent = args;
     }
-    
+
     if (!modmailMsg) {
       await message.reply("❌ Could not find the message to edit. You can use the Discord message ID or leave blank to edit your most recent message.");
       return;
     }
-    
+
     if (!newContent) {
-      await message.reply("❌ Please provide the new message content. Usage: `!edit (message_id) <new_message>`");
+      await message.reply("❌ Please provide the new message content. Usage: `.edit (message_id) <new_message>`");
       return;
     }
-    
+
     try {
       const user = await client.users.fetch(thread.userId);
-      
+
       // Get staff member's highest meaningful role name
       let editRoleName = "Staff";
       const editMember = message.member;
@@ -6486,7 +6209,7 @@ client.on("messageCreate", async (message) => {
           editRoleName = roles.first()!.name;
         }
       }
-      
+
       // Edit the channel message if we have its ID
       if (modmailMsg.channelMessageId) {
         try {
@@ -6502,7 +6225,7 @@ client.on("messageCreate", async (message) => {
           console.log("Could not edit channel message:", e);
         }
       }
-      
+
       // Edit the DM message if we have its ID
       if (modmailMsg.dmMessageId) {
         try {
@@ -6519,15 +6242,15 @@ client.on("messageCreate", async (message) => {
           console.log("Could not edit DM message:", e);
         }
       }
-      
+
       // Update in database
       await storage.updateModmailMessage(modmailMsg.id, { content: newContent });
-      
+
       // Delete the edit command message
       try {
         await message.delete();
       } catch (e) {}
-      
+
       // Send confirmation that auto-deletes
       const confirmMsg = await (message.channel as any).send("✅ Message edited successfully.");
       setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
@@ -6537,27 +6260,27 @@ client.on("messageCreate", async (message) => {
     }
     return;
   }
-  
-  // Handle !delete (message_id) or !delete for most recent
-  if (message.guild && message.content.toLowerCase().startsWith("!delete")) {
+
+  // Handle .delete (message_id) or .delete for most recent
+  if (message.guild && message.content.toLowerCase().startsWith(".delete")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
       await message.reply("❌ This is not a modmail ticket channel.");
       return;
     }
-    
+
     if (thread.status !== "open") {
       await message.reply("❌ This ticket is already closed.");
       return;
     }
-    
+
     const args = message.content.substring(7).trim();
     let modmailMsg: any;
-    
+
     // Check if arg looks like an ID (UUID format or Discord snowflake)
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const discordIdRegex = /^\d{17,20}$/;
-    
+
     if (args && uuidRegex.test(args)) {
       // UUID database ID
       modmailMsg = await storage.getModmailMessage(args);
@@ -6568,15 +6291,15 @@ client.on("messageCreate", async (message) => {
       // No ID provided, use most recent staff message
       modmailMsg = await storage.getLatestStaffModmailMessage(thread.id);
     }
-    
+
     if (!modmailMsg) {
       await message.reply("❌ Could not find the message to delete. You can use the Discord message ID or leave blank to delete your most recent message.");
       return;
     }
-    
+
     try {
       const user = await client.users.fetch(thread.userId);
-      
+
       // Delete the channel message if we have its ID
       if (modmailMsg.channelMessageId) {
         try {
@@ -6586,7 +6309,7 @@ client.on("messageCreate", async (message) => {
           console.log("Could not delete channel message:", e);
         }
       }
-      
+
       // Delete the DM message if we have its ID
       if (modmailMsg.dmMessageId) {
         try {
@@ -6597,15 +6320,15 @@ client.on("messageCreate", async (message) => {
           console.log("Could not delete DM message:", e);
         }
       }
-      
+
       // Delete from database
       await storage.deleteModmailMessage(modmailMsg.id);
-      
+
       // Delete the delete command message
       try {
         await message.delete();
       } catch (e) {}
-      
+
       // Send confirmation that auto-deletes
       const confirmMsg = await (message.channel as any).send("✅ Message deleted successfully.");
       setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
@@ -6615,8 +6338,8 @@ client.on("messageCreate", async (message) => {
     }
     return;
   }
-  
-  // Staff messages in modmail channels WITHOUT !r prefix are NOT sent to user
+
+  // Staff messages in modmail channels WITHOUT .r prefix are NOT sent to user
   // This allows staff to discuss in the channel privately
   // BUT we should still clear the claim expiry timer if any staff member sends a message
   if (message.guild && !message.author.bot) {
@@ -6635,68 +6358,68 @@ const syncingUsers = new Set<string>();
 
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   console.log(`[ROLE SYNC] guildMemberUpdate triggered for ${newMember.user.tag} in guild ${newMember.guild.name} (${newMember.guild.id})`);
-  
+
   const oldRoles = Array.from(oldMember.roles.cache.keys());
   const newRoles = Array.from(newMember.roles.cache.keys());
-  
+
   const allRosterRoles = [...PLAYER_ROLE_IDS, ...STAFF_ROLE_IDS];
-  
+
   const hasRosterRoleChange = allRosterRoles.some(roleId => 
     oldRoles.includes(roleId) !== newRoles.includes(roleId)
   );
-  
+
   if (hasRosterRoleChange) {
     console.log(`Roster role changed for ${newMember.user.tag}, updating rosters...`);
     await updateRosterMessages(newMember.guild.id);
   }
-  
+
   const currentGuildId = newMember.guild.id;
-  
+
   const syncKey = `${newMember.id}-${currentGuildId}`;
   if (syncingUsers.has(syncKey)) {
     console.log(`[ROLE SYNC] Sync already in progress for ${newMember.user.tag}, skipping to prevent loop`);
     return;
   }
-  
+
   const addedRoles = newRoles.filter(r => !oldRoles.includes(r));
   const removedRoles = oldRoles.filter(r => !newRoles.includes(r));
-  
+
   if (addedRoles.length === 0 && removedRoles.length === 0) {
     return;
   }
-  
+
   console.log(`[ROLE SYNC] Added roles: ${addedRoles.join(", ") || "none"}`);
   console.log(`[ROLE SYNC] Removed roles: ${removedRoles.join(", ") || "none"}`);
-  
+
   const allSyncPairs = await storage.getAllRoleSyncPairs();
-  
+
   const relevantPairs = allSyncPairs.filter(pair => 
     pair.sourceGuildId === currentGuildId && 
     (addedRoles.includes(pair.sourceRoleId) || removedRoles.includes(pair.sourceRoleId))
   );
-  
+
   if (relevantPairs.length === 0) {
     console.log(`[ROLE SYNC] No syncable roles changed, skipping`);
     return;
   }
-  
+
   console.log(`[ROLE SYNC] Found ${relevantPairs.length} relevant sync pairs`);
-  
+
   try {
     syncingUsers.add(syncKey);
-    
+
     for (const pair of relevantPairs) {
       const targetSyncKey = `${newMember.id}-${pair.targetGuildId}`;
       syncingUsers.add(targetSyncKey);
-      
+
       const targetGuild = client.guilds.cache.get(pair.targetGuildId);
       if (!targetGuild) {
         console.log(`[ROLE SYNC] Target guild ${pair.targetGuildId} not found in cache`);
         continue;
       }
-      
+
       console.log(`[ROLE SYNC] Syncing to ${targetGuild.name}`);
-      
+
       let targetMember;
       let fetchError = null;
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -6713,19 +6436,19 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
           }
         }
       }
-      
+
       if (!targetMember) {
         console.log(`[ROLE SYNC] User ${newMember.user.tag} not found in target guild or fetch failed: ${fetchError?.message || 'unknown'}`);
         continue;
       }
-      
+
       // Verify target role exists in target guild
       const targetRoleExists = targetGuild.roles.cache.has(pair.targetRoleId);
       if (!targetRoleExists) {
         console.log(`[ROLE SYNC] ERROR: Target role ${pair.targetRoleId} does not exist in guild ${targetGuild.name} (${targetGuild.id}). Sync pair ID: ${pair.id} is misconfigured. Please delete this pair and recreate it with valid role IDs.`);
         continue;
       }
-      
+
       if (addedRoles.includes(pair.sourceRoleId)) {
         if (!targetMember.roles.cache.has(pair.targetRoleId)) {
           try {
@@ -6740,7 +6463,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
           }
         }
       }
-      
+
       if (removedRoles.includes(pair.sourceRoleId)) {
         if (targetMember.roles.cache.has(pair.targetRoleId)) {
           try {
