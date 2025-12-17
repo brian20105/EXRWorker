@@ -95,6 +95,7 @@ export interface IStorage {
   deleteModmailMessage(id: string): Promise<void>;
   getLatestStaffModmailMessage(threadId: string): Promise<ModmailMessage | undefined>;
   getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  getModmailStatsByCategory(guildId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
   
   createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock>;
   getActiveModmailBlock(guildId: string, userId: string): Promise<ModmailBlock | undefined>;
@@ -510,6 +511,37 @@ export class DatabaseStorage implements IStorage {
     
     return Object.entries(counts)
       .map(([userId, count]) => ({ userId, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  async getModmailStatsByCategory(guildId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]> {
+    let threads = await db.select().from(modmailThreads).where(
+      and(
+        eq(modmailThreads.guildId, guildId),
+        eq(modmailThreads.status, "closed")
+      )
+    );
+    
+    if (threads.length === 0) return [];
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      threads = threads.filter(t => t.closedAt && t.closedAt >= fromDate);
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
+    }
+    
+    const counts: { [category: string]: number } = {};
+    for (const t of threads) {
+      const cat = t.category || "unknown";
+      counts[cat] = (counts[cat] || 0) + 1;
+    }
+    
+    return Object.entries(counts)
+      .map(([category, count]) => ({ category, count }))
       .sort((a, b) => b.count - a.count);
   }
 

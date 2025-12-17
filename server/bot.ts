@@ -2097,6 +2097,9 @@ client.on("interactionCreate", async (interaction) => {
           const modmailStats = !category || category === "modmail"
             ? await storage.getModmailStats(interaction.guildId!, fromDays, toDays)
             : [];
+          const modmailCategoryStats = !category || category === "modmail"
+            ? await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays)
+            : [];
 
           const combinedStats: { [userId: string]: number } = {};
           for (const stat of banStats) {
@@ -2156,7 +2159,25 @@ client.on("interactionCreate", async (interaction) => {
             if (!category || category === "modmail") {
               if (banTotal > 0) statsText += `\nBan Requests: ${banTotal}`;
               if (unbanTotal > 0) statsText += `\nUnban Requests: ${unbanTotal}`;
-              if (modmailTotal > 0) statsText += `\nModmails Handled: ${modmailTotal}`;
+              if (modmailTotal > 0) {
+                statsText += `\nModmails Handled: ${modmailTotal}`;
+                // Add modmail category breakdown
+                const categoryLabels: { [key: string]: string } = {
+                  general: "General Inquiries",
+                  competitive: "Competitive",
+                  contentcreator: "Content Creator",
+                  report: "User Reports",
+                  partnerships: "Partnerships",
+                  gfx: "GFX Editor",
+                  creativewarrior: "Creative Warrior",
+                  vfxeditor: "VFX Editor",
+                  unknown: "Other",
+                };
+                for (const catStat of modmailCategoryStats) {
+                  const label = categoryLabels[catStat.category] || catStat.category;
+                  statsText += `\n  - ${label}: ${catStat.count}`;
+                }
+              }
             }
             embed.addFields({ name: "\u200B", value: statsText, inline: false });
           }
@@ -2166,7 +2187,7 @@ client.on("interactionCreate", async (interaction) => {
 
           await interaction.editReply({ embeds: [embed] });
         } catch (error: any) {
-          console.log("Error in /activity command:", error.message);
+          console.log("Error in /activity command:", error.message, error.stack);
           await interaction.editReply({ content: "❌ Failed to fetch activity stats. Please try again." }).catch(() => {});
         }
       } else if (commandName === "clear-role") {
@@ -3048,6 +3069,7 @@ client.on("interactionCreate", async (interaction) => {
           guildId,
           userId: user.id,
           status: "open",
+          category: ticketCategory,
         });
 
         try {
@@ -3166,6 +3188,7 @@ client.on("interactionCreate", async (interaction) => {
           guildId,
           userId: user.id,
           status: "open",
+          category: ticketCategory,
         });
 
         try {
@@ -3919,6 +3942,7 @@ client.on("interactionCreate", async (interaction) => {
           guildId,
           userId: user.id,
           status: "open",
+          category: ticketCategory,
         });
 
         try {
@@ -4071,6 +4095,7 @@ client.on("interactionCreate", async (interaction) => {
           guildId,
           userId: user.id,
           status: "open",
+          category: ticketCategory,
         });
 
         try {
