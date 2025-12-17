@@ -5090,7 +5090,7 @@ client.on("messageCreate", async (message) => {
     let timeArg = "";
     if (lowerContent.startsWith(".close ")) {
       timeArg = message.content.substring(7).trim();
-    } else if (lowerContent.startsWith("!c ")) {
+    } else if (lowerContent.startsWith(".c ")) {
       timeArg = message.content.substring(3).trim();
     }
 
@@ -5304,16 +5304,17 @@ client.on("messageCreate", async (message) => {
       clearTimeout(existingClaimTimer.timeout);
     }
 
+    const channelId = message.channel.id;
     const claimExpiryTimeout = setTimeout(async () => {
-      pendingClaimExpiry.delete(message.channel.id);
+      pendingClaimExpiry.delete(channelId);
 
-      const currentThread = await storage.getModmailThreadByChannel(message.channel.id);
+      const currentThread = await storage.getModmailThreadByChannel(channelId);
       if (!currentThread || currentThread.status !== "open") return;
       if (currentThread.claimedById !== message.author.id) return;
 
       await storage.updateModmailThread(currentThread.id, { claimedById: null });
       try {
-        const channel = await client.channels.fetch(message.channel.id);
+        const channel = await client.channels.fetch(channelId);
         if (channel && "send" in channel) {
           await channel.send(`⏰ Ticket auto-unclaimed. <@${message.author.id}> did not respond within 15 minutes.`);
         }
@@ -5322,7 +5323,7 @@ client.on("messageCreate", async (message) => {
       }
     }, CLAIM_EXPIRY_TIME);
 
-    pendingClaimExpiry.set(message.channel.id, {
+    pendingClaimExpiry.set(channelId, {
       timeout: claimExpiryTimeout,
       claimerId: message.author.id,
     });
