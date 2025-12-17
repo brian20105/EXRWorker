@@ -3594,109 +3594,115 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.customId.startsWith("modmail_claim_")) {
         if (!await safeDeferUpdate(interaction)) return;
 
-        const threadId = interaction.customId.replace("modmail_claim_", "");
-        const thread = await storage.getModmailThread(threadId);
+        try {
+          const threadId = interaction.customId.replace("modmail_claim_", "");
+          const thread = await storage.getModmailThread(threadId);
 
-        if (!thread) {
-          await interaction.followUp({ content: "❌ Thread not found.", flags: 64 });
-          return;
-        }
-
-        if (thread.claimedById) {
-          await interaction.followUp({ content: `❌ This ticket is already claimed by <@${thread.claimedById}>.`, flags: 64 });
-          return;
-        }
-
-        const config = await storage.getGuildConfig(interaction.guildId!);
-        const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
-        const memberRoles = interaction.member?.roles;
-        const hasClaimPermission = claimRoleIds.length === 0 || 
-          (memberRoles && Array.isArray(memberRoles) 
-            ? claimRoleIds.some(id => memberRoles.includes(id))
-            : memberRoles && 'cache' in memberRoles && claimRoleIds.some(id => memberRoles.cache.has(id)));
-
-        if (!hasClaimPermission) {
-          await interaction.followUp({ content: "❌ You don't have permission to claim tickets.", flags: 64 });
-          return;
-        }
-
-        await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
-
-        const claimEmbed = new EmbedBuilder()
-          .setDescription(`🙋 Ticket claimed by <@${interaction.user.id}>`)
-          .setColor(0x5865f2)
-          .setTimestamp();
-        await interaction.channel?.send({ embeds: [claimEmbed] });
-
-        // Start 15-minute claim expiry timer
-        if (interaction.channel) {
-          const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
-          const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
-          if (existingClaimTimer) {
-            clearTimeout(existingClaimTimer.timeout);
+          if (!thread) {
+            await interaction.followUp({ content: "Thread not found.", flags: 64 });
+            return;
           }
 
-          const channelId = interaction.channel.id;
-          const claimerId = interaction.user.id;
-          const claimExpiryTimeout = setTimeout(async () => {
-            pendingClaimExpiry.delete(channelId);
+          if (thread.claimedById) {
+            await interaction.followUp({ content: `This ticket is already claimed by <@${thread.claimedById}>.`, flags: 64 });
+            return;
+          }
 
-            const currentThread = await storage.getModmailThreadByChannel(channelId);
-            if (!currentThread || currentThread.status !== "open") return;
-            if (currentThread.claimedById !== claimerId) return;
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
+          const memberRoles = interaction.member?.roles;
+          const hasClaimPermission = claimRoleIds.length === 0 || 
+            (memberRoles && Array.isArray(memberRoles) 
+              ? claimRoleIds.some(id => memberRoles.includes(id))
+              : memberRoles && 'cache' in memberRoles && claimRoleIds.some(id => memberRoles.cache.has(id)));
 
-            await storage.updateModmailThread(currentThread.id, { claimedById: null });
-            try {
-              const channel = await client.channels.fetch(channelId);
-              if (channel && "send" in channel) {
-                await channel.send(`⏰ Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
-              }
-            } catch (e) {
-              console.log("Could not send auto-unclaim message");
+          if (!hasClaimPermission) {
+            await interaction.followUp({ content: "You don't have permission to claim tickets.", flags: 64 });
+            return;
+          }
+
+          await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
+
+          const claimEmbed = new EmbedBuilder()
+            .setDescription(`Ticket claimed by <@${interaction.user.id}>`)
+            .setColor(0x5865f2)
+            .setTimestamp();
+          await interaction.channel?.send({ embeds: [claimEmbed] });
+
+          // Start 15-minute claim expiry timer
+          if (interaction.channel) {
+            const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
+            const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
+            if (existingClaimTimer) {
+              clearTimeout(existingClaimTimer.timeout);
             }
-          }, CLAIM_EXPIRY_TIME);
 
-          pendingClaimExpiry.set(channelId, {
-            timeout: claimExpiryTimeout,
-            claimerId: claimerId,
-          });
+            const channelId = interaction.channel.id;
+            const claimerId = interaction.user.id;
+            const claimExpiryTimeout = setTimeout(async () => {
+              pendingClaimExpiry.delete(channelId);
+
+              try {
+                const currentThread = await storage.getModmailThreadByChannel(channelId);
+                if (!currentThread || currentThread.status !== "open") return;
+                if (currentThread.claimedById !== claimerId) return;
+
+                await storage.updateModmailThread(currentThread.id, { claimedById: null });
+                const channel = await client.channels.fetch(channelId);
+                if (channel && "send" in channel) {
+                  await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
+                }
+              } catch (e) {
+                console.log("Could not process auto-unclaim");
+              }
+            }, CLAIM_EXPIRY_TIME);
+
+            pendingClaimExpiry.set(channelId, {
+              timeout: claimExpiryTimeout,
+              claimerId: claimerId,
+            });
+          }
+        } catch (error: any) {
+          console.log("Error in modmail_claim button:", error.message);
+          await interaction.followUp({ content: "Failed to claim ticket. Please try again.", flags: 64 }).catch(() => {});
         }
         return;
       } else if (interaction.customId.startsWith("modmail_close_")) {
         if (!await safeDeferReply(interaction)) return;
 
-        const threadId = interaction.customId.replace("modmail_close_", "");
-        const thread = await storage.getModmailThread(threadId);
+        try {
+          const threadId = interaction.customId.replace("modmail_close_", "");
+          const thread = await storage.getModmailThread(threadId);
 
-        if (!thread) {
-          await interaction.editReply({ content: "❌ Thread not found." });
-          return;
-        }
-
-        // Check if ticket is claimed and if the closer is the claimer
-        if (thread.claimedById && thread.claimedById !== interaction.user.id) {
-          await interaction.editReply({ content: `❌ Only <@${thread.claimedById}> (who claimed this ticket) can close it.` });
-          return;
-        }
-
-        // Update thread status and clear timer
-        await storage.updateModmailThread(threadId, {
-          status: "closed",
-          closedById: interaction.user.id,
-          closeReason: "Closed via button",
-          closedAt: new Date(),
-        });
-
-        if (interaction.channel) {
-          const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
-          if (existingClaimTimer) {
-            clearTimeout(existingClaimTimer.timeout);
-            pendingClaimExpiry.delete(interaction.channel.id);
+          if (!thread) {
+            await interaction.editReply({ content: "Thread not found." });
+            return;
           }
-        }
 
-        // Reply immediately, then do background work
-        await interaction.editReply({ content: "✅ Ticket closed. Deleting channel..." });
+          // Check if ticket is claimed and if the closer is the claimer
+          if (thread.claimedById && thread.claimedById !== interaction.user.id) {
+            await interaction.editReply({ content: `Only <@${thread.claimedById}> (who claimed this ticket) can close it.` });
+            return;
+          }
+
+          // Update thread status and clear timer
+          await storage.updateModmailThread(threadId, {
+            status: "closed",
+            closedById: interaction.user.id,
+            closeReason: "Closed via button",
+            closedAt: new Date(),
+          });
+
+          if (interaction.channel) {
+            const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
+            if (existingClaimTimer) {
+              clearTimeout(existingClaimTimer.timeout);
+              pendingClaimExpiry.delete(interaction.channel.id);
+            }
+          }
+
+          // Reply immediately, then do background work
+          await interaction.editReply({ content: "Ticket closed. Deleting channel..." });
 
         // Capture references synchronously before async work
         const guildId = interaction.guildId!;
@@ -3756,7 +3762,10 @@ client.on("interactionCreate", async (interaction) => {
             }, 3000);
           }
         })().catch(e => console.log("[MODMAIL] Background task error:", e));
-
+        } catch (error: any) {
+          console.log("Error in modmail_close button:", error.message);
+          await interaction.editReply({ content: "Failed to close ticket. Please try again." }).catch(() => {});
+        }
         return;
       } else if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
         if (!await safeDeferUpdate(interaction)) return;
