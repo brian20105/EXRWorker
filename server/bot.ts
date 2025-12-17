@@ -879,6 +879,24 @@ const commands = [
     .setName("close_all_tickets")
     .setDescription("Close all open modmail tickets (even if channels are deleted)")
     .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("modmail-category")
+    .setDescription("Manage custom modmail ticket categories")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub.setName("add").setDescription("Add a new custom category")
+        .addStringOption((option) => option.setName("id").setDescription("Category ID (lowercase, no spaces)").setRequired(true))
+        .addStringOption((option) => option.setName("label").setDescription("Display name").setRequired(true))
+        .addStringOption((option) => option.setName("description").setDescription("Short description").setRequired(true))
+        .addStringOption((option) => option.setName("emoji").setDescription("Emoji for the category").setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub.setName("remove").setDescription("Remove a custom category")
+        .addStringOption((option) => option.setName("id").setDescription("Category ID to remove").setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub.setName("list").setDescription("List all modmail categories")
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -2161,12 +2179,14 @@ client.on("interactionCreate", async (interaction) => {
             
             // Add total and category breakdown
             let statsText = `**Total in the specified time:** ${totalCount}`;
-            if (!category || category === "modmail") {
+            if (!category) {
+              // "All Activity" view - show totals only
               if (banTotal > 0) statsText += `\nBan Requests: ${banTotal}`;
               if (unbanTotal > 0) statsText += `\nUnban Requests: ${unbanTotal}`;
-              if (modmailTotal > 0) {
-                statsText += `\nModmails Handled: ${modmailTotal}`;
-                // Add modmail category breakdown
+              if (modmailTotal > 0) statsText += `\nModmails Handled: ${modmailTotal}`;
+            } else if (category === "modmail") {
+              // "Modmails Handled" view - show category breakdown
+              if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
                 const categoryLabels: { [key: string]: string } = {
                   general: "General Inquiries",
                   competitive: "Competitive",
@@ -2176,11 +2196,12 @@ client.on("interactionCreate", async (interaction) => {
                   gfx: "GFX Editor",
                   creativewarrior: "Creative Warrior",
                   vfxeditor: "VFX Editor",
-                  unknown: "Other",
                 };
+                statsText += "\n\n**Category Breakdown:**";
                 for (const catStat of modmailCategoryStats) {
+                  // Skip unknown categories, use label or raw category name
                   const label = categoryLabels[catStat.category] || catStat.category;
-                  statsText += `\n  - ${label}: ${catStat.count}`;
+                  statsText += `\n• ${label}: ${catStat.count}`;
                 }
               }
             }
@@ -2572,10 +2593,20 @@ client.on("interactionCreate", async (interaction) => {
           modmailStaffRoleIds: [staffRole.id],
         });
 
-        // Fetch config for custom embed title/description
+        // Fetch config for custom embed title/description and custom categories
         const config = await storage.getGuildConfig(interaction.guildId!);
         const embedTitle = config?.modmailEmbedTitle || "Support Tickets";
         const embedDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
+
+        // Parse custom categories
+        let customCategories: { id: string; label: string; description: string; emoji?: string }[] = [];
+        if (config?.customModmailCategories) {
+          try {
+            customCategories = JSON.parse(config.customModmailCategories);
+          } catch (e) {
+            customCategories = [];
+          }
+        }
 
         // Post the ticket embed with dropdown menu
         const ticketEmbed = new EmbedBuilder()
@@ -2583,51 +2614,64 @@ client.on("interactionCreate", async (interaction) => {
           .setDescription(embedDescription)
           .setColor(0x2f3136);
 
+        // Build options array with built-in categories
+        const selectOptions = [
+          new StringSelectMenuOptionBuilder()
+            .setLabel("General Inquiries")
+            .setDescription("General questions or support")
+            .setValue("general")
+            .setEmoji("📥"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Apply For Competitive")
+            .setDescription("Apply to join the competitive team")
+            .setValue("competitive")
+            .setEmoji("🖥️"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Apply For Content Creator")
+            .setDescription("Apply to become a content creator")
+            .setValue("contentcreator")
+            .setEmoji("📷"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("User Reports")
+            .setDescription("Report a user")
+            .setValue("report")
+            .setEmoji("🚨"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Partnerships")
+            .setDescription("Partnership inquiries")
+            .setValue("partnerships")
+            .setEmoji("📋"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Apply For GFX Editor")
+            .setDescription("Apply to become a GFX editor")
+            .setValue("gfx")
+            .setEmoji("📝"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Apply For Creative Warrior")
+            .setDescription("Apply for creative warrior role")
+            .setValue("creativewarrior")
+            .setEmoji("⚔️"),
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Apply For VFX Editor")
+            .setDescription("Apply for VFX editor role")
+            .setValue("vfxeditor")
+            .setEmoji("✨"),
+        ];
+
+        // Add custom categories
+        for (const cat of customCategories) {
+          const option = new StringSelectMenuOptionBuilder()
+            .setLabel(cat.label)
+            .setDescription(cat.description.substring(0, 100))
+            .setValue(cat.id);
+          if (cat.emoji) option.setEmoji(cat.emoji);
+          selectOptions.push(option);
+        }
+
         const selectMenu = new StringSelectMenuBuilder()
           .setCustomId(`ticket_select_${interaction.guildId}`)
           .setPlaceholder("Select a ticket category...")
-          .addOptions(
-            new StringSelectMenuOptionBuilder()
-              .setLabel("General Inquiries")
-              .setDescription("General questions or support")
-              .setValue("general")
-              .setEmoji("📥"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For Competitive")
-              .setDescription("Apply to join the competitive team")
-              .setValue("competitive")
-              .setEmoji("🖥️"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For Content Creator")
-              .setDescription("Apply to become a content creator")
-              .setValue("contentcreator")
-              .setEmoji("📷"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("User Reports")
-              .setDescription("Report a user")
-              .setValue("report")
-              .setEmoji("🚨"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Partnerships")
-              .setDescription("Partnership inquiries")
-              .setValue("partnerships")
-              .setEmoji("📋"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For GFX Editor")
-              .setDescription("Apply to become a GFX editor")
-              .setValue("gfx")
-              .setEmoji("📝"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For Creative Warrior")
-              .setDescription("Apply for creative warrior role")
-              .setValue("creativewarrior")
-              .setEmoji("⚔️"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For VFX Editor")
-              .setDescription("Apply for VFX editor role")
-              .setValue("vfxeditor")
-              .setEmoji("✨")
-          );
+          .addOptions(selectOptions);
 
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
@@ -2885,6 +2929,99 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ 
           content: `✅ Closed **${closedCount}** ticket(s). Deleted **${deletedChannelCount}** channel(s).` 
         });
+      } else if (commandName === "modmail-category") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const subcommand = interaction.options.getSubcommand();
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        
+        // Parse existing custom categories
+        let customCategories: { id: string; label: string; description: string; emoji?: string }[] = [];
+        if (config?.customModmailCategories) {
+          try {
+            customCategories = JSON.parse(config.customModmailCategories);
+          } catch (e) {
+            customCategories = [];
+          }
+        }
+
+        // Built-in categories for reference
+        const builtInCategories = [
+          { id: "general", label: "General Inquiries", description: "General questions or support", emoji: "📥" },
+          { id: "competitive", label: "Apply For Competitive", description: "Apply to join the competitive team", emoji: "🖥️" },
+          { id: "contentcreator", label: "Apply For Content Creator", description: "Apply to become a content creator", emoji: "📷" },
+          { id: "report", label: "User Reports", description: "Report a user", emoji: "🚨" },
+          { id: "partnerships", label: "Partnerships", description: "Partnership inquiries", emoji: "📋" },
+          { id: "gfx", label: "Apply For GFX Editor", description: "Apply to become a GFX editor", emoji: "📝" },
+          { id: "creativewarrior", label: "Apply For Creative Warrior", description: "Apply for creative warrior role", emoji: "⚔️" },
+          { id: "vfxeditor", label: "Apply For VFX Editor", description: "Apply for VFX editor role", emoji: "✨" },
+        ];
+
+        if (subcommand === "add") {
+          const categoryId = interaction.options.getString("id", true).toLowerCase().replace(/\s+/g, "");
+          const label = interaction.options.getString("label", true);
+          const description = interaction.options.getString("description", true);
+          const emoji = interaction.options.getString("emoji") || "📌";
+
+          // Check if ID already exists
+          const allIds = [...builtInCategories.map(c => c.id), ...customCategories.map(c => c.id)];
+          if (allIds.includes(categoryId)) {
+            await interaction.editReply({ content: `❌ A category with ID "${categoryId}" already exists.` });
+            return;
+          }
+
+          customCategories.push({ id: categoryId, label, description, emoji });
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customModmailCategories: JSON.stringify(customCategories),
+          });
+
+          await interaction.editReply({ 
+            content: `✅ Added custom category: **${label}** (${emoji})\nID: \`${categoryId}\`\n\n⚠️ You need to run \`/setup_modmail\` again to update the ticket dropdown with the new category.`
+          });
+
+        } else if (subcommand === "remove") {
+          const categoryId = interaction.options.getString("id", true).toLowerCase();
+
+          // Check if it's a built-in category
+          if (builtInCategories.some(c => c.id === categoryId)) {
+            await interaction.editReply({ content: `❌ Cannot remove built-in category "${categoryId}".` });
+            return;
+          }
+
+          const index = customCategories.findIndex(c => c.id === categoryId);
+          if (index === -1) {
+            await interaction.editReply({ content: `❌ Custom category "${categoryId}" not found.` });
+            return;
+          }
+
+          const removed = customCategories.splice(index, 1)[0];
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customModmailCategories: JSON.stringify(customCategories),
+          });
+
+          await interaction.editReply({ 
+            content: `✅ Removed custom category: **${removed.label}**\n\n⚠️ You need to run \`/setup_modmail\` again to update the ticket dropdown.`
+          });
+
+        } else if (subcommand === "list") {
+          const embed = new EmbedBuilder()
+            .setTitle("Modmail Categories")
+            .setColor(0x5865f2);
+
+          let builtInText = builtInCategories.map(c => `${c.emoji} **${c.label}** (\`${c.id}\`)`).join("\n");
+          embed.addFields({ name: "Built-in Categories", value: builtInText, inline: false });
+
+          if (customCategories.length > 0) {
+            let customText = customCategories.map(c => `${c.emoji || "📌"} **${c.label}** (\`${c.id}\`)`).join("\n");
+            embed.addFields({ name: "Custom Categories", value: customText, inline: false });
+          } else {
+            embed.addFields({ name: "Custom Categories", value: "No custom categories added yet.", inline: false });
+          }
+
+          await interaction.editReply({ embeds: [embed] });
+        }
       }
     } else if (interaction.isStringSelectMenu()) {
       // Handle ticket dropdown selection
@@ -3062,11 +3199,25 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        // Parse custom categories for label lookup
+        let customCategories: { id: string; label: string; description: string; emoji?: string }[] = [];
+        if (config?.customModmailCategories) {
+          try {
+            customCategories = JSON.parse(config.customModmailCategories);
+          } catch (e) {
+            customCategories = [];
+          }
+        }
+
         const categoryLabels: { [key: string]: string } = {
           general: "General Inquiries",
           report: "User Reports",
           partnerships: "Partnerships",
         };
+        // Add custom category labels
+        for (const cat of customCategories) {
+          categoryLabels[cat.id] = cat.label;
+        }
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
 
         // Create thread and channel
