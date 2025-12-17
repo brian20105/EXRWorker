@@ -37,7 +37,7 @@ import {
   activityResetBackups
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, or, sql } from "drizzle-orm";
+import { eq, and, desc, or, sql, gte, lte, count } from "drizzle-orm";
 
 export interface IStorage {
   getGuildConfig(guildId: string): Promise<GuildConfig | undefined>;
@@ -96,6 +96,9 @@ export interface IStorage {
   getLatestStaffModmailMessage(threadId: string): Promise<ModmailMessage | undefined>;
   getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   getModmailStatsByCategory(guildId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
+  getActivityStatsForUser(guildId: string, userId: string, category: string, fromDays?: number, toDays?: number): Promise<number>;
+  getModmailStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
+  getModmailStatsByCategoryForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
   
   createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock>;
   getActiveModmailBlock(guildId: string, userId: string): Promise<ModmailBlock | undefined>;
@@ -548,6 +551,93 @@ export class DatabaseStorage implements IStorage {
       // If category column doesn't exist yet, return empty array
       if (error.message?.includes('category') || error.message?.includes('column')) {
         console.log('Category column not yet migrated, skipping category stats');
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  async getActivityStatsForUser(guildId: string, userId: string, category: string, fromDays?: number, toDays?: number): Promise<number> {
+    const table = category === "ban" ? banRequests : unbanRequests;
+    
+    let conditions: any[] = [
+      eq(table.guildId, guildId),
+      eq(table.reviewedById, userId),
+      eq(table.status, "approved")
+    ];
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(table.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(table.createdAt, toDate));
+    }
+    
+    const result = await db.select({ count: count() }).from(table).where(and(...conditions));
+    return result[0]?.count || 0;
+  }
+
+  async getModmailStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number> {
+    let threads = await db.select().from(modmailThreads).where(
+      and(
+        eq(modmailThreads.guildId, guildId),
+        eq(modmailThreads.closedById, userId),
+        eq(modmailThreads.status, "closed")
+      )
+    );
+    
+    if (threads.length === 0) return 0;
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      threads = threads.filter(t => t.closedAt && t.closedAt >= fromDate);
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
+    }
+    
+    return threads.length;
+  }
+
+  async getModmailStatsByCategoryForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]> {
+    try {
+      let threads = await db.select().from(modmailThreads).where(
+        and(
+          eq(modmailThreads.guildId, guildId),
+          eq(modmailThreads.closedById, userId),
+          eq(modmailThreads.status, "closed")
+        )
+      );
+      
+      if (threads.length === 0) return [];
+      
+      const now = new Date();
+      if (fromDays !== undefined) {
+        const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+        threads = threads.filter(t => t.closedAt && t.closedAt >= fromDate);
+      }
+      if (toDays !== undefined) {
+        const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+        threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
+      }
+      
+      const counts: { [category: string]: number } = {};
+      for (const t of threads) {
+        const cat = t.category || "unknown";
+        counts[cat] = (counts[cat] || 0) + 1;
+      }
+      
+      return Object.entries(counts)
+        .map(([category, count]) => ({ category, count }))
+        .sort((a, b) => b.count - a.count);
+    } catch (error: any) {
+      if (error.message?.includes('category') || error.message?.includes('column')) {
+        console.log('Category column not yet migrated, skipping category stats for user');
         return [];
       }
       throw error;
