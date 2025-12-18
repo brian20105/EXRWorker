@@ -805,6 +805,44 @@ const commands = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName("setup_appeal")
+    .setDescription("Post the ban appeal ticket embed in the current channel")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("category")
+        .setDescription("Category channel for appeal threads")
+        .setRequired(true)
+    )
+    .addChannelOption((option) =>
+      option
+        .setName("log_channel")
+        .setDescription("Channel for appeal logs")
+        .setRequired(true)
+    )
+    .addRoleOption((option) =>
+      option
+        .setName("staff_role")
+        .setDescription("Role that can respond to appeals")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("config_appeal")
+    .setDescription("Configure the ban appeal embed title and description")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("title")
+        .setDescription("The embed title")
+        .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("description")
+        .setDescription("The embed description")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
     .setName("block")
     .setDescription("Block a user from opening modmail tickets")
     .setDefaultMemberPermissions(0)
@@ -2917,6 +2955,76 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Modmail embed updated:\n• ${updates.join("\n• ")}\n\nRun /setup_modmail again to post the updated embed.`,
         });
+      } else if (commandName === "setup_appeal") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const category = interaction.options.getChannel("category", true);
+        const logChannel = interaction.options.getChannel("log_channel", true);
+        const staffRole = interaction.options.getRole("staff_role", true);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          appealCategoryId: category.id,
+          appealLogChannelId: logChannel.id,
+          appealStaffRoleIds: [staffRole.id],
+        });
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const embedTitle = config?.appealEmbedTitle || "Ban Appeals";
+        const embedDescription = config?.appealEmbedDescription || "Click the button below to submit a ban appeal.";
+
+        const appealEmbed = new EmbedBuilder()
+          .setTitle(embedTitle)
+          .setDescription(embedDescription)
+          .setColor(0x2f3136);
+
+        const appealButton = new ButtonBuilder()
+          .setCustomId(`appeal_start_${interaction.guildId}`)
+          .setLabel("Submit Ban Appeal")
+          .setStyle(ButtonStyle.Primary)
+          .setEmoji("📝");
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(appealButton);
+
+        if (interaction.channel && "send" in interaction.channel) {
+          await interaction.channel.send({
+            embeds: [appealEmbed],
+            components: [row],
+          });
+        }
+
+        await interaction.editReply({
+          content: `✅ Ban Appeal system configured and embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
+        });
+      } else if (commandName === "config_appeal") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const title = interaction.options.getString("title");
+        const description = interaction.options.getString("description");
+
+        if (!title && !description) {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const currentTitle = config?.appealEmbedTitle || "Ban Appeals";
+          const currentDescription = config?.appealEmbedDescription || "Click the button below to submit a ban appeal.";
+          await interaction.editReply({
+            content: `**Current Appeal Embed Settings:**\n• Title: ${currentTitle}\n• Description: ${currentDescription}\n\nUse the title and description options to update these values.`,
+          });
+          return;
+        }
+
+        const updateData: any = { guildId: interaction.guildId! };
+        if (title) updateData.appealEmbedTitle = title;
+        if (description) updateData.appealEmbedDescription = description;
+
+        await storage.upsertGuildConfig(updateData);
+
+        const updates: string[] = [];
+        if (title) updates.push(`Title: ${title}`);
+        if (description) updates.push(`Description: ${description}`);
+
+        await interaction.editReply({
+          content: `✅ Appeal embed updated:\n• ${updates.join("\n• ")}\n\nRun /setup_appeal again to post the updated embed.`,
+        });
       } else if (commandName === "block") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -3785,6 +3893,154 @@ client.on("interactionCreate", async (interaction) => {
         } catch (error: any) {
           console.log("Error in modmail_close button:", error.message);
           await interaction.editReply({ content: "Failed to close ticket. Please try again." }).catch(() => {});
+        }
+        return;
+      } else if (interaction.customId.startsWith("appeal_start_")) {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const guildId = interaction.customId.replace("appeal_start_", "");
+        const user = interaction.user;
+        const guild = interaction.guild;
+
+        if (!guild) {
+          await interaction.editReply({ content: "This can only be used in a server." });
+          return;
+        }
+
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.appealCategoryId) {
+          await interaction.editReply({ content: "Ban appeals are not configured for this server." });
+          return;
+        }
+
+        const block = await storage.getActiveAppealBlock(guildId, user.id);
+        if (block) {
+          const expiresText = block.expiresAt 
+            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
+            : "You are permanently blocked.";
+          await interaction.editReply({ content: `You are blocked from submitting appeals. ${expiresText}` });
+          return;
+        }
+
+        const existingAppeal = await storage.getOpenAppealThread(guildId, user.id);
+        if (existingAppeal) {
+          await interaction.editReply({ content: "You already have an open appeal. Please wait for staff to respond." });
+          return;
+        }
+
+        const thread = await storage.createAppealThread({
+          guildId,
+          userId: user.id,
+          status: "open",
+        });
+
+        try {
+          const channelName = `appeal-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const newChannel = await guild.channels.create({
+            name: channelName,
+            parent: config.appealCategoryId!,
+            topic: `Ban appeal from ${user.tag} (${user.id})`,
+          });
+
+          await storage.updateAppealThread(thread.id, { channelId: newChannel.id });
+
+          const staffRoleMentions = config.appealStaffRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
+          const initialEmbed = new EmbedBuilder()
+            .setTitle("New Ban Appeal")
+            .setColor(0xff6b6b)
+            .addFields(
+              { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true }
+            )
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+
+          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`appeal_claim_${thread.id}`)
+              .setLabel("Claim")
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji("🙋")
+          );
+
+          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+
+          try {
+            const dmEmbed = new EmbedBuilder()
+              .setTitle("Ban Appeal Submitted")
+              .setDescription("Your ban appeal has been submitted. A staff member will review it shortly.\n\nReply to this DM to send messages to staff.")
+              .setColor(0x57f287)
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {
+            console.log("Could not DM user about appeal creation");
+          }
+
+          await interaction.editReply({ content: "Your ban appeal has been submitted! Check your DMs." });
+        } catch (error) {
+          console.log("Could not create appeal channel:", error);
+          await interaction.editReply({ content: "Failed to submit appeal. Please try again." });
+        }
+        return;
+      } else if (interaction.customId.startsWith("appeal_claim_")) {
+        if (!await safeDeferUpdate(interaction)) return;
+
+        try {
+          const threadId = interaction.customId.replace("appeal_claim_", "");
+          const thread = await storage.getAppealThread(threadId);
+
+          if (!thread) {
+            await interaction.followUp({ content: "Appeal not found.", flags: 64 });
+            return;
+          }
+
+          if (thread.claimedById) {
+            await interaction.followUp({ content: `This appeal is already claimed by <@${thread.claimedById}>.`, flags: 64 });
+            return;
+          }
+
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const claimRoleIds = config?.appealStaffRoleIds || [];
+          const memberRoles = interaction.member?.roles;
+          const hasClaimPermission = claimRoleIds.length === 0 || 
+            (memberRoles && Array.isArray(memberRoles) 
+              ? claimRoleIds.some(id => memberRoles.includes(id))
+              : memberRoles && 'cache' in memberRoles && claimRoleIds.some(id => memberRoles.cache.has(id)));
+
+          if (!hasClaimPermission) {
+            await interaction.followUp({ content: "You don't have permission to claim appeals.", flags: 64 });
+            return;
+          }
+
+          await storage.updateAppealThread(threadId, { claimedById: interaction.user.id });
+
+          const claimEmbed = new EmbedBuilder()
+            .setDescription(`**Appeal claimed by <@${interaction.user.id}>**`)
+            .setColor(0x5865f2)
+            .setTimestamp();
+
+          await interaction.message.edit({
+            components: [
+              new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`appeal_claim_${threadId}`)
+                  .setLabel(`Claimed by ${interaction.user.username}`)
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(true)
+              )
+            ]
+          });
+
+          await interaction.followUp({ embeds: [claimEmbed] });
+
+          try {
+            const appealUser = await client.users.fetch(thread.userId);
+            await appealUser.send({ content: `Your appeal has been claimed by a staff member. They will respond shortly.` });
+          } catch (e) {
+            console.log("Could not DM user about appeal claim");
+          }
+        } catch (error: any) {
+          console.log("Error in appeal_claim button:", error.message);
+          await interaction.followUp({ content: "Failed to claim appeal.", flags: 64 }).catch(() => {});
         }
         return;
       } else if (interaction.customId.startsWith("members_prev_") || interaction.customId.startsWith("members_next_")) {
@@ -5510,20 +5766,24 @@ client.on("messageCreate", async (message) => {
   // Handle prefix commands (close, c) with optional time argument in guild channels
   const lowerContent = message.content.toLowerCase();
   if (message.guild && (lowerContent === `${lowerPrefix}close` || lowerContent === `${lowerPrefix}c` || lowerContent.startsWith(`${lowerPrefix}close `) || lowerContent.startsWith(`${lowerPrefix}c `))) {
-    // Silently ignore if not in a modmail channel
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+
     if (!thread) {
       return;
     }
 
     if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
+      await message.reply("This ticket is already closed.");
       return;
     }
 
     // Check if ticket is claimed and if the closer is the claimer
     if (thread.claimedById && thread.claimedById !== message.author.id) {
-      await message.reply(`❌ Only <@${thread.claimedById}> (who claimed this ticket) can close it.`);
+      await message.reply(`Only <@${thread.claimedById}> (who claimed this ticket) can close it.`);
       return;
     }
 
@@ -5580,13 +5840,16 @@ client.on("messageCreate", async (message) => {
       const timedChannelId = message.channel.id;
       const timedGuildId = message.guild?.id;
       const timedStaffId = message.author.id;
+      const timedIsAppeal = isAppeal;
 
       // Schedule the close
       const timeout = setTimeout(async () => {
         pendingTimedCloses.delete(timedChannelId);
 
         // Re-fetch thread to make sure it's still open
-        const currentThread = await storage.getModmailThreadByChannel(timedChannelId);
+        const currentModmail = await storage.getModmailThreadByChannel(timedChannelId);
+        const currentAppeal = await storage.getAppealThreadByChannel(timedChannelId);
+        const currentThread = timedIsAppeal ? currentAppeal : currentModmail;
         if (!currentThread || currentThread.status !== "open") return;
 
         // Clear claim expiry timer on close
@@ -5597,19 +5860,28 @@ client.on("messageCreate", async (message) => {
         }
 
         // Close the thread
-        await storage.updateModmailThread(currentThread.id, {
-          status: "closed",
-          closedById: timedStaffId,
-          closeReason: "Closed via .close command",
-          closedAt: new Date(),
-        });
+        if (timedIsAppeal) {
+          await storage.updateAppealThread(currentThread.id, {
+            status: "closed",
+            closedById: timedStaffId,
+            closeReason: "Closed via .close command",
+            closedAt: new Date(),
+          });
+        } else {
+          await storage.updateModmailThread(currentThread.id, {
+            status: "closed",
+            closedById: timedStaffId,
+            closeReason: "Closed via .close command",
+            closedAt: new Date(),
+          });
+        }
 
         // Notify user via DM
         try {
           const user = await client.users.fetch(currentThread.userId);
           const closeEmbed = new EmbedBuilder()
-            .setTitle("Ticket Closed")
-            .setDescription("Your ticket has been closed by staff.")
+            .setTitle(timedIsAppeal ? "Appeal Closed" : "Ticket Closed")
+            .setDescription(timedIsAppeal ? "Your appeal has been closed by staff." : "Your ticket has been closed by staff.")
             .setColor(0xed4245)
             .setTimestamp();
           await user.send({ embeds: [closeEmbed] });
@@ -5617,19 +5889,22 @@ client.on("messageCreate", async (message) => {
           console.log("Could not DM user about timed ticket close");
         }
 
-        // Log to modmail log channel
+        // Log to log channel
         if (timedGuildId) {
           const config = await storage.getGuildConfig(timedGuildId);
-          if (config?.modmailLogChannelId) {
+          const logChannelId = timedIsAppeal ? config?.appealLogChannelId : config?.modmailLogChannelId;
+          if (logChannelId) {
             try {
-              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              const logChannel = await client.channels.fetch(logChannelId);
               if (logChannel && "send" in logChannel) {
-                const messages = await storage.getModmailMessages(currentThread.id);
+                const messages = timedIsAppeal 
+                  ? await storage.getAppealMessages(currentThread.id)
+                  : await storage.getModmailMessages(currentThread.id);
                 let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
                 if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
 
                 const logEmbed = new EmbedBuilder()
-                  .setTitle("Ticket Closed (Timed)")
+                  .setTitle(timedIsAppeal ? "Appeal Closed (Timed)" : "Ticket Closed (Timed)")
                   .setColor(0xed4245)
                   .addFields(
                     { name: "User", value: `<@${currentThread.userId}>`, inline: true },
@@ -5640,7 +5915,7 @@ client.on("messageCreate", async (message) => {
                 await logChannel.send({ embeds: [logEmbed] });
               }
             } catch (e) {
-              console.log("Could not send modmail log");
+              console.log("Could not send log");
             }
           }
         }
@@ -5649,7 +5924,7 @@ client.on("messageCreate", async (message) => {
         try {
           const chanToDelete = await client.channels.fetch(timedChannelId);
           if (chanToDelete) await chanToDelete.delete();
-        } catch (e) { console.log("[MODMAIL] Failed to delete channel on timed close:", e); }
+        } catch (e) { console.log("Failed to delete channel on timed close:", e); }
       }, delayMs);
 
       pendingTimedCloses.set(timedChannelId, timeout);
@@ -5657,19 +5932,28 @@ client.on("messageCreate", async (message) => {
     }
 
     // Immediate close (with notification to user)
-    await storage.updateModmailThread(thread.id, {
-      status: "closed",
-      closedById: message.author.id,
-      closeReason: "Closed via .close command", // <<< UPDATED REASON
-      closedAt: new Date(),
-    });
+    if (isAppeal) {
+      await storage.updateAppealThread(thread.id, {
+        status: "closed",
+        closedById: message.author.id,
+        closeReason: "Closed via .close command",
+        closedAt: new Date(),
+      });
+    } else {
+      await storage.updateModmailThread(thread.id, {
+        status: "closed",
+        closedById: message.author.id,
+        closeReason: "Closed via .close command",
+        closedAt: new Date(),
+      });
+    }
 
     // Notify user
     try {
       const user = await client.users.fetch(thread.userId);
       const closeEmbed = new EmbedBuilder()
-        .setTitle("Ticket Closed")
-        .setDescription("Your ticket has been closed by staff.")
+        .setTitle(isAppeal ? "Appeal Closed" : "Ticket Closed")
+        .setDescription(isAppeal ? "Your appeal has been closed by staff." : "Your ticket has been closed by staff.")
         .setColor(0xed4245)
         .setTimestamp();
       await user.send({ embeds: [closeEmbed] });
@@ -5677,18 +5961,21 @@ client.on("messageCreate", async (message) => {
       console.log("Could not DM user about ticket close");
     }
 
-    // Log to modmail log channel
+    // Log to log channel
     const config = await storage.getGuildConfig(message.guild.id);
-    if (config?.modmailLogChannelId) {
+    const logChannelId = isAppeal ? config?.appealLogChannelId : config?.modmailLogChannelId;
+    if (logChannelId) {
       try {
-        const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+        const logChannel = await client.channels.fetch(logChannelId);
         if (logChannel && "send" in logChannel) {
-          const messages = await storage.getModmailMessages(thread.id);
+          const messages = isAppeal 
+            ? await storage.getAppealMessages(thread.id)
+            : await storage.getModmailMessages(thread.id);
           let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
           if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
 
           const logEmbed = new EmbedBuilder()
-            .setTitle("Ticket Closed")
+            .setTitle(isAppeal ? "Appeal Closed" : "Ticket Closed")
             .setColor(0xed4245)
             .addFields(
               { name: "User", value: `<@${thread.userId}>`, inline: true },
@@ -5699,12 +5986,12 @@ client.on("messageCreate", async (message) => {
           await logChannel.send({ embeds: [logEmbed] });
         }
       } catch (e) {
-        console.log("Could not send modmail log");
+        console.log("Could not send log");
       }
     }
 
     // Delete channel after delay
-    await message.reply("✅ Ticket closed. Deleting channel...");
+    await message.reply("Ticket closed. Deleting channel...");
     setTimeout(async () => {
       try {
         await (message.channel as any).delete();
@@ -5715,8 +6002,12 @@ client.on("messageCreate", async (message) => {
 
   // Handle claim command
   if (message.guild && lowerContent === `${lowerPrefix}claim`) {
-    // Silently ignore if not in a modmail channel
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+
     if (!thread) {
       return;
     }
@@ -5733,20 +6024,26 @@ client.on("messageCreate", async (message) => {
 
     // Check claim permission
     const config = await storage.getGuildConfig(message.guild.id);
-    const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
+    const claimRoleIds = isAppeal 
+      ? (config?.appealStaffRoleIds || [])
+      : (config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || []);
     const member = message.member;
     const hasClaimPermission = claimRoleIds.length === 0 || 
       (member && member.roles.cache.some(role => claimRoleIds.includes(role.id)));
 
     if (!hasClaimPermission) {
-      await message.reply("❌ You don't have permission to claim tickets.");
+      await message.reply("You don't have permission to claim tickets.");
       return;
     }
 
-    await storage.updateModmailThread(thread.id, { claimedById: message.author.id });
+    if (isAppeal) {
+      await storage.updateAppealThread(thread.id, { claimedById: message.author.id });
+    } else {
+      await storage.updateModmailThread(thread.id, { claimedById: message.author.id });
+    }
 
     const claimEmbed = new EmbedBuilder()
-      .setDescription(`🙋 Ticket claimed by <@${message.author.id}>`)
+      .setDescription(`Ticket claimed by <@${message.author.id}>`)
       .setColor(0x5865f2)
       .setTimestamp();
     await (message.channel as any).send({ embeds: [claimEmbed] });
@@ -5759,18 +6056,25 @@ client.on("messageCreate", async (message) => {
     }
 
     const channelId = message.channel.id;
+    const claimIsAppeal = isAppeal;
     const claimExpiryTimeout = setTimeout(async () => {
       pendingClaimExpiry.delete(channelId);
 
-      const currentThread = await storage.getModmailThreadByChannel(channelId);
+      const currentModmail = await storage.getModmailThreadByChannel(channelId);
+      const currentAppeal = await storage.getAppealThreadByChannel(channelId);
+      const currentThread = claimIsAppeal ? currentAppeal : currentModmail;
       if (!currentThread || currentThread.status !== "open") return;
       if (currentThread.claimedById !== message.author.id) return;
 
-      await storage.updateModmailThread(currentThread.id, { claimedById: null });
+      if (claimIsAppeal) {
+        await storage.updateAppealThread(currentThread.id, { claimedById: null });
+      } else {
+        await storage.updateModmailThread(currentThread.id, { claimedById: null });
+      }
       try {
         const channel = await client.channels.fetch(channelId);
         if (channel && "send" in channel) {
-          await channel.send(`⏰ Ticket auto-unclaimed. <@${message.author.id}> did not respond within 15 minutes.`);
+          await channel.send(`Ticket auto-unclaimed. <@${message.author.id}> did not respond within 15 minutes.`);
         }
       } catch (e) {
         console.log("Could not send auto-unclaim message");
@@ -6072,17 +6376,135 @@ client.on("messageCreate", async (message) => {
     }
   }
 
-  // Handle <prefix><alias> snippet usage in modmail ticket channels
+  // Handle .asnip commands for appeal snippet management (separate from modmail snippets)
+  if (message.guild && lowerContent.startsWith(`${lowerPrefix}asnip `)) {
+    const args = message.content.substring(prefix.length + 6).trim();
+    const spaceIndex = args.indexOf(" ");
+    const subCommand = spaceIndex === -1 ? args.toLowerCase() : args.substring(0, spaceIndex).toLowerCase();
+    const rest = spaceIndex === -1 ? "" : args.substring(spaceIndex + 1).trim();
+
+    // Check for admin permission for create/edit/delete
+    const member = message.member;
+    const hasAdminPermission = member && member.permissions.has("Administrator");
+
+    if (subCommand === "create") {
+      if (!hasAdminPermission) {
+        await message.reply("Only administrators can create appeal snippets.");
+        return;
+      }
+
+      const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
+      if (!aliasMatch || !aliasMatch[2]?.trim()) {
+        await message.reply(`Usage: \`${prefix}asnip create <alias> <text>\``);
+        return;
+      }
+
+      const alias = aliasMatch[1].toLowerCase();
+      const content = aliasMatch[2].trim();
+
+      const existing = await storage.getAppealSnippet(message.guild.id, alias);
+      if (existing) {
+        await message.reply(`Appeal snippet \`${alias}\` already exists. Use \`${prefix}asnip edit\` to modify it.`);
+        return;
+      }
+
+      await storage.createAppealSnippet({
+        guildId: message.guild.id,
+        alias: alias,
+        content: content,
+        createdById: message.author.id,
+      });
+
+      await message.reply(`Appeal snippet \`${alias}\` created. Use \`${prefix}${alias}\` in appeal channels to send it.`);
+      return;
+    } else if (subCommand === "edit") {
+      if (!hasAdminPermission) {
+        await message.reply("Only administrators can edit appeal snippets.");
+        return;
+      }
+
+      const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
+      if (!aliasMatch || !aliasMatch[2]?.trim()) {
+        await message.reply(`Usage: \`${prefix}asnip edit <alias> <text>\``);
+        return;
+      }
+
+      const alias = aliasMatch[1].toLowerCase();
+      const content = aliasMatch[2].trim();
+
+      const updated = await storage.updateAppealSnippet(message.guild.id, alias, content);
+      if (!updated) {
+        await message.reply(`Appeal snippet \`${alias}\` not found.`);
+        return;
+      }
+
+      await message.reply(`Appeal snippet \`${alias}\` updated.`);
+      return;
+    } else if (subCommand === "delete") {
+      if (!hasAdminPermission) {
+        await message.reply("Only administrators can delete appeal snippets.");
+        return;
+      }
+
+      const alias = rest.toLowerCase();
+      if (!alias) {
+        await message.reply(`Usage: \`${prefix}asnip delete <alias>\``);
+        return;
+      }
+
+      const existing = await storage.getAppealSnippet(message.guild.id, alias);
+      if (!existing) {
+        await message.reply(`Appeal snippet \`${alias}\` not found.`);
+        return;
+      }
+
+      await storage.deleteAppealSnippet(message.guild.id, alias);
+      await message.reply(`Appeal snippet \`${alias}\` deleted.`);
+      return;
+    } else if (subCommand === "list") {
+      if (!hasAdminPermission) {
+        return;
+      }
+
+      const allSnippets = await storage.getAllAppealSnippets(message.guild.id);
+      if (allSnippets.length === 0) {
+        await message.reply(`No appeal snippets configured. Use \`${prefix}asnip create <alias> "<text>"\` to create one.`);
+        return;
+      }
+
+      const list = allSnippets.map((s, i) => {
+        const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
+        return `${i + 1}.) "${s.alias}", Response: "${truncatedContent}"`;
+      }).join("\n");
+      await message.reply(`📝 **Appeal Snippets:**\n${list}`);
+      return;
+    } else {
+      await message.reply(`Unknown subcommand. Use \`${prefix}asnip create\`, \`${prefix}asnip edit\`, \`${prefix}asnip delete\`, or \`${prefix}asnip list\`.`);
+      return;
+    }
+  }
+
+  // Handle <prefix><alias> snippet usage in modmail/appeal ticket channels
   if (message.guild && lowerContent.startsWith(lowerPrefix) && !lowerContent.startsWith(`${lowerPrefix}snip`) && 
+      !lowerContent.startsWith(`${lowerPrefix}asnip`) &&
       !lowerContent.startsWith(`${lowerPrefix}close`) && !lowerContent.startsWith(`${lowerPrefix}c`) &&
       !lowerContent.startsWith(`${lowerPrefix}claim`) && !lowerContent.startsWith(`${lowerPrefix}or`) &&
       !lowerContent.startsWith(`${lowerPrefix}r`) && !lowerContent.startsWith(`${lowerPrefix}ar`) &&
       !lowerContent.startsWith(`${lowerPrefix}edit `) && !lowerContent.startsWith(`${lowerPrefix}delete`)) {
     const alias = message.content.substring(prefix.length).toLowerCase().split(" ")[0];
     if (alias) {
-      const thread = await storage.getModmailThreadByChannel(message.channel.id);
+      // Check for modmail thread first, then appeal thread
+      const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+      const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+      const thread = modmailThread || appealThread;
+      const isAppealSnippet = !modmailThread && !!appealThread;
+      
       if (thread && thread.status === "open") {
-        const snippet = await storage.getSnippet(message.guild.id, alias);
+        // Use appeal snippets for appeal channels, modmail snippets for modmail channels
+        const snippet = isAppealSnippet 
+          ? await storage.getAppealSnippet(message.guild.id, alias)
+          : await storage.getSnippet(message.guild.id, alias);
+          
         if (snippet) {
           try {
             const user = await client.users.fetch(thread.userId);
@@ -6112,14 +6534,26 @@ client.on("messageCreate", async (message) => {
             // Send to channel as well
             const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
 
-            await storage.addModmailMessage({
-              threadId: thread.id,
-              authorId: message.author.id,
-              content: snippet.content,
-              isStaff: "true",
-              channelMessageId: channelMessage.id,
-              dmMessageId: dmMessage.id,
-            });
+            // Save message to correct storage based on context
+            if (isAppealSnippet) {
+              await storage.addAppealMessage({
+                threadId: thread.id,
+                authorId: message.author.id,
+                content: snippet.content,
+                isStaff: "true",
+                channelMessageId: channelMessage.id,
+                dmMessageId: dmMessage.id,
+              });
+            } else {
+              await storage.addModmailMessage({
+                threadId: thread.id,
+                authorId: message.author.id,
+                content: snippet.content,
+                isStaff: "true",
+                channelMessageId: channelMessage.id,
+                dmMessageId: dmMessage.id,
+              });
+            }
 
             // Delete the trigger message
             try {
@@ -6148,19 +6582,30 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Handle modmail DMs - only relay to EXISTING open threads
-    // New tickets must be created via the dropdown menu in the server
+    // Handle modmail/appeal DMs - only relay to EXISTING open threads
+    // New tickets must be created via the dropdown menu or button in the server
     try {
-      // Find an existing open thread for this user across all guilds
-      let targetThread = null;
+      // Find an existing open thread for this user across all guilds (check both modmail and appeal)
+      let targetThread: any = null;
       let targetGuild = null;
+      let isAppealThread = false;
 
       for (const guild of client.guilds.cache.values()) {
         try {
-          const thread = await storage.getOpenModmailThread(guild.id, message.author.id);
-          if (thread && thread.channelId) {
-            targetThread = thread;
+          // Check modmail first
+          const modmailThread = await storage.getOpenModmailThread(guild.id, message.author.id);
+          if (modmailThread && modmailThread.channelId) {
+            targetThread = modmailThread;
             targetGuild = guild;
+            isAppealThread = false;
+            break;
+          }
+          // Then check appeal
+          const appealThread = await storage.getOpenAppealThread(guild.id, message.author.id);
+          if (appealThread && appealThread.channelId) {
+            targetThread = appealThread;
+            targetGuild = guild;
+            isAppealThread = true;
             break;
           }
         } catch (e) {
@@ -6354,48 +6799,61 @@ client.on("messageCreate", async (message) => {
           // Ping subscribed users
           const subs = targetThread.subscribedUserIds || [];
           if (subs.length > 0) {
-            const pingContent = subs.map(id => `<@${id}>`).join(" ");
+            const pingContent = subs.map((id: string) => `<@${id}>`).join(" ");
             const pingMsg = await modmailChannel.send({ content: pingContent });
             // Delete ping message after a short delay to keep channel clean
             setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
           }
 
           // Save message
-          await storage.addModmailMessage({
-            threadId: targetThread.id,
-            authorId: message.author.id,
-            content: message.content,
-            isStaff: "false",
-          });
+          if (isAppealThread) {
+            await storage.addAppealMessage({
+              threadId: targetThread.id,
+              authorId: message.author.id,
+              content: message.content,
+              isStaff: "false",
+            });
+          } else {
+            await storage.addModmailMessage({
+              threadId: targetThread.id,
+              authorId: message.author.id,
+              content: message.content,
+              isStaff: "false",
+            });
+          }
 
           // React to confirm
           await message.react("✅");
         }
       } catch (error) {
-        console.log("Could not relay modmail message:", error);
+        console.log("Could not relay message:", error);
       }
     } catch (error) {
-      console.log("Modmail DM handler error:", error);
+      console.log("DM handler error:", error);
     }
     return;
   }
 
-  // Handle .r <message> reply command in modmail channels (also allows .r with just attachments)
+  // Handle .r <message> reply command in modmail/appeal channels (also allows .r with just attachments)
   if (message.guild && (lowerContent.startsWith(`${lowerPrefix}r `) || (lowerContent === `${lowerPrefix}r` && message.attachments.size > 0))) {
-    // Silently ignore if not in a modmail channel
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+
     if (!thread) {
       return;
     }
 
     const replyContent = lowerContent === `${lowerPrefix}r` ? "" : message.content.substring(prefix.length + 2).trim();
     if (!replyContent && message.attachments.size === 0) {
-      await message.reply(`❌ Please provide a message or attach files. Usage: \`${prefix}r <message>\` or \`${prefix}r\` with attachments`);
+      await message.reply(`Please provide a message or attach files. Usage: \`${prefix}r <message>\` or \`${prefix}r\` with attachments`);
       return;
     }
 
     if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
+      await message.reply("This ticket is already closed.");
       return;
     }
 
@@ -6442,14 +6900,25 @@ client.on("messageCreate", async (message) => {
       const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
 
       // Save message with message IDs
-      const savedMessage = await storage.addModmailMessage({
-        threadId: thread.id,
-        authorId: message.author.id,
-        content: replyContent,
-        isStaff: "true",
-        channelMessageId: channelMessage.id,
-        dmMessageId: dmMessage.id,
-      });
+      if (isAppeal) {
+        await storage.addAppealMessage({
+          threadId: thread.id,
+          authorId: message.author.id,
+          content: replyContent,
+          isStaff: "true",
+          channelMessageId: channelMessage.id,
+          dmMessageId: dmMessage.id,
+        });
+      } else {
+        await storage.addModmailMessage({
+          threadId: thread.id,
+          authorId: message.author.id,
+          content: replyContent,
+          isStaff: "true",
+          channelMessageId: channelMessage.id,
+          dmMessageId: dmMessage.id,
+        });
+      }
 
       // Clear claim expiry timer when any staff responds (ticket is being actively handled)
       const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
@@ -6470,8 +6939,9 @@ client.on("messageCreate", async (message) => {
         pendingInactivityCloses.delete(message.channel.id);
       }
 
-      // Only start inactivity timer if ignoreInactivity is not set
-      if (thread.ignoreInactivity === "true") {
+      // Only start inactivity timer if ignoreInactivity is not set (modmail only, appeals don't have this)
+      const modmailIgnore = !isAppeal && (thread as any).ignoreInactivity === "true";
+      if (modmailIgnore) {
         // Skip inactivity timer for this ticket
         try {
           await message.delete();
