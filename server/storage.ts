@@ -432,7 +432,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addBanActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 25;
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -449,7 +449,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addUnbanActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 25;
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -715,7 +715,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addStaffReportEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 25;
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -919,7 +919,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 25;
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -953,7 +953,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 25;
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
