@@ -3932,14 +3932,6 @@ client.on("interactionCreate", async (interaction) => {
 
           await interaction.followUp({ embeds: [claimEmbed] });
 
-          // DM user that their ticket was claimed
-          try {
-            const ticketUser = await client.users.fetch(thread.userId);
-            await ticketUser.send({ content: `Your ticket has been claimed by a staff member. They will respond shortly.` });
-          } catch (e) {
-            console.log("Could not DM user about ticket claim");
-          }
-
           // Start 15-minute claim expiry timer
           if (interaction.channel) {
             const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
