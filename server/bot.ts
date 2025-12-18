@@ -7023,9 +7023,8 @@ client.on("messageCreate", async (message) => {
             });
           }
 
-          // Send confirmation message
-          const ticketType = isAppealThread ? "Ban Appeal" : "Support Ticket";
-          await message.reply({ content: `✅ Message sent to **${targetGuild.name}** (${ticketType})` });
+          // React to confirm
+          await message.react("✅");
         }
       } catch (error) {
         console.log("Could not relay message:", error);
