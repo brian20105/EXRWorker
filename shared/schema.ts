@@ -294,6 +294,7 @@ export const activityResetBackups = pgTable("activity_reset_backups", {
   banRequestsData: text("ban_requests_data"),
   unbanRequestsData: text("unban_requests_data"),
   modmailThreadsData: text("modmail_threads_data"),
+  appealThreadsData: text("appeal_threads_data"),
   entryCount: text("entry_count").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
