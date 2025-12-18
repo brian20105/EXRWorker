@@ -125,6 +125,10 @@ export interface IStorage {
   
   addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void>;
   removeModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<number>;
+  addAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<void>;
+  removeAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<number>;
+  getAppealStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  getAppealStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
   resetActivityStats(guildId: string, resetById: string, category?: string, userId?: string): Promise<number>;
   getLatestActivityResetBackup(guildId: string): Promise<ActivityResetBackup | undefined>;
   restoreActivityStats(guildId: string): Promise<number>;
@@ -795,11 +799,93 @@ export class DatabaseStorage implements IStorage {
     return removed;
   }
 
+  async addAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
+    for (let i = 0; i < amount; i++) {
+      await db.insert(appealThreads).values({
+        guildId,
+        userId: "manual_entry",
+        status: "closed",
+        closedById: userId,
+        closeReason: "Manual activity entry",
+        closedAt: new Date(),
+      });
+    }
+  }
+
+  async removeAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<number> {
+    const threads = await db.select().from(appealThreads)
+      .where(and(
+        eq(appealThreads.guildId, guildId),
+        eq(appealThreads.closedById, userId),
+        eq(appealThreads.status, "closed")
+      ))
+      .orderBy(desc(appealThreads.closedAt));
+    
+    let removed = 0;
+    for (const thread of threads) {
+      if (removed >= amount) break;
+      await db.delete(appealThreads).where(eq(appealThreads.id, thread.id));
+      removed++;
+    }
+    return removed;
+  }
+
+  async getAppealStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    let threads = await db.select().from(appealThreads)
+      .where(and(
+        eq(appealThreads.guildId, guildId),
+        eq(appealThreads.status, "closed")
+      ));
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      threads = threads.filter(t => t.closedAt && t.closedAt >= fromDate);
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
+    }
+    
+    const counts: { [userId: string]: number } = {};
+    for (const t of threads) {
+      if (t.closedById) {
+        counts[t.closedById] = (counts[t.closedById] || 0) + 1;
+      }
+    }
+    
+    return Object.entries(counts)
+      .map(([userId, count]) => ({ userId, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  async getAppealStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number> {
+    let threads = await db.select().from(appealThreads)
+      .where(and(
+        eq(appealThreads.guildId, guildId),
+        eq(appealThreads.closedById, userId),
+        eq(appealThreads.status, "closed")
+      ));
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      threads = threads.filter(t => t.closedAt && t.closedAt >= fromDate);
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
+    }
+    
+    return threads.length;
+  }
+
   async resetActivityStats(guildId: string, resetById: string, category?: string, userId?: string): Promise<number> {
     let count = 0;
     let banData: any[] = [];
     let unbanData: any[] = [];
     let modmailData: any[] = [];
+    let appealData: any[] = [];
     
     if (!category || category === "ban") {
       const conditions = [eq(banRequests.guildId, guildId)];
@@ -825,6 +911,14 @@ export class DatabaseStorage implements IStorage {
       count += result.length;
     }
     
+    if (!category || category === "appeal") {
+      const conditions = [eq(appealThreads.guildId, guildId), eq(appealThreads.status, "closed")];
+      if (userId) conditions.push(eq(appealThreads.closedById, userId));
+      appealData = await db.select().from(appealThreads).where(and(...conditions));
+      const result = await db.delete(appealThreads).where(and(...conditions)).returning();
+      count += result.length;
+    }
+    
     if (count > 0) {
       await db.insert(activityResetBackups).values({
         guildId,
@@ -834,6 +928,7 @@ export class DatabaseStorage implements IStorage {
         banRequestsData: banData.length > 0 ? JSON.stringify(banData) : null,
         unbanRequestsData: unbanData.length > 0 ? JSON.stringify(unbanData) : null,
         modmailThreadsData: modmailData.length > 0 ? JSON.stringify(modmailData) : null,
+        appealThreadsData: appealData.length > 0 ? JSON.stringify(appealData) : null,
         entryCount: count.toString(),
       });
     }
@@ -878,6 +973,15 @@ export class DatabaseStorage implements IStorage {
       for (const item of modmailData) {
         delete item.id;
         await db.insert(modmailThreads).values(item);
+        restoredCount++;
+      }
+    }
+    
+    if (backup.appealThreadsData) {
+      const appealData = JSON.parse(backup.appealThreadsData);
+      for (const item of appealData) {
+        delete item.id;
+        await db.insert(appealThreads).values(item);
         restoredCount++;
       }
     }

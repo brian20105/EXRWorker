@@ -47,14 +47,20 @@ const processingQuizStart = new Set<string>();
 
 // Track users with pending DM ticket category selection (userId -> messageId)
 const pendingDMTickets = new Map<string, { messageId: string; guildId: string; sentAt: number }>();
+const pendingServerSelections = new Map<string, { messageContent: string; attachments: any[]; tickets: any[]; sentAt: number }>();
 
-// Clean up expired DM ticket selections (5 minutes)
+// Clean up expired DM ticket selections and server selections (5 minutes)
 setInterval(() => {
   const now = Date.now();
   const FIVE_MINUTES = 5 * 60 * 1000;
   for (const [userId, data] of Array.from(pendingDMTickets.entries())) {
     if (now - data.sentAt > FIVE_MINUTES) {
       pendingDMTickets.delete(userId);
+    }
+  }
+  for (const [userId, data] of Array.from(pendingServerSelections.entries())) {
+    if (now - data.sentAt > FIVE_MINUTES) {
+      pendingServerSelections.delete(userId);
     }
   }
 }, 60 * 1000);
@@ -3335,6 +3341,92 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
     } else if (interaction.isStringSelectMenu()) {
+      // Handle server selection for multi-server DM routing
+      if (interaction.customId.startsWith("dm_server_select_")) {
+        if (!await safeDeferUpdate(interaction)) return;
+        
+        const userId = interaction.customId.replace("dm_server_select_", "");
+        const pendingData = pendingServerSelections.get(userId);
+        
+        if (!pendingData) {
+          await interaction.followUp({ content: "This selection has expired. Please send your message again.", flags: 64 });
+          return;
+        }
+        
+        const selectedIndex = parseInt(interaction.values[0]);
+        const selectedTicket = pendingData.tickets[selectedIndex];
+        
+        if (!selectedTicket) {
+          await interaction.followUp({ content: "Invalid selection.", flags: 64 });
+          return;
+        }
+        
+        // Clear the pending data
+        pendingServerSelections.delete(userId);
+        
+        // Relay the message to the selected ticket
+        try {
+          const ticketChannel = await client.channels.fetch(selectedTicket.thread.channelId);
+          if (ticketChannel && "send" in ticketChannel) {
+            const user = await client.users.fetch(userId);
+            
+            const userEmbed = new EmbedBuilder()
+              .setAuthor({ name: user.tag, iconURL: user.displayAvatarURL() })
+              .setDescription(pendingData.messageContent || "(No text content)")
+              .setColor(0x57f287)
+              .setTimestamp();
+            
+            // Add attachments if any
+            if (pendingData.attachments.length > 0) {
+              const urls = pendingData.attachments.map((a: any) => a.url);
+              userEmbed.addFields({ name: "Attachments", value: urls.join("\n"), inline: false });
+              const firstImage = pendingData.attachments.find((a: any) => a.contentType?.startsWith("image/"));
+              if (firstImage) {
+                userEmbed.setImage(firstImage.url);
+              }
+            }
+            
+            await ticketChannel.send({ embeds: [userEmbed] });
+            
+            // Ping subscribed users
+            const subs = selectedTicket.thread.subscribedUserIds || [];
+            if (subs.length > 0) {
+              const pingContent = subs.map((id: string) => `<@${id}>`).join(" ");
+              const pingMsg = await ticketChannel.send({ content: pingContent });
+              setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
+            }
+            
+            // Save message
+            if (selectedTicket.isAppeal) {
+              await storage.addAppealMessage({
+                threadId: selectedTicket.thread.id,
+                authorId: userId,
+                content: pendingData.messageContent,
+                isStaff: "false",
+              });
+            } else {
+              await storage.addModmailMessage({
+                threadId: selectedTicket.thread.id,
+                authorId: userId,
+                content: pendingData.messageContent,
+                isStaff: "false",
+              });
+            }
+            
+            // Update the message to confirm
+            await interaction.message.edit({
+              content: `✅ Message sent to **${selectedTicket.guild.name}** (${selectedTicket.type})`,
+              embeds: [],
+              components: []
+            });
+          }
+        } catch (error) {
+          console.log("Could not relay multi-server message:", error);
+          await interaction.followUp({ content: "Failed to send message. Please try again.", flags: 64 });
+        }
+        return;
+      }
+      
       // Handle ticket dropdown selection
       if (interaction.customId.startsWith("ticket_select_")) {
         const guildId = interaction.customId.split("_")[2];
@@ -4062,13 +4154,6 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           await interaction.followUp({ embeds: [claimEmbed] });
-
-          try {
-            const appealUser = await client.users.fetch(thread.userId);
-            await appealUser.send({ content: `Your appeal has been claimed by a staff member. They will respond shortly.` });
-          } catch (e) {
-            console.log("Could not DM user about appeal claim");
-          }
         } catch (error: any) {
           console.log("Error in appeal_claim button:", error.message);
           await interaction.followUp({ content: "Failed to claim appeal.", flags: 64 }).catch(() => {});
@@ -6623,33 +6708,64 @@ client.on("messageCreate", async (message) => {
     // Handle modmail/appeal DMs - only relay to EXISTING open threads
     // New tickets must be created via the dropdown menu or button in the server
     try {
-      // Find an existing open thread for this user across all guilds (check both modmail and appeal)
-      let targetThread: any = null;
-      let targetGuild = null;
-      let isAppealThread = false;
+      // Find ALL existing open threads for this user across all guilds (check both modmail and appeal)
+      const openTickets: { thread: any; guild: any; isAppeal: boolean; type: string }[] = [];
 
       for (const guild of client.guilds.cache.values()) {
         try {
-          // Check modmail first
+          // Check modmail
           const modmailThread = await storage.getOpenModmailThread(guild.id, message.author.id);
           if (modmailThread && modmailThread.channelId) {
-            targetThread = modmailThread;
-            targetGuild = guild;
-            isAppealThread = false;
-            break;
+            openTickets.push({ thread: modmailThread, guild, isAppeal: false, type: "Support Ticket" });
           }
-          // Then check appeal
+          // Check appeal
           const appealThread = await storage.getOpenAppealThread(guild.id, message.author.id);
           if (appealThread && appealThread.channelId) {
-            targetThread = appealThread;
-            targetGuild = guild;
-            isAppealThread = true;
-            break;
+            openTickets.push({ thread: appealThread, guild, isAppeal: true, type: "Ban Appeal" });
           }
         } catch (e) {
           // No thread in this guild
         }
       }
+
+      // If multiple open tickets, show dropdown to select which one
+      if (openTickets.length > 1) {
+        const embed = new EmbedBuilder()
+          .setTitle("Select Destination")
+          .setDescription("You have open tickets in multiple servers. Select which one to send your message to:")
+          .setColor(0x5865f2);
+
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId(`dm_server_select_${message.author.id}`)
+          .setPlaceholder("Select a server...")
+          .addOptions(
+            openTickets.map((ticket, index) => 
+              new StringSelectMenuOptionBuilder()
+                .setLabel(`${ticket.guild.name}`)
+                .setDescription(`${ticket.type}`)
+                .setValue(`${index}`)
+                .setEmoji(ticket.isAppeal ? "⚖️" : "📩")
+            )
+          );
+
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+
+        // Store the pending message and tickets for later
+        pendingServerSelections.set(message.author.id, {
+          messageContent: message.content,
+          attachments: message.attachments.map(a => ({ url: a.url, contentType: a.contentType })),
+          tickets: openTickets,
+          sentAt: Date.now(),
+        });
+
+        await message.reply({ embeds: [embed], components: [row] });
+        return;
+      }
+
+      // Single ticket or no ticket
+      let targetThread: any = openTickets.length === 1 ? openTickets[0].thread : null;
+      let targetGuild = openTickets.length === 1 ? openTickets[0].guild : null;
+      let isAppealThread = openTickets.length === 1 ? openTickets[0].isAppeal : false;
 
       if (!targetThread || !targetGuild) {
         // No existing open ticket - offer to create one via DM
