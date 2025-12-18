@@ -467,23 +467,13 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
-    .setName("setup_ban")
-    .setDescription("Set the channel for ban requests")
+    .setName("setup_moderation")
+    .setDescription("Set the channel for moderation requests (ban/unban)")
     .setDefaultMemberPermissions(0)
     .addChannelOption((option) =>
       option
         .setName("channel")
-        .setDescription("The channel where ban requests will be sent")
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("setup_unban")
-    .setDescription("Set the channel for unban requests")
-    .setDefaultMemberPermissions(0)
-    .addChannelOption((option) =>
-      option
-        .setName("channel")
-        .setDescription("The channel where unban requests will be sent")
+        .setDescription("The channel where moderation requests will be sent")
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -521,23 +511,13 @@ const commands = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
-    .setName("setup_ban_logs")
-    .setDescription("Set the channel for ban request logs")
+    .setName("setup_moderation_logs")
+    .setDescription("Set the channel for moderation request logs")
     .setDefaultMemberPermissions(0)
     .addChannelOption((option) =>
       option
         .setName("channel")
-        .setDescription("The channel where ban logs will be sent")
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("setup_unban_logs")
-    .setDescription("Set the channel for unban request logs")
-    .setDefaultMemberPermissions(0)
-    .addChannelOption((option) =>
-      option
-        .setName("channel")
-        .setDescription("The channel where unban logs will be sent")
+        .setDescription("The channel where moderation logs will be sent")
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -2148,7 +2128,7 @@ client.on("interactionCreate", async (interaction) => {
         } else {
           await interaction.editReply({ embeds: [embed] });
         }
-      } else if (commandName === "setup_ban") {
+      } else if (commandName === "setup_moderation") {
         if (!await safeDeferReply(interaction)) return;
 
         const channel = interaction.options.getChannel("channel", true);
@@ -2156,54 +2136,26 @@ client.on("interactionCreate", async (interaction) => {
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           banChannelId: channel.id,
-        });
-
-        const embed = new EmbedBuilder()
-          .setTitle("🚫 Ban Request")
-          .setDescription("Need to report a user for violating rules? Click below to submit a ban request with evidence.")
-          .setColor(0xed4245)
-          .setFooter({ text: "Ban Requests Can Take Up To A Day To Get Finalised" });
-
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId("submit_ban_request")
-            .setLabel("Submit Ban Request")
-            .setStyle(ButtonStyle.Danger)
-            .setEmoji("⚠️")
-        );
-
-        if (interaction.channel && "send" in interaction.channel) {
-          await interaction.channel.send({
-            embeds: [embed],
-            components: [row],
-          });
-        }
-
-        await interaction.editReply({
-          content: `✅ Ban request channel configured! Requests will be sent to <#${channel.id}>.`,
-        });
-      } else if (commandName === "setup_unban") {
-        if (!await safeDeferReply(interaction)) return;
-
-        const channel = interaction.options.getChannel("channel", true);
-
-        await storage.upsertGuildConfig({
-          guildId: interaction.guildId!,
           unbanChannelId: channel.id,
         });
 
         const embed = new EmbedBuilder()
-          .setTitle("🔓 Unban Request")
-          .setDescription("Submitting an unban request for another user? Click the button below and provide their username, the reason they were banned.")
-          .setColor(0xf0b232)
-          .setFooter({ text: "Unban Requests Can Take Up To A Day To Get Finalised" });
+          .setTitle("⚖️ Moderation Requests")
+          .setDescription("Submit a ban or unban request by clicking the appropriate button below.")
+          .setColor(0x5865f2)
+          .setFooter({ text: "Moderation Requests Can Take Up To A Day To Get Finalised" });
 
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
+            .setCustomId("submit_ban_request")
+            .setLabel("Ban Request")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("🚫"),
+          new ButtonBuilder()
             .setCustomId("submit_unban_request")
-            .setLabel("Submit Unban Request")
-            .setStyle(ButtonStyle.Primary)
-            .setEmoji("📝")
+            .setLabel("Unban Request")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("🔓")
         );
 
         if (interaction.channel && "send" in interaction.channel) {
@@ -2214,7 +2166,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         await interaction.editReply({
-          content: `✅ Unban request channel configured! Requests will be sent to <#${channel.id}>.`,
+          content: `✅ Moderation request channel configured! Requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_permissions") {
         if (!await safeDeferReply(interaction)) return;
@@ -2238,7 +2190,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Moderation permissions updated! The following roles can now approve/deny ban/unban requests:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
         });
-      } else if (commandName === "setup_ban_logs") {
+      } else if (commandName === "setup_moderation_logs") {
         if (!await safeDeferReply(interaction)) return;
 
         const channel = interaction.options.getChannel("channel", true);
@@ -2246,23 +2198,11 @@ client.on("interactionCreate", async (interaction) => {
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           banLogChannelId: channel.id,
-        });
-
-        await interaction.editReply({
-          content: `✅ Configuration saved! Ban request logs will be sent to <#${channel.id}>.`,
-        });
-      } else if (commandName === "setup_unban_logs") {
-        if (!await safeDeferReply(interaction)) return;
-
-        const channel = interaction.options.getChannel("channel", true);
-
-        await storage.upsertGuildConfig({
-          guildId: interaction.guildId!,
           unbanLogChannelId: channel.id,
         });
 
         await interaction.editReply({
-          content: `✅ Configuration saved! Unban request logs will be sent to <#${channel.id}>.`,
+          content: `✅ Configuration saved! Moderation request logs will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "prefix") {
         if (!await safeDeferReply(interaction)) return;
@@ -5303,8 +5243,8 @@ client.on("interactionCreate", async (interaction) => {
         if (!requestChannel || !("send" in requestChannel)) return;
 
         const embed = new EmbedBuilder()
-          .setTitle("Ban Request")
-          .setColor(0xf0b232)
+          .setTitle("🚫 Ban Request")
+          .setColor(0xed4245)
           .addFields(
             { name: "User ID", value: `<@${userId}>\n(${userId})`, inline: true },
             { name: "Moderator", value: "Pending", inline: true },
@@ -5318,12 +5258,14 @@ client.on("interactionCreate", async (interaction) => {
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`ban_approve_${banRequest.id}`)
-            .setLabel("✓")
-            .setStyle(ButtonStyle.Success),
+            .setLabel("Approve")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("✅"),
           new ButtonBuilder()
             .setCustomId(`ban_deny_${banRequest.id}`)
-            .setLabel("✕")
+            .setLabel("Deny")
             .setStyle(ButtonStyle.Danger)
+            .setEmoji("❌")
         );
 
         const sentMessage = await requestChannel.send({ embeds: [embed], components: [row] });
@@ -5370,8 +5312,8 @@ client.on("interactionCreate", async (interaction) => {
         if (!requestChannel || !("send" in requestChannel)) return;
 
         const embed = new EmbedBuilder()
-          .setTitle("Unban Request")
-          .setColor(0xf0b232)
+          .setTitle("🔓 Unban Request")
+          .setColor(0x57f287)
           .addFields(
             { name: "User ID", value: `<@${userId}>\n(${userId})`, inline: true },
             { name: "Moderator", value: "Pending", inline: true },
@@ -5385,12 +5327,14 @@ client.on("interactionCreate", async (interaction) => {
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`unban_approve_${unbanRequest.id}`)
-            .setLabel("✓")
-            .setStyle(ButtonStyle.Success),
+            .setLabel("Approve")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("✅"),
           new ButtonBuilder()
             .setCustomId(`unban_deny_${unbanRequest.id}`)
-            .setLabel("✕")
+            .setLabel("Deny")
             .setStyle(ButtonStyle.Danger)
+            .setEmoji("❌")
         );
 
         const sentMessage = await requestChannel.send({ embeds: [embed], components: [row] });
