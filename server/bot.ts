@@ -567,7 +567,8 @@ const commands = [
         .addChoices(
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
-          { name: "Modmails handled", value: "modmail" }
+          { name: "Modmails handled", value: "modmail" },
+          { name: "Appeals handled", value: "appeal" }
         )
     )
     .addIntegerOption((option) =>
@@ -616,7 +617,8 @@ const commands = [
         .addChoices(
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
-          { name: "Modmails Handled", value: "modmail" }
+          { name: "Modmails Handled", value: "modmail" },
+          { name: "Appeals Handled", value: "appeal" }
         )
     ),
   new SlashCommandBuilder()
@@ -643,7 +645,8 @@ const commands = [
         .addChoices(
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
-          { name: "Modmails Handled", value: "modmail" }
+          { name: "Modmails Handled", value: "modmail" },
+          { name: "Appeals Handled", value: "appeal" }
         )
     ),
   new SlashCommandBuilder()
@@ -658,7 +661,8 @@ const commands = [
         .addChoices(
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
-          { name: "Modmails Handled", value: "modmail" }
+          { name: "Modmails Handled", value: "modmail" },
+          { name: "Appeals Handled", value: "appeal" }
         )
     )
     .addUserOption((option) =>
@@ -870,6 +874,13 @@ const commands = [
     )
     .addStringOption((option) =>
       option.setName("reason").setDescription("Reason for block").setRequired(false)
+    )
+    .addStringOption((option) =>
+      option.setName("system").setDescription("Which system to block from").setRequired(false)
+        .addChoices(
+          { name: "Team Thrill (Modmail)", value: "modmail" },
+          { name: "Team Thrill Ban Appeal", value: "appeal" }
+        )
     ),
   new SlashCommandBuilder()
     .setName("unblock")
@@ -2224,6 +2235,7 @@ client.on("interactionCreate", async (interaction) => {
             let memberBanStats = 0;
             let memberUnbanStats = 0;
             let memberModmailStats = 0;
+            let memberAppealStats = 0;
             let memberModmailCategoryStats: { category: string; count: number }[] = [];
 
             try {
@@ -2242,12 +2254,17 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not fetch member modmail stats:", e);
             }
             try {
+              memberAppealStats = await storage.getAppealStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+            } catch (e) {
+              console.log("Could not fetch member appeal stats:", e);
+            }
+            try {
               memberModmailCategoryStats = await storage.getModmailStatsByCategoryForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member modmail category stats:", e);
             }
 
-            const totalActivity = memberBanStats + memberUnbanStats + memberModmailStats;
+            const totalActivity = memberBanStats + memberUnbanStats + memberModmailStats + memberAppealStats;
 
             const embed = new EmbedBuilder()
               .setTitle(`Activity for ${targetMember.tag}`)
@@ -2261,7 +2278,8 @@ client.on("interactionCreate", async (interaction) => {
             let statsText = `**Total Activity:** ${totalActivity}\n\n`;
             statsText += `**Ban Requests:** ${memberBanStats}\n`;
             statsText += `**Unban Requests:** ${memberUnbanStats}\n`;
-            statsText += `**Modmails Handled:** ${memberModmailStats}`;
+            statsText += `**Modmails Handled:** ${memberModmailStats}\n`;
+            statsText += `**Appeals Handled:** ${memberAppealStats}`;
 
             // Add modmail category breakdown if available
             if (memberModmailStats > 0 && memberModmailCategoryStats.length > 0) {
@@ -2295,6 +2313,7 @@ client.on("interactionCreate", async (interaction) => {
           let banStats: { userId: string; count: number }[] = [];
           let unbanStats: { userId: string; count: number }[] = [];
           let modmailStats: { userId: string; count: number }[] = [];
+          let appealStats: { userId: string; count: number }[] = [];
           let modmailCategoryStats: { category: string; count: number }[] = [];
 
           try {
@@ -2322,6 +2341,14 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           try {
+            if (!category || category === "appeal") {
+              appealStats = await storage.getAppealStats(interaction.guildId!, fromDays, toDays);
+            }
+          } catch (e) {
+            console.log("Could not fetch appeal stats:", e);
+          }
+
+          try {
             if (!category || category === "modmail") {
               modmailCategoryStats = await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays);
             }
@@ -2337,6 +2364,9 @@ client.on("interactionCreate", async (interaction) => {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
           for (const stat of modmailStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of appealStats) {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
 
@@ -2461,6 +2491,8 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (category === "modmail") {
               await storage.addModmailActivityEntries(interaction.guildId!, user.id, amount);
+            } else if (category === "appeal") {
+              await storage.addAppealActivityEntries(interaction.guildId!, user.id, amount);
             } else {
               for (let i = 0; i < amount; i++) {
                 if (category === "ban") {
@@ -2510,6 +2542,8 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (category === "modmail") {
               removed = await storage.removeModmailActivityEntries(interaction.guildId!, user.id, amount);
+            } else if (category === "appeal") {
+              removed = await storage.removeAppealActivityEntries(interaction.guildId!, user.id, amount);
             } else {
               removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
             }
@@ -2517,7 +2551,7 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not remove activity entries:", e);
           }
 
-          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "appeal" ? "appeal" : "modmail";
           await interaction.editReply({
             content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
           });
@@ -3038,6 +3072,7 @@ client.on("interactionCreate", async (interaction) => {
         const duration = interaction.options.getInteger("duration", true);
         const timeUnit = interaction.options.getString("time", true);
         const reason = interaction.options.getString("reason") || undefined;
+        const system = interaction.options.getString("system") || "modmail";
 
         // Check if user has block permission
         const config = await storage.getGuildConfig(interaction.guildId!);
@@ -3064,17 +3099,29 @@ client.on("interactionCreate", async (interaction) => {
           expiresAt = new Date(Date.now() + duration * multipliers[timeUnit]);
         }
 
-        await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
-        await storage.createModmailBlock({
-          guildId: interaction.guildId!,
-          userId: targetUser.id,
-          blockedById: interaction.user.id,
-          reason,
-          expiresAt,
-        });
+        if (system === "appeal") {
+          await storage.removeAppealBlock(interaction.guildId!, targetUser.id);
+          await storage.createAppealBlock({
+            guildId: interaction.guildId!,
+            userId: targetUser.id,
+            blockedById: interaction.user.id,
+            reason,
+            expiresAt,
+          });
+        } else {
+          await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
+          await storage.createModmailBlock({
+            guildId: interaction.guildId!,
+            userId: targetUser.id,
+            blockedById: interaction.user.id,
+            reason,
+            expiresAt,
+          });
+        }
 
         const durationText = timeUnit === "permanent" ? "permanently" : `for ${duration} ${timeUnit}`;
-        await interaction.editReply({ content: `✅ <@${targetUser.id}> has been blocked from modmail ${durationText}.${reason ? ` Reason: ${reason}` : ""}` });
+        const systemText = system === "appeal" ? "ban appeals" : "modmail";
+        await interaction.editReply({ content: `✅ <@${targetUser.id}> has been blocked from ${systemText} ${durationText}.${reason ? ` Reason: ${reason}` : ""}` });
       } else if (commandName === "unblock") {
         if (!await safeDeferReply(interaction)) return;
 
