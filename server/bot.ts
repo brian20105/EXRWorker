@@ -47,7 +47,7 @@ const processingQuizStart = new Set<string>();
 
 // Track users with pending DM ticket category selection (userId -> messageId)
 const pendingDMTickets = new Map<string, { messageId: string; guildId: string; sentAt: number }>();
-const pendingServerSelections = new Map<string, { messageContent: string; attachments: any[]; tickets: any[]; sentAt: number }>();
+const pendingServerSelections = new Map<string, { messageContent: string; attachments: any[]; tickets: any[]; sentAt: number; originalMessageId: string; originalChannelId: string }>();
 
 // Clean up expired DM ticket selections and server selections (5 minutes)
 setInterval(() => {
@@ -2382,7 +2382,7 @@ client.on("interactionCreate", async (interaction) => {
             .sort((a, b) => b.count - a.count)
             .slice(0, 10);
 
-          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : "All Activity";
+          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : "All Activity";
 
           const embed = new EmbedBuilder()
             .setTitle(`${categoryText} Leaderboard`)
@@ -3473,12 +3473,23 @@ client.on("interactionCreate", async (interaction) => {
               });
             }
             
-            // Update the message to confirm
-            await interaction.message.edit({
-              content: `✅ Message sent to **${selectedTicket.guild.name}** (${selectedTicket.type})`,
-              embeds: [],
-              components: []
-            });
+            // React to original message with checkmark and delete the selection message
+            try {
+              const originalChannel = await client.channels.fetch(pendingData.originalChannelId);
+              if (originalChannel && "messages" in originalChannel) {
+                const originalMessage = await originalChannel.messages.fetch(pendingData.originalMessageId);
+                await originalMessage.react("✅");
+              }
+            } catch (e) {
+              console.log("Could not react to original message:", e);
+            }
+            
+            // Delete the selection message
+            try {
+              await interaction.message.delete();
+            } catch (e) {
+              console.log("Could not delete selection message:", e);
+            }
           }
         } catch (error) {
           console.log("Could not relay multi-server message:", error);
@@ -6808,6 +6819,8 @@ client.on("messageCreate", async (message) => {
           attachments: message.attachments.map(a => ({ url: a.url, contentType: a.contentType })),
           tickets: openTickets,
           sentAt: Date.now(),
+          originalMessageId: message.id,
+          originalChannelId: message.channel.id,
         });
 
         await message.reply({ embeds: [embed], components: [row] });
