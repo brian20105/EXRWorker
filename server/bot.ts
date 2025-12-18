@@ -3079,7 +3079,7 @@ client.on("interactionCreate", async (interaction) => {
         const duration = interaction.options.getInteger("duration", true);
         const timeUnit = interaction.options.getString("time", true);
         const reason = interaction.options.getString("reason") || undefined;
-        const system = interaction.options.getString("system") || "modmail";
+        const system = interaction.options.getString("system") || "appeal";
 
         // Check if user has block permission
         const config = await storage.getGuildConfig(interaction.guildId!);
