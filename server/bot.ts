@@ -6815,7 +6815,7 @@ client.on("messageCreate", async (message) => {
       // Find ALL existing open threads for this user across all guilds (check both modmail and appeal)
       const openTickets: { thread: any; guild: any; isAppeal: boolean; type: string }[] = [];
 
-      for (const guild of client.guilds.cache.values()) {
+      for (const guild of Array.from(client.guilds.cache.values())) {
         try {
           // Check modmail
           const modmailThread = await storage.getOpenModmailThread(guild.id, message.author.id);
