@@ -423,8 +423,10 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(table.createdAt));
     
     const idsToDelete = requests.slice(0, amount).map(r => r.id);
-    if (idsToDelete.length > 0) {
-      await db.delete(table).where(inArray(table.id, idsToDelete));
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
+      const batch = idsToDelete.slice(i, i + BATCH_SIZE);
+      await db.delete(table).where(inArray(table.id, batch));
     }
     return idsToDelete.length;
   }
@@ -744,11 +746,14 @@ export class DatabaseStorage implements IStorage {
     const banIdsToDelete = allReqs.filter(r => r.type === 'ban').map(r => r.id);
     const unbanIdsToDelete = allReqs.filter(r => r.type === 'unban').map(r => r.id);
     
-    if (banIdsToDelete.length > 0) {
-      await db.delete(banRequests).where(inArray(banRequests.id, banIdsToDelete));
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < banIdsToDelete.length; i += BATCH_SIZE) {
+      const batch = banIdsToDelete.slice(i, i + BATCH_SIZE);
+      await db.delete(banRequests).where(inArray(banRequests.id, batch));
     }
-    if (unbanIdsToDelete.length > 0) {
-      await db.delete(unbanRequests).where(inArray(unbanRequests.id, unbanIdsToDelete));
+    for (let i = 0; i < unbanIdsToDelete.length; i += BATCH_SIZE) {
+      const batch = unbanIdsToDelete.slice(i, i + BATCH_SIZE);
+      await db.delete(unbanRequests).where(inArray(unbanRequests.id, batch));
     }
     
     return allReqs.length;
@@ -939,8 +944,10 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(modmailThreads.closedAt));
     
     const idsToDelete = threads.slice(0, amount).map(t => t.id);
-    if (idsToDelete.length > 0) {
-      await db.delete(modmailThreads).where(inArray(modmailThreads.id, idsToDelete));
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
+      const batch = idsToDelete.slice(i, i + BATCH_SIZE);
+      await db.delete(modmailThreads).where(inArray(modmailThreads.id, batch));
     }
     return idsToDelete.length;
   }
@@ -971,8 +978,10 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(appealThreads.closedAt));
     
     const idsToDelete = threads.slice(0, amount).map(t => t.id);
-    if (idsToDelete.length > 0) {
-      await db.delete(appealThreads).where(inArray(appealThreads.id, idsToDelete));
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
+      const batch = idsToDelete.slice(i, i + BATCH_SIZE);
+      await db.delete(appealThreads).where(inArray(appealThreads.id, batch));
     }
     return idsToDelete.length;
   }
