@@ -3756,10 +3756,37 @@ client.on("interactionCreate", async (interaction) => {
           await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
 
           const claimEmbed = new EmbedBuilder()
-            .setDescription(`Ticket claimed by <@${interaction.user.id}>`)
+            .setDescription(`**Ticket claimed by <@${interaction.user.id}>**`)
             .setColor(0x5865f2)
             .setTimestamp();
-          await interaction.channel?.send({ embeds: [claimEmbed] });
+
+          // Update button to show claimed state while preserving other buttons
+          await interaction.message.edit({
+            components: [
+              new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`modmail_claim_${threadId}`)
+                  .setLabel(`Claimed by ${interaction.user.username}`)
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(true),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_close_${threadId}`)
+                  .setLabel("Close")
+                  .setStyle(ButtonStyle.Danger)
+                  .setEmoji("🔒")
+              )
+            ]
+          });
+
+          await interaction.followUp({ embeds: [claimEmbed] });
+
+          // DM user that their ticket was claimed
+          try {
+            const ticketUser = await client.users.fetch(thread.userId);
+            await ticketUser.send({ content: `Your ticket has been claimed by a staff member. They will respond shortly.` });
+          } catch (e) {
+            console.log("Could not DM user about ticket claim");
+          }
 
           // Start 15-minute claim expiry timer
           if (interaction.channel) {
@@ -6126,21 +6153,24 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !or and !unclaim command (claimer or admin can unclaim)
+  // Handle !or and !unclaim command (claimer or admin can unclaim) - works in both modmail and appeal channels
   if (message.guild && (lowerContent === `${lowerPrefix}or` || lowerContent === `${lowerPrefix}unclaim`)) {
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+    
     if (!thread) {
-      // Silent return if not a modmail channel (don't spam error in non-ticket channels)
       return;
     }
 
     if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
+      await message.reply("This ticket is already closed.");
       return;
     }
 
     if (!thread.claimedById) {
-      await message.reply("❌ This ticket is not claimed by anyone.");
+      await message.reply("This ticket is not claimed by anyone.");
       return;
     }
 
@@ -6150,12 +6180,16 @@ client.on("messageCreate", async (message) => {
     const isClaimedByUser = thread.claimedById === message.author.id;
 
     if (!isClaimedByUser && !hasAdminPermission) {
-      await message.reply(`❌ Only <@${thread.claimedById}> (who claimed this ticket) or an administrator can unclaim it.`);
+      await message.reply(`Only <@${thread.claimedById}> (who claimed this ticket) or an administrator can unclaim it.`);
       return;
     }
 
     const previousClaimer = thread.claimedById;
-    await storage.updateModmailThread(thread.id, { claimedById: null });
+    if (isAppeal) {
+      await storage.updateAppealThread(thread.id, { claimedById: null });
+    } else {
+      await storage.updateModmailThread(thread.id, { claimedById: null });
+    }
 
     // Clear claim expiry timer
     const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
@@ -7083,22 +7117,26 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle .ar <message> anonymous reply command in modmail channels
+  // Handle .ar <message> anonymous reply command in modmail/appeal channels
   if (message.guild && (lowerContent.startsWith(`${lowerPrefix}ar `) || (lowerContent === `${lowerPrefix}ar` && message.attachments.size > 0))) {
-    // Silently ignore if not in a modmail channel
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+    
     if (!thread) {
       return;
     }
 
     const replyContent = lowerContent === `${lowerPrefix}ar` ? "" : message.content.substring(prefix.length + 3).trim();
     if (!replyContent && message.attachments.size === 0) {
-      await message.reply(`❌ Please provide a message or attach files. Usage: \`${prefix}ar <message>\` or \`${prefix}ar\` with attachments`);
+      await message.reply(`Please provide a message or attach files. Usage: \`${prefix}ar <message>\` or \`${prefix}ar\` with attachments`);
       return;
     }
 
     if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
+      await message.reply("This ticket is already closed.");
       return;
     }
 
@@ -7147,14 +7185,25 @@ client.on("messageCreate", async (message) => {
       const channelMessage = await (message.channel as any).send({ embeds: [channelEmbed] });
 
       // Save message with message IDs
-      await storage.addModmailMessage({
-        threadId: thread.id,
-        authorId: message.author.id,
-        content: `[Anonymous] ${replyContent}`,
-        isStaff: "true",
-        channelMessageId: channelMessage.id,
-        dmMessageId: dmMessage.id,
-      });
+      if (isAppeal) {
+        await storage.addAppealMessage({
+          threadId: thread.id,
+          authorId: message.author.id,
+          content: `[Anonymous] ${replyContent}`,
+          isStaff: "true",
+          channelMessageId: channelMessage.id,
+          dmMessageId: dmMessage.id,
+        });
+      } else {
+        await storage.addModmailMessage({
+          threadId: thread.id,
+          authorId: message.author.id,
+          content: `[Anonymous] ${replyContent}`,
+          isStaff: "true",
+          channelMessageId: channelMessage.id,
+          dmMessageId: dmMessage.id,
+        });
+      }
 
       // Clear claim expiry timer when any staff responds
       const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
@@ -7163,20 +7212,32 @@ client.on("messageCreate", async (message) => {
         pendingClaimExpiry.delete(message.channel.id);
       }
 
-      // Cancel any existing inactivity timers for this channel
-      const existingWarning = pendingInactivityWarnings.get(message.channel.id);
-      if (existingWarning) {
-        clearTimeout(existingWarning.timeout);
-        pendingInactivityWarnings.delete(message.channel.id);
-      }
-      const existingClose = pendingInactivityCloses.get(message.channel.id);
-      if (existingClose) {
-        clearTimeout(existingClose.timeout);
-        pendingInactivityCloses.delete(message.channel.id);
+      // Cancel any existing inactivity timers for this channel (only for modmail)
+      if (!isAppeal) {
+        const existingWarning = pendingInactivityWarnings.get(message.channel.id);
+        if (existingWarning) {
+          clearTimeout(existingWarning.timeout);
+          pendingInactivityWarnings.delete(message.channel.id);
+        }
+        const existingClose = pendingInactivityCloses.get(message.channel.id);
+        if (existingClose) {
+          clearTimeout(existingClose.timeout);
+          pendingInactivityCloses.delete(message.channel.id);
+        }
       }
 
-      // Only start inactivity timer if ignoreInactivity is not set
-      if (thread.ignoreInactivity === "true") {
+      // For appeals, just delete message and return (no inactivity tracking)
+      if (isAppeal) {
+        try {
+          await message.delete();
+        } catch (e) {
+          console.log("Could not delete trigger message:", e);
+        }
+        return;
+      }
+
+      // Only start inactivity timer if ignoreInactivity is not set (modmail only)
+      if ((thread as any).ignoreInactivity === "true") {
         try {
           await message.delete();
         } catch (e) {
