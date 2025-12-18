@@ -432,7 +432,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addBanActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 25;
+    const BATCH_SIZE = 50;
+    const batches = [];
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -444,12 +445,14 @@ export class DatabaseStorage implements IStorage {
         reviewedById: userId,
         reviewReason: "Manual entry by admin",
       }));
-      await db.insert(banRequests).values(entries);
+      batches.push(db.insert(banRequests).values(entries));
     }
+    await Promise.all(batches);
   }
 
   async addUnbanActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 25;
+    const BATCH_SIZE = 50;
+    const batches = [];
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -461,8 +464,9 @@ export class DatabaseStorage implements IStorage {
         reviewedById: userId,
         reviewReason: "Manual entry by admin",
       }));
-      await db.insert(unbanRequests).values(entries);
+      batches.push(db.insert(unbanRequests).values(entries));
     }
+    await Promise.all(batches);
   }
 
   async createStaffIntroSubmission(submission: InsertStaffIntroSubmission): Promise<StaffIntroSubmission> {
@@ -715,7 +719,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addStaffReportEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 25;
+    const BATCH_SIZE = 50;
+    const batches = [];
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -727,8 +732,9 @@ export class DatabaseStorage implements IStorage {
         reviewedById: "staff_report_entry",
         reviewReason: "Staff report activity entry",
       }));
-      await db.insert(banRequests).values(entries);
+      batches.push(db.insert(banRequests).values(entries));
     }
+    await Promise.all(batches);
   }
 
   async removeStaffReportEntries(guildId: string, userId: string, amount: number): Promise<number> {
@@ -919,7 +925,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 25;
+    const BATCH_SIZE = 50;
+    const batches = [];
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -930,8 +937,9 @@ export class DatabaseStorage implements IStorage {
         closeReason: "Manual activity entry",
         closedAt: new Date(),
       }));
-      await db.insert(modmailThreads).values(entries);
+      batches.push(db.insert(modmailThreads).values(entries));
     }
+    await Promise.all(batches);
   }
 
   async removeModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<number> {
@@ -953,7 +961,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 25;
+    const BATCH_SIZE = 50;
+    const batches = [];
     for (let i = 0; i < amount; i += BATCH_SIZE) {
       const batchSize = Math.min(BATCH_SIZE, amount - i);
       const entries = Array.from({ length: batchSize }, () => ({
@@ -964,8 +973,9 @@ export class DatabaseStorage implements IStorage {
         closeReason: "Manual activity entry",
         closedAt: new Date(),
       }));
-      await db.insert(appealThreads).values(entries);
+      batches.push(db.insert(appealThreads).values(entries));
     }
+    await Promise.all(batches);
   }
 
   async removeAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<number> {
