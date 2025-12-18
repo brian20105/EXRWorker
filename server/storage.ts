@@ -629,6 +629,115 @@ export class DatabaseStorage implements IStorage {
     return result[0]?.count || 0;
   }
 
+  async getStaffReportStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    const now = new Date();
+    
+    let banReqs = await db.select().from(banRequests).where(eq(banRequests.guildId, guildId));
+    let unbanReqs = await db.select().from(unbanRequests).where(eq(unbanRequests.guildId, guildId));
+    
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      banReqs = banReqs.filter(r => r.createdAt >= fromDate);
+      unbanReqs = unbanReqs.filter(r => r.createdAt >= fromDate);
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      banReqs = banReqs.filter(r => r.createdAt <= toDate);
+      unbanReqs = unbanReqs.filter(r => r.createdAt <= toDate);
+    }
+    
+    const counts: { [userId: string]: number } = {};
+    for (const r of [...banReqs, ...unbanReqs]) {
+      if (r.requestedById && r.requestedById !== "manual_entry") {
+        counts[r.requestedById] = (counts[r.requestedById] || 0) + 1;
+      }
+    }
+    
+    return Object.entries(counts)
+      .map(([userId, count]) => ({ userId, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  async getStaffReportStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number> {
+    const now = new Date();
+    
+    let conditions = [eq(banRequests.guildId, guildId), eq(banRequests.requestedById, userId)];
+    let conditions2 = [eq(unbanRequests.guildId, guildId), eq(unbanRequests.requestedById, userId)];
+    
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(banRequests.createdAt, fromDate));
+      conditions2.push(gte(unbanRequests.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(banRequests.createdAt, toDate));
+      conditions2.push(lte(unbanRequests.createdAt, toDate));
+    }
+    
+    const banResult = await db.select({ count: count() }).from(banRequests).where(and(...conditions));
+    const unbanResult = await db.select({ count: count() }).from(unbanRequests).where(and(...conditions2));
+    return (banResult[0]?.count || 0) + (unbanResult[0]?.count || 0);
+  }
+
+  async addStaffReportEntries(guildId: string, userId: string, amount: number): Promise<void> {
+    for (let i = 0; i < amount; i++) {
+      await db.insert(banRequests).values({
+        guildId,
+        targetUserId: "staff_report_entry",
+        requestedById: userId,
+        reason: "Manual staff report entry",
+        status: "approved",
+        reviewedById: "staff_report_entry",
+        reviewReason: "Staff report activity entry",
+      });
+    }
+  }
+
+  async removeStaffReportEntries(guildId: string, userId: string, amount: number): Promise<number> {
+    const banReqs = await db.select().from(banRequests)
+      .where(and(eq(banRequests.guildId, guildId), eq(banRequests.requestedById, userId)))
+      .orderBy(desc(banRequests.createdAt));
+    const unbanReqs = await db.select().from(unbanRequests)
+      .where(and(eq(unbanRequests.guildId, guildId), eq(unbanRequests.requestedById, userId)))
+      .orderBy(desc(unbanRequests.createdAt));
+    
+    const allReqs = [...banReqs.map(r => ({ ...r, type: 'ban' })), ...unbanReqs.map(r => ({ ...r, type: 'unban' }))]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    
+    let removed = 0;
+    for (const req of allReqs) {
+      if (removed >= amount) break;
+      if (req.type === 'ban') {
+        await db.delete(banRequests).where(eq(banRequests.id, req.id));
+      } else {
+        await db.delete(unbanRequests).where(eq(unbanRequests.id, req.id));
+      }
+      removed++;
+    }
+    return removed;
+  }
+
+  async resetStaffReportStats(guildId: string, userId?: string): Promise<void> {
+    if (userId) {
+      await db.delete(banRequests).where(and(eq(banRequests.guildId, guildId), eq(banRequests.requestedById, userId)));
+      await db.delete(unbanRequests).where(and(eq(unbanRequests.guildId, guildId), eq(unbanRequests.requestedById, userId)));
+    } else {
+      const allBanReqs = await db.select().from(banRequests).where(eq(banRequests.guildId, guildId));
+      const allUnbanReqs = await db.select().from(unbanRequests).where(eq(unbanRequests.guildId, guildId));
+      for (const r of allBanReqs) {
+        if (r.requestedById && r.requestedById !== "manual_entry") {
+          await db.update(banRequests).set({ requestedById: "reset" }).where(eq(banRequests.id, r.id));
+        }
+      }
+      for (const r of allUnbanReqs) {
+        if (r.requestedById && r.requestedById !== "manual_entry") {
+          await db.update(unbanRequests).set({ requestedById: "reset" }).where(eq(unbanRequests.id, r.id));
+        }
+      }
+    }
+  }
+
   async getModmailStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number> {
     let threads = await db.select().from(modmailThreads).where(
       and(
@@ -886,6 +995,7 @@ export class DatabaseStorage implements IStorage {
     let unbanData: any[] = [];
     let modmailData: any[] = [];
     let appealData: any[] = [];
+    let staffReportData: any[] = [];
     
     if (!category || category === "ban") {
       const conditions = [eq(banRequests.guildId, guildId)];
@@ -917,6 +1027,20 @@ export class DatabaseStorage implements IStorage {
       appealData = await db.select().from(appealThreads).where(and(...conditions));
       const result = await db.delete(appealThreads).where(and(...conditions)).returning();
       count += result.length;
+    }
+    
+    if (category === "staffreport") {
+      await this.resetStaffReportStats(guildId, userId);
+      const banConditions = [eq(banRequests.guildId, guildId)];
+      const unbanConditions = [eq(unbanRequests.guildId, guildId)];
+      if (userId) {
+        banConditions.push(eq(banRequests.requestedById, userId));
+        unbanConditions.push(eq(unbanRequests.requestedById, userId));
+      }
+      const banReqs = await db.select().from(banRequests).where(and(...banConditions));
+      const unbanReqs = await db.select().from(unbanRequests).where(and(...unbanConditions));
+      count = banReqs.length + unbanReqs.length;
+      staffReportData = [...banReqs, ...unbanReqs];
     }
     
     if (count > 0) {

@@ -568,7 +568,8 @@ const commands = [
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
           { name: "Modmails handled", value: "modmail" },
-          { name: "Appeals handled", value: "appeal" }
+          { name: "Appeals handled", value: "appeal" },
+          { name: "Staff Reports", value: "staffreport" }
         )
     )
     .addIntegerOption((option) =>
@@ -618,7 +619,8 @@ const commands = [
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
           { name: "Modmails Handled", value: "modmail" },
-          { name: "Appeals Handled", value: "appeal" }
+          { name: "Appeals Handled", value: "appeal" },
+          { name: "Staff Reports", value: "staffreport" }
         )
     ),
   new SlashCommandBuilder()
@@ -646,7 +648,8 @@ const commands = [
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
           { name: "Modmails Handled", value: "modmail" },
-          { name: "Appeals Handled", value: "appeal" }
+          { name: "Appeals Handled", value: "appeal" },
+          { name: "Staff Reports", value: "staffreport" }
         )
     ),
   new SlashCommandBuilder()
@@ -662,7 +665,8 @@ const commands = [
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
           { name: "Modmails Handled", value: "modmail" },
-          { name: "Appeals Handled", value: "appeal" }
+          { name: "Appeals Handled", value: "appeal" },
+          { name: "Staff Reports", value: "staffreport" }
         )
     )
     .addUserOption((option) =>
@@ -2321,6 +2325,7 @@ client.on("interactionCreate", async (interaction) => {
           let unbanStats: { userId: string; count: number }[] = [];
           let modmailStats: { userId: string; count: number }[] = [];
           let appealStats: { userId: string; count: number }[] = [];
+          let staffReportStats: { userId: string; count: number }[] = [];
           let modmailCategoryStats: { category: string; count: number }[] = [];
 
           try {
@@ -2356,6 +2361,14 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           try {
+            if (!category || category === "staffreport") {
+              staffReportStats = await storage.getStaffReportStats(interaction.guildId!, fromDays, toDays);
+            }
+          } catch (e) {
+            console.log("Could not fetch staff report stats:", e);
+          }
+
+          try {
             if (!category || category === "modmail") {
               modmailCategoryStats = await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays);
             }
@@ -2376,13 +2389,16 @@ client.on("interactionCreate", async (interaction) => {
           for (const stat of appealStats) {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
+          for (const stat of staffReportStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
 
           const leaderboard = Object.entries(combinedStats)
             .map(([userId, count]) => ({ userId, count }))
             .sort((a, b) => b.count - a.count)
             .slice(0, 10);
 
-          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : "All Activity";
+          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
 
           const embed = new EmbedBuilder()
             .setTitle(`${categoryText} Leaderboard`)
@@ -2397,6 +2413,8 @@ client.on("interactionCreate", async (interaction) => {
           const banTotal = banStats.reduce((sum, e) => sum + e.count, 0);
           const unbanTotal = unbanStats.reduce((sum, e) => sum + e.count, 0);
           const modmailTotal = modmailStats.reduce((sum, e) => sum + e.count, 0);
+          const appealTotal = appealStats.reduce((sum, e) => sum + e.count, 0);
+          const staffReportTotal = staffReportStats.reduce((sum, e) => sum + e.count, 0);
 
           if (leaderboard.length === 0) {
             embed.addFields({ name: "\u200B", value: "No activity found for the specified filters.", inline: false });
@@ -2410,10 +2428,12 @@ client.on("interactionCreate", async (interaction) => {
             // Add total and category breakdown
             let statsText = `**Total in the specified time:** ${totalCount}`;
             if (!category) {
-              // "All Activity" view - show totals only
+              // "All Activity" view - show all totals
               if (banTotal > 0) statsText += `\nBan Requests: ${banTotal}`;
               if (unbanTotal > 0) statsText += `\nUnban Requests: ${unbanTotal}`;
               if (modmailTotal > 0) statsText += `\nModmails Handled: ${modmailTotal}`;
+              if (appealTotal > 0) statsText += `\nAppeals Handled: ${appealTotal}`;
+              if (staffReportTotal > 0) statsText += `\nStaff Reports: ${staffReportTotal}`;
             } else if (category === "modmail") {
               // "Modmails Handled" view - show category breakdown
               if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
@@ -2500,6 +2520,8 @@ client.on("interactionCreate", async (interaction) => {
               await storage.addModmailActivityEntries(interaction.guildId!, user.id, amount);
             } else if (category === "appeal") {
               await storage.addAppealActivityEntries(interaction.guildId!, user.id, amount);
+            } else if (category === "staffreport") {
+              await storage.addStaffReportEntries(interaction.guildId!, user.id, amount);
             } else {
               for (let i = 0; i < amount; i++) {
                 if (category === "ban") {
@@ -2529,7 +2551,7 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not add activity entries:", e);
           }
 
-          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : "modmail";
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "staffreport" ? "staff report" : category === "appeal" ? "appeal" : "modmail";
           await interaction.editReply({
             content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
           });
@@ -2551,6 +2573,8 @@ client.on("interactionCreate", async (interaction) => {
               removed = await storage.removeModmailActivityEntries(interaction.guildId!, user.id, amount);
             } else if (category === "appeal") {
               removed = await storage.removeAppealActivityEntries(interaction.guildId!, user.id, amount);
+            } else if (category === "staffreport") {
+              removed = await storage.removeStaffReportEntries(interaction.guildId!, user.id, amount);
             } else {
               removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
             }
@@ -2558,7 +2582,7 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not remove activity entries:", e);
           }
 
-          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "appeal" ? "appeal" : "modmail";
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "staffreport" ? "staff report" : category === "appeal" ? "appeal" : "modmail";
           await interaction.editReply({
             content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
           });
@@ -2595,7 +2619,7 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not reset activity stats:", e);
           }
 
-          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "modmail" ? "modmail" : "all";
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "modmail" ? "modmail" : category === "appeal" ? "appeal" : category === "staffreport" ? "staff report" : "all";
           const userText = user ? `<@${user.id}>` : "everyone";
 
           await interaction.editReply({
