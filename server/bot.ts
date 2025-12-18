@@ -840,6 +840,13 @@ const commands = [
     .setName("block")
     .setDescription("Block a user from opening modmail tickets")
     .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option.setName("system").setDescription("Which system to block from").setRequired(true)
+        .addChoices(
+          { name: "Team Thrill (Modmail)", value: "modmail" },
+          { name: "Team Thrill Ban Appeal", value: "appeal" }
+        )
+    )
     .addUserOption((option) =>
       option.setName("user").setDescription("User to block").setRequired(true)
     )
@@ -858,13 +865,6 @@ const commands = [
     )
     .addStringOption((option) =>
       option.setName("reason").setDescription("Reason for block").setRequired(false)
-    )
-    .addStringOption((option) =>
-      option.setName("system").setDescription("Which system to block from").setRequired(false)
-        .addChoices(
-          { name: "Team Thrill (Modmail)", value: "modmail" },
-          { name: "Team Thrill Ban Appeal", value: "appeal" }
-        )
     ),
   new SlashCommandBuilder()
     .setName("unblock")
@@ -3083,11 +3083,11 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "block") {
         if (!await safeDeferReply(interaction)) return;
 
+        const system = interaction.options.getString("system", true);
         const targetUser = interaction.options.getUser("user", true);
         const duration = interaction.options.getInteger("duration", true);
         const timeUnit = interaction.options.getString("time", true);
         const reason = interaction.options.getString("reason") || undefined;
-        const system = interaction.options.getString("system") || "appeal";
 
         // Check if user has block permission
         const config = await storage.getGuildConfig(interaction.guildId!);
