@@ -1291,99 +1291,109 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "payout_permission") {
         if (!await safeDeferReply(interaction)) return;
 
-        const roles: string[] = [];
-        const roleNames: string[] = [];
+        try {
+          const roles: string[] = [];
+          const roleNames: string[] = [];
 
-        for (let i = 1; i <= 5; i++) {
-          const role = interaction.options.getRole(`role${i}`);
-          if (role) {
-            roles.push(role.id);
-            roleNames.push(role.name);
+          for (let i = 1; i <= 5; i++) {
+            const role = interaction.options.getRole(`role${i}`);
+            if (role) {
+              roles.push(role.id);
+              roleNames.push(role.name);
+            }
           }
+
+          await storage.updateAllowedRoles(interaction.guildId!, roles);
+
+          await interaction.editReply({
+            content: `Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
+          });
+        } catch (error: any) {
+          console.log("Error in payout_permission:", error.message);
+          await interaction.editReply({ content: "Failed to update payout permissions. Please try again." }).catch(() => {});
         }
-
-        await storage.updateAllowedRoles(interaction.guildId!, roles);
-
-        await interaction.editReply({
-          content: `✅ Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
-        });
       } else if (commandName === "list_payouts") {
         const isPrivate = interaction.options.getBoolean("private") ?? true;
         if (!await safeDeferReply(interaction, isPrivate)) return;
 
-        const member = interaction.member;
-        const memberRoles = member && 'roles' in member 
-          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
-          : undefined;
-        const memberPermissions = member && 'permissions' in member 
-          ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
-          : undefined;
+        try {
+          const member = interaction.member;
+          const memberRoles = member && 'roles' in member 
+            ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+            : undefined;
+          const memberPermissions = member && 'permissions' in member 
+            ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+            : undefined;
 
-        const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
-        if (!hasPermission) {
-          await interaction.editReply({
-            content: "❌ You don't have permission to view payout requests.",
-          });
-          return;
+          const hasPermission = await hasPayoutPermission(memberRoles, memberPermissions, interaction.guildId!);
+          if (!hasPermission) {
+            await interaction.editReply({
+              content: "You don't have permission to view payout requests.",
+            });
+            return;
+          }
+
+          const allPayouts = await storage.getAllPayouts(interaction.guildId!);
+
+          if (allPayouts.length === 0) {
+            await interaction.editReply({
+              content: "No payout requests found.",
+            });
+            return;
+          }
+
+          const pending = allPayouts.filter(p => p.status === "pending");
+          const approved = allPayouts.filter(p => p.status === "approved");
+          const denied = allPayouts.filter(p => p.status === "denied");
+
+          const totalPending = pending.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+          const totalApproved = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+          const totalDenied = denied.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+
+          const embeds: EmbedBuilder[] = [];
+
+          const summaryEmbed = new EmbedBuilder()
+            .setTitle("All Payout Requests")
+            .setColor(0x5865f2)
+            .setDescription(`Total: **${allPayouts.length}** requests`)
+            .addFields(
+              { name: "Pending", value: `**${pending.length}** requests\n$${totalPending.toFixed(2)}`, inline: true },
+              { name: "Approved", value: `**${approved.length}** requests\n$${totalApproved.toFixed(2)}`, inline: true },
+              { name: "Denied", value: `**${denied.length}** requests\n$${totalDenied.toFixed(2)}`, inline: true }
+            )
+            .setTimestamp();
+          embeds.push(summaryEmbed);
+
+          const formatPayoutList = (payouts: typeof allPayouts, title: string, emoji: string, color: number) => {
+            if (payouts.length === 0) return null;
+
+            let description = "";
+            payouts.forEach((payout, index) => {
+              const line = `**${index + 1}.)** <@${payout.userId}>\n> **ID:** ${payout.userId}\n> **Reason:** ${payout.reason || "No reason"}\n> **Amount:** $${payout.moneyOwed}\n> **Email:** ${payout.email}\n\n`;
+              if (description.length + line.length < 4000) {
+                description += line;
+              }
+            });
+
+            return new EmbedBuilder()
+              .setTitle(`${emoji} ${title}`)
+              .setColor(color)
+              .setDescription(description || "None");
+          };
+
+          const pendingEmbed = formatPayoutList(pending, "Pending Requests", "", 0xf0b232);
+          const approvedEmbed = formatPayoutList(approved, "Approved Requests", "", 0x23a559);
+          const deniedEmbed = formatPayoutList(denied, "Denied Requests", "", 0xda373c);
+
+          if (pendingEmbed) embeds.push(pendingEmbed);
+          if (approvedEmbed) embeds.push(approvedEmbed);
+          if (deniedEmbed) embeds.push(deniedEmbed);
+
+          await interaction.editReply({ embeds: embeds.slice(0, 10) });
+        } catch (error: any) {
+          console.log("Error in list_payouts:", error.message);
+          await interaction.editReply({ content: "Failed to list payouts. Please try again." }).catch(() => {});
         }
-
-        const allPayouts = await storage.getAllPayouts(interaction.guildId!);
-
-        if (allPayouts.length === 0) {
-          await interaction.editReply({
-            content: "No payout requests found.",
-          });
-          return;
-        }
-
-        const pending = allPayouts.filter(p => p.status === "pending");
-        const approved = allPayouts.filter(p => p.status === "approved");
-        const denied = allPayouts.filter(p => p.status === "denied");
-
-        const totalPending = pending.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
-        const totalApproved = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
-        const totalDenied = denied.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
-
-        const embeds: EmbedBuilder[] = [];
-
-        const summaryEmbed = new EmbedBuilder()
-          .setTitle("📋 All Payout Requests")
-          .setColor(0x5865f2)
-          .setDescription(`Total: **${allPayouts.length}** requests`)
-          .addFields(
-            { name: "⏳ Pending", value: `**${pending.length}** requests\n$${totalPending.toFixed(2)}`, inline: true },
-            { name: "✅ Approved", value: `**${approved.length}** requests\n$${totalApproved.toFixed(2)}`, inline: true },
-            { name: "❌ Denied", value: `**${denied.length}** requests\n$${totalDenied.toFixed(2)}`, inline: true }
-          )
-          .setTimestamp();
-        embeds.push(summaryEmbed);
-
-        const formatPayoutList = (payouts: typeof allPayouts, title: string, emoji: string, color: number) => {
-          if (payouts.length === 0) return null;
-
-          let description = "";
-          payouts.forEach((payout, index) => {
-            const line = `**${index + 1}.)** <@${payout.userId}>\n> **ID:** ${payout.userId}\n> **Reason:** ${payout.reason || "No reason"}\n> **Amount:** $${payout.moneyOwed}\n> **Email:** ${payout.email}\n\n`;
-            if (description.length + line.length < 4000) {
-              description += line;
-            }
-          });
-
-          return new EmbedBuilder()
-            .setTitle(`${emoji} ${title}`)
-            .setColor(color)
-            .setDescription(description || "None");
-        };
-
-        const pendingEmbed = formatPayoutList(pending, "Pending Requests", "⏳", 0xf0b232);
-        const approvedEmbed = formatPayoutList(approved, "Approved Requests", "✅", 0x23a559);
-        const deniedEmbed = formatPayoutList(denied, "Denied Requests", "❌", 0xda373c);
-
-        if (pendingEmbed) embeds.push(pendingEmbed);
-        if (approvedEmbed) embeds.push(approvedEmbed);
-        if (deniedEmbed) embeds.push(deniedEmbed);
-
-        await interaction.editReply({ embeds: embeds.slice(0, 10) });
       } else if (commandName === "setup") {
         const rosterType = interaction.options.getString("roster", true);
 
