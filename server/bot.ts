@@ -467,23 +467,13 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
-    .setName("setup_ban")
-    .setDescription("Set the channel for ban requests")
+    .setName("setup_moderation")
+    .setDescription("Set the channel for moderation requests (ban/unban)")
     .setDefaultMemberPermissions(0)
     .addChannelOption((option) =>
       option
         .setName("channel")
-        .setDescription("The channel where ban requests will be sent")
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("setup_unban")
-    .setDescription("Set the channel for unban requests")
-    .setDefaultMemberPermissions(0)
-    .addChannelOption((option) =>
-      option
-        .setName("channel")
-        .setDescription("The channel where unban requests will be sent")
+        .setDescription("The channel where moderation requests will be sent")
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -521,23 +511,13 @@ const commands = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
-    .setName("setup_ban_logs")
-    .setDescription("Set the channel for ban request logs")
+    .setName("setup_moderation_logs")
+    .setDescription("Set the channel for moderation request logs")
     .setDefaultMemberPermissions(0)
     .addChannelOption((option) =>
       option
         .setName("channel")
-        .setDescription("The channel where ban logs will be sent")
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("setup_unban_logs")
-    .setDescription("Set the channel for unban request logs")
-    .setDefaultMemberPermissions(0)
-    .addChannelOption((option) =>
-      option
-        .setName("channel")
-        .setDescription("The channel where unban logs will be sent")
+        .setDescription("The channel where moderation logs will be sent")
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -979,6 +959,16 @@ const commands = [
     .addSubcommand((sub) =>
       sub.setName("list").setDescription("List all modmail categories")
     ),
+  new SlashCommandBuilder()
+    .setName("setup_command_logs")
+    .setDescription("Set the channel for bot command activity logs")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where command logs will be sent")
+        .setRequired(true)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -1071,6 +1061,43 @@ async function sendDMToStaff(staffUserId: string, status: "approved" | "denied",
     await user.send({ embeds: [embed] });
   } catch (error) {
     console.log(`Could not DM staff ${staffUserId}:`, error);
+  }
+}
+
+async function logCommand(guildId: string, commandName: string, userId: string, username: string, options?: any): Promise<void> {
+  try {
+    const config = await storage.getGuildConfig(guildId);
+    if (!config?.commandLogChannelId) return;
+
+    const logChannel = await client.channels.fetch(config.commandLogChannelId);
+    if (!logChannel || !("send" in logChannel)) return;
+
+    let optionsText = "None";
+    if (options) {
+      const optionsList: string[] = [];
+      for (const [key, value] of Object.entries(options)) {
+        if (value) {
+          optionsList.push(`**${key}:** ${value}`);
+        }
+      }
+      if (optionsList.length > 0) {
+        optionsText = optionsList.join("\n");
+      }
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("Command Used")
+      .setColor(0x5865f2)
+      .addFields(
+        { name: "Command", value: `\`/${commandName}\``, inline: true },
+        { name: "User", value: `<@${userId}> (${username})`, inline: true },
+        { name: "Options", value: optionsText, inline: false }
+      )
+      .setTimestamp();
+
+    await logChannel.send({ embeds: [embed] });
+  } catch (error) {
+    console.log("Could not log command:", error);
   }
 }
 
@@ -1305,6 +1332,23 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.isChatInputCommand()) {
       const { commandName } = interaction;
+
+      // Log command usage (fire-and-forget)
+      if (interaction.guildId) {
+        const optionsData: any = {};
+        for (const option of interaction.options.data) {
+          if (option.value !== undefined) {
+            optionsData[option.name] = option.value;
+          } else if (option.channel) {
+            optionsData[option.name] = `#${option.channel.name}`;
+          } else if (option.role) {
+            optionsData[option.name] = `@${option.role.name}`;
+          } else if (option.user) {
+            optionsData[option.name] = `@${option.user.username}`;
+          }
+        }
+        logCommand(interaction.guildId, commandName, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
+      }
 
       if (commandName === "setup_pay_request") {
         if (!await safeDeferReply(interaction)) return;
@@ -2084,7 +2128,7 @@ client.on("interactionCreate", async (interaction) => {
         } else {
           await interaction.editReply({ embeds: [embed] });
         }
-      } else if (commandName === "setup_ban") {
+      } else if (commandName === "setup_moderation") {
         if (!await safeDeferReply(interaction)) return;
 
         const channel = interaction.options.getChannel("channel", true);
@@ -2092,54 +2136,26 @@ client.on("interactionCreate", async (interaction) => {
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           banChannelId: channel.id,
-        });
-
-        const embed = new EmbedBuilder()
-          .setTitle("🚫 Ban Request")
-          .setDescription("Need to report a user for violating rules? Click below to submit a ban request with evidence.")
-          .setColor(0xed4245)
-          .setFooter({ text: "Ban Requests Can Take Up To A Day To Get Finalised" });
-
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId("submit_ban_request")
-            .setLabel("Submit Ban Request")
-            .setStyle(ButtonStyle.Danger)
-            .setEmoji("⚠️")
-        );
-
-        if (interaction.channel && "send" in interaction.channel) {
-          await interaction.channel.send({
-            embeds: [embed],
-            components: [row],
-          });
-        }
-
-        await interaction.editReply({
-          content: `✅ Ban request channel configured! Requests will be sent to <#${channel.id}>.`,
-        });
-      } else if (commandName === "setup_unban") {
-        if (!await safeDeferReply(interaction)) return;
-
-        const channel = interaction.options.getChannel("channel", true);
-
-        await storage.upsertGuildConfig({
-          guildId: interaction.guildId!,
           unbanChannelId: channel.id,
         });
 
         const embed = new EmbedBuilder()
-          .setTitle("🔓 Unban Request")
-          .setDescription("Submitting an unban request for another user? Click the button below and provide their username, the reason they were banned.")
-          .setColor(0xf0b232)
-          .setFooter({ text: "Unban Requests Can Take Up To A Day To Get Finalised" });
+          .setTitle("⚖️ Moderation Requests")
+          .setDescription("Submit a ban or unban request by clicking the appropriate button below.")
+          .setColor(0x5865f2)
+          .setFooter({ text: "Moderation Requests Can Take Up To A Day To Get Finalised" });
 
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
+            .setCustomId("submit_ban_request")
+            .setLabel("Ban Request")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("🚫"),
+          new ButtonBuilder()
             .setCustomId("submit_unban_request")
-            .setLabel("Submit Unban Request")
-            .setStyle(ButtonStyle.Primary)
-            .setEmoji("📝")
+            .setLabel("Unban Request")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("🔓")
         );
 
         if (interaction.channel && "send" in interaction.channel) {
@@ -2150,7 +2166,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         await interaction.editReply({
-          content: `✅ Unban request channel configured! Requests will be sent to <#${channel.id}>.`,
+          content: `✅ Moderation request channel configured! Requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_permissions") {
         if (!await safeDeferReply(interaction)) return;
@@ -2174,7 +2190,7 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Moderation permissions updated! The following roles can now approve/deny ban/unban requests:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
         });
-      } else if (commandName === "setup_ban_logs") {
+      } else if (commandName === "setup_moderation_logs") {
         if (!await safeDeferReply(interaction)) return;
 
         const channel = interaction.options.getChannel("channel", true);
@@ -2182,23 +2198,11 @@ client.on("interactionCreate", async (interaction) => {
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           banLogChannelId: channel.id,
-        });
-
-        await interaction.editReply({
-          content: `✅ Configuration saved! Ban request logs will be sent to <#${channel.id}>.`,
-        });
-      } else if (commandName === "setup_unban_logs") {
-        if (!await safeDeferReply(interaction)) return;
-
-        const channel = interaction.options.getChannel("channel", true);
-
-        await storage.upsertGuildConfig({
-          guildId: interaction.guildId!,
           unbanLogChannelId: channel.id,
         });
 
         await interaction.editReply({
-          content: `✅ Configuration saved! Unban request logs will be sent to <#${channel.id}>.`,
+          content: `✅ Configuration saved! Moderation request logs will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "prefix") {
         if (!await safeDeferReply(interaction)) return;
@@ -3263,6 +3267,7 @@ client.on("interactionCreate", async (interaction) => {
                 const messages = await storage.getModmailMessages(thread.id);
                 let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
                 if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                if (!transcript) transcript = "No messages";
 
                 const logEmbed = new EmbedBuilder()
                   .setTitle("Ticket Closed (Bulk)")
@@ -3270,13 +3275,14 @@ client.on("interactionCreate", async (interaction) => {
                   .addFields(
                     { name: "User", value: `<@${thread.userId}>`, inline: true },
                     { name: "Closed By", value: `<@${interaction.user.id}>`, inline: true },
-                    { name: "Transcript", value: transcript || "No messages", inline: false }
+                    { name: "Transcript", value: transcript, inline: false }
                   )
                   .setTimestamp();
                 await logChannel.send({ embeds: [logEmbed] });
+                console.log(`[MODMAIL] Bulk close log sent for thread ${thread.id}`);
               }
-            } catch (e) {
-              console.log("Could not send modmail log for bulk close");
+            } catch (e: any) {
+              console.log(`[MODMAIL] Could not send log for bulk close thread ${thread.id}:`, e.message);
             }
           }
 
@@ -3403,6 +3409,19 @@ client.on("interactionCreate", async (interaction) => {
 
           await interaction.editReply({ embeds: [embed] });
         }
+      } else if (commandName === "setup_command_logs") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          commandLogChannelId: channel.id,
+        });
+
+        await interaction.editReply({
+          content: `✅ Command logs will be sent to <#${channel.id}>!`,
+        });
       }
     } else if (interaction.isStringSelectMenu()) {
       // Handle server selection for multi-server DM routing
@@ -4019,17 +4038,45 @@ client.on("interactionCreate", async (interaction) => {
             }
           }
 
-          // Reply immediately, then do background work
+          // Capture references synchronously
+          const guildId = interaction.guildId!;
+          const closerId = interaction.user.id;
+          const channelId = interaction.channel?.id;
+          const threadUserId = thread.userId;
+          const threadIdForLog = thread.id;
+
+          // Send log BEFORE replying or deleting (critical to ensure it happens)
+          try {
+            const config = await storage.getGuildConfig(guildId);
+            if (config?.modmailLogChannelId) {
+              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const messages = await storage.getModmailMessages(threadIdForLog);
+                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                if (!transcript) transcript = "No messages";
+
+                const logEmbed = new EmbedBuilder()
+                  .setTitle("Ticket Closed")
+                  .setColor(0xed4245)
+                  .addFields(
+                    { name: "User", value: `<@${threadUserId}>`, inline: true },
+                    { name: "Closed By", value: `<@${closerId}>`, inline: true },
+                    { name: "Transcript", value: transcript, inline: false }
+                  )
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+                console.log(`[MODMAIL] Log sent for thread ${threadIdForLog}`);
+              }
+            }
+          } catch (e: any) {
+            console.log("[MODMAIL] Could not send log:", e.message);
+          }
+
+          // Reply to user
           await interaction.editReply({ content: "Ticket closed. Deleting channel..." });
 
-        // Capture references synchronously before async work
-        const guildId = interaction.guildId!;
-        const closerId = interaction.user.id;
-        const channelId = interaction.channel?.id;
-        const threadUserId = thread.userId;
-        const threadIdForLog = thread.id;
-
-        // Background: DM user, log, and delete channel
+        // Background: DM user and delete channel
         (async () => {
           // DM user notification
           try {
@@ -4041,36 +4088,10 @@ client.on("interactionCreate", async (interaction) => {
               .setTimestamp();
             await user.send({ embeds: [closeEmbed] });
           } catch (e) {
-            console.log("Could not DM user about ticket close");
+            console.log("[MODMAIL] Could not DM user about ticket close");
           }
 
-          // Log to modmail log channel
-          try {
-            const config = await storage.getGuildConfig(guildId);
-            if (config?.modmailLogChannelId) {
-              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
-              if (logChannel && "send" in logChannel) {
-                const messages = await storage.getModmailMessages(threadIdForLog);
-                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-
-                const logEmbed = new EmbedBuilder()
-                  .setTitle("Ticket Closed")
-                  .setColor(0xed4245)
-                  .addFields(
-                    { name: "User", value: `<@${threadUserId}>`, inline: true },
-                    { name: "Closed By", value: `<@${closerId}>`, inline: true },
-                    { name: "Transcript", value: transcript || "No messages", inline: false }
-                  )
-                  .setTimestamp();
-                await logChannel.send({ embeds: [logEmbed] });
-              }
-            }
-          } catch (e) {
-            console.log("Could not send modmail log");
-          }
-
-          // Delete channel after delay using captured ID
+          // Delete channel after delay
           if (channelId) {
             setTimeout(async () => {
               try {
@@ -5222,8 +5243,8 @@ client.on("interactionCreate", async (interaction) => {
         if (!requestChannel || !("send" in requestChannel)) return;
 
         const embed = new EmbedBuilder()
-          .setTitle("Ban Request")
-          .setColor(0xf0b232)
+          .setTitle("🚫 Ban Request")
+          .setColor(0xed4245)
           .addFields(
             { name: "User ID", value: `<@${userId}>\n(${userId})`, inline: true },
             { name: "Moderator", value: "Pending", inline: true },
@@ -5237,12 +5258,14 @@ client.on("interactionCreate", async (interaction) => {
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`ban_approve_${banRequest.id}`)
-            .setLabel("✓")
-            .setStyle(ButtonStyle.Success),
+            .setLabel("Approve")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("✅"),
           new ButtonBuilder()
             .setCustomId(`ban_deny_${banRequest.id}`)
-            .setLabel("✕")
+            .setLabel("Deny")
             .setStyle(ButtonStyle.Danger)
+            .setEmoji("❌")
         );
 
         const sentMessage = await requestChannel.send({ embeds: [embed], components: [row] });
@@ -5289,8 +5312,8 @@ client.on("interactionCreate", async (interaction) => {
         if (!requestChannel || !("send" in requestChannel)) return;
 
         const embed = new EmbedBuilder()
-          .setTitle("Unban Request")
-          .setColor(0xf0b232)
+          .setTitle("🔓 Unban Request")
+          .setColor(0x57f287)
           .addFields(
             { name: "User ID", value: `<@${userId}>\n(${userId})`, inline: true },
             { name: "Moderator", value: "Pending", inline: true },
@@ -5304,12 +5327,14 @@ client.on("interactionCreate", async (interaction) => {
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`unban_approve_${unbanRequest.id}`)
-            .setLabel("✓")
-            .setStyle(ButtonStyle.Success),
+            .setLabel("Approve")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("✅"),
           new ButtonBuilder()
             .setCustomId(`unban_deny_${unbanRequest.id}`)
-            .setLabel("✕")
+            .setLabel("Deny")
             .setStyle(ButtonStyle.Danger)
+            .setEmoji("❌")
         );
 
         const sentMessage = await requestChannel.send({ embeds: [embed], components: [row] });
