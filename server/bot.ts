@@ -2522,30 +2522,10 @@ client.on("interactionCreate", async (interaction) => {
               await storage.addAppealActivityEntries(interaction.guildId!, user.id, amount);
             } else if (category === "staffreport") {
               await storage.addStaffReportEntries(interaction.guildId!, user.id, amount);
-            } else {
-              for (let i = 0; i < amount; i++) {
-                if (category === "ban") {
-                  await storage.createBanRequest({
-                    guildId: interaction.guildId!,
-                    targetUserId: "manual_entry",
-                    requestedById: "manual_entry",
-                    reason: "Manual activity entry",
-                    status: "approved",
-                    reviewedById: user.id,
-                    reviewReason: "Manual entry by admin",
-                  });
-                } else {
-                  await storage.createUnbanRequest({
-                    guildId: interaction.guildId!,
-                    targetUserId: "manual_entry",
-                    requestedById: "manual_entry",
-                    reason: "Manual activity entry",
-                    status: "approved",
-                    reviewedById: user.id,
-                    reviewReason: "Manual entry by admin",
-                  });
-                }
-              }
+            } else if (category === "ban") {
+              await storage.addBanActivityEntries(interaction.guildId!, user.id, amount);
+            } else if (category === "unban") {
+              await storage.addUnbanActivityEntries(interaction.guildId!, user.id, amount);
             }
           } catch (e) {
             console.log("Could not add activity entries:", e);
@@ -5585,7 +5565,13 @@ client.on("interactionCreate", async (interaction) => {
                   )
                   .setTimestamp();
                 await requester.send({ embeds: [dmEmbed] });
-              } catch (e) { console.log("[UNBAN] Failed to DM requester:", e); }
+              } catch (e: any) { 
+                if (e?.code === 10013) {
+                  console.log("[UNBAN] Requester not found (deleted account)");
+                } else {
+                  console.log("[UNBAN] Failed to DM requester");
+                }
+              }
             })(),
             (async () => {
               try {
@@ -5600,7 +5586,13 @@ client.on("interactionCreate", async (interaction) => {
                   )
                   .setTimestamp();
                 await targetUser.send({ embeds: [targetDmEmbed] });
-              } catch (e) { console.log("[UNBAN] Failed to DM target user:", e); }
+              } catch (e: any) { 
+                if (e?.code === 10013) {
+                  console.log("[UNBAN] Target user not found (deleted account)");
+                } else {
+                  console.log("[UNBAN] Failed to DM target user");
+                }
+              }
             })()
           ]);
 

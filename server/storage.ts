@@ -49,7 +49,7 @@ import {
   appealSnippets
 } from "@shared/schema";
 import { db, withRetry } from "./db";
-import { eq, and, desc, or, sql, gte, lte, count } from "drizzle-orm";
+import { eq, and, desc, or, sql, gte, lte, count, inArray } from "drizzle-orm";
 
 export interface IStorage {
   getGuildConfig(guildId: string): Promise<GuildConfig | undefined>;
@@ -422,13 +422,41 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(table.guildId, guildId), eq(table.reviewedById, userId)))
       .orderBy(desc(table.createdAt));
     
-    let removed = 0;
-    for (const request of requests) {
-      if (removed >= amount) break;
-      await db.delete(table).where(eq(table.id, request.id));
-      removed++;
+    const idsToDelete = requests.slice(0, amount).map(r => r.id);
+    if (idsToDelete.length > 0) {
+      await db.delete(table).where(inArray(table.id, idsToDelete));
     }
-    return removed;
+    return idsToDelete.length;
+  }
+
+  async addBanActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
+    const entries = Array.from({ length: amount }, () => ({
+      guildId,
+      targetUserId: "manual_entry",
+      requestedById: "manual_entry",
+      reason: "Manual activity entry",
+      status: "approved",
+      reviewedById: userId,
+      reviewReason: "Manual entry by admin",
+    }));
+    if (entries.length > 0) {
+      await db.insert(banRequests).values(entries);
+    }
+  }
+
+  async addUnbanActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
+    const entries = Array.from({ length: amount }, () => ({
+      guildId,
+      targetUserId: "manual_entry",
+      requestedById: "manual_entry",
+      reason: "Manual activity entry",
+      status: "approved",
+      reviewedById: userId,
+      reviewReason: "Manual entry by admin",
+    }));
+    if (entries.length > 0) {
+      await db.insert(unbanRequests).values(entries);
+    }
   }
 
   async createStaffIntroSubmission(submission: InsertStaffIntroSubmission): Promise<StaffIntroSubmission> {
@@ -681,16 +709,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addStaffReportEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    for (let i = 0; i < amount; i++) {
-      await db.insert(banRequests).values({
-        guildId,
-        targetUserId: "staff_report_entry",
-        requestedById: userId,
-        reason: "Manual staff report entry",
-        status: "approved",
-        reviewedById: "staff_report_entry",
-        reviewReason: "Staff report activity entry",
-      });
+    const entries = Array.from({ length: amount }, () => ({
+      guildId,
+      targetUserId: "staff_report_entry",
+      requestedById: userId,
+      reason: "Manual staff report entry",
+      status: "approved",
+      reviewedById: "staff_report_entry",
+      reviewReason: "Staff report activity entry",
+    }));
+    if (entries.length > 0) {
+      await db.insert(banRequests).values(entries);
     }
   }
 
@@ -702,20 +731,21 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(unbanRequests.guildId, guildId), eq(unbanRequests.requestedById, userId)))
       .orderBy(desc(unbanRequests.createdAt));
     
-    const allReqs = [...banReqs.map(r => ({ ...r, type: 'ban' })), ...unbanReqs.map(r => ({ ...r, type: 'unban' }))]
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const allReqs = [...banReqs.map(r => ({ ...r, type: 'ban' as const })), ...unbanReqs.map(r => ({ ...r, type: 'unban' as const }))]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, amount);
     
-    let removed = 0;
-    for (const req of allReqs) {
-      if (removed >= amount) break;
-      if (req.type === 'ban') {
-        await db.delete(banRequests).where(eq(banRequests.id, req.id));
-      } else {
-        await db.delete(unbanRequests).where(eq(unbanRequests.id, req.id));
-      }
-      removed++;
+    const banIdsToDelete = allReqs.filter(r => r.type === 'ban').map(r => r.id);
+    const unbanIdsToDelete = allReqs.filter(r => r.type === 'unban').map(r => r.id);
+    
+    if (banIdsToDelete.length > 0) {
+      await db.delete(banRequests).where(inArray(banRequests.id, banIdsToDelete));
     }
-    return removed;
+    if (unbanIdsToDelete.length > 0) {
+      await db.delete(unbanRequests).where(inArray(unbanRequests.id, unbanIdsToDelete));
+    }
+    
+    return allReqs.length;
   }
 
   async resetStaffReportStats(guildId: string, userId?: string): Promise<void> {
@@ -878,15 +908,16 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    for (let i = 0; i < amount; i++) {
-      await db.insert(modmailThreads).values({
-        guildId,
-        userId: "manual_entry",
-        status: "closed",
-        closedById: userId,
-        closeReason: "Manual activity entry",
-        closedAt: new Date(),
-      });
+    const entries = Array.from({ length: amount }, () => ({
+      guildId,
+      userId: "manual_entry",
+      status: "closed",
+      closedById: userId,
+      closeReason: "Manual activity entry",
+      closedAt: new Date(),
+    }));
+    if (entries.length > 0) {
+      await db.insert(modmailThreads).values(entries);
     }
   }
 
@@ -899,25 +930,24 @@ export class DatabaseStorage implements IStorage {
       ))
       .orderBy(desc(modmailThreads.closedAt));
     
-    let removed = 0;
-    for (const thread of threads) {
-      if (removed >= amount) break;
-      await db.delete(modmailThreads).where(eq(modmailThreads.id, thread.id));
-      removed++;
+    const idsToDelete = threads.slice(0, amount).map(t => t.id);
+    if (idsToDelete.length > 0) {
+      await db.delete(modmailThreads).where(inArray(modmailThreads.id, idsToDelete));
     }
-    return removed;
+    return idsToDelete.length;
   }
 
   async addAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    for (let i = 0; i < amount; i++) {
-      await db.insert(appealThreads).values({
-        guildId,
-        userId: "manual_entry",
-        status: "closed",
-        closedById: userId,
-        closeReason: "Manual activity entry",
-        closedAt: new Date(),
-      });
+    const entries = Array.from({ length: amount }, () => ({
+      guildId,
+      userId: "manual_entry",
+      status: "closed",
+      closedById: userId,
+      closeReason: "Manual activity entry",
+      closedAt: new Date(),
+    }));
+    if (entries.length > 0) {
+      await db.insert(appealThreads).values(entries);
     }
   }
 
@@ -930,13 +960,11 @@ export class DatabaseStorage implements IStorage {
       ))
       .orderBy(desc(appealThreads.closedAt));
     
-    let removed = 0;
-    for (const thread of threads) {
-      if (removed >= amount) break;
-      await db.delete(appealThreads).where(eq(appealThreads.id, thread.id));
-      removed++;
+    const idsToDelete = threads.slice(0, amount).map(t => t.id);
+    if (idsToDelete.length > 0) {
+      await db.delete(appealThreads).where(inArray(appealThreads.id, idsToDelete));
     }
-    return removed;
+    return idsToDelete.length;
   }
 
   async getAppealStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
