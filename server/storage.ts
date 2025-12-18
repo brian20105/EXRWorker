@@ -430,31 +430,35 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addBanActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const entries = Array.from({ length: amount }, () => ({
-      guildId,
-      targetUserId: "manual_entry",
-      requestedById: "manual_entry",
-      reason: "Manual activity entry",
-      status: "approved",
-      reviewedById: userId,
-      reviewReason: "Manual entry by admin",
-    }));
-    if (entries.length > 0) {
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < amount; i += BATCH_SIZE) {
+      const batchSize = Math.min(BATCH_SIZE, amount - i);
+      const entries = Array.from({ length: batchSize }, () => ({
+        guildId,
+        targetUserId: "manual_entry",
+        requestedById: "manual_entry",
+        reason: "Manual activity entry",
+        status: "approved",
+        reviewedById: userId,
+        reviewReason: "Manual entry by admin",
+      }));
       await db.insert(banRequests).values(entries);
     }
   }
 
   async addUnbanActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const entries = Array.from({ length: amount }, () => ({
-      guildId,
-      targetUserId: "manual_entry",
-      requestedById: "manual_entry",
-      reason: "Manual activity entry",
-      status: "approved",
-      reviewedById: userId,
-      reviewReason: "Manual entry by admin",
-    }));
-    if (entries.length > 0) {
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < amount; i += BATCH_SIZE) {
+      const batchSize = Math.min(BATCH_SIZE, amount - i);
+      const entries = Array.from({ length: batchSize }, () => ({
+        guildId,
+        targetUserId: "manual_entry",
+        requestedById: "manual_entry",
+        reason: "Manual activity entry",
+        status: "approved",
+        reviewedById: userId,
+        reviewReason: "Manual entry by admin",
+      }));
       await db.insert(unbanRequests).values(entries);
     }
   }
@@ -709,16 +713,18 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addStaffReportEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const entries = Array.from({ length: amount }, () => ({
-      guildId,
-      targetUserId: "staff_report_entry",
-      requestedById: userId,
-      reason: "Manual staff report entry",
-      status: "approved",
-      reviewedById: "staff_report_entry",
-      reviewReason: "Staff report activity entry",
-    }));
-    if (entries.length > 0) {
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < amount; i += BATCH_SIZE) {
+      const batchSize = Math.min(BATCH_SIZE, amount - i);
+      const entries = Array.from({ length: batchSize }, () => ({
+        guildId,
+        targetUserId: "staff_report_entry",
+        requestedById: userId,
+        reason: "Manual staff report entry",
+        status: "approved",
+        reviewedById: "staff_report_entry",
+        reviewReason: "Staff report activity entry",
+      }));
       await db.insert(banRequests).values(entries);
     }
   }
@@ -908,15 +914,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const entries = Array.from({ length: amount }, () => ({
-      guildId,
-      userId: "manual_entry",
-      status: "closed",
-      closedById: userId,
-      closeReason: "Manual activity entry",
-      closedAt: new Date(),
-    }));
-    if (entries.length > 0) {
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < amount; i += BATCH_SIZE) {
+      const batchSize = Math.min(BATCH_SIZE, amount - i);
+      const entries = Array.from({ length: batchSize }, () => ({
+        guildId,
+        userId: "manual_entry",
+        status: "closed",
+        closedById: userId,
+        closeReason: "Manual activity entry",
+        closedAt: new Date(),
+      }));
       await db.insert(modmailThreads).values(entries);
     }
   }
@@ -938,15 +946,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   async addAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const entries = Array.from({ length: amount }, () => ({
-      guildId,
-      userId: "manual_entry",
-      status: "closed",
-      closedById: userId,
-      closeReason: "Manual activity entry",
-      closedAt: new Date(),
-    }));
-    if (entries.length > 0) {
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < amount; i += BATCH_SIZE) {
+      const batchSize = Math.min(BATCH_SIZE, amount - i);
+      const entries = Array.from({ length: batchSize }, () => ({
+        guildId,
+        userId: "manual_entry",
+        status: "closed",
+        closedById: userId,
+        closeReason: "Manual activity entry",
+        closedAt: new Date(),
+      }));
       await db.insert(appealThreads).values(entries);
     }
   }
