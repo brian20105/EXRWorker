@@ -884,10 +884,17 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("unblock")
-    .setDescription("Unblock a user from modmail")
+    .setDescription("Unblock a user from modmail or appeals")
     .setDefaultMemberPermissions(0)
     .addUserOption((option) =>
       option.setName("user").setDescription("User to unblock").setRequired(true)
+    )
+    .addStringOption((option) =>
+      option.setName("system").setDescription("Which system to unblock from").setRequired(false)
+        .addChoices(
+          { name: "Team Thrill (Modmail)", value: "modmail" },
+          { name: "Team Thrill Ban Appeal", value: "appeal" }
+        )
     ),
   new SlashCommandBuilder()
     .setName("permissions")
@@ -3126,6 +3133,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!await safeDeferReply(interaction)) return;
 
         const targetUser = interaction.options.getUser("user", true);
+        const system = interaction.options.getString("system") || "modmail";
 
         const config = await storage.getGuildConfig(interaction.guildId!);
         const blockRoleIds = config?.modmailBlockRoleIds || [];
@@ -3140,8 +3148,13 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
-        await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.` });
+        if (system === "appeal") {
+          await storage.removeAppealBlock(interaction.guildId!, targetUser.id);
+          await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from ban appeals.` });
+        } else {
+          await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
+          await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.` });
+        }
       } else if (commandName === "permissions") {
         if (!await safeDeferReply(interaction)) return;
 
