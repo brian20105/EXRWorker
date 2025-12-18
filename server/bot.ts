@@ -3327,6 +3327,7 @@ client.on("interactionCreate", async (interaction) => {
                 const messages = await storage.getModmailMessages(thread.id);
                 let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
                 if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                if (!transcript) transcript = "No messages";
 
                 const logEmbed = new EmbedBuilder()
                   .setTitle("Ticket Closed (Bulk)")
@@ -3334,13 +3335,14 @@ client.on("interactionCreate", async (interaction) => {
                   .addFields(
                     { name: "User", value: `<@${thread.userId}>`, inline: true },
                     { name: "Closed By", value: `<@${interaction.user.id}>`, inline: true },
-                    { name: "Transcript", value: transcript || "No messages", inline: false }
+                    { name: "Transcript", value: transcript, inline: false }
                   )
                   .setTimestamp();
                 await logChannel.send({ embeds: [logEmbed] });
+                console.log(`[MODMAIL] Bulk close log sent for thread ${thread.id}`);
               }
-            } catch (e) {
-              console.log("Could not send modmail log for bulk close");
+            } catch (e: any) {
+              console.log(`[MODMAIL] Could not send log for bulk close thread ${thread.id}:`, e.message);
             }
           }
 
@@ -4096,17 +4098,45 @@ client.on("interactionCreate", async (interaction) => {
             }
           }
 
-          // Reply immediately, then do background work
+          // Capture references synchronously
+          const guildId = interaction.guildId!;
+          const closerId = interaction.user.id;
+          const channelId = interaction.channel?.id;
+          const threadUserId = thread.userId;
+          const threadIdForLog = thread.id;
+
+          // Send log BEFORE replying or deleting (critical to ensure it happens)
+          try {
+            const config = await storage.getGuildConfig(guildId);
+            if (config?.modmailLogChannelId) {
+              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const messages = await storage.getModmailMessages(threadIdForLog);
+                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                if (!transcript) transcript = "No messages";
+
+                const logEmbed = new EmbedBuilder()
+                  .setTitle("Ticket Closed")
+                  .setColor(0xed4245)
+                  .addFields(
+                    { name: "User", value: `<@${threadUserId}>`, inline: true },
+                    { name: "Closed By", value: `<@${closerId}>`, inline: true },
+                    { name: "Transcript", value: transcript, inline: false }
+                  )
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+                console.log(`[MODMAIL] Log sent for thread ${threadIdForLog}`);
+              }
+            }
+          } catch (e: any) {
+            console.log("[MODMAIL] Could not send log:", e.message);
+          }
+
+          // Reply to user
           await interaction.editReply({ content: "Ticket closed. Deleting channel..." });
 
-        // Capture references synchronously before async work
-        const guildId = interaction.guildId!;
-        const closerId = interaction.user.id;
-        const channelId = interaction.channel?.id;
-        const threadUserId = thread.userId;
-        const threadIdForLog = thread.id;
-
-        // Background: DM user, log, and delete channel
+        // Background: DM user and delete channel
         (async () => {
           // DM user notification
           try {
@@ -4118,36 +4148,10 @@ client.on("interactionCreate", async (interaction) => {
               .setTimestamp();
             await user.send({ embeds: [closeEmbed] });
           } catch (e) {
-            console.log("Could not DM user about ticket close");
+            console.log("[MODMAIL] Could not DM user about ticket close");
           }
 
-          // Log to modmail log channel
-          try {
-            const config = await storage.getGuildConfig(guildId);
-            if (config?.modmailLogChannelId) {
-              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
-              if (logChannel && "send" in logChannel) {
-                const messages = await storage.getModmailMessages(threadIdForLog);
-                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-
-                const logEmbed = new EmbedBuilder()
-                  .setTitle("Ticket Closed")
-                  .setColor(0xed4245)
-                  .addFields(
-                    { name: "User", value: `<@${threadUserId}>`, inline: true },
-                    { name: "Closed By", value: `<@${closerId}>`, inline: true },
-                    { name: "Transcript", value: transcript || "No messages", inline: false }
-                  )
-                  .setTimestamp();
-                await logChannel.send({ embeds: [logEmbed] });
-              }
-            }
-          } catch (e) {
-            console.log("Could not send modmail log");
-          }
-
-          // Delete channel after delay using captured ID
+          // Delete channel after delay
           if (channelId) {
             setTimeout(async () => {
               try {
