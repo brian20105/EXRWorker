@@ -7794,6 +7794,35 @@ client.on("messageCreate", async (message) => {
 });
 
 const syncingUsers = new Set<string>();
+const pendingRosterUpdates = new Map<string, NodeJS.Timeout>();
+const activeRosterUpdates = new Set<string>();
+
+function scheduleRosterUpdate(guildId: string) {
+  const existing = pendingRosterUpdates.get(guildId);
+  if (existing) {
+    clearTimeout(existing);
+  }
+  
+  const timeout = setTimeout(async () => {
+    pendingRosterUpdates.delete(guildId);
+    
+    if (activeRosterUpdates.has(guildId)) {
+      console.log(`[ROSTER] Update already in progress for guild ${guildId}, skipping`);
+      return;
+    }
+    
+    try {
+      activeRosterUpdates.add(guildId);
+      await updateRosterMessages(guildId);
+    } catch (error) {
+      console.error(`[ROSTER] Error updating rosters for guild ${guildId}:`, error);
+    } finally {
+      activeRosterUpdates.delete(guildId);
+    }
+  }, 2000);
+  
+  pendingRosterUpdates.set(guildId, timeout);
+}
 
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   console.log(`[ROLE SYNC] guildMemberUpdate triggered for ${newMember.user.tag} in guild ${newMember.guild.name} (${newMember.guild.id})`);
@@ -7808,8 +7837,8 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   );
 
   if (hasRosterRoleChange) {
-    console.log(`Roster role changed for ${newMember.user.tag}, updating rosters...`);
-    await updateRosterMessages(newMember.guild.id);
+    console.log(`Roster role changed for ${newMember.user.tag}, scheduling roster update...`);
+    scheduleRosterUpdate(newMember.guild.id);
   }
 
   const currentGuildId = newMember.guild.id;
