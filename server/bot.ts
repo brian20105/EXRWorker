@@ -3719,7 +3719,11 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
         }
         return;
-      } else if (interaction.customId.startsWith("modmail_claim_")) {
+      }
+      // End of select menu handlers
+    } else if (interaction.isButton()) {
+      // Handle button interactions
+      if (interaction.customId.startsWith("modmail_claim_")) {
         if (!await safeDeferUpdate(interaction)) return;
 
         try {
