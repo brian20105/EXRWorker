@@ -51,6 +51,12 @@ export const guildConfigs = pgTable("guild_configs", {
   categoryPingVfxeditor: text("category_ping_vfxeditor").array(),
   customModmailCategories: text("custom_modmail_categories"), // JSON array of {id, label, description, emoji}
   commandPrefix: text("command_prefix").default("."),
+  // Appeal system config
+  appealCategoryId: text("appeal_category_id"),
+  appealLogChannelId: text("appeal_log_channel_id"),
+  appealStaffRoleIds: text("appeal_staff_role_ids").array(),
+  appealEmbedTitle: text("appeal_embed_title"),
+  appealEmbedDescription: text("appeal_embed_description"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -299,3 +305,82 @@ export const insertActivityResetBackupSchema = createInsertSchema(activityResetB
 
 export type InsertActivityResetBackup = z.infer<typeof insertActivityResetBackupSchema>;
 export type ActivityResetBackup = typeof activityResetBackups.$inferSelect;
+
+// Appeal system tables (separate from modmail)
+export const appealThreads = pgTable("appeal_threads", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  channelId: text("channel_id"),
+  status: text("status").notNull().default("open"),
+  claimedById: text("claimed_by_id"),
+  closedById: text("closed_by_id"),
+  closeReason: text("close_reason"),
+  subscribedUserIds: text("subscribed_user_ids").array().default([]),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  closedAt: timestamp("closed_at"),
+});
+
+export const insertAppealThreadSchema = createInsertSchema(appealThreads).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertAppealThread = z.infer<typeof insertAppealThreadSchema>;
+export type AppealThread = typeof appealThreads.$inferSelect;
+
+export const appealMessages = pgTable("appeal_messages", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  threadId: text("thread_id").notNull(),
+  authorId: text("author_id").notNull(),
+  content: text("content").notNull(),
+  isStaff: text("is_staff").notNull().default("false"),
+  channelMessageId: text("channel_message_id"),
+  dmMessageId: text("dm_message_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertAppealMessageSchema = createInsertSchema(appealMessages).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertAppealMessage = z.infer<typeof insertAppealMessageSchema>;
+export type AppealMessage = typeof appealMessages.$inferSelect;
+
+export const appealBlocks = pgTable("appeal_blocks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  userId: text("user_id").notNull(),
+  blockedById: text("blocked_by_id").notNull(),
+  reason: text("reason"),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertAppealBlockSchema = createInsertSchema(appealBlocks).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertAppealBlock = z.infer<typeof insertAppealBlockSchema>;
+export type AppealBlock = typeof appealBlocks.$inferSelect;
+
+export const appealSnippets = pgTable("appeal_snippets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  alias: text("alias").notNull(),
+  content: text("content").notNull(),
+  createdById: text("created_by_id").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertAppealSnippetSchema = createInsertSchema(appealSnippets).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertAppealSnippet = z.infer<typeof insertAppealSnippetSchema>;
+export type AppealSnippet = typeof appealSnippets.$inferSelect;
