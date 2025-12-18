@@ -23,6 +23,14 @@ import {
   type InsertSnippet,
   type ActivityResetBackup,
   type InsertActivityResetBackup,
+  type AppealThread,
+  type InsertAppealThread,
+  type AppealMessage,
+  type InsertAppealMessage,
+  type AppealBlock,
+  type InsertAppealBlock,
+  type AppealSnippet,
+  type InsertAppealSnippet,
   guildConfigs,
   payoutRequests,
   roleSyncPairs,
@@ -34,7 +42,11 @@ import {
   modmailMessages,
   modmailBlocks,
   snippets,
-  activityResetBackups
+  activityResetBackups,
+  appealThreads,
+  appealMessages,
+  appealBlocks,
+  appealSnippets
 } from "@shared/schema";
 import { db, withRetry } from "./db";
 import { eq, and, desc, or, sql, gte, lte, count } from "drizzle-orm";
@@ -117,6 +129,33 @@ export interface IStorage {
   getLatestActivityResetBackup(guildId: string): Promise<ActivityResetBackup | undefined>;
   restoreActivityStats(guildId: string): Promise<number>;
   deleteActivityResetBackup(id: string): Promise<void>;
+  
+  // Appeal system methods
+  createAppealThread(thread: InsertAppealThread): Promise<AppealThread>;
+  getAppealThread(id: string): Promise<AppealThread | undefined>;
+  getOpenAppealThread(guildId: string, userId: string): Promise<AppealThread | undefined>;
+  getAppealThreadByChannel(channelId: string): Promise<AppealThread | undefined>;
+  updateAppealThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[] }): Promise<AppealThread>;
+  getAllAppealThreads(guildId: string): Promise<AppealThread[]>;
+  
+  addAppealMessage(message: InsertAppealMessage): Promise<AppealMessage>;
+  getAppealMessages(threadId: string): Promise<AppealMessage[]>;
+  getAppealMessage(id: string): Promise<AppealMessage | undefined>;
+  getAppealMessageByChannelMessageId(channelMessageId: string): Promise<AppealMessage | undefined>;
+  updateAppealMessage(id: string, updates: { content?: string; channelMessageId?: string; dmMessageId?: string }): Promise<AppealMessage | undefined>;
+  deleteAppealMessage(id: string): Promise<void>;
+  getLatestStaffAppealMessage(threadId: string): Promise<AppealMessage | undefined>;
+  
+  createAppealBlock(block: InsertAppealBlock): Promise<AppealBlock>;
+  getActiveAppealBlock(guildId: string, userId: string): Promise<AppealBlock | undefined>;
+  removeAppealBlock(guildId: string, userId: string): Promise<void>;
+  getAllAppealBlocks(guildId: string): Promise<AppealBlock[]>;
+  
+  createAppealSnippet(snippet: InsertAppealSnippet): Promise<AppealSnippet>;
+  getAppealSnippet(guildId: string, alias: string): Promise<AppealSnippet | undefined>;
+  updateAppealSnippet(guildId: string, alias: string, content: string): Promise<AppealSnippet | undefined>;
+  deleteAppealSnippet(guildId: string, alias: string): Promise<void>;
+  getAllAppealSnippets(guildId: string): Promise<AppealSnippet[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -850,6 +889,155 @@ export class DatabaseStorage implements IStorage {
 
   async deleteActivityResetBackup(id: string): Promise<void> {
     await db.delete(activityResetBackups).where(eq(activityResetBackups.id, id));
+  }
+
+  // Appeal system implementations
+  async createAppealThread(thread: InsertAppealThread): Promise<AppealThread> {
+    const result = await db.insert(appealThreads).values(thread).returning();
+    return result[0];
+  }
+
+  async getAppealThread(id: string): Promise<AppealThread | undefined> {
+    const result = await db.select().from(appealThreads).where(eq(appealThreads.id, id));
+    return result[0];
+  }
+
+  async getOpenAppealThread(guildId: string, userId: string): Promise<AppealThread | undefined> {
+    const result = await db.select().from(appealThreads).where(
+      and(
+        eq(appealThreads.guildId, guildId),
+        eq(appealThreads.userId, userId),
+        eq(appealThreads.status, "open")
+      )
+    );
+    return result[0];
+  }
+
+  async getAppealThreadByChannel(channelId: string): Promise<AppealThread | undefined> {
+    const result = await db.select().from(appealThreads).where(eq(appealThreads.channelId, channelId));
+    return result[0];
+  }
+
+  async updateAppealThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[] }): Promise<AppealThread> {
+    const result = await db.update(appealThreads).set(updates).where(eq(appealThreads.id, id)).returning();
+    return result[0];
+  }
+
+  async getAllAppealThreads(guildId: string): Promise<AppealThread[]> {
+    return await db.select().from(appealThreads).where(eq(appealThreads.guildId, guildId)).orderBy(desc(appealThreads.createdAt));
+  }
+
+  async addAppealMessage(message: InsertAppealMessage): Promise<AppealMessage> {
+    const result = await db.insert(appealMessages).values(message).returning();
+    return result[0];
+  }
+
+  async getAppealMessages(threadId: string): Promise<AppealMessage[]> {
+    return await db.select().from(appealMessages).where(eq(appealMessages.threadId, threadId)).orderBy(appealMessages.createdAt);
+  }
+
+  async getAppealMessage(id: string): Promise<AppealMessage | undefined> {
+    const result = await db.select().from(appealMessages).where(eq(appealMessages.id, id));
+    return result[0];
+  }
+
+  async getAppealMessageByChannelMessageId(channelMessageId: string): Promise<AppealMessage | undefined> {
+    const result = await db.select().from(appealMessages).where(eq(appealMessages.channelMessageId, channelMessageId));
+    return result[0];
+  }
+
+  async updateAppealMessage(id: string, updates: { content?: string; channelMessageId?: string; dmMessageId?: string }): Promise<AppealMessage | undefined> {
+    const result = await db.update(appealMessages).set(updates).where(eq(appealMessages.id, id)).returning();
+    return result[0];
+  }
+
+  async deleteAppealMessage(id: string): Promise<void> {
+    await db.delete(appealMessages).where(eq(appealMessages.id, id));
+  }
+
+  async getLatestStaffAppealMessage(threadId: string): Promise<AppealMessage | undefined> {
+    const result = await db.select().from(appealMessages).where(
+      and(
+        eq(appealMessages.threadId, threadId),
+        eq(appealMessages.isStaff, "true")
+      )
+    ).orderBy(desc(appealMessages.createdAt)).limit(1);
+    return result[0];
+  }
+
+  async createAppealBlock(block: InsertAppealBlock): Promise<AppealBlock> {
+    const result = await db.insert(appealBlocks).values(block).returning();
+    return result[0];
+  }
+
+  async getActiveAppealBlock(guildId: string, userId: string): Promise<AppealBlock | undefined> {
+    const blocks = await db.select().from(appealBlocks).where(
+      and(
+        eq(appealBlocks.guildId, guildId),
+        eq(appealBlocks.userId, userId)
+      )
+    );
+    const now = new Date();
+    for (const block of blocks) {
+      if (!block.expiresAt || block.expiresAt > now) {
+        return block;
+      }
+    }
+    return undefined;
+  }
+
+  async removeAppealBlock(guildId: string, userId: string): Promise<void> {
+    await db.delete(appealBlocks).where(
+      and(
+        eq(appealBlocks.guildId, guildId),
+        eq(appealBlocks.userId, userId)
+      )
+    );
+  }
+
+  async getAllAppealBlocks(guildId: string): Promise<AppealBlock[]> {
+    return await db.select().from(appealBlocks).where(eq(appealBlocks.guildId, guildId));
+  }
+
+  async createAppealSnippet(snippet: InsertAppealSnippet): Promise<AppealSnippet> {
+    const result = await db.insert(appealSnippets).values(snippet).returning();
+    return result[0];
+  }
+
+  async getAppealSnippet(guildId: string, alias: string): Promise<AppealSnippet | undefined> {
+    const result = await db.select().from(appealSnippets).where(
+      and(
+        eq(appealSnippets.guildId, guildId),
+        eq(appealSnippets.alias, alias)
+      )
+    );
+    return result[0];
+  }
+
+  async updateAppealSnippet(guildId: string, alias: string, content: string): Promise<AppealSnippet | undefined> {
+    const result = await db.update(appealSnippets)
+      .set({ content, updatedAt: new Date() })
+      .where(
+        and(
+          eq(appealSnippets.guildId, guildId),
+          eq(appealSnippets.alias, alias)
+        )
+      )
+      .returning();
+    return result[0];
+  }
+
+  async deleteAppealSnippet(guildId: string, alias: string): Promise<void> {
+    await db.delete(appealSnippets).where(
+      and(
+        eq(appealSnippets.guildId, guildId),
+        eq(appealSnippets.alias, alias)
+      )
+    );
+  }
+
+  async getAllAppealSnippets(guildId: string): Promise<AppealSnippet[]> {
+    return await db.select().from(appealSnippets).where(eq(appealSnippets.guildId, guildId));
   }
 }
 
