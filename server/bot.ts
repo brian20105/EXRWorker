@@ -979,6 +979,16 @@ const commands = [
     .addSubcommand((sub) =>
       sub.setName("list").setDescription("List all modmail categories")
     ),
+  new SlashCommandBuilder()
+    .setName("setup_command_logs")
+    .setDescription("Set the channel for bot command activity logs")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where command logs will be sent")
+        .setRequired(true)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -1071,6 +1081,43 @@ async function sendDMToStaff(staffUserId: string, status: "approved" | "denied",
     await user.send({ embeds: [embed] });
   } catch (error) {
     console.log(`Could not DM staff ${staffUserId}:`, error);
+  }
+}
+
+async function logCommand(guildId: string, commandName: string, userId: string, username: string, options?: any): Promise<void> {
+  try {
+    const config = await storage.getGuildConfig(guildId);
+    if (!config?.commandLogChannelId) return;
+
+    const logChannel = await client.channels.fetch(config.commandLogChannelId);
+    if (!logChannel || !("send" in logChannel)) return;
+
+    let optionsText = "None";
+    if (options) {
+      const optionsList: string[] = [];
+      for (const [key, value] of Object.entries(options)) {
+        if (value) {
+          optionsList.push(`**${key}:** ${value}`);
+        }
+      }
+      if (optionsList.length > 0) {
+        optionsText = optionsList.join("\n");
+      }
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("Command Used")
+      .setColor(0x5865f2)
+      .addFields(
+        { name: "Command", value: `\`/${commandName}\``, inline: true },
+        { name: "User", value: `<@${userId}> (${username})`, inline: true },
+        { name: "Options", value: optionsText, inline: false }
+      )
+      .setTimestamp();
+
+    await logChannel.send({ embeds: [embed] });
+  } catch (error) {
+    console.log("Could not log command:", error);
   }
 }
 
@@ -1305,6 +1352,23 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.isChatInputCommand()) {
       const { commandName } = interaction;
+
+      // Log command usage (fire-and-forget)
+      if (interaction.guildId) {
+        const optionsData: any = {};
+        for (const option of interaction.options.data) {
+          if (option.value !== undefined) {
+            optionsData[option.name] = option.value;
+          } else if (option.channel) {
+            optionsData[option.name] = `#${option.channel.name}`;
+          } else if (option.role) {
+            optionsData[option.name] = `@${option.role.name}`;
+          } else if (option.user) {
+            optionsData[option.name] = `@${option.user.username}`;
+          }
+        }
+        logCommand(interaction.guildId, commandName, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
+      }
 
       if (commandName === "setup_pay_request") {
         if (!await safeDeferReply(interaction)) return;
@@ -3403,6 +3467,19 @@ client.on("interactionCreate", async (interaction) => {
 
           await interaction.editReply({ embeds: [embed] });
         }
+      } else if (commandName === "setup_command_logs") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          commandLogChannelId: channel.id,
+        });
+
+        await interaction.editReply({
+          content: `✅ Command logs will be sent to <#${channel.id}>!`,
+        });
       }
     } else if (interaction.isStringSelectMenu()) {
       // Handle server selection for multi-server DM routing
