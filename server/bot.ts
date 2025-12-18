@@ -5981,7 +5981,7 @@ client.on("messageCreate", async (message) => {
       // Support regular quotes, smart quotes, or no quotes
       const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
       if (!aliasMatch || !aliasMatch[2]?.trim()) {
-        await message.reply(`❌ Usage: \`${prefix}snip create <alias> <text>\``);
+        await message.reply(`Usage: \`${prefix}snip create <alias> <text>\``);
         return;
       }
 
@@ -6001,7 +6001,7 @@ client.on("messageCreate", async (message) => {
         createdById: message.author.id,
       });
 
-      await message.reply(`✅ Snippet \`${alias}\` created. Use \`.${alias}\` in ticket channels to send it.`);
+      await message.reply(`Snippet \`${alias}\` created. Use \`${prefix}${alias}\` in ticket channels to send it.`);
       return;
     } else if (subCommand === "edit") {
       if (!hasAdminPermission) {
@@ -6056,7 +6056,7 @@ client.on("messageCreate", async (message) => {
 
       const allSnippets = await storage.getAllSnippets(message.guild.id);
       if (allSnippets.length === 0) {
-        await message.reply(`📝 No snippets configured. Use \`${prefix}snip create <alias> "<text>"\` to create one.`);
+        await message.reply(`No snippets configured. Use \`${prefix}snip create <alias> "<text>"\` to create one.`);
         return;
       }
 
