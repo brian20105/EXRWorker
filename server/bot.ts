@@ -75,6 +75,12 @@ setInterval(() => {
       console.log(`[QUIZ] Cleaned up expired quiz session for user ${userId}`);
     }
   }
+  
+  // Safety cleanup for processingQuizStart
+  if (processingQuizStart.size > 20) {
+    console.log(`[CLEANUP] Clearing ${processingQuizStart.size} stale quiz starts`);
+    processingQuizStart.clear();
+  }
 }, 5 * 60 * 1000); // Check every 5 minutes
 
 const QUIZ_QUESTIONS = [
@@ -5957,6 +5963,57 @@ interface ClaimExpiryTimer {
 }
 const pendingClaimExpiry = new Map<string, ClaimExpiryTimer>();
 
+// Periodic cleanup of timer maps to prevent memory leaks (every 10 minutes)
+setInterval(() => {
+  const MAX_TIMER_AGE = 60 * 60 * 1000; // 1 hour - clear any timer older than this
+  const now = Date.now();
+  
+  // Log current map sizes for monitoring
+  const sizes = {
+    timedCloses: pendingTimedCloses.size,
+    inactivityWarnings: pendingInactivityWarnings.size,
+    inactivityCloses: pendingInactivityCloses.size,
+    claimExpiry: pendingClaimExpiry.size,
+  };
+  
+  if (sizes.timedCloses + sizes.inactivityWarnings + sizes.inactivityCloses + sizes.claimExpiry > 0) {
+    console.log(`[CLEANUP] Timer map sizes: ${JSON.stringify(sizes)}`);
+  }
+  
+  // Clear all pending timers if they've accumulated too many (safety valve)
+  if (sizes.timedCloses > 100) {
+    console.log(`[CLEANUP] Clearing ${sizes.timedCloses} stale timed closes`);
+    for (const [id, timeout] of Array.from(pendingTimedCloses.entries())) {
+      clearTimeout(timeout);
+    }
+    pendingTimedCloses.clear();
+  }
+  
+  if (sizes.inactivityWarnings > 100) {
+    console.log(`[CLEANUP] Clearing ${sizes.inactivityWarnings} stale inactivity warnings`);
+    for (const [id, timer] of Array.from(pendingInactivityWarnings.entries())) {
+      clearTimeout(timer.timeout);
+    }
+    pendingInactivityWarnings.clear();
+  }
+  
+  if (sizes.inactivityCloses > 100) {
+    console.log(`[CLEANUP] Clearing ${sizes.inactivityCloses} stale inactivity closes`);
+    for (const [id, timer] of Array.from(pendingInactivityCloses.entries())) {
+      clearTimeout(timer.timeout);
+    }
+    pendingInactivityCloses.clear();
+  }
+  
+  if (sizes.claimExpiry > 100) {
+    console.log(`[CLEANUP] Clearing ${sizes.claimExpiry} stale claim expiry timers`);
+    for (const [id, timer] of Array.from(pendingClaimExpiry.entries())) {
+      clearTimeout(timer.timeout);
+    }
+    pendingClaimExpiry.clear();
+  }
+}, 10 * 60 * 1000); // Every 10 minutes
+
 // Prevent duplicate message processing (in case of multiple bot instances)
 const processedMessages = new Set<string>();
 const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
@@ -7796,6 +7853,30 @@ client.on("messageCreate", async (message) => {
 const syncingUsers = new Set<string>();
 const pendingRosterUpdates = new Map<string, NodeJS.Timeout>();
 const activeRosterUpdates = new Set<string>();
+
+// Cleanup for role sync and roster update tracking (every 5 minutes)
+setInterval(() => {
+  // Safety valve: clear syncingUsers if it gets too large
+  if (syncingUsers.size > 50) {
+    console.log(`[CLEANUP] Clearing ${syncingUsers.size} stale syncing users`);
+    syncingUsers.clear();
+  }
+  
+  // Clear stale roster updates
+  if (pendingRosterUpdates.size > 20) {
+    console.log(`[CLEANUP] Clearing ${pendingRosterUpdates.size} stale roster updates`);
+    for (const [id, timeout] of Array.from(pendingRosterUpdates.entries())) {
+      clearTimeout(timeout);
+    }
+    pendingRosterUpdates.clear();
+  }
+  
+  // Clear stale active roster updates
+  if (activeRosterUpdates.size > 10) {
+    console.log(`[CLEANUP] Clearing ${activeRosterUpdates.size} stale active roster updates`);
+    activeRosterUpdates.clear();
+  }
+}, 5 * 60 * 1000);
 
 function scheduleRosterUpdate(guildId: string) {
   const existing = pendingRosterUpdates.get(guildId);
