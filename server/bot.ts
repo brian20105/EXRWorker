@@ -1314,18 +1314,27 @@ client.once("clientReady", async () => {
     return;
   }
 
-  try {
-    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN!);
-    console.log("🔄 Registering slash commands...");
+  // Register commands in background with timeout to not block bot startup
+  (async () => {
+    try {
+      const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_BOT_TOKEN!);
+      console.log("🔄 Registering slash commands...");
 
-    await rest.put(Routes.applicationCommands(APPLICATION_ID), {
-      body: commands,
-    });
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Command registration timed out after 30s")), 30000)
+      );
+      
+      await Promise.race([
+        rest.put(Routes.applicationCommands(APPLICATION_ID), { body: commands }),
+        timeoutPromise
+      ]);
 
-    console.log("✅ Slash commands registered successfully!");
-  } catch (error) {
-    console.error("❌ Error registering commands:", error);
-  }
+      console.log("✅ Slash commands registered successfully!");
+    } catch (error: any) {
+      console.error("❌ Error registering commands:", error.message || error);
+      console.log("⚠️ Bot will continue running with existing commands");
+    }
+  })();
 });
 
 client.on("interactionCreate", async (interaction) => {
