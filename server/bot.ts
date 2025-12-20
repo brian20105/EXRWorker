@@ -3541,6 +3541,7 @@ client.on("interactionCreate", async (interaction) => {
               return option;
             });
 
+            console.log(`[modmail-category] Creating select menu...`);
             const selectMenu = new StringSelectMenuBuilder()
               .setCustomId(`remove_category_${interaction.guildId}`)
               .setPlaceholder("Select a category to remove...")
@@ -3548,12 +3549,14 @@ client.on("interactionCreate", async (interaction) => {
 
             const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
+            console.log(`[modmail-category] Sending dropdown...`);
             await interaction.editReply({ 
               content: "Select a custom category to remove:",
               components: [row]
             });
+            console.log(`[modmail-category] Dropdown sent successfully!`);
           } catch (error: any) {
-            console.error("Error creating category removal menu:", error);
+            console.error("[modmail-category] Error creating category removal menu:", error);
             await interaction.editReply({ content: `❌ Error: ${error.message}` });
           }
 
