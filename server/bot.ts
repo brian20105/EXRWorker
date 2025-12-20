@@ -3512,25 +3512,40 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const selectOptions = customCategories.map(cat => 
-            new StringSelectMenuOptionBuilder()
-              .setLabel(cat.label)
-              .setDescription(cat.description.substring(0, 100))
-              .setValue(cat.id)
-              .setEmoji(cat.emoji || "📌")
-          );
+          try {
+            const selectOptions = customCategories.map(cat => {
+              const option = new StringSelectMenuOptionBuilder()
+                .setLabel(cat.label.substring(0, 100))
+                .setDescription((cat.description || "No description").substring(0, 100))
+                .setValue(cat.id);
+              
+              // Only set emoji if it exists and is a simple emoji (not a custom Discord emoji ID)
+              if (cat.emoji && cat.emoji.length <= 4 && !/^\d+$/.test(cat.emoji)) {
+                try {
+                  option.setEmoji(cat.emoji);
+                } catch (e) {
+                  // Invalid emoji, skip it
+                }
+              }
+              
+              return option;
+            });
 
-          const selectMenu = new StringSelectMenuBuilder()
-            .setCustomId(`remove_category_${interaction.guildId}`)
-            .setPlaceholder("Select a category to remove...")
-            .addOptions(selectOptions);
+            const selectMenu = new StringSelectMenuBuilder()
+              .setCustomId(`remove_category_${interaction.guildId}`)
+              .setPlaceholder("Select a category to remove...")
+              .addOptions(selectOptions);
 
-          const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+            const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
-          await interaction.editReply({ 
-            content: "Select a custom category to remove:",
-            components: [row]
-          });
+            await interaction.editReply({ 
+              content: "Select a custom category to remove:",
+              components: [row]
+            });
+          } catch (error: any) {
+            console.error("Error creating category removal menu:", error);
+            await interaction.editReply({ content: `❌ Error: ${error.message}` });
+          }
 
         } else if (subcommand === "list") {
           const embed = new EmbedBuilder()
