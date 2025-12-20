@@ -7274,7 +7274,19 @@ client.on("messageCreate", async (message) => {
 
       // Relay message to existing modmail channel
       try {
-        const modmailChannel = await client.channels.fetch(targetThread.channelId!);
+        let modmailChannel;
+        try {
+          modmailChannel = await client.channels.fetch(targetThread.channelId!);
+        } catch (fetchError: any) {
+          if (fetchError.code === 10003) {
+            // Channel was deleted - close the thread and let user start fresh
+            console.log(`[DM] Modmail channel ${targetThread.channelId} no longer exists, closing thread`);
+            await storage.updateModmailThread(targetThread.id, { status: "closed", closeReason: "Channel deleted" });
+            await message.reply("Your previous ticket channel was deleted. Please send a new message to open a fresh ticket.");
+            return;
+          }
+          throw fetchError;
+        }
         if (modmailChannel && "send" in modmailChannel) {
           // Cancel any pending inactivity and timed close timers when user responds
           const channelId = targetThread.channelId!;
