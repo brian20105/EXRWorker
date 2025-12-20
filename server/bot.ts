@@ -2886,7 +2886,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Terminated ${count} active quiz session${count !== 1 ? "s" : ""}.`,
         });
       } else if (commandName === "setup_modmail") {
-        if (!await safeDeferReply(interaction)) return;
+        if (!await safeDeferReply(interaction, false)) return;
 
         const category = interaction.options.getChannel("category", true);
         const logChannel = interaction.options.getChannel("log_channel", true);
