@@ -790,20 +790,8 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("config_modmail")
-    .setDescription("Configure the modmail ticket embed title and description")
-    .setDefaultMemberPermissions(0)
-    .addStringOption((option) =>
-      option
-        .setName("title")
-        .setDescription("The embed title")
-        .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("description")
-        .setDescription("The embed description")
-        .setRequired(false)
-    ),
+    .setDescription("Configure the modmail ticket embed title and description (opens a form)")
+    .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("setup_appeal")
     .setDescription("Post the ban appeal ticket embed in the current channel")
@@ -828,20 +816,8 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("config_appeal")
-    .setDescription("Configure the ban appeal embed title and description")
-    .setDefaultMemberPermissions(0)
-    .addStringOption((option) =>
-      option
-        .setName("title")
-        .setDescription("The embed title")
-        .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("description")
-        .setDescription("The embed description")
-        .setRequired(false)
-    ),
+    .setDescription("Configure the ban appeal embed title and description (opens a form)")
+    .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("block")
     .setDescription("Block a user from opening modmail tickets")
@@ -2997,34 +2973,36 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Modmail configured and ticket embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
         });
       } else if (commandName === "config_modmail") {
-        if (!await safeDeferReply(interaction)) return;
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const currentTitle = config?.modmailEmbedTitle || "Support Tickets";
+        const currentDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
 
-        const title = interaction.options.getString("title");
-        const description = interaction.options.getString("description");
+        const modal = new ModalBuilder()
+          .setCustomId(`config_modmail_modal_${interaction.guildId}`)
+          .setTitle("Configure Modmail Embed");
 
-        if (!title && !description) {
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          const currentTitle = config?.modmailEmbedTitle || "Support Tickets";
-          const currentDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
-          await interaction.editReply({
-            content: `**Current Modmail Embed Settings:**\n• Title: ${currentTitle}\n• Description: ${currentDescription}\n\nUse the title and description options to update these values.`,
-          });
-          return;
-        }
+        const titleInput = new TextInputBuilder()
+          .setCustomId("embed_title")
+          .setLabel("Embed Title")
+          .setStyle(TextInputStyle.Short)
+          .setValue(currentTitle)
+          .setMaxLength(256)
+          .setRequired(true);
 
-        const updateData: any = { guildId: interaction.guildId! };
-        if (title) updateData.modmailEmbedTitle = title;
-        if (description) updateData.modmailEmbedDescription = description;
+        const descriptionInput = new TextInputBuilder()
+          .setCustomId("embed_description")
+          .setLabel("Embed Description (supports line breaks)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setValue(currentDescription)
+          .setMaxLength(4000)
+          .setRequired(true);
 
-        await storage.upsertGuildConfig(updateData);
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+        );
 
-        const updates: string[] = [];
-        if (title) updates.push(`Title: ${title}`);
-        if (description) updates.push(`Description: ${description}`);
-
-        await interaction.editReply({
-          content: `✅ Modmail embed updated:\n• ${updates.join("\n• ")}\n\nRun /setup_modmail again to post the updated embed.`,
-        });
+        await interaction.showModal(modal);
       } else if (commandName === "setup_appeal") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -3067,34 +3045,36 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Ban Appeal system configured and embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
         });
       } else if (commandName === "config_appeal") {
-        if (!await safeDeferReply(interaction)) return;
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const currentTitle = config?.appealEmbedTitle || "Ban Appeals";
+        const currentDescription = config?.appealEmbedDescription || "Click the button below to submit a ban appeal.";
 
-        const title = interaction.options.getString("title");
-        const description = interaction.options.getString("description");
+        const modal = new ModalBuilder()
+          .setCustomId(`config_appeal_modal_${interaction.guildId}`)
+          .setTitle("Configure Appeal Embed");
 
-        if (!title && !description) {
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          const currentTitle = config?.appealEmbedTitle || "Ban Appeals";
-          const currentDescription = config?.appealEmbedDescription || "Click the button below to submit a ban appeal.";
-          await interaction.editReply({
-            content: `**Current Appeal Embed Settings:**\n• Title: ${currentTitle}\n• Description: ${currentDescription}\n\nUse the title and description options to update these values.`,
-          });
-          return;
-        }
+        const titleInput = new TextInputBuilder()
+          .setCustomId("embed_title")
+          .setLabel("Embed Title")
+          .setStyle(TextInputStyle.Short)
+          .setValue(currentTitle)
+          .setMaxLength(256)
+          .setRequired(true);
 
-        const updateData: any = { guildId: interaction.guildId! };
-        if (title) updateData.appealEmbedTitle = title;
-        if (description) updateData.appealEmbedDescription = description;
+        const descriptionInput = new TextInputBuilder()
+          .setCustomId("embed_description")
+          .setLabel("Embed Description (supports line breaks)")
+          .setStyle(TextInputStyle.Paragraph)
+          .setValue(currentDescription)
+          .setMaxLength(4000)
+          .setRequired(true);
 
-        await storage.upsertGuildConfig(updateData);
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+        );
 
-        const updates: string[] = [];
-        if (title) updates.push(`Title: ${title}`);
-        if (description) updates.push(`Description: ${description}`);
-
-        await interaction.editReply({
-          content: `✅ Appeal embed updated:\n• ${updates.join("\n• ")}\n\nRun /setup_appeal again to post the updated embed.`,
-        });
+        await interaction.showModal(modal);
       } else if (commandName === "block") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -4708,6 +4688,44 @@ client.on("interactionCreate", async (interaction) => {
       // Silently ignore unhandled button interactions (e.g., Discord's native attachment buttons)
       return;
     } else if (interaction.isModalSubmit()) {
+      // Handle config modmail embed modal
+      if (interaction.customId.startsWith("config_modmail_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        const title = interaction.fields.getTextInputValue("embed_title");
+        const description = interaction.fields.getTextInputValue("embed_description");
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          modmailEmbedTitle: title,
+          modmailEmbedDescription: description,
+        });
+
+        await interaction.editReply({
+          content: `✅ Modmail embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_modmail\` again to post the updated embed.`,
+        });
+        return;
+      }
+
+      // Handle config appeal embed modal
+      if (interaction.customId.startsWith("config_appeal_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        const title = interaction.fields.getTextInputValue("embed_title");
+        const description = interaction.fields.getTextInputValue("embed_description");
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          appealEmbedTitle: title,
+          appealEmbedDescription: description,
+        });
+
+        await interaction.editReply({
+          content: `✅ Appeal embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_appeal\` again to post the updated embed.`,
+        });
+        return;
+      }
+
       // Handle ticket application modals
       if (interaction.customId.startsWith("ticket_modal_")) {
         if (!await safeDeferReply(interaction)) return;
