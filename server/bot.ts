@@ -104,8 +104,8 @@ async function safeDeferReply(interaction: any, ephemeral: boolean = true): Prom
   try {
     await interaction.deferReply({ flags: ephemeral ? 64 : undefined });
     return true;
-  } catch (e) {
-    // Silently ignore - interaction expired (bot restart, network delay, or double-click)
+  } catch (e: any) {
+    console.error(`[safeDeferReply] Failed for ${interaction.commandName || interaction.customId}: ${e.message}`);
     return false;
   }
 }
