@@ -3457,7 +3457,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "modmail-category") {
         console.log(`[modmail-category] Command called with subcommand attempt...`);
-        if (!await safeDeferReply(interaction)) {
+        if (!await safeDeferReply(interaction, false)) {
           console.log(`[modmail-category] safeDeferReply failed`);
           return;
         }
