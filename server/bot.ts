@@ -2895,11 +2895,16 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Terminated ${count} active quiz session${count !== 1 ? "s" : ""}.`,
         });
       } else if (commandName === "setup_modmail") {
+        // Debug: log interaction details
+        const age = Date.now() - interaction.createdTimestamp;
+        console.log(`[setup_modmail] Received interaction ${interaction.id}, age: ${age}ms, replied: ${interaction.replied}, deferred: ${interaction.deferred}`);
+        
         // Reply immediately to avoid timeout
         try {
           await interaction.reply({ content: "⏳ Setting up modmail system..." });
+          console.log(`[setup_modmail] Reply succeeded`);
         } catch (e: any) {
-          console.error(`[setup_modmail] Initial reply failed: ${e.message}`);
+          console.error(`[setup_modmail] Initial reply failed: ${e.message}, code: ${e.code}`);
           return;
         }
 
