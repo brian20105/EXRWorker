@@ -809,6 +809,12 @@ const commands = [
           { name: "Staff Intro", value: "staffintro" },
           { name: "Inactivity", value: "inactivity" }
         )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("message_id")
+        .setDescription("Message ID of the embed to update (right-click message > Copy ID)")
+        .setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("setup_appeal")
@@ -3020,7 +3026,17 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "edit_embed") {
         const embedType = interaction.options.getString("type", true);
+        const messageId = interaction.options.getString("message_id");
         const config = await storage.getGuildConfig(interaction.guildId!);
+        
+        // If message_id provided, save it to database for the modal handler to use
+        if (embedType === "modmail" && messageId) {
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            modmailEmbedMessageId: messageId,
+            modmailEmbedChannelId: interaction.channelId,
+          });
+        }
         
         if (embedType === "modmail") {
           const currentTitle = config?.modmailEmbedTitle || "Support Tickets";
@@ -4958,18 +4974,20 @@ client.on("interactionCreate", async (interaction) => {
         const title = interaction.fields.getTextInputValue("embed_title");
         const description = interaction.fields.getTextInputValue("embed_description");
 
-        const config = await storage.getGuildConfig(interaction.guildId!);
-        
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           modmailEmbedTitle: title,
           modmailEmbedDescription: description,
         });
 
+        // Re-fetch config to get the latest message ID (may have been set by /edit_embed)
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
         // Try to update the existing message in real time
         let updatedInRealTime = false;
         if (config?.modmailEmbedMessageId && config?.modmailEmbedChannelId) {
           try {
+            console.log(`[edit_embed] Trying to update message ${config.modmailEmbedMessageId} in channel ${config.modmailEmbedChannelId}`);
             const channel = await client.channels.fetch(config.modmailEmbedChannelId);
             if (channel && "messages" in channel) {
               const message = await channel.messages.fetch(config.modmailEmbedMessageId);
@@ -4979,11 +4997,14 @@ client.on("interactionCreate", async (interaction) => {
                   .setDescription(description);
                 await message.edit({ embeds: [newEmbed] });
                 updatedInRealTime = true;
+                console.log(`[edit_embed] Successfully updated message`);
               }
             }
           } catch (e) {
             console.log("Could not update modmail embed in real time:", e);
           }
+        } else {
+          console.log(`[edit_embed] No message ID saved. messageId=${config?.modmailEmbedMessageId}, channelId=${config?.modmailEmbedChannelId}`);
         }
 
         if (updatedInRealTime) {
