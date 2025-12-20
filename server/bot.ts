@@ -793,6 +793,20 @@ const commands = [
     .setDescription("Configure the modmail ticket embed title and description (opens a form)")
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
+    .setName("edit_embed")
+    .setDescription("Edit modmail or appeal embed with line breaks support")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("type")
+        .setDescription("Which embed to edit")
+        .setRequired(true)
+        .addChoices(
+          { name: "Modmail", value: "modmail" },
+          { name: "Appeal", value: "appeal" }
+        )
+    ),
+  new SlashCommandBuilder()
     .setName("setup_appeal")
     .setDescription("Post the ban appeal ticket embed in the current channel")
     .setDefaultMemberPermissions(0)
@@ -2972,6 +2986,71 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Modmail configured and ticket embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
         });
+      } else if (commandName === "edit_embed") {
+        const embedType = interaction.options.getString("type", true);
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        
+        if (embedType === "modmail") {
+          const currentTitle = config?.modmailEmbedTitle || "Support Tickets";
+          const currentDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
+
+          const modal = new ModalBuilder()
+            .setCustomId(`config_modmail_modal_${interaction.guildId}`)
+            .setTitle("Edit Modmail Embed");
+
+          const titleInput = new TextInputBuilder()
+            .setCustomId("embed_title")
+            .setLabel("Embed Title")
+            .setStyle(TextInputStyle.Short)
+            .setValue(currentTitle)
+            .setMaxLength(256)
+            .setRequired(true);
+
+          const descriptionInput = new TextInputBuilder()
+            .setCustomId("embed_description")
+            .setLabel("Description (use Enter for line breaks)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setValue(currentDescription)
+            .setMaxLength(4000)
+            .setRequired(true);
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+          );
+
+          await interaction.showModal(modal);
+        } else if (embedType === "appeal") {
+          const currentTitle = config?.appealEmbedTitle || "Ban Appeals";
+          const currentDescription = config?.appealEmbedDescription || "Click the button below to submit a ban appeal.";
+
+          const modal = new ModalBuilder()
+            .setCustomId(`config_appeal_modal_${interaction.guildId}`)
+            .setTitle("Edit Appeal Embed");
+
+          const titleInput = new TextInputBuilder()
+            .setCustomId("embed_title")
+            .setLabel("Embed Title")
+            .setStyle(TextInputStyle.Short)
+            .setValue(currentTitle)
+            .setMaxLength(256)
+            .setRequired(true);
+
+          const descriptionInput = new TextInputBuilder()
+            .setCustomId("embed_description")
+            .setLabel("Description (use Enter for line breaks)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setValue(currentDescription)
+            .setMaxLength(4000)
+            .setRequired(true);
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+          );
+
+          await interaction.showModal(modal);
+        }
       } else if (commandName === "config_modmail") {
         const config = await storage.getGuildConfig(interaction.guildId!);
         const currentTitle = config?.modmailEmbedTitle || "Support Tickets";
