@@ -101,11 +101,13 @@ const FULL_QUESTIONS = [
 
 // Helper to safely defer replies - returns false if interaction expired
 async function safeDeferReply(interaction: any, ephemeral: boolean = true): Promise<boolean> {
+  const age = Date.now() - interaction.createdTimestamp;
   try {
     await interaction.deferReply({ flags: ephemeral ? 64 : undefined });
+    console.log(`[safeDeferReply] Success for ${interaction.commandName || interaction.customId} (age: ${age}ms)`);
     return true;
   } catch (e: any) {
-    console.error(`[safeDeferReply] Failed for ${interaction.commandName || interaction.customId}: ${e.message}`);
+    console.error(`[safeDeferReply] Failed for ${interaction.commandName || interaction.customId} (age: ${age}ms): ${e.message}`);
     return false;
   }
 }
@@ -1330,6 +1332,13 @@ client.once("clientReady", async () => {
 
 client.on("interactionCreate", async (interaction) => {
   try {
+    // Check interaction age - Discord interactions expire after 3 seconds
+    const interactionAge = Date.now() - interaction.createdTimestamp;
+    if (interactionAge > 2500) {
+      console.log(`[INTERACTION] Skipping stale interaction (age: ${interactionAge}ms): ${interaction.id}`);
+      return;
+    }
+
     // Check if interaction is still valid
     if (interaction.isRepliable() && interaction.replied) {
       console.log('Interaction already replied to:', interaction.id);
@@ -1339,7 +1348,7 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.isChatInputCommand()) {
       const { commandName } = interaction;
 
-      // Log command usage (fire-and-forget)
+      // Log command usage (fire-and-forget, no await)
       if (interaction.guildId) {
         const optionsData: any = {};
         for (const option of interaction.options.data) {
