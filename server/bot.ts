@@ -3456,9 +3456,15 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Closed **${closedCount}** ticket(s). Deleted **${deletedChannelCount}** channel(s).` 
         });
       } else if (commandName === "modmail-category") {
-        if (!await safeDeferReply(interaction)) return;
+        console.log(`[modmail-category] Command called with subcommand attempt...`);
+        if (!await safeDeferReply(interaction)) {
+          console.log(`[modmail-category] safeDeferReply failed`);
+          return;
+        }
+        console.log(`[modmail-category] safeDeferReply succeeded`);
 
         const subcommand = interaction.options.getSubcommand();
+        console.log(`[modmail-category] Subcommand: ${subcommand}`);
         const config = await storage.getGuildConfig(interaction.guildId!);
         
         // Parse existing custom categories
@@ -3507,12 +3513,16 @@ client.on("interactionCreate", async (interaction) => {
           });
 
         } else if (subcommand === "remove") {
+          console.log(`[modmail-category] Remove - custom categories count: ${customCategories.length}`);
+          console.log(`[modmail-category] Categories: ${JSON.stringify(customCategories)}`);
+          
           if (customCategories.length === 0) {
             await interaction.editReply({ content: "❌ No custom categories to remove." });
             return;
           }
 
           try {
+            console.log(`[modmail-category] Building select options...`);
             const selectOptions = customCategories.map(cat => {
               const option = new StringSelectMenuOptionBuilder()
                 .setLabel(cat.label.substring(0, 100))
