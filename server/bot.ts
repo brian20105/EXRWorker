@@ -2982,9 +2982,16 @@ client.on("interactionCreate", async (interaction) => {
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
         if (interaction.channel && "send" in interaction.channel) {
-          await interaction.channel.send({
+          const sentMessage = await interaction.channel.send({
             embeds: [ticketEmbed],
             components: [row],
+          });
+          
+          // Save message ID for real-time updates
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            modmailEmbedMessageId: sentMessage.id,
+            modmailEmbedChannelId: interaction.channel.id,
           });
         }
 
@@ -4931,15 +4938,43 @@ client.on("interactionCreate", async (interaction) => {
         const title = interaction.fields.getTextInputValue("embed_title");
         const description = interaction.fields.getTextInputValue("embed_description");
 
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           modmailEmbedTitle: title,
           modmailEmbedDescription: description,
         });
 
-        await interaction.editReply({
-          content: `✅ Modmail embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_modmail\` again to post the updated embed.`,
-        });
+        // Try to update the existing message in real time
+        let updatedInRealTime = false;
+        if (config?.modmailEmbedMessageId && config?.modmailEmbedChannelId) {
+          try {
+            const channel = await client.channels.fetch(config.modmailEmbedChannelId);
+            if (channel && "messages" in channel) {
+              const message = await channel.messages.fetch(config.modmailEmbedMessageId);
+              if (message) {
+                const newEmbed = EmbedBuilder.from(message.embeds[0] || new EmbedBuilder())
+                  .setTitle(title)
+                  .setDescription(description);
+                await message.edit({ embeds: [newEmbed] });
+                updatedInRealTime = true;
+              }
+            }
+          } catch (e) {
+            console.log("Could not update modmail embed in real time:", e);
+          }
+        }
+
+        if (updatedInRealTime) {
+          await interaction.editReply({
+            content: `✅ Modmail embed updated in real time!\n• **Title:** ${title}\n• **Description:**\n${description}`,
+          });
+        } else {
+          await interaction.editReply({
+            content: `✅ Modmail embed saved!\n• **Title:** ${title}\n• **Description:**\n${description}\n\n⚠️ Run \`/setup_modmail\` again to post the updated embed.`,
+          });
+        }
         return;
       }
 

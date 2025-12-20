@@ -43,6 +43,8 @@ export const guildConfigs = pgTable("guild_configs", {
   activityResetRoleIds: text("activity_reset_role_ids").array(),
   modmailEmbedTitle: text("modmail_embed_title"),
   modmailEmbedDescription: text("modmail_embed_description"),
+  modmailEmbedMessageId: text("modmail_embed_message_id"),
+  modmailEmbedChannelId: text("modmail_embed_channel_id"),
   categoryPingGeneral: text("category_ping_general").array(),
   categoryPingCompetitive: text("category_ping_competitive").array(),
   categoryPingContentcreator: text("category_ping_contentcreator").array(),
