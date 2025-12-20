@@ -26,6 +26,8 @@ export const guildConfigs = pgTable("guild_configs", {
   inactivitySubmissionsChannelId: text("inactivity_submissions_channel_id"),
   inactivityLogChannelId: text("inactivity_log_channel_id"),
   inactivityPingRoleIds: text("inactivity_ping_role_ids").array(),
+  inactivityEmbedTitle: text("inactivity_embed_title"),
+  inactivityEmbedDescription: text("inactivity_embed_description"),
   quizQuestion1: text("quiz_question_1"),
   quizQuestion2: text("quiz_question_2"),
   quizQuestion3: text("quiz_question_3"),

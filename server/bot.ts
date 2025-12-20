@@ -794,7 +794,7 @@ const commands = [
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("edit_embed")
-    .setDescription("Edit modmail or appeal embed with line breaks support")
+    .setDescription("Edit system embeds with line breaks support")
     .setDefaultMemberPermissions(0)
     .addStringOption((option) =>
       option
@@ -803,7 +803,9 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Modmail", value: "modmail" },
-          { name: "Appeal", value: "appeal" }
+          { name: "Appeal", value: "appeal" },
+          { name: "Staff Intro", value: "staffintro" },
+          { name: "Inactivity", value: "inactivity" }
         )
     ),
   new SlashCommandBuilder()
@@ -2783,9 +2785,13 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "setup_inactivity") {
         if (!await safeDeferReply(interaction)) return;
 
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const embedTitle = config?.inactivityEmbedTitle || "Inactivity Request";
+        const embedDescription = config?.inactivityEmbedDescription || "Need to take a break? Click the button below to submit an inactivity request.\n\nPlease provide the dates you'll be inactive and your reason.";
+
         const embed = new EmbedBuilder()
-          .setTitle("Inactivity Request")
-          .setDescription("Need to take a break? Click the button below to submit an inactivity request.\n\nPlease provide the dates you'll be inactive and your reason.")
+          .setTitle(embedTitle)
+          .setDescription(embedDescription)
           .setColor(0x5865f2)
           .setFooter({ text: "All requests require approval" });
 
@@ -3027,6 +3033,66 @@ client.on("interactionCreate", async (interaction) => {
           const modal = new ModalBuilder()
             .setCustomId(`config_appeal_modal_${interaction.guildId}`)
             .setTitle("Edit Appeal Embed");
+
+          const titleInput = new TextInputBuilder()
+            .setCustomId("embed_title")
+            .setLabel("Embed Title")
+            .setStyle(TextInputStyle.Short)
+            .setValue(currentTitle)
+            .setMaxLength(256)
+            .setRequired(true);
+
+          const descriptionInput = new TextInputBuilder()
+            .setCustomId("embed_description")
+            .setLabel("Description (use Enter for line breaks)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setValue(currentDescription)
+            .setMaxLength(4000)
+            .setRequired(true);
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+          );
+
+          await interaction.showModal(modal);
+        } else if (embedType === "staffintro") {
+          const currentTitle = config?.staffIntroEmbedTitle || "Staff Introduction";
+          const currentDescription = config?.staffIntroEmbedDescription || "Click the button below to introduce yourself to the team.";
+
+          const modal = new ModalBuilder()
+            .setCustomId(`config_staffintro_modal_${interaction.guildId}`)
+            .setTitle("Edit Staff Intro Embed");
+
+          const titleInput = new TextInputBuilder()
+            .setCustomId("embed_title")
+            .setLabel("Embed Title")
+            .setStyle(TextInputStyle.Short)
+            .setValue(currentTitle)
+            .setMaxLength(256)
+            .setRequired(true);
+
+          const descriptionInput = new TextInputBuilder()
+            .setCustomId("embed_description")
+            .setLabel("Description (use Enter for line breaks)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setValue(currentDescription)
+            .setMaxLength(4000)
+            .setRequired(true);
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+          );
+
+          await interaction.showModal(modal);
+        } else if (embedType === "inactivity") {
+          const currentTitle = config?.inactivityEmbedTitle || "Inactivity Request";
+          const currentDescription = config?.inactivityEmbedDescription || "Click the button below to submit an inactivity request.";
+
+          const modal = new ModalBuilder()
+            .setCustomId(`config_inactivity_modal_${interaction.guildId}`)
+            .setTitle("Edit Inactivity Embed");
 
           const titleInput = new TextInputBuilder()
             .setCustomId("embed_title")
@@ -4801,6 +4867,44 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({
           content: `✅ Appeal embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_appeal\` again to post the updated embed.`,
+        });
+        return;
+      }
+
+      // Handle config staff intro embed modal
+      if (interaction.customId.startsWith("config_staffintro_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        const title = interaction.fields.getTextInputValue("embed_title");
+        const description = interaction.fields.getTextInputValue("embed_description");
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          staffIntroEmbedTitle: title,
+          staffIntroEmbedDescription: description,
+        });
+
+        await interaction.editReply({
+          content: `✅ Staff Intro embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_intro\` again to post the updated embed.`,
+        });
+        return;
+      }
+
+      // Handle config inactivity embed modal
+      if (interaction.customId.startsWith("config_inactivity_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        const title = interaction.fields.getTextInputValue("embed_title");
+        const description = interaction.fields.getTextInputValue("embed_description");
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          inactivityEmbedTitle: title,
+          inactivityEmbedDescription: description,
+        });
+
+        await interaction.editReply({
+          content: `✅ Inactivity embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_inactivity\` again to post the updated embed.`,
         });
         return;
       }
