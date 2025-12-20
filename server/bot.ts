@@ -951,8 +951,7 @@ const commands = [
         .addStringOption((option) => option.setName("emoji").setDescription("Emoji for the category").setRequired(false))
     )
     .addSubcommand((sub) =>
-      sub.setName("remove").setDescription("Remove a custom category")
-        .addStringOption((option) => option.setName("id").setDescription("Category ID to remove").setRequired(true))
+      sub.setName("remove").setDescription("Remove a custom category (shows selection menu)")
     )
     .addSubcommand((sub) =>
       sub.setName("list").setDescription("List all modmail categories")
@@ -3508,28 +3507,29 @@ client.on("interactionCreate", async (interaction) => {
           });
 
         } else if (subcommand === "remove") {
-          const categoryId = interaction.options.getString("id", true).toLowerCase();
-
-          // Check if it's a built-in category
-          if (builtInCategories.some(c => c.id === categoryId)) {
-            await interaction.editReply({ content: `❌ Cannot remove built-in category "${categoryId}".` });
+          if (customCategories.length === 0) {
+            await interaction.editReply({ content: "❌ No custom categories to remove." });
             return;
           }
 
-          const index = customCategories.findIndex(c => c.id === categoryId);
-          if (index === -1) {
-            await interaction.editReply({ content: `❌ Custom category "${categoryId}" not found.` });
-            return;
-          }
+          const selectOptions = customCategories.map(cat => 
+            new StringSelectMenuOptionBuilder()
+              .setLabel(cat.label)
+              .setDescription(cat.description.substring(0, 100))
+              .setValue(cat.id)
+              .setEmoji(cat.emoji || "📌")
+          );
 
-          const removed = customCategories.splice(index, 1)[0];
-          await storage.upsertGuildConfig({
-            guildId: interaction.guildId!,
-            customModmailCategories: JSON.stringify(customCategories),
-          });
+          const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId(`remove_category_${interaction.guildId}`)
+            .setPlaceholder("Select a category to remove...")
+            .addOptions(selectOptions);
+
+          const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
           await interaction.editReply({ 
-            content: `✅ Removed custom category: **${removed.label}**\n\n⚠️ You need to run \`/setup_modmail\` again to update the ticket dropdown.`
+            content: "Select a custom category to remove:",
+            components: [row]
           });
 
         } else if (subcommand === "list") {
@@ -3564,6 +3564,42 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
     } else if (interaction.isStringSelectMenu()) {
+      // Handle category removal selection
+      if (interaction.customId.startsWith("remove_category_")) {
+        if (!await safeDeferUpdate(interaction)) return;
+
+        const guildId = interaction.customId.replace("remove_category_", "");
+        const categoryId = interaction.values[0];
+
+        const config = await storage.getGuildConfig(guildId);
+        let customCategories: { id: string; label: string; description: string; emoji?: string }[] = [];
+        if (config?.customModmailCategories) {
+          try {
+            customCategories = JSON.parse(config.customModmailCategories);
+          } catch (e) {
+            customCategories = [];
+          }
+        }
+
+        const index = customCategories.findIndex(c => c.id === categoryId);
+        if (index === -1) {
+          await interaction.editReply({ content: `❌ Category not found.`, components: [] });
+          return;
+        }
+
+        const removed = customCategories.splice(index, 1)[0];
+        await storage.upsertGuildConfig({
+          guildId,
+          customModmailCategories: JSON.stringify(customCategories),
+        });
+
+        await interaction.editReply({ 
+          content: `✅ Removed custom category: **${removed.label}**\n\n⚠️ You need to run \`/setup_modmail\` again to update the ticket dropdown.`,
+          components: []
+        });
+        return;
+      }
+
       // Handle server selection for multi-server DM routing
       if (interaction.customId.startsWith("dm_server_select_")) {
         if (!await safeDeferUpdate(interaction)) return;
