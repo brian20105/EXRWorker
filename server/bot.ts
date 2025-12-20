@@ -3621,10 +3621,37 @@ client.on("interactionCreate", async (interaction) => {
           customModmailCategories: JSON.stringify(customCategories),
         });
 
-        await interaction.editReply({ 
-          content: `✅ Removed custom category: **${removed.label}**\n\n⚠️ You need to run \`/setup_modmail\` again to update the ticket dropdown.`,
-          components: []
-        });
+        // If there are more categories, show updated dropdown
+        if (customCategories.length > 0) {
+          const selectOptions = customCategories.map(cat => {
+            const option = new StringSelectMenuOptionBuilder()
+              .setLabel(cat.label.substring(0, 100))
+              .setDescription((cat.description || "No description").substring(0, 100))
+              .setValue(cat.id);
+            
+            if (cat.emoji && cat.emoji.length <= 4 && !/^\d+$/.test(cat.emoji)) {
+              try { option.setEmoji(cat.emoji); } catch (e) {}
+            }
+            return option;
+          });
+
+          const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId(`remove_category_${guildId}`)
+            .setPlaceholder("Select another category to remove...")
+            .addOptions(selectOptions);
+
+          const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+
+          await interaction.editReply({ 
+            content: `✅ Removed: **${removed.label}**\n\nSelect another category to remove, or dismiss this message:`,
+            components: [row]
+          });
+        } else {
+          await interaction.editReply({ 
+            content: `✅ Removed custom category: **${removed.label}**\n\nNo more custom categories to remove.\n\n⚠️ Run \`/setup_modmail\` again to update the ticket dropdown.`,
+            components: []
+          });
+        }
         return;
       }
 
