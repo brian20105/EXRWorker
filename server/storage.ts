@@ -816,13 +816,18 @@ export class DatabaseStorage implements IStorage {
     }
     
     const threads = await db.select().from(modmailThreads).where(and(...conditions));
+    console.log(`[getAllGuildsModmailStats] Found ${threads.length} closed threads across all guilds`);
+    
     const counts: { [userId: string]: number } = {};
     for (const thread of threads) {
       if (thread.closedById) {
         counts[thread.closedById] = (counts[thread.closedById] || 0) + 1;
       }
     }
-    return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
+    
+    const result = Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
+    console.log(`[getAllGuildsModmailStats] Returning stats for ${result.length} users:`, result.slice(0, 5));
+    return result;
   }
 
   async getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
@@ -839,13 +844,18 @@ export class DatabaseStorage implements IStorage {
     }
     
     const threads = await db.select().from(appealThreads).where(and(...conditions));
+    console.log(`[getAllGuildsAppealStats] Found ${threads.length} closed appeals across all guilds`);
+    
     const counts: { [userId: string]: number } = {};
     for (const thread of threads) {
       if (thread.closedById) {
         counts[thread.closedById] = (counts[thread.closedById] || 0) + 1;
       }
     }
-    return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
+    
+    const result = Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
+    console.log(`[getAllGuildsAppealStats] Returning stats for ${result.length} users:`, result.slice(0, 5));
+    return result;
   }
 
   async getStaffReportStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
