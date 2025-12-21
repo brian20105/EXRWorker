@@ -2930,7 +2930,7 @@ client.on("interactionCreate", async (interaction) => {
 
         try {
           const role = interaction.options.getRole("role", true);
-          const period = interaction.options.getString("period") || "7";
+          const period = interaction.options.getString("period") || "all";
           
           if (!interaction.guild || !interaction.channel || !("send" in interaction.channel)) {
             await interaction.editReply({ content: "This command must be used in a server text channel." });
@@ -2959,108 +2959,33 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          await interaction.editReply({ 
-            content: `⏳ Running moderation stats check for ${roleMembers.length} members... This may take a moment.` 
+          // Send initial scanning message showing role name
+          const scanningMessage = await interaction.channel.send({
+            content: `📊 Scanning ${roleMembers.length} members with **${trackedRole.name}**... This may take a while.`
           });
 
-          const periodArg = period === "7" ? "7" : period === "30" ? "30" : "all";
-          const statsResults: { userId: string; warns: number; mutes: number; kicks: number; bans: number; total: number }[] = [];
+          // Delete the deferred reply
+          await interaction.deleteReply().catch(() => {});
 
-          // Run *ms command for each user and collect responses
+          // Run *ms command for each user
           for (const member of roleMembers) {
             try {
-              // Send the *ms command
-              const msCommand = `*ms ${member.id} ${periodArg}`;
-              const commandMessage = await interaction.channel.send(msCommand);
-
-              // Wait for the bot's response (with timeout)
-              const response = await interaction.channel.awaitMessages({
-                filter: (m) => m.author.id === config.moderatorBotId && m.reference?.messageId === commandMessage.id,
-                max: 1,
-                time: 5000,
-                errors: ['time']
-              }).catch(() => null);
-
-              if (response && response.size > 0) {
-                const botReply = response.first();
-                const content = botReply?.content || "";
-                const embed = botReply?.embeds?.[0];
-
-                // Parse the stats from the response
-                let warns = 0, mutes = 0, kicks = 0, bans = 0;
-
-                // Try to parse from embed fields or content
-                if (embed?.fields) {
-                  for (const field of embed.fields) {
-                    const value = parseInt(field.value) || 0;
-                    if (field.name.toLowerCase().includes('warn')) warns = value;
-                    else if (field.name.toLowerCase().includes('mute') || field.name.toLowerCase().includes('timeout')) mutes = value;
-                    else if (field.name.toLowerCase().includes('kick')) kicks = value;
-                    else if (field.name.toLowerCase().includes('ban')) bans = value;
-                  }
-                } else {
-                  // Fallback: try to parse from content using regex
-                  const warnMatch = content.match(/warn[s]?[:\s]+(\d+)/i);
-                  const muteMatch = content.match(/mute[s]?[:\s]+(\d+)/i);
-                  const kickMatch = content.match(/kick[s]?[:\s]+(\d+)/i);
-                  const banMatch = content.match(/ban[s]?[:\s]+(\d+)/i);
-                  
-                  if (warnMatch) warns = parseInt(warnMatch[1]) || 0;
-                  if (muteMatch) mutes = parseInt(muteMatch[1]) || 0;
-                  if (kickMatch) kicks = parseInt(kickMatch[1]) || 0;
-                  if (banMatch) bans = parseInt(banMatch[1]) || 0;
-                }
-
-                const total = warns + mutes + kicks + bans;
-                statsResults.push({ userId: member.id, warns, mutes, kicks, bans, total });
-
-                // Clean up the command and response messages
-                try {
-                  await commandMessage.delete();
-                  if (botReply) await botReply.delete();
-                } catch (e) {
-                  // Ignore delete errors
-                }
-              } else {
-                // No response - assume 0 stats
-                statsResults.push({ userId: member.id, warns: 0, mutes: 0, kicks: 0, bans: 0, total: 0 });
-                
-                try {
-                  await commandMessage.delete();
-                } catch (e) {
-                  // Ignore delete errors
-                }
-              }
-
+              const msCommand = `*ms ${member.id}`;
+              await interaction.channel.send(msCommand);
+              
               // Small delay between commands to avoid rate limits
-              await new Promise(resolve => setTimeout(resolve, 500));
+              await new Promise(resolve => setTimeout(resolve, 600));
             } catch (error) {
-              console.log(`Error getting stats for ${member.id}:`, error);
-              // Add with 0 stats if error
-              statsResults.push({ userId: member.id, warns: 0, mutes: 0, kicks: 0, bans: 0, total: 0 });
+              console.log(`Error sending *ms for ${member.id}:`, error);
             }
           }
 
-          // Sort by total
-          const leaderboard = statsResults.sort((a, b) => b.total - a.total).slice(0, 50);
-
-          const periodText = period === "7" ? "Last 7 Days" : period === "30" ? "Last 30 Days" : "All Time";
-          const resultEmbed = new EmbedBuilder()
-            .setTitle(`📊 Moderation Stats Leaderboard (${periodText})`)
-            .setColor(0x5865f2);
-
-          let description = "";
-          leaderboard.forEach((entry, index) => {
-            description += `${index + 1}. <@${entry.userId}> - **${entry.total}** (W: ${entry.warns} | M: ${entry.mutes} | K: ${entry.kicks} | B: ${entry.bans})\n`;
-          });
-
-          resultEmbed.setDescription(description || "No stats found.");
-          resultEmbed.setFooter({ text: `${roleMembers.length} moderators | ${new Date().toLocaleString()}` });
-
-          await interaction.editReply({ embeds: [resultEmbed] });
+          // Note: The actual responses will come from TRL | Moderator bot
+          // This command just triggers the *ms commands - the moderator bot handles the responses
+          
         } catch (error: any) {
           console.log("Error in /modstats command:", error.message, error.stack);
-          await interaction.editReply({ content: "Failed to get moderation stats. Please try again." }).catch(() => {});
+          await interaction.editReply({ content: "Failed to run moderation stats. Please try again." }).catch(() => {});
         }
       } else if (commandName === "setup_modstats_bot") {
         if (!await safeDeferReply(interaction, false)) return;
