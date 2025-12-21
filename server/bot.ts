@@ -2472,8 +2472,18 @@ client.on("interactionCreate", async (interaction) => {
           try {
             const config = await storage.getGuildConfig(interaction.guildId!);
             if (config?.activityTrackedRoleIds && config.activityTrackedRoleIds.length > 0 && interaction.guild) {
-              // Fetch all guild members first to ensure cache is populated
-              await interaction.guild.members.fetch();
+              // Try to use cached members first, then fetch if needed
+              let membersAvailable = interaction.guild.members.cache.size > 1;
+              if (!membersAvailable) {
+                try {
+                  await Promise.race([
+                    interaction.guild.members.fetch(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000))
+                  ]);
+                } catch (e) {
+                  console.log("Member fetch timed out or failed, using cache");
+                }
+              }
               for (const roleId of config.activityTrackedRoleIds) {
                 const trackedRole = interaction.guild.roles.cache.get(roleId);
                 if (trackedRole) {
