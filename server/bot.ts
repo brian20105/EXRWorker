@@ -811,6 +811,9 @@ const commands = [
           { name: "Last 30 days", value: "30" },
           { name: "All time", value: "all" }
         )
+    )
+    .addBooleanOption((option) =>
+      option.setName("auto_run").setDescription("Automatically check all members (uses database stats)").setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("setup_modstats_bot")
@@ -2928,30 +2931,114 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const role = interaction.options.getRole("role", true);
           const period = interaction.options.getString("period") || "7";
+          const autoRun = interaction.options.getBoolean("auto_run") ?? false;
           
           if (!interaction.guild) {
             await interaction.editReply({ content: "This command must be used in a server." });
             return;
           }
 
-          // Get stats from database
+          // Fetch members with the role
+          await interaction.guild.members.fetch();
+          const trackedRole = interaction.guild.roles.cache.get(role.id);
+          if (!trackedRole) {
+            await interaction.editReply({ content: "Role not found." });
+            return;
+          }
+          const roleMembers = Array.from(trackedRole.members.keys());
+
+          if (roleMembers.length === 0) {
+            await interaction.editReply({ content: "No members found with that role." });
+            return;
+          }
+
+          // If auto_run is enabled, execute *ms for each user
+          if (autoRun) {
+            await interaction.editReply({ content: `🔄 Running mod stats check for ${roleMembers.length} members... This may take a moment.` });
+
+            const config = await storage.getGuildConfig(interaction.guildId!);
+            if (!config?.modLogChannelId) {
+              await interaction.editReply({ content: "❌ Mod log channel not configured. Use `/setup_modstats_bot` first." });
+              return;
+            }
+
+            const statsResults: { userId: string; warns: number; mutes: number; kicks: number; bans: number; total: number }[] = [];
+            
+            // Check each member's stats by simulating the bot command
+            for (const memberId of roleMembers) {
+              try {
+                // Get stats from database for this user
+                const fromDays = period === "all" ? undefined : parseInt(period);
+                const userStats = await storage.getModerationStats(interaction.guildId!, fromDays);
+                const memberStat = userStats.find(s => s.moderatorId === memberId);
+                
+                if (memberStat) {
+                  const total = memberStat.warns + memberStat.mutes + memberStat.kicks + memberStat.bans;
+                  statsResults.push({
+                    userId: memberId,
+                    warns: memberStat.warns,
+                    mutes: memberStat.mutes,
+                    kicks: memberStat.kicks,
+                    bans: memberStat.bans,
+                    total
+                  });
+                } else {
+                  // User has no stats
+                  statsResults.push({
+                    userId: memberId,
+                    warns: 0,
+                    mutes: 0,
+                    kicks: 0,
+                    bans: 0,
+                    total: 0
+                  });
+                }
+              } catch (error) {
+                console.log(`Failed to get stats for ${memberId}:`, error);
+                statsResults.push({
+                  userId: memberId,
+                  warns: 0,
+                  mutes: 0,
+                  kicks: 0,
+                  bans: 0,
+                  total: 0
+                });
+              }
+            }
+
+            // Sort by total actions
+            const leaderboard = statsResults.sort((a, b) => b.total - a.total).slice(0, 50);
+
+            const periodText = period === "7" ? "Last 7 Days" : period === "30" ? "Last 30 Days" : "All Time";
+            const resultEmbed = new EmbedBuilder()
+              .setTitle(`📊 Automated Moderation Stats Leaderboard (${periodText})`)
+              .setColor(0x5865f2);
+
+            let description = "";
+            leaderboard.forEach((entry, index) => {
+              description += `${index + 1}. <@${entry.userId}> - **${entry.total}** (W: ${entry.warns} | M: ${entry.mutes} | K: ${entry.kicks} | B: ${entry.bans})\n`;
+            });
+
+            resultEmbed.setDescription(description || "No stats found.");
+            resultEmbed.setFooter({ text: `${statsResults.length} moderators checked | ${new Date().toLocaleString()}` });
+
+            await interaction.editReply({ content: null, embeds: [resultEmbed] });
+            return;
+          }
+
+          // Original behavior - get stats from database
           const fromDays = period === "all" ? undefined : parseInt(period);
           const stats = await storage.getModerationStats(interaction.guildId!, fromDays);
           
           if (stats.length === 0) {
             await interaction.editReply({ 
-              content: "No moderation stats found. Use `/setup_modstats_bot` to configure the log channel, then `/scan_modlogs` to import past actions." 
+              content: "No moderation stats found. Use `/setup_modstats_bot` to configure the log channel, then `/scan_modlogs` to import past actions.\n\nTip: Use the `auto_run` option to automatically check all members with the role." 
             });
             return;
           }
 
-          // Fetch members with the role
-          await interaction.guild.members.fetch();
-          const trackedRole = interaction.guild.roles.cache.get(role.id);
-          const roleMembers = trackedRole ? new Set(trackedRole.members.keys()) : new Set();
-
           // Filter stats to only include members with the role
-          const filteredStats = stats.filter(s => roleMembers.has(s.moderatorId));
+          const filteredStats = stats.filter(s => roleMembers.includes(s.moderatorId));
           
           if (filteredStats.length === 0) {
             await interaction.editReply({ content: "No moderation stats found for members with that role." });
