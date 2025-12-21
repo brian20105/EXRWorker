@@ -2932,18 +2932,15 @@ client.on("interactionCreate", async (interaction) => {
           const role = interaction.options.getRole("role", true);
           const period = interaction.options.getString("period") || "7";
           
-          if (!interaction.guild) {
-            await interaction.editReply({ content: "This command must be used in a server." });
+          if (!interaction.guild || !interaction.channel || !("send" in interaction.channel)) {
+            await interaction.editReply({ content: "This command must be used in a server text channel." });
             return;
           }
 
-          // Get stats from database first
-          const fromDays = period === "all" ? undefined : parseInt(period);
-          const allStats = await storage.getModerationStats(interaction.guildId!, fromDays);
-          
-          if (allStats.length === 0) {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          if (!config?.moderatorBotId) {
             await interaction.editReply({ 
-              content: "No moderation stats found. Use `/setup_modstats_bot` to configure the log channel, then `/scan_modlogs` to import past actions." 
+              content: "Please configure the moderator bot first using `/setup_modstats_bot`" 
             });
             return;
           }
@@ -2955,38 +2952,97 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.editReply({ content: "Role not found." });
             return;
           }
-          const roleMembers = Array.from(trackedRole.members.keys());
+          const roleMembers = Array.from(trackedRole.members.values());
 
           if (roleMembers.length === 0) {
             await interaction.editReply({ content: "No members found with that role." });
             return;
           }
 
-          // Build leaderboard with all members (even those with 0 stats)
-          const statsMap = new Map(allStats.map(s => [s.moderatorId, s]));
-          const leaderboard = roleMembers.map(memberId => {
-            const stats = statsMap.get(memberId);
-            if (stats) {
-              const total = stats.warns + stats.mutes + stats.kicks + stats.bans;
-              return {
-                userId: memberId,
-                warns: stats.warns,
-                mutes: stats.mutes,
-                kicks: stats.kicks,
-                bans: stats.bans,
-                total
-              };
-            } else {
-              return {
-                userId: memberId,
-                warns: 0,
-                mutes: 0,
-                kicks: 0,
-                bans: 0,
-                total: 0
-              };
+          await interaction.editReply({ 
+            content: `⏳ Running moderation stats check for ${roleMembers.length} members... This may take a moment.` 
+          });
+
+          const periodArg = period === "7" ? "7" : period === "30" ? "30" : "all";
+          const statsResults: { userId: string; warns: number; mutes: number; kicks: number; bans: number; total: number }[] = [];
+
+          // Run *ms command for each user and collect responses
+          for (const member of roleMembers) {
+            try {
+              // Send the *ms command
+              const msCommand = `*ms ${member.id} ${periodArg}`;
+              const commandMessage = await interaction.channel.send(msCommand);
+
+              // Wait for the bot's response (with timeout)
+              const response = await interaction.channel.awaitMessages({
+                filter: (m) => m.author.id === config.moderatorBotId && m.reference?.messageId === commandMessage.id,
+                max: 1,
+                time: 5000,
+                errors: ['time']
+              }).catch(() => null);
+
+              if (response && response.size > 0) {
+                const botReply = response.first();
+                const content = botReply?.content || "";
+                const embed = botReply?.embeds?.[0];
+
+                // Parse the stats from the response
+                let warns = 0, mutes = 0, kicks = 0, bans = 0;
+
+                // Try to parse from embed fields or content
+                if (embed?.fields) {
+                  for (const field of embed.fields) {
+                    const value = parseInt(field.value) || 0;
+                    if (field.name.toLowerCase().includes('warn')) warns = value;
+                    else if (field.name.toLowerCase().includes('mute') || field.name.toLowerCase().includes('timeout')) mutes = value;
+                    else if (field.name.toLowerCase().includes('kick')) kicks = value;
+                    else if (field.name.toLowerCase().includes('ban')) bans = value;
+                  }
+                } else {
+                  // Fallback: try to parse from content using regex
+                  const warnMatch = content.match(/warn[s]?[:\s]+(\d+)/i);
+                  const muteMatch = content.match(/mute[s]?[:\s]+(\d+)/i);
+                  const kickMatch = content.match(/kick[s]?[:\s]+(\d+)/i);
+                  const banMatch = content.match(/ban[s]?[:\s]+(\d+)/i);
+                  
+                  if (warnMatch) warns = parseInt(warnMatch[1]) || 0;
+                  if (muteMatch) mutes = parseInt(muteMatch[1]) || 0;
+                  if (kickMatch) kicks = parseInt(kickMatch[1]) || 0;
+                  if (banMatch) bans = parseInt(banMatch[1]) || 0;
+                }
+
+                const total = warns + mutes + kicks + bans;
+                statsResults.push({ userId: member.id, warns, mutes, kicks, bans, total });
+
+                // Clean up the command and response messages
+                try {
+                  await commandMessage.delete();
+                  if (botReply) await botReply.delete();
+                } catch (e) {
+                  // Ignore delete errors
+                }
+              } else {
+                // No response - assume 0 stats
+                statsResults.push({ userId: member.id, warns: 0, mutes: 0, kicks: 0, bans: 0, total: 0 });
+                
+                try {
+                  await commandMessage.delete();
+                } catch (e) {
+                  // Ignore delete errors
+                }
+              }
+
+              // Small delay between commands to avoid rate limits
+              await new Promise(resolve => setTimeout(resolve, 500));
+            } catch (error) {
+              console.log(`Error getting stats for ${member.id}:`, error);
+              // Add with 0 stats if error
+              statsResults.push({ userId: member.id, warns: 0, mutes: 0, kicks: 0, bans: 0, total: 0 });
             }
-          }).sort((a, b) => b.total - a.total).slice(0, 50);
+          }
+
+          // Sort by total
+          const leaderboard = statsResults.sort((a, b) => b.total - a.total).slice(0, 50);
 
           const periodText = period === "7" ? "Last 7 Days" : period === "30" ? "Last 30 Days" : "All Time";
           const resultEmbed = new EmbedBuilder()
