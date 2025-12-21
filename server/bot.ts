@@ -2503,7 +2503,7 @@ client.on("interactionCreate", async (interaction) => {
           const leaderboard = Object.entries(combinedStats)
             .map(([userId, count]) => ({ userId, count }))
             .sort((a, b) => b.count - a.count)
-            .slice(0, 25);
+            .slice(0, 100);
 
           const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
 
