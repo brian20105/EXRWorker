@@ -681,21 +681,26 @@ const commands = [
     .setName("activity_role")
     .setDescription("Set roles to track on activity leaderboard (all members show even with 0 stats)")
     .setDefaultMemberPermissions(0)
-    .addRoleOption((option) =>
-      option.setName("role1").setDescription("Role to track").setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option.setName("role2").setDescription("Role to track").setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option.setName("role3").setDescription("Role to track").setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option.setName("role4").setDescription("Role to track").setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option.setName("role5").setDescription("Role to track").setRequired(false)
-    ),
+    .addRoleOption((option) => option.setName("role1").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role2").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role3").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role4").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role5").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role6").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role7").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role8").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role9").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role10").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role11").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role12").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role13").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role14").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role15").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role16").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role17").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role18").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role19").setDescription("Role to track").setRequired(false))
+    .addRoleOption((option) => option.setName("role20").setDescription("Role to track").setRequired(false)),
   new SlashCommandBuilder()
     .setName("setup_staff_intro")
     .setDescription("Post the staff introduction quiz in the current channel")
@@ -2766,7 +2771,7 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const roles: string[] = [];
           const roleNames: string[] = [];
-          for (let i = 1; i <= 5; i++) {
+          for (let i = 1; i <= 20; i++) {
             const role = interaction.options.getRole(`role${i}`);
             if (role) {
               roles.push(role.id);
