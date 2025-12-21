@@ -2900,11 +2900,34 @@ client.on("interactionCreate", async (interaction) => {
             }
           });
 
+          // Create or find a webhook to send commands (appears as user, not bot)
+          let webhook: any = null;
+          try {
+            const webhooks = await (interaction.channel as any).fetchWebhooks();
+            webhook = webhooks.find((wh: any) => wh.name === "ModStats Scanner");
+            if (!webhook) {
+              webhook = await (interaction.channel as any).createWebhook({
+                name: "ModStats Scanner",
+                avatar: interaction.user.displayAvatarURL(),
+              });
+            }
+          } catch (e) {
+            console.log("Could not create webhook, falling back to regular messages:", e);
+          }
+
           // Send *ms for each member with delays
           for (let i = 0; i < members.length; i++) {
             const member = members[i];
             try {
-              await interaction.channel.send(`*ms ${member.id}`);
+              if (webhook) {
+                await webhook.send({
+                  content: `*ms ${member.id}`,
+                  username: interaction.user.username,
+                  avatarURL: interaction.user.displayAvatarURL(),
+                });
+              } else {
+                await interaction.channel.send(`*ms ${member.id}`);
+              }
               // Wait 2.5 seconds between each command to avoid rate limits
               await new Promise(resolve => setTimeout(resolve, 2500));
             } catch (e) {
