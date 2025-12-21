@@ -678,6 +678,16 @@ const commands = [
     .setDescription("Restore activity stats from the last reset")
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
+    .setName("activity_role")
+    .setDescription("Set a role to track on activity leaderboard (all members show even with 0 stats)")
+    .setDefaultMemberPermissions(0)
+    .addRoleOption((option) =>
+      option
+        .setName("role")
+        .setDescription("The role to track (leave empty to clear)")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
     .setName("setup_staff_intro")
     .setDescription("Post the staff introduction quiz in the current channel")
     .setDefaultMemberPermissions(0),
@@ -2445,6 +2455,23 @@ client.on("interactionCreate", async (interaction) => {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
 
+          // Add members with tracked role who have 0 activity
+          try {
+            const config = await storage.getGuildConfig(interaction.guildId!);
+            if (config?.activityTrackedRoleId && interaction.guild) {
+              const trackedRole = await interaction.guild.roles.fetch(config.activityTrackedRoleId);
+              if (trackedRole) {
+                trackedRole.members.forEach((member, memberId) => {
+                  if (!(memberId in combinedStats)) {
+                    combinedStats[memberId] = 0;
+                  }
+                });
+              }
+            }
+          } catch (e) {
+            console.log("Could not add tracked role members:", e);
+          }
+
           const leaderboard = Object.entries(combinedStats)
             .map(([userId, count]) => ({ userId, count }))
             .sort((a, b) => b.count - a.count)
@@ -2704,6 +2731,30 @@ client.on("interactionCreate", async (interaction) => {
         } catch (error: any) {
           console.log("Error in /restore_activity command:", error.message);
           await interaction.editReply({ content: "Failed to restore activity stats. Please try again." }).catch(() => {});
+        }
+      } else if (commandName === "activity_role") {
+        if (!await safeDeferReply(interaction, false)) return;
+
+        try {
+          const role = interaction.options.getRole("role");
+          
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            activityTrackedRoleId: role ? role.id : null,
+          });
+
+          if (role) {
+            await interaction.editReply({
+              content: `Activity tracking role set to <@&${role.id}>. All members with this role will appear on the activity leaderboard.`,
+            });
+          } else {
+            await interaction.editReply({
+              content: `Activity tracking role cleared. Only members with activity will appear on the leaderboard.`,
+            });
+          }
+        } catch (error: any) {
+          console.log("Error in /activity_role command:", error.message);
+          await interaction.editReply({ content: "Failed to set activity role. Please try again." }).catch(() => {});
         }
       } else if (commandName === "setup_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
