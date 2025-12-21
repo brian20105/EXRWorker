@@ -702,7 +702,7 @@ export class DatabaseStorage implements IStorage {
 
   async getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
     let conditions: any[] = [
-      eq(modmailThreads.claimedById, userId),
+      eq(modmailThreads.closedById, userId),
       eq(modmailThreads.status, "closed")
     ];
     
@@ -722,7 +722,7 @@ export class DatabaseStorage implements IStorage {
 
   async getModmailStatsByCategoryForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]> {
     let conditions: any[] = [
-      eq(modmailThreads.claimedById, userId),
+      eq(modmailThreads.closedById, userId),
       eq(modmailThreads.status, "closed")
     ];
     
@@ -747,7 +747,7 @@ export class DatabaseStorage implements IStorage {
 
   async getAppealStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
     let conditions: any[] = [
-      eq(appealThreads.claimedById, userId),
+      eq(appealThreads.closedById, userId),
       eq(appealThreads.status, "closed")
     ];
     
@@ -818,8 +818,8 @@ export class DatabaseStorage implements IStorage {
     const threads = await db.select().from(modmailThreads).where(and(...conditions));
     const counts: { [userId: string]: number } = {};
     for (const thread of threads) {
-      if (thread.claimedById) {
-        counts[thread.claimedById] = (counts[thread.claimedById] || 0) + 1;
+      if (thread.closedById) {
+        counts[thread.closedById] = (counts[thread.closedById] || 0) + 1;
       }
     }
     return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
@@ -841,8 +841,8 @@ export class DatabaseStorage implements IStorage {
     const threads = await db.select().from(appealThreads).where(and(...conditions));
     const counts: { [userId: string]: number } = {};
     for (const thread of threads) {
-      if (thread.claimedById) {
-        counts[thread.claimedById] = (counts[thread.claimedById] || 0) + 1;
+      if (thread.closedById) {
+        counts[thread.closedById] = (counts[thread.closedById] || 0) + 1;
       }
     }
     return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
