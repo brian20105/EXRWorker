@@ -62,6 +62,7 @@ export const guildConfigs = pgTable("guild_configs", {
   appealStaffRoleIds: text("appeal_staff_role_ids").array(),
   appealEmbedTitle: text("appeal_embed_title"),
   appealEmbedDescription: text("appeal_embed_description"),
+  activityTrackedRoleId: text("activity_tracked_role_id"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
