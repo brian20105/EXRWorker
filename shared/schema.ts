@@ -64,6 +64,7 @@ export const guildConfigs = pgTable("guild_configs", {
   appealEmbedDescription: text("appeal_embed_description"),
   activityTrackedRoleIds: text("activity_tracked_role_ids").array(),
   moderatorBotId: text("moderator_bot_id"),
+  modLogChannelId: text("mod_log_channel_id"), // Channel where TRL | Moderator posts logs
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -392,3 +393,24 @@ export const insertAppealSnippetSchema = createInsertSchema(appealSnippets).omit
 
 export type InsertAppealSnippet = z.infer<typeof insertAppealSnippetSchema>;
 export type AppealSnippet = typeof appealSnippets.$inferSelect;
+
+// Moderation actions tracking (parsed from logs or audit)
+export const moderationActions = pgTable("moderation_actions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  moderatorId: text("moderator_id").notNull(),
+  targetId: text("target_id"),
+  actionType: text("action_type").notNull(), // warn, mute, kick, ban, unban, timeout
+  reason: text("reason"),
+  sourceType: text("source_type").notNull(), // audit_log, log_channel, manual
+  sourceMessageId: text("source_message_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertModerationActionSchema = createInsertSchema(moderationActions).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertModerationAction = z.infer<typeof insertModerationActionSchema>;
+export type ModerationAction = typeof moderationActions.$inferSelect;

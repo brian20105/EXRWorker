@@ -31,7 +31,10 @@ import {
   type InsertAppealBlock,
   type AppealSnippet,
   type InsertAppealSnippet,
+  type ModerationAction,
+  type InsertModerationAction,
   guildConfigs,
+  moderationActions,
   payoutRequests,
   roleSyncPairs,
   banRequests,
@@ -169,6 +172,11 @@ export interface IStorage {
   updateAppealSnippet(guildId: string, alias: string, content: string): Promise<AppealSnippet | undefined>;
   deleteAppealSnippet(guildId: string, alias: string): Promise<void>;
   getAllAppealSnippets(guildId: string): Promise<AppealSnippet[]>;
+  
+  // Moderation actions tracking
+  createModerationAction(action: InsertModerationAction): Promise<ModerationAction>;
+  getModerationStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ moderatorId: string; warns: number; mutes: number; kicks: number; bans: number }[]>;
+  getModerationActionExists(guildId: string, sourceMessageId: string): Promise<boolean>;
 }
 
 export class DatabaseStorage implements IStorage {
