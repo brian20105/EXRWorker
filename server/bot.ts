@@ -679,13 +679,22 @@ const commands = [
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("activity_role")
-    .setDescription("Set a role to track on activity leaderboard (all members show even with 0 stats)")
+    .setDescription("Set roles to track on activity leaderboard (all members show even with 0 stats)")
     .setDefaultMemberPermissions(0)
     .addRoleOption((option) =>
-      option
-        .setName("role")
-        .setDescription("The role to track (leave empty to clear)")
-        .setRequired(false)
+      option.setName("role1").setDescription("Role to track").setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option.setName("role2").setDescription("Role to track").setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option.setName("role3").setDescription("Role to track").setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option.setName("role4").setDescription("Role to track").setRequired(false)
+    )
+    .addRoleOption((option) =>
+      option.setName("role5").setDescription("Role to track").setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("setup_staff_intro")
@@ -2455,17 +2464,25 @@ client.on("interactionCreate", async (interaction) => {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
 
-          // Add members with tracked role who have 0 activity
+          // Filter out placeholder entries like staff_report_entry
+          delete combinedStats["staff_report_entry"];
+          delete combinedStats["manual_entry"];
+
+          // Add members with tracked roles who have 0 activity
           try {
             const config = await storage.getGuildConfig(interaction.guildId!);
-            if (config?.activityTrackedRoleId && interaction.guild) {
-              const trackedRole = await interaction.guild.roles.fetch(config.activityTrackedRoleId);
-              if (trackedRole) {
-                trackedRole.members.forEach((member, memberId) => {
-                  if (!(memberId in combinedStats)) {
-                    combinedStats[memberId] = 0;
-                  }
-                });
+            if (config?.activityTrackedRoleIds && config.activityTrackedRoleIds.length > 0 && interaction.guild) {
+              // Fetch all guild members first to ensure cache is populated
+              await interaction.guild.members.fetch();
+              for (const roleId of config.activityTrackedRoleIds) {
+                const trackedRole = interaction.guild.roles.cache.get(roleId);
+                if (trackedRole) {
+                  trackedRole.members.forEach((member, memberId) => {
+                    if (!(memberId in combinedStats)) {
+                      combinedStats[memberId] = 0;
+                    }
+                  });
+                }
               }
             }
           } catch (e) {
@@ -2736,25 +2753,33 @@ client.on("interactionCreate", async (interaction) => {
         if (!await safeDeferReply(interaction, false)) return;
 
         try {
-          const role = interaction.options.getRole("role");
+          const roles: string[] = [];
+          const roleNames: string[] = [];
+          for (let i = 1; i <= 5; i++) {
+            const role = interaction.options.getRole(`role${i}`);
+            if (role) {
+              roles.push(role.id);
+              roleNames.push(role.name);
+            }
+          }
           
           await storage.upsertGuildConfig({
             guildId: interaction.guildId!,
-            activityTrackedRoleId: role ? role.id : null,
+            activityTrackedRoleIds: roles.length > 0 ? roles : null,
           });
 
-          if (role) {
+          if (roles.length > 0) {
             await interaction.editReply({
-              content: `Activity tracking role set to <@&${role.id}>. All members with this role will appear on the activity leaderboard.`,
+              content: `Activity tracking roles set to: ${roleNames.map(r => `**${r}**`).join(", ")}. All members with these roles will appear on the activity leaderboard.`,
             });
           } else {
             await interaction.editReply({
-              content: `Activity tracking role cleared. Only members with activity will appear on the leaderboard.`,
+              content: `Activity tracking roles cleared. Only members with activity will appear on the leaderboard.`,
             });
           }
         } catch (error: any) {
           console.log("Error in /activity_role command:", error.message);
-          await interaction.editReply({ content: "Failed to set activity role. Please try again." }).catch(() => {});
+          await interaction.editReply({ content: "Failed to set activity roles. Please try again." }).catch(() => {});
         }
       } else if (commandName === "setup_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
