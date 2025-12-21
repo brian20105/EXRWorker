@@ -415,7 +415,8 @@ export class DatabaseStorage implements IStorage {
     
     const counts: { [userId: string]: number } = {};
     for (const r of requests) {
-      if (r.reviewedById && r.status !== "pending") {
+      // Filter out placeholder entries like staff_report_entry and manual_entry
+      if (r.reviewedById && r.status !== "pending" && r.reviewedById !== "staff_report_entry" && r.reviewedById !== "manual_entry") {
         counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
       }
     }
@@ -786,12 +787,14 @@ export class DatabaseStorage implements IStorage {
     
     const counts: { [userId: string]: number } = {};
     for (const r of banReqs) {
-      if (r.reviewedById) {
+      // Filter out placeholder entries like staff_report_entry and manual_entry
+      if (r.reviewedById && r.reviewedById !== "staff_report_entry" && r.reviewedById !== "manual_entry") {
         counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
       }
     }
     for (const r of unbanReqs) {
-      if (r.reviewedById) {
+      // Filter out placeholder entries like staff_report_entry and manual_entry
+      if (r.reviewedById && r.reviewedById !== "staff_report_entry" && r.reviewedById !== "manual_entry") {
         counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
       }
     }
