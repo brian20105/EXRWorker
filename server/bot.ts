@@ -2931,10 +2931,20 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const role = interaction.options.getRole("role", true);
           const period = interaction.options.getString("period") || "7";
-          const autoRun = interaction.options.getBoolean("auto_run") ?? false;
           
           if (!interaction.guild) {
             await interaction.editReply({ content: "This command must be used in a server." });
+            return;
+          }
+
+          // Get stats from database first
+          const fromDays = period === "all" ? undefined : parseInt(period);
+          const allStats = await storage.getModerationStats(interaction.guildId!, fromDays);
+          
+          if (allStats.length === 0) {
+            await interaction.editReply({ 
+              content: "No moderation stats found. Use `/setup_modstats_bot` to configure the log channel, then `/scan_modlogs` to import past actions." 
+            });
             return;
           }
 
@@ -2952,104 +2962,31 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          // If auto_run is enabled, execute *ms for each user
-          if (autoRun) {
-            await interaction.editReply({ content: `🔄 Running mod stats check for ${roleMembers.length} members... This may take a moment.` });
-
-            const config = await storage.getGuildConfig(interaction.guildId!);
-            if (!config?.modLogChannelId) {
-              await interaction.editReply({ content: "❌ Mod log channel not configured. Use `/setup_modstats_bot` first." });
-              return;
+          // Build leaderboard with all members (even those with 0 stats)
+          const statsMap = new Map(allStats.map(s => [s.moderatorId, s]));
+          const leaderboard = roleMembers.map(memberId => {
+            const stats = statsMap.get(memberId);
+            if (stats) {
+              const total = stats.warns + stats.mutes + stats.kicks + stats.bans;
+              return {
+                userId: memberId,
+                warns: stats.warns,
+                mutes: stats.mutes,
+                kicks: stats.kicks,
+                bans: stats.bans,
+                total
+              };
+            } else {
+              return {
+                userId: memberId,
+                warns: 0,
+                mutes: 0,
+                kicks: 0,
+                bans: 0,
+                total: 0
+              };
             }
-
-            const statsResults: { userId: string; warns: number; mutes: number; kicks: number; bans: number; total: number }[] = [];
-            
-            // Check each member's stats by simulating the bot command
-            for (const memberId of roleMembers) {
-              try {
-                // Get stats from database for this user
-                const fromDays = period === "all" ? undefined : parseInt(period);
-                const userStats = await storage.getModerationStats(interaction.guildId!, fromDays);
-                const memberStat = userStats.find(s => s.moderatorId === memberId);
-                
-                if (memberStat) {
-                  const total = memberStat.warns + memberStat.mutes + memberStat.kicks + memberStat.bans;
-                  statsResults.push({
-                    userId: memberId,
-                    warns: memberStat.warns,
-                    mutes: memberStat.mutes,
-                    kicks: memberStat.kicks,
-                    bans: memberStat.bans,
-                    total
-                  });
-                } else {
-                  // User has no stats
-                  statsResults.push({
-                    userId: memberId,
-                    warns: 0,
-                    mutes: 0,
-                    kicks: 0,
-                    bans: 0,
-                    total: 0
-                  });
-                }
-              } catch (error) {
-                console.log(`Failed to get stats for ${memberId}:`, error);
-                statsResults.push({
-                  userId: memberId,
-                  warns: 0,
-                  mutes: 0,
-                  kicks: 0,
-                  bans: 0,
-                  total: 0
-                });
-              }
-            }
-
-            // Sort by total actions
-            const leaderboard = statsResults.sort((a, b) => b.total - a.total).slice(0, 50);
-
-            const periodText = period === "7" ? "Last 7 Days" : period === "30" ? "Last 30 Days" : "All Time";
-            const resultEmbed = new EmbedBuilder()
-              .setTitle(`📊 Automated Moderation Stats Leaderboard (${periodText})`)
-              .setColor(0x5865f2);
-
-            let description = "";
-            leaderboard.forEach((entry, index) => {
-              description += `${index + 1}. <@${entry.userId}> - **${entry.total}** (W: ${entry.warns} | M: ${entry.mutes} | K: ${entry.kicks} | B: ${entry.bans})\n`;
-            });
-
-            resultEmbed.setDescription(description || "No stats found.");
-            resultEmbed.setFooter({ text: `${statsResults.length} moderators checked | ${new Date().toLocaleString()}` });
-
-            await interaction.editReply({ content: null, embeds: [resultEmbed] });
-            return;
-          }
-
-          // Original behavior - get stats from database
-          const fromDays = period === "all" ? undefined : parseInt(period);
-          const stats = await storage.getModerationStats(interaction.guildId!, fromDays);
-          
-          if (stats.length === 0) {
-            await interaction.editReply({ 
-              content: "No moderation stats found. Use `/setup_modstats_bot` to configure the log channel, then `/scan_modlogs` to import past actions.\n\nTip: Use the `auto_run` option to automatically check all members with the role." 
-            });
-            return;
-          }
-
-          // Filter stats to only include members with the role
-          const filteredStats = stats.filter(s => roleMembers.includes(s.moderatorId));
-          
-          if (filteredStats.length === 0) {
-            await interaction.editReply({ content: "No moderation stats found for members with that role." });
-            return;
-          }
-
-          // Sort by total actions
-          const leaderboard = filteredStats
-            .map(s => ({ ...s, total: s.warns + s.mutes + s.kicks + s.bans }))
-            .sort((a, b) => b.total - a.total)
-            .slice(0, 50);
+          }).sort((a, b) => b.total - a.total).slice(0, 50);
 
           const periodText = period === "7" ? "Last 7 Days" : period === "30" ? "Last 30 Days" : "All Time";
           const resultEmbed = new EmbedBuilder()
@@ -3058,11 +2995,11 @@ client.on("interactionCreate", async (interaction) => {
 
           let description = "";
           leaderboard.forEach((entry, index) => {
-            description += `${index + 1}. <@${entry.moderatorId}> - **${entry.total}** (M: ${entry.mutes} | B: ${entry.bans} | K: ${entry.kicks} | W: ${entry.warns})\n`;
+            description += `${index + 1}. <@${entry.userId}> - **${entry.total}** (W: ${entry.warns} | M: ${entry.mutes} | K: ${entry.kicks} | B: ${entry.bans})\n`;
           });
 
           resultEmbed.setDescription(description || "No stats found.");
-          resultEmbed.setFooter({ text: `${filteredStats.length} moderators | ${new Date().toLocaleString()}` });
+          resultEmbed.setFooter({ text: `${roleMembers.length} moderators | ${new Date().toLocaleString()}` });
 
           await interaction.editReply({ embeds: [resultEmbed] });
         } catch (error: any) {
