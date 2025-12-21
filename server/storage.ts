@@ -1523,6 +1523,62 @@ export class DatabaseStorage implements IStorage {
   async getAllAppealSnippets(guildId: string): Promise<AppealSnippet[]> {
     return await db.select().from(appealSnippets).where(eq(appealSnippets.guildId, guildId));
   }
+
+  async createModerationAction(action: InsertModerationAction): Promise<ModerationAction> {
+    const result = await db.insert(moderationActions).values(action).returning();
+    return result[0];
+  }
+
+  async getModerationStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ moderatorId: string; warns: number; mutes: number; kicks: number; bans: number }[]> {
+    let query = db.select({
+      moderatorId: moderationActions.moderatorId,
+      actionType: moderationActions.actionType,
+    }).from(moderationActions).where(eq(moderationActions.guildId, guildId));
+
+    if (fromDays !== undefined) {
+      const fromDate = new Date();
+      fromDate.setDate(fromDate.getDate() - fromDays);
+      query = query.where(gte(moderationActions.createdAt, fromDate)) as any;
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date();
+      toDate.setDate(toDate.getDate() - toDays);
+      query = query.where(lte(moderationActions.createdAt, toDate)) as any;
+    }
+
+    const results = await query;
+    
+    // Aggregate by moderator
+    const statsMap = new Map<string, { warns: number; mutes: number; kicks: number; bans: number }>();
+    for (const row of results) {
+      if (!statsMap.has(row.moderatorId)) {
+        statsMap.set(row.moderatorId, { warns: 0, mutes: 0, kicks: 0, bans: 0 });
+      }
+      const stats = statsMap.get(row.moderatorId)!;
+      switch (row.actionType) {
+        case 'warn': stats.warns++; break;
+        case 'mute': case 'timeout': stats.mutes++; break;
+        case 'kick': stats.kicks++; break;
+        case 'ban': stats.bans++; break;
+      }
+    }
+    
+    return Array.from(statsMap.entries()).map(([moderatorId, stats]) => ({
+      moderatorId,
+      ...stats
+    }));
+  }
+
+  async getModerationActionExists(guildId: string, sourceMessageId: string): Promise<boolean> {
+    const result = await db.select({ id: moderationActions.id })
+      .from(moderationActions)
+      .where(and(
+        eq(moderationActions.guildId, guildId),
+        eq(moderationActions.sourceMessageId, sourceMessageId)
+      ))
+      .limit(1);
+    return result.length > 0;
+  }
 }
 
 export const storage = new DatabaseStorage();

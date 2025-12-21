@@ -99,6 +99,102 @@ const FULL_QUESTIONS = [
   "You understand that this is a paid position and any unprofessionalism/arguing will get you removed?"
 ];
 
+// Parse moderation log messages from TRL | Moderator or similar bots
+async function parseModLogMessage(msg: any, guildId: string): Promise<{ guildId: string; moderatorId: string; targetId: string | null; actionType: string; reason: string | null; sourceType: string; sourceMessageId: string } | null> {
+  try {
+    const content = msg.content?.toLowerCase() || "";
+    const embedTitle = msg.embeds?.[0]?.title?.toLowerCase() || "";
+    const embedDesc = msg.embeds?.[0]?.description?.toLowerCase() || "";
+    const embedFields = msg.embeds?.[0]?.fields || [];
+    const fullText = `${content} ${embedTitle} ${embedDesc}`;
+    
+    let actionType: string | null = null;
+    let moderatorId: string | null = null;
+    let targetId: string | null = null;
+    let reason: string | null = null;
+    
+    // Detect action type from various common formats
+    if (fullText.includes("warn") && !fullText.includes("unwarned")) actionType = "warn";
+    else if (fullText.includes("mute") && !fullText.includes("unmute")) actionType = "mute";
+    else if (fullText.includes("timeout") && !fullText.includes("removed")) actionType = "timeout";
+    else if (fullText.includes("kick") && !fullText.includes("unkick")) actionType = "kick";
+    else if (fullText.includes("ban") && !fullText.includes("unban")) actionType = "ban";
+    else if (fullText.includes("unban")) actionType = "unban";
+    else if (fullText.includes("unmute")) actionType = "unmute";
+    
+    if (!actionType) return null;
+    
+    // Extract user IDs from mentions or field values
+    const idRegex = /<@!?(\d{17,19})>|ID:\s*(\d{17,19})|User ID:\s*(\d{17,19})|(\d{17,19})/gi;
+    const fullContent = `${msg.content || ""} ${msg.embeds?.[0]?.description || ""} ${embedFields.map((f: any) => `${f.name} ${f.value}`).join(" ")}`;
+    const matches = [...fullContent.matchAll(idRegex)];
+    
+    // Try to find moderator from embed fields
+    for (const field of embedFields) {
+      const fieldName = field.name.toLowerCase();
+      const fieldValue = field.value;
+      
+      if (fieldName.includes("moderator") || fieldName.includes("staff") || fieldName.includes("by") || fieldName.includes("executor")) {
+        const modMatch = fieldValue.match(/<@!?(\d{17,19})>|(\d{17,19})/);
+        if (modMatch) moderatorId = modMatch[1] || modMatch[2];
+      }
+      if (fieldName.includes("user") || fieldName.includes("target") || fieldName.includes("member")) {
+        const targetMatch = fieldValue.match(/<@!?(\d{17,19})>|(\d{17,19})/);
+        if (targetMatch) targetId = targetMatch[1] || targetMatch[2];
+      }
+      if (fieldName.includes("reason")) {
+        reason = fieldValue;
+      }
+    }
+    
+    // If we still don't have moderator/target, try to extract from author/footer
+    if (!moderatorId) {
+      const footerText = msg.embeds?.[0]?.footer?.text || "";
+      const footerMatch = footerText.match(/ID:\s*(\d{17,19})|(\d{17,19})/);
+      if (footerMatch) {
+        // Footer usually has moderator ID in some bots
+        const potentialId = footerMatch[1] || footerMatch[2];
+        if (!targetId) targetId = potentialId;
+        else moderatorId = potentialId;
+      }
+    }
+    
+    // Try to get from embed author
+    if (!targetId && msg.embeds?.[0]?.author?.name) {
+      const authorText = msg.embeds[0].author.name;
+      const authorMatch = authorText.match(/\((\d{17,19})\)/);
+      if (authorMatch) targetId = authorMatch[1];
+    }
+    
+    // If no moderator found but we have IDs, try to infer from message structure
+    if (!moderatorId && matches.length >= 1) {
+      // First ID is usually the target, second might be moderator
+      if (matches.length >= 2) {
+        targetId = targetId || matches[0][1] || matches[0][2] || matches[0][3] || matches[0][4];
+        moderatorId = matches[1][1] || matches[1][2] || matches[1][3] || matches[1][4];
+      } else if (!targetId) {
+        targetId = matches[0][1] || matches[0][2] || matches[0][3] || matches[0][4];
+      }
+    }
+    
+    // Need at least moderator ID to track stats
+    if (!moderatorId) return null;
+    
+    return {
+      guildId,
+      moderatorId,
+      targetId,
+      actionType,
+      reason,
+      sourceType: "log_channel",
+      sourceMessageId: msg.id,
+    };
+  } catch (e) {
+    console.log("[MODLOG PARSE] Error parsing message:", e);
+    return null;
+  }
+}
+
 // Helper to safely defer replies - returns false if interaction expired
 async function safeDeferReply(interaction: any, ephemeral: boolean = true): Promise<boolean> {
   const age = Date.now() - interaction.createdTimestamp;
@@ -718,11 +814,18 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("setup_modstats_bot")
-    .setDescription("Set the moderator bot ID to parse stats from")
+    .setDescription("Set the moderator bot ID and log channel to parse stats from")
     .setDefaultMemberPermissions(0)
     .addStringOption((option) =>
       option.setName("bot_id").setDescription("The bot ID (right-click bot and copy ID)").setRequired(true)
+    )
+    .addChannelOption((option) =>
+      option.setName("log_channel").setDescription("Channel where the moderator bot posts action logs").setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName("scan_modlogs")
+    .setDescription("Scan the last 1000 messages in the mod log channel to import past actions")
+    .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("setup_staff_intro")
     .setDescription("Post the staff introduction quiz in the current channel")
@@ -2826,165 +2929,139 @@ client.on("interactionCreate", async (interaction) => {
           const role = interaction.options.getRole("role", true);
           const period = interaction.options.getString("period") || "7";
           
-          if (!interaction.guild || !interaction.channel || !("send" in interaction.channel)) {
-            await interaction.editReply({ content: "This command must be used in a server channel." });
+          if (!interaction.guild) {
+            await interaction.editReply({ content: "This command must be used in a server." });
             return;
           }
 
-          // Get the configured moderator bot ID
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          const MODERATOR_BOT_ID = config?.moderatorBotId;
-          if (!MODERATOR_BOT_ID) {
-            await interaction.editReply({ content: "Please configure the moderator bot first using `/setup_modstats_bot`" });
+          // Get stats from database
+          const fromDays = period === "all" ? undefined : parseInt(period);
+          const stats = await storage.getModerationStats(interaction.guildId!, fromDays);
+          
+          if (stats.length === 0) {
+            await interaction.editReply({ 
+              content: "No moderation stats found. Use `/setup_modstats_bot` to configure the log channel, then `/scan_modlogs` to import past actions." 
+            });
             return;
           }
 
-          // Fetch all members with the role
+          // Fetch members with the role
           await interaction.guild.members.fetch();
           const trackedRole = interaction.guild.roles.cache.get(role.id);
-          if (!trackedRole) {
-            await interaction.editReply({ content: "Could not find the specified role." });
-            return;
-          }
+          const roleMembers = trackedRole ? new Set(trackedRole.members.keys()) : new Set();
 
-          const members = Array.from(trackedRole.members.values());
-          if (members.length === 0) {
-            await interaction.editReply({ content: "No members found with that role." });
-            return;
-          }
-
-          await interaction.editReply({ 
-            content: `📊 Scanning ${members.length} members with **${role.name}**... This may take a while.`
-          });
-
-          // Store to collect stats from the other bot's responses
-          const modStats: Map<string, { mutes: number; bans: number; kicks: number; warns: number; total: number; username: string }> = new Map();
+          // Filter stats to only include members with the role
+          const filteredStats = stats.filter(s => roleMembers.has(s.moderatorId));
           
-          // Create a message collector to capture responses from the moderator bot
-          const collector = interaction.channel.createMessageCollector({
-            filter: (msg) => msg.author.id === MODERATOR_BOT_ID && msg.embeds.length > 0,
-            time: members.length * 3000 + 30000, // Allow time for all responses plus buffer
-          });
-
-          collector.on("collect", (msg) => {
-            try {
-              const embed = msg.embeds[0];
-              if (!embed) return;
-              
-              // Parse the embed fields to get stats - format is "Mutes (last 7 days):" with value "18"
-              const fields = embed.fields || [];
-              let mutes = 0, bans = 0, kicks = 0, warns = 0;
-              const periodLabel = period === "7" ? "last 7 days" : period === "30" ? "last 30 days" : "all time";
-              
-              for (const field of fields) {
-                const name = field.name.toLowerCase();
-                const value = parseInt(field.value) || 0;
-                
-                if (name.includes("mutes") && name.includes(periodLabel)) mutes = value;
-                else if (name.includes("bans") && name.includes(periodLabel)) bans = value;
-                else if (name.includes("kicks") && name.includes(periodLabel)) kicks = value;
-                else if (name.includes("warns") && name.includes(periodLabel)) warns = value;
-              }
-
-              // Try to get user ID from the embed footer
-              const footerText = embed.footer?.text || "";
-              const idMatch = footerText.match(/ID:\s*(\d+)/);
-              if (idMatch) {
-                const userId = idMatch[1];
-                const username = embed.author?.name || "Unknown";
-                modStats.set(userId, { mutes, bans, kicks, warns, total: mutes + bans + kicks + warns, username });
-                console.log(`[MODSTATS] Collected stats for ${userId}: M:${mutes} B:${bans} K:${kicks} W:${warns}`);
-              }
-            } catch (e) {
-              console.log("Error parsing mod stats embed:", e);
-            }
-          });
-
-          // Create or find a webhook to send commands (appears as user, not bot)
-          let webhook: any = null;
-          try {
-            const webhooks = await (interaction.channel as any).fetchWebhooks();
-            webhook = webhooks.find((wh: any) => wh.name === "ModStats Scanner");
-            if (!webhook) {
-              webhook = await (interaction.channel as any).createWebhook({
-                name: "ModStats Scanner",
-                avatar: interaction.user.displayAvatarURL(),
-              });
-            }
-          } catch (e) {
-            console.log("Could not create webhook, falling back to regular messages:", e);
+          if (filteredStats.length === 0) {
+            await interaction.editReply({ content: "No moderation stats found for members with that role." });
+            return;
           }
 
-          // Send *ms for each member with delays
-          for (let i = 0; i < members.length; i++) {
-            const member = members[i];
-            try {
-              if (webhook) {
-                await webhook.send({
-                  content: `*ms ${member.id}`,
-                  username: interaction.user.username,
-                  avatarURL: interaction.user.displayAvatarURL(),
-                });
-              } else {
-                await interaction.channel.send(`*ms ${member.id}`);
-              }
-              // Wait 2.5 seconds between each command to avoid rate limits
-              await new Promise(resolve => setTimeout(resolve, 2500));
-            } catch (e) {
-              console.log(`Failed to send *ms for ${member.user.tag}:`, e);
-            }
-          }
-
-          // Wait a bit more for the last responses
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          collector.stop();
-
-          // Build leaderboard
-          const leaderboard = Array.from(modStats.entries())
-            .map(([userId, stats]) => ({ userId, ...stats }))
+          // Sort by total actions
+          const leaderboard = filteredStats
+            .map(s => ({ ...s, total: s.warns + s.mutes + s.kicks + s.bans }))
             .sort((a, b) => b.total - a.total)
             .slice(0, 50);
 
-          if (leaderboard.length === 0) {
-            await interaction.followUp({ content: "No moderation stats could be collected. Make sure the moderator bot is responding to `*ms` commands." });
-            return;
-          }
-
           const periodText = period === "7" ? "Last 7 Days" : period === "30" ? "Last 30 Days" : "All Time";
           const resultEmbed = new EmbedBuilder()
-            .setTitle(`Moderation Stats Leaderboard (${periodText})`)
+            .setTitle(`📊 Moderation Stats Leaderboard (${periodText})`)
             .setColor(0x5865f2);
 
           let description = "";
           leaderboard.forEach((entry, index) => {
-            description += `${index + 1}. <@${entry.userId}> - **${entry.total}** (M: ${entry.mutes} | B: ${entry.bans} | K: ${entry.kicks} | W: ${entry.warns})\n`;
+            description += `${index + 1}. <@${entry.moderatorId}> - **${entry.total}** (M: ${entry.mutes} | B: ${entry.bans} | K: ${entry.kicks} | W: ${entry.warns})\n`;
           });
 
           resultEmbed.setDescription(description || "No stats found.");
-          resultEmbed.setFooter({ text: `Scanned ${members.length} members | ${new Date().toLocaleString()}` });
+          resultEmbed.setFooter({ text: `${filteredStats.length} moderators | ${new Date().toLocaleString()}` });
 
-          await interaction.followUp({ embeds: [resultEmbed] });
+          await interaction.editReply({ embeds: [resultEmbed] });
         } catch (error: any) {
           console.log("Error in /modstats command:", error.message, error.stack);
-          await interaction.followUp({ content: "Failed to collect moderation stats. Please try again." }).catch(() => {});
+          await interaction.editReply({ content: "Failed to get moderation stats. Please try again." }).catch(() => {});
         }
       } else if (commandName === "setup_modstats_bot") {
         if (!await safeDeferReply(interaction, false)) return;
 
         try {
           const botId = interaction.options.getString("bot_id", true);
+          const logChannel = interaction.options.getChannel("log_channel", true);
           
           await storage.upsertGuildConfig({
             guildId: interaction.guildId!,
             moderatorBotId: botId,
+            modLogChannelId: logChannel.id,
           });
 
           await interaction.editReply({
-            content: `Moderator bot ID set to \`${botId}\`. Now you can use \`/modstats\` to scan moderation stats.`,
+            content: `✅ **Moderation Stats Setup Complete**\n\n**Bot ID:** \`${botId}\`\n**Log Channel:** <#${logChannel.id}>\n\nThe bot will now automatically track moderation actions posted in that channel.\n\nUse \`/scan_modlogs\` to import past actions from the last 1000 messages.`,
           });
         } catch (error: any) {
           console.log("Error in /setup_modstats_bot command:", error.message);
-          await interaction.editReply({ content: "Failed to set moderator bot ID." }).catch(() => {});
+          await interaction.editReply({ content: "Failed to set moderator bot configuration." }).catch(() => {});
+        }
+      } else if (commandName === "scan_modlogs") {
+        if (!await safeDeferReply(interaction, false)) return;
+
+        try {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          if (!config?.modLogChannelId || !config?.moderatorBotId) {
+            await interaction.editReply({ 
+              content: "Please configure the moderator bot first using `/setup_modstats_bot`" 
+            });
+            return;
+          }
+
+          const logChannel = await client.channels.fetch(config.modLogChannelId);
+          if (!logChannel || !("messages" in logChannel)) {
+            await interaction.editReply({ content: "Could not access the log channel." });
+            return;
+          }
+
+          await interaction.editReply({ content: "🔍 Scanning log channel for moderation actions... This may take a moment." });
+
+          // Fetch messages in batches
+          let lastId: string | undefined;
+          let totalMessages = 0;
+          let actionsFound = 0;
+          const maxMessages = 1000;
+
+          while (totalMessages < maxMessages) {
+            const options: { limit: number; before?: string } = { limit: 100 };
+            if (lastId) options.before = lastId;
+            
+            const messages = await (logChannel as any).messages.fetch(options);
+            if (messages.size === 0) break;
+            
+            for (const msg of messages.values()) {
+              if (msg.author.id !== config.moderatorBotId) continue;
+              
+              // Parse the message for moderation actions
+              const action = await parseModLogMessage(msg, interaction.guildId!);
+              if (action) {
+                // Check if already exists
+                const exists = await storage.getModerationActionExists(interaction.guildId!, msg.id);
+                if (!exists) {
+                  await storage.createModerationAction(action);
+                  actionsFound++;
+                }
+              }
+            }
+            
+            totalMessages += messages.size;
+            lastId = messages.last()?.id;
+            
+            if (messages.size < 100) break;
+          }
+
+          await interaction.editReply({
+            content: `✅ **Scan Complete**\n\nScanned ${totalMessages} messages and found ${actionsFound} new moderation actions.\n\nUse \`/modstats\` to view the leaderboard.`,
+          });
+        } catch (error: any) {
+          console.log("Error in /scan_modlogs command:", error.message, error.stack);
+          await interaction.editReply({ content: "Failed to scan log channel. Please try again." }).catch(() => {});
         }
       } else if (commandName === "setup_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
