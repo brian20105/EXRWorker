@@ -560,6 +560,16 @@ const commands = [
           { name: "Staff Reports", value: "staffreport" }
         )
     )
+    .addStringOption((option) =>
+      option
+        .setName("scope")
+        .setDescription("Show stats from this server only or all servers")
+        .setRequired(false)
+        .addChoices(
+          { name: "All Servers", value: "all" },
+          { name: "This Server Only", value: "guild" }
+        )
+    )
     .addIntegerOption((option) =>
       option
         .setName("from")
@@ -2251,19 +2261,21 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const targetMember = interaction.options.getUser("member");
           const category = interaction.options.getString("category");
+          const scope = interaction.options.getString("scope") || "all"; // Default to all servers
           const fromDays = interaction.options.getInteger("from") ?? undefined;
           const toDays = interaction.options.getInteger("to") ?? undefined;
+          const useAllGuilds = scope === "all";
 
           // Build time range description with Discord timestamps (hammer times)
           const now = new Date();
           const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
           const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
           
-          let timeRangeDesc = "";
+          let timeRangeDesc = useAllGuilds ? "📊 **All Servers**" : "📊 **This Server Only**";
           if (fromDate || toDays !== undefined) {
             const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
             const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
-            timeRangeDesc = fromTimestamp ? `From ${fromTimestamp} to ${toTimestamp}` : `Up to ${toTimestamp}`;
+            timeRangeDesc += "\n" + (fromTimestamp ? `From ${fromTimestamp} to ${toTimestamp}` : `Up to ${toTimestamp}`);
           }
 
           // If a specific member is requested, show their individual stats
@@ -2275,27 +2287,37 @@ client.on("interactionCreate", async (interaction) => {
             let memberModmailCategoryStats: { category: string; count: number }[] = [];
 
             try {
-              memberBanStats = await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "ban", fromDays, toDays);
+              memberBanStats = useAllGuilds 
+                ? await storage.getActivityStatsForUserAllGuilds(targetMember.id, "ban", fromDays, toDays)
+                : await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "ban", fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member ban stats:", e);
             }
             try {
-              memberUnbanStats = await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "unban", fromDays, toDays);
+              memberUnbanStats = useAllGuilds
+                ? await storage.getActivityStatsForUserAllGuilds(targetMember.id, "unban", fromDays, toDays)
+                : await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "unban", fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member unban stats:", e);
             }
             try {
-              memberModmailStats = await storage.getModmailStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+              memberModmailStats = useAllGuilds
+                ? await storage.getModmailStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
+                : await storage.getModmailStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member modmail stats:", e);
             }
             try {
-              memberAppealStats = await storage.getAppealStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+              memberAppealStats = useAllGuilds
+                ? await storage.getAppealStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
+                : await storage.getAppealStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member appeal stats:", e);
             }
             try {
-              memberModmailCategoryStats = await storage.getModmailStatsByCategoryForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+              memberModmailCategoryStats = useAllGuilds
+                ? await storage.getModmailStatsByCategoryForUserAllGuilds(targetMember.id, fromDays, toDays)
+                : await storage.getModmailStatsByCategoryForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member modmail category stats:", e);
             }
@@ -2305,11 +2327,8 @@ client.on("interactionCreate", async (interaction) => {
             const embed = new EmbedBuilder()
               .setTitle(`Activity for ${targetMember.tag}`)
               .setThumbnail(targetMember.displayAvatarURL())
-              .setColor(0x5865f2);
-
-            if (timeRangeDesc) {
-              embed.setDescription(timeRangeDesc);
-            }
+              .setColor(0x5865f2)
+              .setDescription(timeRangeDesc);
 
             let statsText = `**Total Activity:** ${totalActivity}\n\n`;
             statsText += `**Ban Requests:** ${memberBanStats}\n`;
@@ -2355,7 +2374,9 @@ client.on("interactionCreate", async (interaction) => {
 
           try {
             if (!category || category === "ban") {
-              banStats = await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
+              banStats = useAllGuilds
+                ? await storage.getAllGuildsActivityStats(fromDays, toDays)
+                : await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
             }
           } catch (e) {
             console.log("Could not fetch ban stats:", e);
@@ -2363,7 +2384,9 @@ client.on("interactionCreate", async (interaction) => {
 
           try {
             if (!category || category === "unban") {
-              unbanStats = await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
+              unbanStats = useAllGuilds
+                ? [] // Combined in banStats for all guilds
+                : await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
             }
           } catch (e) {
             console.log("Could not fetch unban stats:", e);
@@ -2371,7 +2394,9 @@ client.on("interactionCreate", async (interaction) => {
 
           try {
             if (!category || category === "modmail") {
-              modmailStats = await storage.getModmailStats(interaction.guildId!, fromDays, toDays);
+              modmailStats = useAllGuilds
+                ? await storage.getAllGuildsModmailStats(fromDays, toDays)
+                : await storage.getModmailStats(interaction.guildId!, fromDays, toDays);
             }
           } catch (e) {
             console.log("Could not fetch modmail stats:", e);
@@ -2379,7 +2404,9 @@ client.on("interactionCreate", async (interaction) => {
 
           try {
             if (!category || category === "appeal") {
-              appealStats = await storage.getAppealStats(interaction.guildId!, fromDays, toDays);
+              appealStats = useAllGuilds
+                ? await storage.getAllGuildsAppealStats(fromDays, toDays)
+                : await storage.getAppealStats(interaction.guildId!, fromDays, toDays);
             }
           } catch (e) {
             console.log("Could not fetch appeal stats:", e);

@@ -112,6 +112,15 @@ export interface IStorage {
   getModmailStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
   getModmailStatsByCategoryForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
   
+  // Cross-server activity stats (aggregates from all servers)
+  getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number): Promise<number>;
+  getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
+  getModmailStatsByCategoryForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
+  getAppealStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
+  getAllGuildsActivityStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsModmailStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  
   createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock>;
   getActiveModmailBlock(guildId: string, userId: string): Promise<ModmailBlock | undefined>;
   removeModmailBlock(guildId: string, userId: string): Promise<void>;
@@ -665,6 +674,175 @@ export class DatabaseStorage implements IStorage {
     
     const result = await db.select({ count: count() }).from(table).where(and(...conditions));
     return result[0]?.count || 0;
+  }
+
+  // Cross-server activity stats - aggregates from ALL guilds
+  async getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number): Promise<number> {
+    const table = category === "ban" ? banRequests : unbanRequests;
+    
+    let conditions: any[] = [
+      eq(table.reviewedById, userId),
+      eq(table.status, "approved")
+    ];
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(table.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(table.createdAt, toDate));
+    }
+    
+    const result = await db.select({ count: count() }).from(table).where(and(...conditions));
+    return result[0]?.count || 0;
+  }
+
+  async getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
+    let conditions: any[] = [
+      eq(modmailThreads.claimedById, userId),
+      eq(modmailThreads.status, "closed")
+    ];
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(modmailThreads.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(modmailThreads.createdAt, toDate));
+    }
+    
+    const result = await db.select({ count: count() }).from(modmailThreads).where(and(...conditions));
+    return result[0]?.count || 0;
+  }
+
+  async getModmailStatsByCategoryForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]> {
+    let conditions: any[] = [
+      eq(modmailThreads.claimedById, userId),
+      eq(modmailThreads.status, "closed")
+    ];
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(modmailThreads.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(modmailThreads.createdAt, toDate));
+    }
+    
+    const threads = await db.select().from(modmailThreads).where(and(...conditions));
+    const categoryCounts: { [category: string]: number } = {};
+    for (const thread of threads) {
+      const cat = thread.category || "general";
+      categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+    }
+    return Object.entries(categoryCounts).map(([category, count]) => ({ category, count }));
+  }
+
+  async getAppealStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
+    let conditions: any[] = [
+      eq(appealThreads.claimedById, userId),
+      eq(appealThreads.status, "closed")
+    ];
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(appealThreads.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(appealThreads.createdAt, toDate));
+    }
+    
+    const result = await db.select({ count: count() }).from(appealThreads).where(and(...conditions));
+    return result[0]?.count || 0;
+  }
+
+  async getAllGuildsActivityStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    const now = new Date();
+    
+    let banConditions: any[] = [eq(banRequests.status, "approved")];
+    let unbanConditions: any[] = [eq(unbanRequests.status, "approved")];
+    
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      banConditions.push(gte(banRequests.createdAt, fromDate));
+      unbanConditions.push(gte(unbanRequests.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      banConditions.push(lte(banRequests.createdAt, toDate));
+      unbanConditions.push(lte(unbanRequests.createdAt, toDate));
+    }
+    
+    const banReqs = await db.select().from(banRequests).where(and(...banConditions));
+    const unbanReqs = await db.select().from(unbanRequests).where(and(...unbanConditions));
+    
+    const counts: { [userId: string]: number } = {};
+    for (const r of banReqs) {
+      if (r.reviewedById) {
+        counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
+      }
+    }
+    for (const r of unbanReqs) {
+      if (r.reviewedById) {
+        counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
+      }
+    }
+    
+    return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
+  }
+
+  async getAllGuildsModmailStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    let conditions: any[] = [eq(modmailThreads.status, "closed")];
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(modmailThreads.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(modmailThreads.createdAt, toDate));
+    }
+    
+    const threads = await db.select().from(modmailThreads).where(and(...conditions));
+    const counts: { [userId: string]: number } = {};
+    for (const thread of threads) {
+      if (thread.claimedById) {
+        counts[thread.claimedById] = (counts[thread.claimedById] || 0) + 1;
+      }
+    }
+    return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
+  }
+
+  async getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    let conditions: any[] = [eq(appealThreads.status, "closed")];
+    
+    const now = new Date();
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(appealThreads.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(appealThreads.createdAt, toDate));
+    }
+    
+    const threads = await db.select().from(appealThreads).where(and(...conditions));
+    const counts: { [userId: string]: number } = {};
+    for (const thread of threads) {
+      if (thread.claimedById) {
+        counts[thread.claimedById] = (counts[thread.claimedById] || 0) + 1;
+      }
+    }
+    return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
   }
 
   async getStaffReportStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
