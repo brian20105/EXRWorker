@@ -1011,8 +1011,8 @@ const commands = [
     .addStringOption((option) =>
       option.setName("system").setDescription("Which system to block from").setRequired(true)
         .addChoices(
-          { name: "Team Thrill (Modmail)", value: "modmail" },
-          { name: "Team Thrill Ban Appeal", value: "appeal" }
+          { name: "Modmail", value: "modmail" },
+          { name: "Ban Appeal", value: "appeal" }
         )
     )
     .addUserOption((option) =>
@@ -1044,8 +1044,8 @@ const commands = [
     .addStringOption((option) =>
       option.setName("system").setDescription("Which system to unblock from").setRequired(false)
         .addChoices(
-          { name: "Team Thrill (Modmail)", value: "modmail" },
-          { name: "Team Thrill Ban Appeal", value: "appeal" }
+          { name: "Modmail", value: "modmail" },
+          { name: "Ban Appeal", value: "appeal" }
         )
     ),
   new SlashCommandBuilder()
@@ -1303,7 +1303,7 @@ function getMembersWithRole(guild: any, roleId: string): string[] {
 }
 
 async function generatePlayerRoster(guild: any): Promise<string> {
-  let playerRoster = "**Thrill's Competitive Roster**\n\n";
+  let playerRoster = "**Competitive Roster**\n\n";
 
   for (const roleId of PLAYER_ROLE_IDS) {
     const members = getMembersWithRole(guild, roleId);
@@ -1319,7 +1319,7 @@ async function generatePlayerRoster(guild: any): Promise<string> {
 }
 
 async function generateStaffRoster(guild: any): Promise<string> {
-  let staffRoster = "**Thrill's Staff Roster**\n\n";
+  let staffRoster = "**Staff Roster**\n\n";
 
   for (const roleId of STAFF_ROLE_IDS) {
     const members = getMembersWithRole(guild, roleId);
@@ -4207,7 +4207,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const reasonInput = new TextInputBuilder()
               .setCustomId("apply_reason")
-              .setLabel("Why Do You Want To Apply For Thrills Esports")
+              .setLabel("Why Do You Want To Apply For Our Esports Team?")
               .setStyle(TextInputStyle.Paragraph)
               .setPlaceholder("Explain why you want to join...")
               .setRequired(true);
