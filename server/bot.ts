@@ -4207,7 +4207,7 @@ client.on("interactionCreate", async (interaction) => {
 
             const reasonInput = new TextInputBuilder()
               .setCustomId("apply_reason")
-              .setLabel("Why Do You Want To Apply To Join Our Esports Team?")
+              .setLabel("Why Do You Want To Join Our Esports Team?")
               .setStyle(TextInputStyle.Paragraph)
               .setPlaceholder("Explain why you want to join...")
               .setRequired(true);
