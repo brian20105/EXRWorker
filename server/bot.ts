@@ -4200,9 +4200,9 @@ client.on("interactionCreate", async (interaction) => {
 
             const trackerInput = new TextInputBuilder()
               .setCustomId("fortnite_tracker")
-              .setLabel("Send Your Fortnite Tracker")
+              .setLabel("Send Your Desired Game Tracker")
               .setStyle(TextInputStyle.Short)
-              .setPlaceholder("https://fortnitetracker.com/profile/...")
+              .setPlaceholder("https://...")
               .setRequired(true);
 
             const reasonInput = new TextInputBuilder()
@@ -5662,7 +5662,7 @@ client.on("interactionCreate", async (interaction) => {
           const tracker = interaction.fields.getTextInputValue("fortnite_tracker");
           const reason = interaction.fields.getTextInputValue("apply_reason");
           applicationFields = [
-            { name: "Fortnite Tracker", value: tracker },
+            { name: "Game Tracker", value: tracker },
             { name: "Why They Want To Apply", value: reason },
           ];
         } else if (ticketCategory === "contentcreator") {
@@ -7336,7 +7336,7 @@ client.on("messageCreate", async (message) => {
       // Support regular quotes, smart quotes, or no quotes
       const aliasMatch = rest.match(/^(\S+)\s+[""\u201C\u201D]?([\s\S]+?)[""\u201C\u201D]?$/);
       if (!aliasMatch || !aliasMatch[2]?.trim()) {
-        await message.reply(`Usage: \`${prefix}snip create <alias> <text>\``);
+        await message.reply(`❌ Usage: \`${prefix}snip create <alias> <text>\``);
         return;
       }
 
