@@ -1060,7 +1060,8 @@ const commands = [
           { name: "Inactivity Approval", value: "inactivity" },
           { name: "Modmail Block", value: "block" },
           { name: "Modmail Claim", value: "claim" },
-          { name: "Activity Reset", value: "activity_reset" }
+          { name: "Activity Reset", value: "activity_reset" },
+          { name: "Appeal Claim", value: "appeal_claim" }
         )
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
@@ -7316,8 +7317,9 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle snip commands for snippet management
-  if (message.guild && lowerContent.startsWith(`${lowerPrefix}snip `)) {
-    const args = message.content.substring(prefix.length + 5).trim();
+  if (message.guild && (lowerContent.startsWith(`${lowerPrefix}snip `) || lowerContent.startsWith(`${lowerPrefix}snippet `))) {
+    const cmdLen = lowerContent.startsWith(`${lowerPrefix}snippet `) ? 8 : 5;
+    const args = message.content.substring(prefix.length + cmdLen).trim();
     const spaceIndex = args.indexOf(" ");
     const subCommand = spaceIndex === -1 ? args.toLowerCase() : args.substring(0, spaceIndex).toLowerCase();
     const rest = spaceIndex === -1 ? "" : args.substring(spaceIndex + 1).trim();
