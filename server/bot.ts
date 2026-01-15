@@ -3914,6 +3914,7 @@ client.on("interactionCreate", async (interaction) => {
           block: "Modmail Block",
           claim: "Modmail Claim",
           activity_reset: "Activity Reset",
+          appeal_claim: "Appeal Claim",
         };
 
         if (permType === "payout") {
@@ -3928,6 +3929,8 @@ client.on("interactionCreate", async (interaction) => {
           await storage.upsertGuildConfig({ guildId: interaction.guildId!, modmailClaimRoleIds: roles });
         } else if (permType === "activity_reset") {
           await storage.upsertGuildConfig({ guildId: interaction.guildId!, activityResetRoleIds: roles });
+        } else if (permType === "appeal_claim") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, appealStaffRoleIds: roles });
         }
 
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
