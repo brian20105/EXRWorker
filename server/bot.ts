@@ -4665,9 +4665,8 @@ client.on("interactionCreate", async (interaction) => {
             closedAt: new Date(),
           });
 
-          // Track activity for closing modmail (with category)
-          const modmailCat = thread.category || "unknown";
-          await storage.addModmailActivityEntries(interaction.guildId!, interaction.user.id, 1, modmailCat);
+          // Track activity for closing modmail
+          await storage.addModmailActivityEntries(interaction.guildId!, interaction.user.id, 1);
 
           if (interaction.channel) {
             const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
@@ -5325,6 +5324,72 @@ client.on("interactionCreate", async (interaction) => {
             console.log('Interaction expired:', interaction.id);
           } else {
             throw error;
+          }
+        }
+        return;
+      } else if (interaction.customId.startsWith("sniplist_") || interaction.customId.startsWith("asniplist_")) {
+        try {
+          const isAppeal = interaction.customId.startsWith("asniplist_");
+          const pageNum = parseInt(interaction.customId.split("_")[1]);
+          
+          const allSnippets = isAppeal 
+            ? await storage.getAllAppealSnippets(interaction.guildId!)
+            : await storage.getAllSnippets(interaction.guildId!);
+          
+          if (allSnippets.length === 0) {
+            await interaction.update({ content: "No snippets found.", embeds: [], components: [] });
+            return;
+          }
+
+          const perPage = 10;
+          const totalPages = Math.ceil(allSnippets.length / perPage);
+          const page = Math.max(1, Math.min(pageNum, totalPages));
+          const start = (page - 1) * perPage;
+          const pageSnippets = allSnippets.slice(start, start + perPage);
+
+          const snippetListDisplay = pageSnippets.map((s, i) => {
+            const num = start + i + 1;
+            const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
+            return `**${num}.** \`${s.alias}\` - ${truncatedContent}`;
+          }).join("\n");
+
+          const prefix = (await storage.getGuildConfig(interaction.guildId!))?.commandPrefix || ".";
+
+          const embed = new EmbedBuilder()
+            .setTitle(`📝 ${isAppeal ? "Appeal " : ""}Snippet List`)
+            .setDescription(snippetListDisplay || "No snippets on this page.")
+            .setColor(0x5865f2)
+            .setFooter({ text: `Page ${page}/${totalPages} | Total: ${allSnippets.length} snippets | Use ${prefix}${isAppeal ? "asnip" : "snip"} list <page>` });
+
+          const row = new ActionRowBuilder<ButtonBuilder>();
+          const btnPrefix = isAppeal ? "asniplist" : "sniplist";
+          if (page > 1) {
+            row.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`${btnPrefix}_${page - 1}`)
+                .setLabel("◀ Previous")
+                .setStyle(ButtonStyle.Secondary)
+            );
+          }
+          if (page < totalPages) {
+            row.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`${btnPrefix}_${page + 1}`)
+                .setLabel("Next ▶")
+                .setStyle(ButtonStyle.Secondary)
+            );
+          }
+
+          if (row.components.length > 0) {
+            await interaction.update({ embeds: [embed], components: [row] });
+          } else {
+            await interaction.update({ embeds: [embed], components: [] });
+          }
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            // Interaction expired
+          } else {
+            console.error("Snippet list pagination error:", error);
           }
         }
         return;
@@ -6922,10 +6987,9 @@ client.on("messageCreate", async (message) => {
             closeReason: "Closed via .close command",
             closedAt: new Date(),
           });
-          // Track activity for closing modmail (with category)
+          // Track activity for closing modmail
           if (timedGuildId) {
-            const modmailCat = (currentThread as any).category || "unknown";
-            await storage.addModmailActivityEntries(timedGuildId, timedStaffId, 1, modmailCat);
+            await storage.addModmailActivityEntries(timedGuildId, timedStaffId, 1);
           }
         }
 
@@ -7001,9 +7065,8 @@ client.on("messageCreate", async (message) => {
         closeReason: "Closed via .close command",
         closedAt: new Date(),
       });
-      // Track activity for closing modmail (with category)
-      const modmailCat = (thread as any).category || "unknown";
-      await storage.addModmailActivityEntries(message.guild.id, message.author.id, 1, modmailCat);
+      // Track activity for closing modmail
+      await storage.addModmailActivityEntries(message.guild.id, message.author.id, 1);
     }
 
     // Notify user
@@ -7367,11 +7430,48 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      const list = allSnippets.map((s, i) => {
+      const perPage = 10;
+      const totalPages = Math.ceil(allSnippets.length / perPage);
+      const pageArg = rest ? parseInt(rest) : 1;
+      const page = isNaN(pageArg) || pageArg < 1 ? 1 : Math.min(pageArg, totalPages);
+      const start = (page - 1) * perPage;
+      const pageSnippets = allSnippets.slice(start, start + perPage);
+
+      const snippetListDisplay = pageSnippets.map((s, i) => {
+        const num = start + i + 1;
         const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
-        return `${i + 1}.) "${s.alias}", Response: "${truncatedContent}"`;
+        return `**${num}.** \`${s.alias}\` - ${truncatedContent}`;
       }).join("\n");
-      await message.reply(`📝 **Available Snippets:**\n${list}`);
+
+      const embed = new EmbedBuilder()
+        .setTitle(`📝 Snippet List`)
+        .setDescription(snippetListDisplay || "No snippets on this page.")
+        .setColor(0x5865f2)
+        .setFooter({ text: `Page ${page}/${totalPages} | Total: ${allSnippets.length} snippets | Use ${prefix}snip list <page>` });
+
+      const row = new ActionRowBuilder<ButtonBuilder>();
+      if (page > 1) {
+        row.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`sniplist_${page - 1}`)
+            .setLabel("◀ Previous")
+            .setStyle(ButtonStyle.Secondary)
+        );
+      }
+      if (page < totalPages) {
+        row.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`sniplist_${page + 1}`)
+            .setLabel("Next ▶")
+            .setStyle(ButtonStyle.Secondary)
+        );
+      }
+
+      if (row.components.length > 0) {
+        await message.reply({ embeds: [embed], components: [row] });
+      } else {
+        await message.reply({ embeds: [embed] });
+      }
       return;
     } else if (subCommand === "view") {
       const alias = rest.toLowerCase();
@@ -7537,11 +7637,48 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      const list = allSnippets.map((s, i) => {
+      const perPage = 10;
+      const totalPages = Math.ceil(allSnippets.length / perPage);
+      const pageArg = rest ? parseInt(rest) : 1;
+      const page = isNaN(pageArg) || pageArg < 1 ? 1 : Math.min(pageArg, totalPages);
+      const start = (page - 1) * perPage;
+      const pageSnippets = allSnippets.slice(start, start + perPage);
+
+      const snippetListDisplay = pageSnippets.map((s, i) => {
+        const num = start + i + 1;
         const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
-        return `${i + 1}.) "${s.alias}", Response: "${truncatedContent}"`;
+        return `**${num}.** \`${s.alias}\` - ${truncatedContent}`;
       }).join("\n");
-      await message.reply(`📝 **Appeal Snippets:**\n${list}`);
+
+      const embed = new EmbedBuilder()
+        .setTitle(`📝 Appeal Snippet List`)
+        .setDescription(snippetListDisplay || "No snippets on this page.")
+        .setColor(0x5865f2)
+        .setFooter({ text: `Page ${page}/${totalPages} | Total: ${allSnippets.length} snippets | Use ${prefix}asnip list <page>` });
+
+      const row = new ActionRowBuilder<ButtonBuilder>();
+      if (page > 1) {
+        row.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`asniplist_${page - 1}`)
+            .setLabel("◀ Previous")
+            .setStyle(ButtonStyle.Secondary)
+        );
+      }
+      if (page < totalPages) {
+        row.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`asniplist_${page + 1}`)
+            .setLabel("Next ▶")
+            .setStyle(ButtonStyle.Secondary)
+        );
+      }
+
+      if (row.components.length > 0) {
+        await message.reply({ embeds: [embed], components: [row] });
+      } else {
+        await message.reply({ embeds: [embed] });
+      }
       return;
     } else if (subCommand === "view") {
       const alias = rest.toLowerCase();
@@ -8756,133 +8893,6 @@ client.on("messageCreate", async (message) => {
       setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
     } catch (error) {
       console.error("Sub command error:", error);
-    }
-    return;
-  }
-
-  // Handle .snippet list or .snip list with pagination and view command
-  if (message.guild && (lowerContent.startsWith(`${lowerPrefix}snippet `) || lowerContent.startsWith(`${lowerPrefix}snip `) || lowerContent === `${lowerPrefix}snippet` || lowerContent === `${lowerPrefix}snip`)) {
-    // Check for modmail thread first, then appeal thread
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
-    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
-    const isAppeal = !modmailThread && !!appealThread;
-
-    const fullArgs = message.content.split(" ").slice(1);
-    const subCommand = fullArgs[0]?.toLowerCase();
-
-    if (subCommand === "list" || !subCommand) {
-      try {
-        const snippets = isAppeal ? await storage.getAllAppealSnippets(message.guild.id) : await storage.getAllSnippets(message.guild.id);
-        if (snippets.length === 0) {
-          await message.reply("No snippets found.");
-          return;
-        }
-
-        const pageArg = fullArgs[1] ? parseInt(fullArgs[1]) : 1;
-        const perPage = 10;
-        const totalPages = Math.ceil(snippets.length / perPage);
-        const page = isNaN(pageArg) || pageArg < 1 ? 1 : Math.min(pageArg, totalPages);
-        const start = (page - 1) * perPage;
-        const pageSnippets = snippets.slice(start, start + perPage);
-
-        const embed = new EmbedBuilder()
-          .setTitle(`Snippet List (Page ${page}/${totalPages})`)
-          .setColor(0x5865f2);
-
-        let snippetListDisplay = pageSnippets.map(s => `**${s.alias}**: ${s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content}`).join("\n");
-        embed.setDescription(snippetListDisplay || "No snippets on this page.");
-        embed.setFooter({ text: `Total Snippets: ${snippets.length} | Use ${prefix}snippet list <page> to see more.` });
-
-        await message.reply({ embeds: [embed] });
-      } catch (e) {
-        console.log("Snippet list error:", e);
-      }
-      return;
-    }
-
-    if (subCommand === "view") {
-      const alias = fullArgs[1]?.toLowerCase();
-      if (!alias) {
-        await message.reply(`❌ Usage: \`${prefix}snippet view <alias>\``);
-        return;
-      }
-
-      try {
-        const snippet = isAppeal ? await storage.getAppealSnippet(message.guild.id, alias) : await storage.getSnippet(message.guild.id, alias);
-        if (!snippet) {
-          await message.reply(`❌ Snippet \`${alias}\` not found.`);
-          return;
-        }
-
-        const embed = new EmbedBuilder()
-          .setTitle(`Snippet: ${snippet.alias}`)
-          .setDescription(snippet.content)
-          .setColor(0x5865f2);
-
-        await message.reply({ embeds: [embed] });
-      } catch (e) {
-        console.log("Snippet view error:", e);
-      }
-      return;
-    }
-
-    // Handle using a snippet
-    const alias = subCommand;
-    try {
-      const snippet = isAppeal ? await storage.getAppealSnippet(message.guild.id, alias) : await storage.getSnippet(message.guild.id, alias);
-      if (snippet) {
-        const thread = modmailThread || appealThread;
-        if (thread && thread.status === "open") {
-          // Trigger the relay logic by calling the reply function logic directly
-          const user = await client.users.fetch(thread.userId);
-          
-          let roleName = "Staff";
-          const member = message.member;
-          if (member && member.roles.cache.size > 0) {
-            const roles = member.roles.cache
-              .filter(r => r.id !== message.guild!.id)
-              .sort((a, b) => b.position - a.position);
-            if (roles.size > 0) {
-              roleName = roles.first()!.name;
-            }
-          }
-
-          const staffEmbed = new EmbedBuilder()
-            .setAuthor({ name: roleName, iconURL: message.author.displayAvatarURL() })
-            .setDescription(snippet.content)
-            .setColor(0x5865f2)
-            .setFooter({ text: message.author.tag })
-            .setTimestamp();
-
-          const dmMessage = await user.send({ embeds: [staffEmbed] });
-          const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
-
-          if (isAppeal) {
-            await storage.addAppealMessage({
-              threadId: thread.id,
-              authorId: message.author.id,
-              content: snippet.content,
-              isStaff: "true",
-              channelMessageId: channelMessage.id,
-              dmMessageId: dmMessage.id,
-            });
-          } else {
-            await storage.addModmailMessage({
-              threadId: thread.id,
-              authorId: message.author.id,
-              content: snippet.content,
-              isStaff: "true",
-              channelMessageId: channelMessage.id,
-              dmMessageId: dmMessage.id,
-            });
-          }
-          await message.delete().catch(() => {});
-        } else {
-          await message.reply(snippet.content);
-        }
-      }
-    } catch (e) {
-      console.log("Snippet use error:", e);
     }
     return;
   }
