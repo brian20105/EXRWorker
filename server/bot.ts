@@ -1634,7 +1634,7 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
           
-          const rosters = await storage.getRosterConfigsByGuild(guildId);
+          const rosters = await storage.getAllRosterConfigs(guildId);
           const filtered = rosters
             .filter(r => r.name.toLowerCase().includes(focusedOption.value.toLowerCase()))
             .slice(0, 25)
@@ -1642,6 +1642,7 @@ client.on("interactionCreate", async (interaction) => {
           
           await interaction.respond(filtered);
         } catch (e) {
+          console.log("Roster autocomplete error:", e);
           await interaction.respond([]).catch(() => {});
         }
         return;
