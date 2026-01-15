@@ -7266,102 +7266,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle .sub command (subscribe to ticket notifications)
-  if (message.guild && message.content.toLowerCase().startsWith(".sub")) {
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
-    if (!thread) {
-      return; // Silent return if not a modmail channel
-    }
-
-    if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
-      return;
-    }
-
-    // Parse target user (self or mentioned/ID)
-    const args = message.content.substring(4).trim();
-    let targetUserId = message.author.id;
-
-    if (args) {
-      // Check for mention or user ID
-      const mentionMatch = args.match(/<@!?(\d+)>/);
-      const idMatch = args.match(/^(\d+)$/);
-      if (mentionMatch) {
-        targetUserId = mentionMatch[1];
-      } else if (idMatch) {
-        targetUserId = idMatch[1];
-      }
-    }
-
-    const currentSubs = thread.subscribedUserIds || [];
-    if (currentSubs.includes(targetUserId)) {
-      if (targetUserId === message.author.id) {
-        await message.reply("❌ You are already subscribed to this ticket.");
-      } else {
-        await message.reply(`❌ <@${targetUserId}> is already subscribed to this ticket.`);
-      }
-      return;
-    }
-
-    const newSubs = [...currentSubs, targetUserId];
-    await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
-
-    if (targetUserId === message.author.id) {
-      await message.reply("🔔 You are now subscribed to this ticket. You'll be pinged when the user replies.");
-    } else {
-      await message.reply(`🔔 <@${targetUserId}> is now subscribed to this ticket.`);
-    }
-    return;
-  }
-
-  // Handle .unsub command (unsubscribe from ticket notifications)
-  if (message.guild && message.content.toLowerCase().startsWith(".unsub")) {
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
-    if (!thread) {
-      return; // Silent return if not a modmail channel
-    }
-
-    if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
-      return;
-    }
-
-    // Parse target user (self or mentioned/ID)
-    const args = message.content.substring(6).trim();
-    let targetUserId = message.author.id;
-
-    if (args) {
-      // Check for mention or user ID
-      const mentionMatch = args.match(/<@!?(\d+)>/);
-      const idMatch = args.match(/^(\d+)$/);
-      if (mentionMatch) {
-        targetUserId = mentionMatch[1];
-      } else if (idMatch) {
-        targetUserId = idMatch[1];
-      }
-    }
-
-    const currentSubs = thread.subscribedUserIds || [];
-    if (!currentSubs.includes(targetUserId)) {
-      if (targetUserId === message.author.id) {
-        await message.reply("❌ You are not subscribed to this ticket.");
-      } else {
-        await message.reply(`❌ <@${targetUserId}> is not subscribed to this ticket.`);
-      }
-      return;
-    }
-
-    const newSubs = currentSubs.filter(id => id !== targetUserId);
-    await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
-
-    if (targetUserId === message.author.id) {
-      await message.reply("🔕 You are now unsubscribed from this ticket.");
-    } else {
-      await message.reply(`🔕 <@${targetUserId}> is now unsubscribed from this ticket.`);
-    }
-    return;
-  }
-
   // Handle snip commands for snippet management
   if (message.guild && (lowerContent.startsWith(`${lowerPrefix}snip `) || lowerContent.startsWith(`${lowerPrefix}snippet `))) {
     const cmdLen = lowerContent.startsWith(`${lowerPrefix}snippet `) ? 8 : 5;
@@ -7469,8 +7373,70 @@ client.on("messageCreate", async (message) => {
       }).join("\n");
       await message.reply(`📝 **Available Snippets:**\n${list}`);
       return;
+    } else if (subCommand === "view") {
+      const alias = rest.toLowerCase();
+      if (!alias) {
+        await message.reply(`❌ Usage: \`${prefix}snip view <alias>\``);
+        return;
+      }
+
+      const snippet = await storage.getSnippet(message.guild.id, alias);
+      if (!snippet) {
+        await message.reply(`❌ Snippet \`${alias}\` not found.`);
+        return;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Snippet: ${snippet.alias}`)
+        .setDescription(snippet.content)
+        .setColor(0x5865f2);
+      await message.reply({ embeds: [embed] });
+      return;
     } else {
-      await message.reply(`❌ Unknown subcommand. Use \`${prefix}snip create\`, \`${prefix}snip edit\`, \`${prefix}snip delete\`, or \`${prefix}snip list\`.`);
+      // If subCommand is not a known command, try to use it as a snippet alias
+      const snippet = await storage.getSnippet(message.guild.id, subCommand);
+      if (snippet) {
+        // Check if in a ticket channel and send as embed
+        const thread = await storage.getModmailThreadByChannel(message.channel.id);
+        if (thread && thread.status === "open") {
+          const user = await client.users.fetch(thread.userId);
+          
+          let roleName = "Staff";
+          const memberRole = message.member;
+          if (memberRole && memberRole.roles.cache.size > 0) {
+            const roles = memberRole.roles.cache
+              .filter(r => r.id !== message.guild!.id)
+              .sort((a, b) => b.position - a.position);
+            if (roles.size > 0) {
+              roleName = roles.first()!.name;
+            }
+          }
+
+          const staffEmbed = new EmbedBuilder()
+            .setAuthor({ name: roleName, iconURL: message.author.displayAvatarURL() })
+            .setDescription(snippet.content)
+            .setColor(0x5865f2)
+            .setFooter({ text: message.author.tag })
+            .setTimestamp();
+
+          const dmMessage = await user.send({ embeds: [staffEmbed] });
+          const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
+
+          await storage.addModmailMessage({
+            threadId: thread.id,
+            authorId: message.author.id,
+            content: snippet.content,
+            isStaff: "true",
+            channelMessageId: channelMessage.id,
+            dmMessageId: dmMessage.id,
+          });
+          await message.delete().catch(() => {});
+        } else {
+          await message.reply(snippet.content);
+        }
+        return;
+      }
+      await message.reply(`❌ Unknown subcommand. Use \`${prefix}snip create\`, \`${prefix}snip edit\`, \`${prefix}snip delete\`, \`${prefix}snip view\`, or \`${prefix}snip list\`.`);
       return;
     }
   }
@@ -7577,8 +7543,70 @@ client.on("messageCreate", async (message) => {
       }).join("\n");
       await message.reply(`📝 **Appeal Snippets:**\n${list}`);
       return;
+    } else if (subCommand === "view") {
+      const alias = rest.toLowerCase();
+      if (!alias) {
+        await message.reply(`❌ Usage: \`${prefix}asnip view <alias>\``);
+        return;
+      }
+
+      const snippet = await storage.getAppealSnippet(message.guild.id, alias);
+      if (!snippet) {
+        await message.reply(`❌ Appeal snippet \`${alias}\` not found.`);
+        return;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Appeal Snippet: ${snippet.alias}`)
+        .setDescription(snippet.content)
+        .setColor(0x5865f2);
+      await message.reply({ embeds: [embed] });
+      return;
     } else {
-      await message.reply(`Unknown subcommand. Use \`${prefix}asnip create\`, \`${prefix}asnip edit\`, \`${prefix}asnip delete\`, or \`${prefix}asnip list\`.`);
+      // If subCommand is not a known command, try to use it as a snippet alias
+      const snippet = await storage.getAppealSnippet(message.guild.id, subCommand);
+      if (snippet) {
+        // Check if in an appeal channel and send as embed
+        const thread = await storage.getAppealThreadByChannel(message.channel.id);
+        if (thread && thread.status === "open") {
+          const user = await client.users.fetch(thread.userId);
+          
+          let roleName = "Staff";
+          const memberRole = message.member;
+          if (memberRole && memberRole.roles.cache.size > 0) {
+            const roles = memberRole.roles.cache
+              .filter(r => r.id !== message.guild!.id)
+              .sort((a, b) => b.position - a.position);
+            if (roles.size > 0) {
+              roleName = roles.first()!.name;
+            }
+          }
+
+          const staffEmbed = new EmbedBuilder()
+            .setAuthor({ name: roleName, iconURL: message.author.displayAvatarURL() })
+            .setDescription(snippet.content)
+            .setColor(0x5865f2)
+            .setFooter({ text: message.author.tag })
+            .setTimestamp();
+
+          const dmMessage = await user.send({ embeds: [staffEmbed] });
+          const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
+
+          await storage.addAppealMessage({
+            threadId: thread.id,
+            authorId: message.author.id,
+            content: snippet.content,
+            isStaff: "true",
+            channelMessageId: channelMessage.id,
+            dmMessageId: dmMessage.id,
+          });
+          await message.delete().catch(() => {});
+        } else {
+          await message.reply(snippet.content);
+        }
+        return;
+      }
+      await message.reply(`❌ Unknown subcommand. Use \`${prefix}asnip create\`, \`${prefix}asnip edit\`, \`${prefix}asnip delete\`, \`${prefix}asnip view\`, or \`${prefix}asnip list\`.`);
       return;
     }
   }
