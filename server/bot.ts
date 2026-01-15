@@ -841,36 +841,11 @@ const commands = [
     .addRoleOption((option) => option.setName("role20").setDescription("Role to track").setRequired(false)),
   new SlashCommandBuilder()
     .setName("modstats")
-    .setDescription("Get moderation stats leaderboard by running *ms for users with a role")
+    .setDescription("Get a copyable list of *ms commands for all users with a role")
     .setDefaultMemberPermissions(0)
     .addRoleOption((option) =>
       option.setName("role").setDescription("Role to check stats for").setRequired(true)
-    )
-    .addStringOption((option) =>
-      option.setName("period").setDescription("Time period for stats").setRequired(false)
-        .addChoices(
-          { name: "Last 7 days", value: "7" },
-          { name: "Last 30 days", value: "30" },
-          { name: "All time", value: "all" }
-        )
-    )
-    .addBooleanOption((option) =>
-      option.setName("auto_run").setDescription("Automatically check all members (uses database stats)").setRequired(false)
     ),
-  new SlashCommandBuilder()
-    .setName("setup_modstats_bot")
-    .setDescription("Set the moderator bot ID and log channel to parse stats from")
-    .setDefaultMemberPermissions(0)
-    .addStringOption((option) =>
-      option.setName("bot_id").setDescription("The bot ID (right-click bot and copy ID)").setRequired(true)
-    )
-    .addChannelOption((option) =>
-      option.setName("log_channel").setDescription("Channel where the moderator bot posts action logs").setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("scan_modlogs")
-    .setDescription("Scan the last 1000 messages in the mod log channel to import past actions")
-    .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("setup_staff_intro")
     .setDescription("Post the staff introduction quiz in the current channel")
@@ -3236,27 +3211,19 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "Failed to set activity roles. Please try again." }).catch(() => {});
         }
       } else if (commandName === "modstats") {
-        if (!await safeDeferReply(interaction, false)) return;
+        // Ephemeral response - only the user can see it
+        if (!await safeDeferReply(interaction, true)) return;
 
         try {
           const role = interaction.options.getRole("role", true);
-          const period = interaction.options.getString("period") || "all";
           
-          if (!interaction.guild || !interaction.channel || !("send" in interaction.channel)) {
-            await interaction.editReply({ content: "This command must be used in a server text channel." });
-            return;
-          }
-
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          if (!config?.moderatorBotId) {
-            await interaction.editReply({ 
-              content: "Please configure the moderator bot first using `/setup_modstats_bot`" 
-            });
+          if (!interaction.guild) {
+            await interaction.editReply({ content: "This command must be used in a server." });
             return;
           }
 
           // Fetch members with the role
-          await interaction.guild.members.fetch();
+          await interaction.guild.members.fetch({ time: 30000 });
           const trackedRole = interaction.guild.roles.cache.get(role.id);
           if (!trackedRole) {
             await interaction.editReply({ content: "Role not found." });
@@ -3269,114 +3236,35 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          // Send initial scanning message showing role name
-          const scanningMessage = await interaction.channel.send({
-            content: `📊 Scanning ${roleMembers.length} members with **${trackedRole.name}**... This may take a while.`
-          });
-
-          // Delete the deferred reply
-          await interaction.deleteReply().catch(() => {});
-
-          // Run *ms command for each user
-          for (const member of roleMembers) {
-            try {
-              const msCommand = `*ms ${member.id}`;
-              await interaction.channel.send(msCommand);
-              
-              // Small delay between commands to avoid rate limits
-              await new Promise(resolve => setTimeout(resolve, 600));
-            } catch (error) {
-              console.log(`Error sending *ms for ${member.id}:`, error);
+          // Build copyable list of *ms commands
+          const msCommands = roleMembers.map(member => `*ms ${member.id}`);
+          
+          // Split into chunks if needed (Discord limit is 2000 chars)
+          const header = `**Moderation Stats Commands for ${trackedRole.name}** (${roleMembers.length} members)\n\nCopy and paste these commands in the channel where the moderation bot is:\n`;
+          
+          const messages: string[] = [];
+          let currentMessage = header + "```\n";
+          
+          for (const cmd of msCommands) {
+            const testMessage = currentMessage + cmd + "\n";
+            if ((testMessage + "```").length > 1900) {
+              messages.push(currentMessage + "```");
+              currentMessage = "```\n" + cmd + "\n";
+            } else {
+              currentMessage = testMessage;
             }
           }
+          messages.push(currentMessage + "```");
 
-          // Note: The actual responses will come from TRL | Moderator bot
-          // This command just triggers the *ms commands - the moderator bot handles the responses
+          // Send first message as reply, rest as followups
+          await interaction.editReply({ content: messages[0] });
+          for (let i = 1; i < messages.length; i++) {
+            await interaction.followUp({ content: messages[i], ephemeral: true });
+          }
           
         } catch (error: any) {
           console.log("Error in /modstats command:", error.message, error.stack);
-          await interaction.editReply({ content: "Failed to run moderation stats. Please try again." }).catch(() => {});
-        }
-      } else if (commandName === "setup_modstats_bot") {
-        if (!await safeDeferReply(interaction, false)) return;
-
-        try {
-          const botId = interaction.options.getString("bot_id", true);
-          const logChannel = interaction.options.getChannel("log_channel", true);
-          
-          await storage.upsertGuildConfig({
-            guildId: interaction.guildId!,
-            moderatorBotId: botId,
-            modLogChannelId: logChannel.id,
-          });
-
-          await interaction.editReply({
-            content: `✅ **Moderation Stats Setup Complete**\n\n**Bot ID:** \`${botId}\`\n**Log Channel:** <#${logChannel.id}>\n\nThe bot will now automatically track moderation actions posted in that channel.\n\nUse \`/scan_modlogs\` to import past actions from the last 1000 messages.`,
-          });
-        } catch (error: any) {
-          console.log("Error in /setup_modstats_bot command:", error.message);
-          await interaction.editReply({ content: "Failed to set moderator bot configuration." }).catch(() => {});
-        }
-      } else if (commandName === "scan_modlogs") {
-        if (!await safeDeferReply(interaction, false)) return;
-
-        try {
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          if (!config?.modLogChannelId || !config?.moderatorBotId) {
-            await interaction.editReply({ 
-              content: "Please configure the moderator bot first using `/setup_modstats_bot`" 
-            });
-            return;
-          }
-
-          const logChannel = await client.channels.fetch(config.modLogChannelId);
-          if (!logChannel || !("messages" in logChannel)) {
-            await interaction.editReply({ content: "Could not access the log channel." });
-            return;
-          }
-
-          await interaction.editReply({ content: "🔍 Scanning log channel for moderation actions... This may take a moment." });
-
-          // Fetch messages in batches
-          let lastId: string | undefined;
-          let totalMessages = 0;
-          let actionsFound = 0;
-          const maxMessages = 1000;
-
-          while (totalMessages < maxMessages) {
-            const options: { limit: number; before?: string } = { limit: 100 };
-            if (lastId) options.before = lastId;
-            
-            const messages = await (logChannel as any).messages.fetch(options);
-            if (messages.size === 0) break;
-            
-            for (const msg of messages.values()) {
-              if (msg.author.id !== config.moderatorBotId) continue;
-              
-              // Parse the message for moderation actions
-              const action = await parseModLogMessage(msg, interaction.guildId!);
-              if (action) {
-                // Check if already exists
-                const exists = await storage.getModerationActionExists(interaction.guildId!, msg.id);
-                if (!exists) {
-                  await storage.createModerationAction(action);
-                  actionsFound++;
-                }
-              }
-            }
-            
-            totalMessages += messages.size;
-            lastId = messages.last()?.id;
-            
-            if (messages.size < 100) break;
-          }
-
-          await interaction.editReply({
-            content: `✅ **Scan Complete**\n\nScanned ${totalMessages} messages and found ${actionsFound} new moderation actions.\n\nUse \`/modstats\` to view the leaderboard.`,
-          });
-        } catch (error: any) {
-          console.log("Error in /scan_modlogs command:", error.message, error.stack);
-          await interaction.editReply({ content: "Failed to scan log channel. Please try again." }).catch(() => {});
+          await interaction.editReply({ content: "Failed to generate mod stats commands. Please try again." }).catch(() => {});
         }
       } else if (commandName === "setup_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
