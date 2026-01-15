@@ -841,10 +841,15 @@ const commands = [
     .addRoleOption((option) => option.setName("role20").setDescription("Role to track").setRequired(false)),
   new SlashCommandBuilder()
     .setName("modstats")
-    .setDescription("Get a copyable list of *ms commands for all users with a role")
+    .setDescription("Moderation stats commands")
     .setDefaultMemberPermissions(0)
-    .addRoleOption((option) =>
-      option.setName("role").setDescription("Role to check stats for").setRequired(true)
+    .addSubcommand((sub) =>
+      sub.setName("list").setDescription("Get copyable *ms commands for a role")
+        .addRoleOption((option) => option.setName("role").setDescription("Role to check stats for").setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub.setName("check").setDescription("Scan channel for moderation stats responses")
+        .addIntegerOption((option) => option.setName("messages").setDescription("Number of messages to scan (default: 100)").setRequired(false))
     ),
   new SlashCommandBuilder()
     .setName("setup_staff_intro")
@@ -3207,60 +3212,151 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "Failed to set activity roles. Please try again." }).catch(() => {});
         }
       } else if (commandName === "modstats") {
-        // Ephemeral response - only the user can see it
-        if (!await safeDeferReply(interaction, true)) return;
+        const subcommand = interaction.options.getSubcommand();
+        
+        if (subcommand === "list") {
+          // Ephemeral response - only the user can see it
+          if (!await safeDeferReply(interaction, true)) return;
 
-        try {
-          const role = interaction.options.getRole("role", true);
-          
-          if (!interaction.guild) {
-            await interaction.editReply({ content: "This command must be used in a server." });
-            return;
-          }
-
-          // Fetch members with the role
-          await interaction.guild.members.fetch({ time: 30000 });
-          const trackedRole = interaction.guild.roles.cache.get(role.id);
-          if (!trackedRole) {
-            await interaction.editReply({ content: "Role not found." });
-            return;
-          }
-          const roleMembers = Array.from(trackedRole.members.values());
-
-          if (roleMembers.length === 0) {
-            await interaction.editReply({ content: "No members found with that role." });
-            return;
-          }
-
-          // Build copyable list of *ms commands
-          const msCommands = roleMembers.map(member => `*ms ${member.id}`);
-          
-          // Split into chunks if needed (Discord limit is 2000 chars)
-          const header = `**Moderation Stats Commands for ${trackedRole.name}** (${roleMembers.length} members)\n\nCopy and paste these commands in the channel where the moderation bot is:\n`;
-          
-          const messages: string[] = [];
-          let currentMessage = header + "```\n";
-          
-          for (const cmd of msCommands) {
-            const testMessage = currentMessage + cmd + "\n";
-            if ((testMessage + "```").length > 1900) {
-              messages.push(currentMessage + "```");
-              currentMessage = "```\n" + cmd + "\n";
-            } else {
-              currentMessage = testMessage;
+          try {
+            const role = interaction.options.getRole("role", true);
+            
+            if (!interaction.guild) {
+              await interaction.editReply({ content: "This command must be used in a server." });
+              return;
             }
-          }
-          messages.push(currentMessage + "```");
 
-          // Send first message as reply, rest as followups
-          await interaction.editReply({ content: messages[0] });
-          for (let i = 1; i < messages.length; i++) {
-            await interaction.followUp({ content: messages[i], ephemeral: true });
+            // Fetch members with the role
+            await interaction.guild.members.fetch({ time: 30000 });
+            const trackedRole = interaction.guild.roles.cache.get(role.id);
+            if (!trackedRole) {
+              await interaction.editReply({ content: "Role not found." });
+              return;
+            }
+            const roleMembers = Array.from(trackedRole.members.values());
+
+            if (roleMembers.length === 0) {
+              await interaction.editReply({ content: "No members found with that role." });
+              return;
+            }
+
+            // Build copyable list of *ms commands - each in separate code block
+            const header = `**Moderation Stats Commands for ${trackedRole.name}** (${roleMembers.length} members)\n\nCopy and paste these commands in the channel where the moderation bot is:\n\n`;
+            
+            const messages: string[] = [];
+            let currentMessage = header;
+            
+            for (const member of roleMembers) {
+              const cmdBlock = `\`*ms ${member.id}\`\n`;
+              if ((currentMessage + cmdBlock).length > 1900) {
+                messages.push(currentMessage);
+                currentMessage = cmdBlock;
+              } else {
+                currentMessage += cmdBlock;
+              }
+            }
+            messages.push(currentMessage);
+
+            // Send first message as reply, rest as followups
+            await interaction.editReply({ content: messages[0] });
+            for (let i = 1; i < messages.length; i++) {
+              await interaction.followUp({ content: messages[i], ephemeral: true });
+            }
+            
+          } catch (error: any) {
+            console.log("Error in /modstats list command:", error.message, error.stack);
+            await interaction.editReply({ content: "Failed to generate mod stats commands. Please try again." }).catch(() => {});
           }
-          
-        } catch (error: any) {
-          console.log("Error in /modstats command:", error.message, error.stack);
-          await interaction.editReply({ content: "Failed to generate mod stats commands. Please try again." }).catch(() => {});
+        } else if (subcommand === "check") {
+          if (!await safeDeferReply(interaction, false)) return;
+
+          try {
+            const messagesToScan = interaction.options.getInteger("messages") || 100;
+            
+            if (!interaction.channel || !("messages" in interaction.channel)) {
+              await interaction.editReply({ content: "This command must be used in a text channel." });
+              return;
+            }
+
+            await interaction.editReply({ content: `🔍 Scanning last ${messagesToScan} messages for moderation stats...` });
+
+            // Fetch messages
+            const messages = await interaction.channel.messages.fetch({ limit: Math.min(messagesToScan, 100) });
+            
+            // Parse stats from bot embeds (looking for patterns like "Bans: X" etc)
+            const statsMap: Map<string, { username: string; bans: number; kicks: number; warns: number; mutes: number; total: number }> = new Map();
+            
+            for (const msg of messages.values()) {
+              // Check if message is from a bot and has embeds
+              if (!msg.author.bot || msg.embeds.length === 0) continue;
+              
+              for (const embed of msg.embeds) {
+                // Look for moderation stats patterns in embed
+                const description = embed.description || "";
+                const fields = embed.fields || [];
+                const fullText = description + " " + fields.map(f => f.name + " " + f.value).join(" ");
+                
+                // Try to extract user ID from title or description
+                const userIdMatch = embed.title?.match(/(\d{17,19})/) || description.match(/<@!?(\d{17,19})>/) || description.match(/ID:\s*(\d{17,19})/i);
+                if (!userIdMatch) continue;
+                
+                const userId = userIdMatch[1];
+                
+                // Parse stats
+                const bansMatch = fullText.match(/Bans?[:\s]+(\d+)/i);
+                const kicksMatch = fullText.match(/Kicks?[:\s]+(\d+)/i);
+                const warnsMatch = fullText.match(/Warn(?:ing)?s?[:\s]+(\d+)/i);
+                const mutesMatch = fullText.match(/Mutes?[:\s]+(\d+)/i) || fullText.match(/Timeout?s?[:\s]+(\d+)/i);
+                const totalMatch = fullText.match(/Total[:\s]+(\d+)/i);
+                
+                if (bansMatch || kicksMatch || warnsMatch || mutesMatch || totalMatch) {
+                  const existing = statsMap.get(userId) || { username: "", bans: 0, kicks: 0, warns: 0, mutes: 0, total: 0 };
+                  
+                  if (bansMatch) existing.bans = parseInt(bansMatch[1]) || 0;
+                  if (kicksMatch) existing.kicks = parseInt(kicksMatch[1]) || 0;
+                  if (warnsMatch) existing.warns = parseInt(warnsMatch[1]) || 0;
+                  if (mutesMatch) existing.mutes = parseInt(mutesMatch[1]) || 0;
+                  if (totalMatch) existing.total = parseInt(totalMatch[1]) || 0;
+                  
+                  // Try to get username
+                  const usernameMatch = embed.title?.match(/(.+?)\s*\(\d{17,19}\)/) || embed.author?.name?.match(/(.+)/);
+                  if (usernameMatch) existing.username = usernameMatch[1].trim();
+                  
+                  statsMap.set(userId, existing);
+                }
+              }
+            }
+
+            if (statsMap.size === 0) {
+              await interaction.editReply({ 
+                content: `📊 **Moderation Stats Scan Complete**\n\nNo moderation stats found in the last ${messagesToScan} messages.\n\nMake sure the moderation bot's stat responses are in this channel.`
+              });
+              return;
+            }
+
+            // Build results table
+            const sortedStats = Array.from(statsMap.entries()).sort((a, b) => b[1].total - a[1].total);
+            
+            let resultText = `📊 **Moderation Stats Found** (${statsMap.size} users)\n\n`;
+            resultText += "```\n";
+            resultText += "User ID            | Bans | Kicks | Warns | Mutes | Total\n";
+            resultText += "-------------------|------|-------|-------|-------|------\n";
+            
+            for (const [userId, stats] of sortedStats.slice(0, 25)) {
+              resultText += `${userId} | ${String(stats.bans).padStart(4)} | ${String(stats.kicks).padStart(5)} | ${String(stats.warns).padStart(5)} | ${String(stats.mutes).padStart(5)} | ${String(stats.total).padStart(5)}\n`;
+            }
+            resultText += "```";
+            
+            if (sortedStats.length > 25) {
+              resultText += `\n*Showing top 25 of ${sortedStats.length} users*`;
+            }
+
+            await interaction.editReply({ content: resultText });
+            
+          } catch (error: any) {
+            console.log("Error in /modstats check command:", error.message, error.stack);
+            await interaction.editReply({ content: "Failed to scan channel for stats. Please try again." }).catch(() => {});
+          }
         }
       } else if (commandName === "setup_staff_intro") {
         if (!await safeDeferReply(interaction)) return;
