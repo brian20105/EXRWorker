@@ -120,6 +120,8 @@ export interface IStorage {
   getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
   getModmailStatsByCategoryForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
   getAppealStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
+  getStaffReportStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
+  getStaffReportStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
   getAllGuildsActivityStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   getAllGuildsModmailStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
@@ -900,6 +902,28 @@ export class DatabaseStorage implements IStorage {
     
     let conditions = [eq(banRequests.guildId, guildId), eq(banRequests.requestedById, userId)];
     let conditions2 = [eq(unbanRequests.guildId, guildId), eq(unbanRequests.requestedById, userId)];
+    
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      conditions.push(gte(banRequests.createdAt, fromDate));
+      conditions2.push(gte(unbanRequests.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      conditions.push(lte(banRequests.createdAt, toDate));
+      conditions2.push(lte(unbanRequests.createdAt, toDate));
+    }
+    
+    const banResult = await db.select({ count: count() }).from(banRequests).where(and(...conditions));
+    const unbanResult = await db.select({ count: count() }).from(unbanRequests).where(and(...conditions2));
+    return (banResult[0]?.count || 0) + (unbanResult[0]?.count || 0);
+  }
+
+  async getStaffReportStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
+    const now = new Date();
+    
+    let conditions = [eq(banRequests.requestedById, userId)];
+    let conditions2 = [eq(unbanRequests.requestedById, userId)];
     
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);

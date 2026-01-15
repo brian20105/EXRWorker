@@ -2472,11 +2472,24 @@ client.on("interactionCreate", async (interaction) => {
               .setColor(0x5865f2)
               .setDescription(timeRangeDesc);
 
-            let statsText = `**Total Activity:** ${totalActivity}\n\n`;
+            // Also get staff report stats for the user
+            let memberStaffReportStats = 0;
+            try {
+              memberStaffReportStats = useAllGuilds
+                ? await storage.getStaffReportStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
+                : await storage.getStaffReportStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+            } catch (e) {
+              console.log("Could not fetch member staff report stats:", e);
+            }
+
+            const totalActivityWithStaffReports = memberBanStats + memberUnbanStats + memberModmailStats + memberAppealStats + memberStaffReportStats;
+
+            let statsText = `**Total Activity:** ${totalActivityWithStaffReports}\n\n`;
             statsText += `**Ban Requests:** ${memberBanStats}\n`;
             statsText += `**Unban Requests:** ${memberUnbanStats}\n`;
             statsText += `**Modmails Handled:** ${memberModmailStats}\n`;
-            statsText += `**Appeals Handled:** ${memberAppealStats}`;
+            statsText += `**Appeals Handled:** ${memberAppealStats}\n`;
+            statsText += `**Staff Reports:** ${memberStaffReportStats}`;
 
             // Add modmail category breakdown if available
             if (memberModmailStats > 0 && memberModmailCategoryStats.length > 0) {
@@ -4651,6 +4664,10 @@ client.on("interactionCreate", async (interaction) => {
             closeReason: "Closed via button",
             closedAt: new Date(),
           });
+
+          // Track activity for closing modmail (with category)
+          const modmailCat = thread.category || "unknown";
+          await storage.addModmailActivityEntries(interaction.guildId!, interaction.user.id, 1, modmailCat);
 
           if (interaction.channel) {
             const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
@@ -6881,6 +6898,10 @@ client.on("messageCreate", async (message) => {
             closeReason: "Closed via .close command",
             closedAt: new Date(),
           });
+          // Track activity for closing appeal
+          if (timedGuildId) {
+            await storage.addAppealActivityEntries(timedGuildId, timedStaffId, 1);
+          }
         } else {
           await storage.updateModmailThread(currentThread.id, {
             status: "closed",
@@ -6888,6 +6909,11 @@ client.on("messageCreate", async (message) => {
             closeReason: "Closed via .close command",
             closedAt: new Date(),
           });
+          // Track activity for closing modmail (with category)
+          if (timedGuildId) {
+            const modmailCat = (currentThread as any).category || "unknown";
+            await storage.addModmailActivityEntries(timedGuildId, timedStaffId, 1, modmailCat);
+          }
         }
 
         // Notify user via DM
@@ -6953,6 +6979,8 @@ client.on("messageCreate", async (message) => {
         closeReason: "Closed via .close command",
         closedAt: new Date(),
       });
+      // Track activity for closing appeal
+      await storage.addAppealActivityEntries(message.guild.id, message.author.id, 1);
     } else {
       await storage.updateModmailThread(thread.id, {
         status: "closed",
@@ -6960,6 +6988,9 @@ client.on("messageCreate", async (message) => {
         closeReason: "Closed via .close command",
         closedAt: new Date(),
       });
+      // Track activity for closing modmail (with category)
+      const modmailCat = (thread as any).category || "unknown";
+      await storage.addModmailActivityEntries(message.guild.id, message.author.id, 1, modmailCat);
     }
 
     // Notify user
