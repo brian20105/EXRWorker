@@ -7220,7 +7220,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !sub command (subscribe to ticket notifications)
+  // Handle .sub command (subscribe to ticket notifications)
   if (message.guild && message.content.toLowerCase().startsWith(".sub")) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
