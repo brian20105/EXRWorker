@@ -1089,17 +1089,7 @@ const commands = [
     .setDescription("Set which roles get pinged for each ticket category")
     .setDefaultMemberPermissions(0)
     .addStringOption((option) =>
-      option.setName("category").setDescription("Ticket category").setRequired(true)
-        .addChoices(
-          { name: "General Inquiries", value: "general" },
-          { name: "Apply For Competitive", value: "competitive" },
-          { name: "Apply For Content Creator", value: "contentcreator" },
-          { name: "User Reports", value: "report" },
-          { name: "Partnerships", value: "partnerships" },
-          { name: "Apply For GFX Editor", value: "gfx" },
-          { name: "Apply For Creative Warrior", value: "creativewarrior" },
-          { name: "Apply For VFX Editor", value: "vfxeditor" }
-        )
+      option.setName("category").setDescription("Category ID (use /modmail-category list to see IDs)").setRequired(true)
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1 to ping").setRequired(false))
     .addRoleOption((option) => option.setName("role2").setDescription("Role 2 to ping").setRequired(false))
@@ -2490,16 +2480,17 @@ client.on("interactionCreate", async (interaction) => {
 
             // Add modmail category breakdown if available
             if (memberModmailStats > 0 && memberModmailCategoryStats.length > 0) {
-              const categoryLabels: { [key: string]: string } = {
-                general: "General Inquiries",
-                competitive: "Competitive",
-                contentcreator: "Content Creator",
-                report: "User Reports",
-                partnerships: "Partnerships",
-                gfx: "GFX Editor",
-                creativewarrior: "Creative Warrior",
-                vfxeditor: "VFX Editor",
-              };
+              // Build category labels from custom categories in config
+              const categoryLabels: { [key: string]: string } = {};
+              const activityConfig = await storage.getGuildConfig(interaction.guildId!);
+              if (activityConfig?.customModmailCategories) {
+                try {
+                  const cats = JSON.parse(activityConfig.customModmailCategories);
+                  for (const cat of cats) {
+                    categoryLabels[cat.id] = cat.label;
+                  }
+                } catch (e) {}
+              }
               statsText += "\n\n**Modmail Category Breakdown:**";
               for (const catStat of memberModmailCategoryStats) {
                 // Skip unknown/null categories
@@ -2677,16 +2668,17 @@ client.on("interactionCreate", async (interaction) => {
             } else if (category === "modmail") {
               // "Modmails Handled" view - show category breakdown
               if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
-                const categoryLabels: { [key: string]: string } = {
-                  general: "General Inquiries",
-                  competitive: "Competitive",
-                  contentcreator: "Content Creator",
-                  report: "User Reports",
-                  partnerships: "Partnerships",
-                  gfx: "GFX Editor",
-                  creativewarrior: "Creative Warrior",
-                  vfxeditor: "VFX Editor",
-                };
+                // Build category labels from custom categories in config
+                const categoryLabels: { [key: string]: string } = {};
+                const leaderboardConfig = await storage.getGuildConfig(interaction.guildId!);
+                if (leaderboardConfig?.customModmailCategories) {
+                  try {
+                    const cats = JSON.parse(leaderboardConfig.customModmailCategories);
+                    for (const cat of cats) {
+                      categoryLabels[cat.id] = cat.label;
+                    }
+                  } catch (e) {}
+                }
                 statsText += "\n\n**Category Breakdown:**";
                 for (const catStat of modmailCategoryStats) {
                   // Skip unknown/null categories
@@ -3675,7 +3667,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!await safeDeferReply(interaction)) return;
 
         const targetUser = interaction.options.getUser("user", true);
-        const system = interaction.options.getString("system") || "modmail";
+        const system = interaction.options.getString("system", true);
 
         const config = await storage.getGuildConfig(interaction.guildId!);
         const blockRoleIds = config?.modmailBlockRoleIds || [];
@@ -3742,16 +3734,17 @@ client.on("interactionCreate", async (interaction) => {
           if (role) roles.push(role.id);
         }
 
-        const categoryLabels: { [key: string]: string } = {
-          general: "General Inquiries",
-          competitive: "Apply For Competitive",
-          contentcreator: "Apply For Content Creator",
-          report: "User Reports",
-          partnerships: "Partnerships",
-          gfx: "Apply For GFX Editor",
-          creativewarrior: "Apply For Creative Warrior",
-          vfxeditor: "Apply For VFX Editor",
-        };
+        // Build category labels from custom categories in config
+        const categoryLabels: { [key: string]: string } = {};
+        const pingConfig = await storage.getGuildConfig(interaction.guildId!);
+        if (pingConfig?.customModmailCategories) {
+          try {
+            const cats = JSON.parse(pingConfig.customModmailCategories);
+            for (const cat of cats) {
+              categoryLabels[cat.id] = cat.label;
+            }
+          } catch (e) {}
+        }
 
         const updateField: { [key: string]: string } = {
           general: "categoryPingGeneral",
@@ -4334,12 +4327,8 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
 
-        const categoryLabels: { [key: string]: string } = {
-          general: "General Inquiries",
-          report: "User Reports",
-          partnerships: "Partnerships",
-        };
-        // Add custom category labels
+        // Build category labels from custom categories in config
+        const categoryLabels: { [key: string]: string } = {};
         for (const cat of customCategories) {
           categoryLabels[cat.id] = cat.label;
         }
@@ -4454,15 +4443,20 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const categoryLabels: { [key: string]: string } = {
-          general: "General Inquiries",
-          competitive: "Apply For Competitive",
-          contentcreator: "Apply For Content Creator",
-          report: "User Reports",
-          partnerships: "Partnerships",
-          gfx: "Apply For GFX Editor",
-        };
-        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+        // Build category labels from custom categories in config
+        const modalConfig = await storage.getGuildConfig(guildId);
+        const modalCats: { id: string; label: string; description: string; emoji?: string }[] = [];
+        if (modalConfig?.customModmailCategories) {
+          try {
+            const parsed = JSON.parse(modalConfig.customModmailCategories);
+            modalCats.push(...parsed);
+          } catch (e) {}
+        }
+        const modalCategoryLabels: { [key: string]: string } = {};
+        for (const cat of modalCats) {
+          modalCategoryLabels[cat.id] = cat.label;
+        }
+        const categoryLabel = modalCategoryLabels[ticketCategory] || ticketCategory;
 
         // Create thread and channel
         const thread = await storage.createModmailThread({
@@ -5458,14 +5452,20 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const categoryLabels: { [key: string]: string } = {
-          competitive: "Apply For Competitive",
-          contentcreator: "Apply For Content Creator",
-          gfx: "Apply For GFX Editor",
-          creativewarrior: "Apply For Creative Warrior",
-          vfxeditor: "Apply For VFX Editor",
-        };
-        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+        // Build category labels from custom categories in config
+        const modalConfig = await storage.getGuildConfig(guildId);
+        const modalCats: { id: string; label: string; description: string; emoji?: string }[] = [];
+        if (modalConfig?.customModmailCategories) {
+          try {
+            const parsed = JSON.parse(modalConfig.customModmailCategories);
+            modalCats.push(...parsed);
+          } catch (e) {}
+        }
+        const formCategoryLabels: { [key: string]: string } = {};
+        for (const cat of modalCats) {
+          formCategoryLabels[cat.id] = cat.label;
+        }
+        const categoryLabel = formCategoryLabels[ticketCategory] || ticketCategory;
 
         // Get form data based on category
         let applicationFields: { name: string; value: string }[] = [];
@@ -5611,14 +5611,20 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const categoryLabels: { [key: string]: string } = {
-          competitive: "Apply For Competitive",
-          contentcreator: "Apply For Content Creator",
-          gfx: "Apply For GFX Editor",
-          creativewarrior: "Apply For Creative Warrior",
-          vfxeditor: "Apply For VFX Editor",
-        };
-        const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
+        // Build category labels from custom categories in config
+        const dmModalConfig = await storage.getGuildConfig(guildId);
+        const dmModalCats: { id: string; label: string; description: string; emoji?: string }[] = [];
+        if (dmModalConfig?.customModmailCategories) {
+          try {
+            const parsed = JSON.parse(dmModalConfig.customModmailCategories);
+            dmModalCats.push(...parsed);
+          } catch (e) {}
+        }
+        const dmFormCategoryLabels: { [key: string]: string } = {};
+        for (const cat of dmModalCats) {
+          dmFormCategoryLabels[cat.id] = cat.label;
+        }
+        const categoryLabel = dmFormCategoryLabels[ticketCategory] || ticketCategory;
 
         // Get form data based on category
         let applicationFields: { name: string; value: string }[] = [];
