@@ -3096,10 +3096,30 @@ client.on("interactionCreate", async (interaction) => {
           currentMessage = currentMessage + "```" + totalsLine;
           messages.push(currentMessage);
 
+          // Build ping list (mentions for all users) - copyable
+          const pingList = leaderboardData.map(entry => `<@${entry.userId}>`).join(" ");
+          const pingMessages: string[] = [];
+          let currentPingMsg = "\n**Ping list (copyable):**\n```\n";
+          for (const entry of leaderboardData) {
+            const mention = `<@${entry.userId}> `;
+            if ((currentPingMsg + mention + "```").length > 1900) {
+              pingMessages.push(currentPingMsg + "```");
+              currentPingMsg = "```\n" + mention;
+            } else {
+              currentPingMsg += mention;
+            }
+          }
+          pingMessages.push(currentPingMsg + "\n```");
+
           // Send first message as reply, rest as followups
           await interaction.editReply({ content: messages[0] });
           for (let i = 1; i < messages.length; i++) {
             await interaction.followUp({ content: messages[i], ephemeral: true });
+          }
+          
+          // Send ping list as followups
+          for (const pingMsg of pingMessages) {
+            await interaction.followUp({ content: pingMsg, ephemeral: true });
           }
         } catch (error: any) {
           console.log("Error in /activity_check command:", error.message, error.stack);
