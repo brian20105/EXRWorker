@@ -8428,8 +8428,12 @@ client.on("messageCreate", async (message) => {
 
   // Handle .edit (message_id) (new_message) or .edit (new_message) for most recent
   if (message.guild && lowerContent.startsWith(`${lowerPrefix}edit `)) {
-    // Silently ignore if not in a modmail channel
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+
     if (!thread) {
       return;
     }
@@ -8450,15 +8454,15 @@ client.on("messageCreate", async (message) => {
 
     if (parts[0] && uuidRegex.test(parts[0])) {
       // First arg is UUID database ID
-      modmailMsg = await storage.getModmailMessage(parts[0]);
+      modmailMsg = isAppeal ? await storage.getAppealMessage(parts[0]) : await storage.getModmailMessage(parts[0]);
       newContent = parts.slice(1).join(" ");
     } else if (parts[0] && discordIdRegex.test(parts[0])) {
       // First arg is Discord message ID (snowflake)
-      modmailMsg = await storage.getModmailMessageByChannelMessageId(parts[0]);
+      modmailMsg = isAppeal ? await storage.getAppealMessageByChannelMessageId(parts[0]) : await storage.getModmailMessageByChannelMessageId(parts[0]);
       newContent = parts.slice(1).join(" ");
     } else {
       // No ID provided, use most recent staff message
-      modmailMsg = await storage.getLatestStaffModmailMessage(thread.id);
+      modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
       newContent = args;
     }
 
@@ -8521,7 +8525,11 @@ client.on("messageCreate", async (message) => {
       }
 
       // Update in database
-      await storage.updateModmailMessage(modmailMsg.id, { content: newContent });
+      if (isAppeal) {
+        await storage.updateAppealMessage(modmailMsg.id, { content: newContent });
+      } else {
+        await storage.updateModmailMessage(modmailMsg.id, { content: newContent });
+      }
 
       // Delete the edit command message
       try {
@@ -8532,7 +8540,7 @@ client.on("messageCreate", async (message) => {
       const confirmMsg = await (message.channel as any).send("✅ Message edited successfully.");
       setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
     } catch (error) {
-      console.log("Could not edit modmail message:", error);
+      console.log("Could not edit message:", error);
       await message.reply("❌ Failed to edit message.");
     }
     return;
@@ -8540,8 +8548,12 @@ client.on("messageCreate", async (message) => {
 
   // Handle .delete (message_id) or .delete for most recent
   if (message.guild && lowerContent.startsWith(`${lowerPrefix}delete`)) {
-    // Silently ignore if not in a modmail channel
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+
     if (!thread) {
       return;
     }
@@ -8560,13 +8572,13 @@ client.on("messageCreate", async (message) => {
 
     if (args && uuidRegex.test(args)) {
       // UUID database ID
-      modmailMsg = await storage.getModmailMessage(args);
+      modmailMsg = isAppeal ? await storage.getAppealMessage(args) : await storage.getModmailMessage(args);
     } else if (args && discordIdRegex.test(args)) {
       // Discord message ID (snowflake)
-      modmailMsg = await storage.getModmailMessageByChannelMessageId(args);
+      modmailMsg = isAppeal ? await storage.getAppealMessageByChannelMessageId(args) : await storage.getModmailMessageByChannelMessageId(args);
     } else {
       // No ID provided, use most recent staff message
-      modmailMsg = await storage.getLatestStaffModmailMessage(thread.id);
+      modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
     }
 
     if (!modmailMsg) {
@@ -8599,7 +8611,11 @@ client.on("messageCreate", async (message) => {
       }
 
       // Delete from database
-      await storage.deleteModmailMessage(modmailMsg.id);
+      if (isAppeal) {
+        await storage.deleteAppealMessage(modmailMsg.id);
+      } else {
+        await storage.deleteModmailMessage(modmailMsg.id);
+      }
 
       // Delete the delete command message
       try {
@@ -8610,8 +8626,180 @@ client.on("messageCreate", async (message) => {
       const confirmMsg = await (message.channel as any).send("✅ Message deleted successfully.");
       setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
     } catch (error) {
-      console.log("Could not delete modmail message:", error);
+      console.log("Could not delete message:", error);
       await message.reply("❌ Failed to delete message.");
+    }
+    return;
+  }
+
+  // Handle .sub command to subscribe/unsubscribe from a ticket
+  if (message.guild && lowerContent.startsWith(`${lowerPrefix}sub`)) {
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+
+    if (!thread) {
+      return;
+    }
+
+    try {
+      const currentSubs = thread.subscribedUserIds || [];
+      const isSubscribed = currentSubs.includes(message.author.id);
+      let newSubs;
+      let action;
+
+      if (isSubscribed) {
+        newSubs = currentSubs.filter(id => id !== message.author.id);
+        action = "unsubscribed from";
+      } else {
+        newSubs = [...currentSubs, message.author.id];
+        action = "subscribed to";
+      }
+
+      if (isAppeal) {
+        await storage.updateAppealThread(thread.id, { subscribedUserIds: newSubs });
+      } else {
+        await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
+      }
+
+      const confirmMsg = await (message.channel as any).send(`✅ You have ${action} this ticket.`);
+      
+      try {
+        await message.delete();
+      } catch (e) {}
+      
+      setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+    } catch (error) {
+      console.log("Sub command error:", error);
+    }
+    return;
+  }
+
+  // Handle .snippet list or .snip list with pagination and view command
+  if (message.guild && (lowerContent.startsWith(`${lowerPrefix}snippet `) || lowerContent.startsWith(`${lowerPrefix}snip `) || lowerContent === `${lowerPrefix}snippet` || lowerContent === `${lowerPrefix}snip`)) {
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const isAppeal = !modmailThread && !!appealThread;
+
+    const fullArgs = message.content.split(" ").slice(1);
+    const subCommand = fullArgs[0]?.toLowerCase();
+
+    if (subCommand === "list" || !subCommand) {
+      try {
+        const snippets = isAppeal ? await storage.getAllAppealSnippets(message.guild.id) : await storage.getAllSnippets(message.guild.id);
+        if (snippets.length === 0) {
+          await message.reply("No snippets found.");
+          return;
+        }
+
+        const pageArg = fullArgs[1] ? parseInt(fullArgs[1]) : 1;
+        const perPage = 10;
+        const totalPages = Math.ceil(snippets.length / perPage);
+        const page = isNaN(pageArg) || pageArg < 1 ? 1 : Math.min(pageArg, totalPages);
+        const start = (page - 1) * perPage;
+        const pageSnippets = snippets.slice(start, start + perPage);
+
+        const embed = new EmbedBuilder()
+          .setTitle(`Snippet List (Page ${page}/${totalPages})`)
+          .setColor(0x5865f2);
+
+        let snippetListDisplay = pageSnippets.map(s => `**${s.alias}**: ${s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content}`).join("\n");
+        embed.setDescription(snippetListDisplay || "No snippets on this page.");
+        embed.setFooter({ text: `Total Snippets: ${snippets.length} | Use ${prefix}snippet list <page> to see more.` });
+
+        await message.reply({ embeds: [embed] });
+      } catch (e) {
+        console.log("Snippet list error:", e);
+      }
+      return;
+    }
+
+    if (subCommand === "view") {
+      const alias = fullArgs[1]?.toLowerCase();
+      if (!alias) {
+        await message.reply(`❌ Usage: \`${prefix}snippet view <alias>\``);
+        return;
+      }
+
+      try {
+        const snippet = isAppeal ? await storage.getAppealSnippet(message.guild.id, alias) : await storage.getSnippet(message.guild.id, alias);
+        if (!snippet) {
+          await message.reply(`❌ Snippet \`${alias}\` not found.`);
+          return;
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle(`Snippet: ${snippet.alias}`)
+          .setDescription(snippet.content)
+          .setColor(0x5865f2);
+
+        await message.reply({ embeds: [embed] });
+      } catch (e) {
+        console.log("Snippet view error:", e);
+      }
+      return;
+    }
+
+    // Handle using a snippet
+    const alias = subCommand;
+    try {
+      const snippet = isAppeal ? await storage.getAppealSnippet(message.guild.id, alias) : await storage.getSnippet(message.guild.id, alias);
+      if (snippet) {
+        const thread = modmailThread || appealThread;
+        if (thread && thread.status === "open") {
+          // Trigger the relay logic by calling the reply function logic directly
+          const user = await client.users.fetch(thread.userId);
+          
+          let roleName = "Staff";
+          const member = message.member;
+          if (member && member.roles.cache.size > 0) {
+            const roles = member.roles.cache
+              .filter(r => r.id !== message.guild!.id)
+              .sort((a, b) => b.position - a.position);
+            if (roles.size > 0) {
+              roleName = roles.first()!.name;
+            }
+          }
+
+          const staffEmbed = new EmbedBuilder()
+            .setAuthor({ name: roleName, iconURL: message.author.displayAvatarURL() })
+            .setDescription(snippet.content)
+            .setColor(0x5865f2)
+            .setFooter({ text: message.author.tag })
+            .setTimestamp();
+
+          const dmMessage = await user.send({ embeds: [staffEmbed] });
+          const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
+
+          if (isAppeal) {
+            await storage.addAppealMessage({
+              threadId: thread.id,
+              authorId: message.author.id,
+              content: snippet.content,
+              isStaff: "true",
+              channelMessageId: channelMessage.id,
+              dmMessageId: dmMessage.id,
+            });
+          } else {
+            await storage.addModmailMessage({
+              threadId: thread.id,
+              authorId: message.author.id,
+              content: snippet.content,
+              isStaff: "true",
+              channelMessageId: channelMessage.id,
+              dmMessageId: dmMessage.id,
+            });
+          }
+          await message.delete().catch(() => {});
+        } else {
+          await message.reply(snippet.content);
+        }
+      }
+    } catch (e) {
+      console.log("Snippet use error:", e);
     }
     return;
   }
