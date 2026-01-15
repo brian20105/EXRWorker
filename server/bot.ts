@@ -1341,7 +1341,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
           console.log(`[ROSTER] Database connection attempt ${attempt} failed, retrying...`);
           await new Promise(r => setTimeout(r, 1000 * attempt));
         } else if (isConnError) {
-          console.log("[ROSTER] Database unavailable after 3 attempts, skipping roster update");
+          // console.log("[ROSTER] Database unavailable after 3 attempts, skipping roster update");
           return;
         } else {
           throw dbError;
@@ -1349,27 +1349,27 @@ async function updateRosterMessages(guildId: string): Promise<void> {
       }
     }
     if (!config) {
-      console.log("[ROSTER] No config found for guild", guildId);
+      // console.log("[ROSTER] No config found for guild", guildId);
       return;
     }
 
     const guild = client.guilds.cache.get(guildId);
     if (!guild) {
-      console.log("[ROSTER] Guild not in cache", guildId);
+      // console.log("[ROSTER] Guild not in cache", guildId);
       return;
     }
 
     // Always fetch fresh member data
     try {
       await guild.members.fetch({ time: 30000 });
-      console.log("[ROSTER] Fetched all members for roster update");
+      // console.log("[ROSTER] Fetched all members for roster update");
     } catch (error) {
-      console.log("[ROSTER] Could not fetch all members, using cached");
+      // console.log("[ROSTER] Could not fetch all members, using cached");
     }
 
     // Update player roster
     if (config.playerRosterChannelId) {
-      console.log("[ROSTER] Updating player roster...", config.playerRosterChannelId, config.playerRosterMessageId);
+      // console.log("[ROSTER] Updating player roster...", config.playerRosterChannelId, config.playerRosterMessageId);
       try {
         const channel = await client.channels.fetch(config.playerRosterChannelId);
         if (channel && "send" in channel) {
@@ -1380,16 +1380,16 @@ async function updateRosterMessages(guildId: string): Promise<void> {
             try {
               const message = await (channel as any).messages.fetch(config.playerRosterMessageId);
               await message.edit({ content: newContent });
-              console.log("[ROSTER] Updated player roster successfully");
+              // console.log("[ROSTER] Updated player roster successfully");
             } catch (fetchError: any) {
               // Message deleted - create new one
-              console.log("[ROSTER] Player roster message not found, creating new one");
+              // console.log("[ROSTER] Player roster message not found, creating new one");
               const newMessage = await (channel as any).send({ content: newContent });
               await storage.upsertGuildConfig({
                 guildId,
                 playerRosterMessageId: newMessage.id,
               });
-              console.log("[ROSTER] Created new player roster message");
+              // console.log("[ROSTER] Created new player roster message");
             }
           } else {
             // No message ID configured - create new one
@@ -1398,21 +1398,21 @@ async function updateRosterMessages(guildId: string): Promise<void> {
               guildId,
               playerRosterMessageId: newMessage.id,
             });
-            console.log("[ROSTER] Created new player roster message");
+            // console.log("[ROSTER] Created new player roster message");
           }
         } else {
-          console.log("[ROSTER] Channel not a text channel");
+          // console.log("[ROSTER] Channel not a text channel");
         }
       } catch (error: any) {
-        console.log("[ROSTER] Could not update player roster:", error.message || error);
+        // console.log("[ROSTER] Could not update player roster:", error.message || error);
       }
     } else {
-      console.log("[ROSTER] No player roster channel configured");
+      // console.log("[ROSTER] No player roster channel configured");
     }
 
     // Update staff roster
     if (config.staffRosterChannelId) {
-      console.log("[ROSTER] Updating staff roster...", config.staffRosterChannelId, config.staffRosterMessageId);
+      // console.log("[ROSTER] Updating staff roster...", config.staffRosterChannelId, config.staffRosterMessageId);
       try {
         const channel = await client.channels.fetch(config.staffRosterChannelId);
         if (channel && "send" in channel) {
@@ -1423,16 +1423,16 @@ async function updateRosterMessages(guildId: string): Promise<void> {
             try {
               const message = await (channel as any).messages.fetch(config.staffRosterMessageId);
               await message.edit({ content: newContent });
-              console.log("[ROSTER] Updated staff roster successfully");
+              // console.log("[ROSTER] Updated staff roster successfully");
             } catch (fetchError: any) {
               // Message deleted - create new one
-              console.log("[ROSTER] Staff roster message not found, creating new one");
+              // console.log("[ROSTER] Staff roster message not found, creating new one");
               const newMessage = await (channel as any).send({ content: newContent });
               await storage.upsertGuildConfig({
                 guildId,
                 staffRosterMessageId: newMessage.id,
               });
-              console.log("[ROSTER] Created new staff roster message");
+              // console.log("[ROSTER] Created new staff roster message");
             }
           } else {
             // No message ID configured - create new one
@@ -1441,16 +1441,16 @@ async function updateRosterMessages(guildId: string): Promise<void> {
               guildId,
               staffRosterMessageId: newMessage.id,
             });
-            console.log("[ROSTER] Created new staff roster message");
+            // console.log("[ROSTER] Created new staff roster message");
           }
         } else {
-          console.log("[ROSTER] Channel not a text channel");
+          // console.log("[ROSTER] Channel not a text channel");
         }
       } catch (error: any) {
-        console.log("[ROSTER] Could not update staff roster:", error.message || error);
+        // console.log("[ROSTER] Could not update staff roster:", error.message || error);
       }
     } else {
-      console.log("[ROSTER] No staff roster channel configured");
+      // console.log("[ROSTER] No staff roster channel configured");
     }
   } catch (error) {
     console.error("[ROSTER] Error updating roster messages:", error);
@@ -4407,7 +4407,7 @@ client.on("interactionCreate", async (interaction) => {
               .setTimestamp();
             await user.send({ embeds: [dmEmbed] });
           } catch (e) {
-            console.log("Could not DM user about ticket creation");
+            // console.log("Could not DM user about ticket creation");
           }
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
@@ -4531,7 +4531,7 @@ client.on("interactionCreate", async (interaction) => {
               .setTimestamp();
             await user.send({ embeds: [dmEmbed] });
           } catch (e) {
-            console.log("Could not DM user about ticket creation");
+            // console.log("Could not DM user about ticket creation");
           }
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
@@ -4709,7 +4709,7 @@ client.on("interactionCreate", async (interaction) => {
               }
             }
           } catch (e: any) {
-            console.log("[MODMAIL] Could not send log:", e.message);
+            // console.log("[MODMAIL] Could not send log:", e.message);
           }
 
           // Reply to user
@@ -4727,7 +4727,7 @@ client.on("interactionCreate", async (interaction) => {
               .setTimestamp();
             await user.send({ embeds: [closeEmbed] });
           } catch (e) {
-            console.log("[MODMAIL] Could not DM user about ticket close");
+            // console.log("[MODMAIL] Could not DM user about ticket close");
           }
 
           // Delete channel after delay
@@ -4736,10 +4736,10 @@ client.on("interactionCreate", async (interaction) => {
               try {
                 const chan = await client.channels.fetch(channelId);
                 if (chan) await chan.delete();
-              } catch (e) { console.log("[MODMAIL] Failed to delete channel:", e); }
+              } catch (e) { }
             }, 3000);
           }
-        })().catch(e => console.log("[MODMAIL] Background task error:", e));
+        })().catch(e => {});
         } catch (error: any) {
           console.log("Error in modmail_close button:", error.message);
           await interaction.editReply({ content: "Failed to close ticket. Please try again." }).catch(() => {});
@@ -4822,7 +4822,7 @@ client.on("interactionCreate", async (interaction) => {
               .setTimestamp();
             await user.send({ embeds: [dmEmbed] });
           } catch (e) {
-            console.log("Could not DM user about appeal creation");
+            // console.log("Could not DM user about appeal creation");
           }
 
           await interaction.editReply({ content: "Your ban appeal has been submitted! Check your DMs." });
@@ -5579,7 +5579,7 @@ client.on("interactionCreate", async (interaction) => {
               .setTimestamp();
             await user.send({ embeds: [dmEmbed] });
           } catch (e) {
-            console.log("Could not DM user about application submission");
+            // console.log("Could not DM user about application submission");
           }
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted! Check your DMs.` });
@@ -6496,7 +6496,7 @@ client.on("interactionCreate", async (interaction) => {
 
           await user.send({ embeds: [dmEmbed] });
         } catch (error) {
-          console.log("Could not DM user about inactivity decision");
+          // console.log("Could not DM user about inactivity decision");
         }
 
         await interaction.editReply({
@@ -6626,17 +6626,26 @@ client.on("interactionCreate", async (interaction) => {
           const embed = new EmbedBuilder()
             .setTitle(`Staff Intro Submission - ${action === "approve" ? "Approved" : "Denied"}`)
             .setColor(color)
-            .setDescription(oldEmbed.description || "")
-            .addFields(
-              { name: "Status", value: status, inline: true },
-              { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: true }
-            )
-            .setFooter({ text: `Submission ID: ${submissionId}` })
-            .setTimestamp();
+            .setDescription(oldEmbed.description || "");
+
+          // Preserve the original Q&A fields from the embed
+          if (oldEmbed.fields && oldEmbed.fields.length > 0) {
+            for (const field of oldEmbed.fields) {
+              embed.addFields({ name: field.name, value: field.value, inline: field.inline || false });
+            }
+          }
+
+          embed.addFields(
+            { name: "Status", value: status, inline: true },
+            { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: true }
+          );
 
           if (reviewReason) {
             embed.addFields({ name: "Review Note", value: reviewReason, inline: false });
           }
+
+          embed.setFooter({ text: `Submission ID: ${submissionId}` })
+            .setTimestamp();
 
           await message.edit({ embeds: [embed], components: [] });
         }
@@ -6657,7 +6666,7 @@ client.on("interactionCreate", async (interaction) => {
 
           await user.send({ embeds: [dmEmbed] });
         } catch (error) {
-          console.log("Could not DM user about quiz result");
+          // console.log("Could not DM user about quiz result");
         }
 
         await interaction.editReply({
@@ -6864,8 +6873,12 @@ client.on("messageCreate", async (message) => {
         await message.delete();
       } catch (e) {}
 
-      // Send timed close message
-      await (message.channel as any).send(`⏰ This ticket will close ${timeString}.`);
+      // Send timed close message as embed
+      const timedCloseEmbed = new EmbedBuilder()
+        .setDescription(`⏰ This ticket will close ${timeString}.`)
+        .setColor(0xf0b232)
+        .setTimestamp();
+      await (message.channel as any).send({ embeds: [timedCloseEmbed] });
 
       // Capture references synchronously before async timeout
       const timedChannelId = message.channel.id;
@@ -6926,7 +6939,7 @@ client.on("messageCreate", async (message) => {
             .setTimestamp();
           await user.send({ embeds: [closeEmbed] });
         } catch (e) {
-          console.log("Could not DM user about timed ticket close");
+          // console.log("Could not DM user about timed ticket close");
         }
 
         // Log to log channel
@@ -7003,7 +7016,7 @@ client.on("messageCreate", async (message) => {
         .setTimestamp();
       await user.send({ embeds: [closeEmbed] });
     } catch (e) {
-      console.log("Could not DM user about ticket close");
+      // console.log("Could not DM user about ticket close");
     }
 
     // Log to log channel
@@ -8102,7 +8115,7 @@ client.on("messageCreate", async (message) => {
             const ticketUser = await client.users.fetch(currentThread.userId);
             await ticketUser.send({ embeds: [warningEmbed] });
           } catch (e) {
-            console.log("Could not DM user about inactivity warning");
+            // console.log("Could not DM user about inactivity warning");
           }
 
           // Schedule auto-close after another 15 minutes
@@ -8164,7 +8177,7 @@ client.on("messageCreate", async (message) => {
             try {
               const chanToDelete = await client.channels.fetch(channelId);
               if (chanToDelete) await chanToDelete.delete();
-            } catch (e) { console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
+            } catch (e) { // console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
           }, FIFTEEN_MINUTES);
 
           pendingInactivityCloses.set(channelId, {
@@ -8355,7 +8368,7 @@ client.on("messageCreate", async (message) => {
             const ticketUser = await client.users.fetch(currentThread.userId);
             await ticketUser.send({ embeds: [warningEmbed] });
           } catch (e) {
-            console.log("Could not DM user about inactivity warning");
+            // console.log("Could not DM user about inactivity warning");
           }
 
           const closeTimeout = setTimeout(async () => {
@@ -8414,7 +8427,7 @@ client.on("messageCreate", async (message) => {
             try {
               const chanToDelete = await client.channels.fetch(channelId);
               if (chanToDelete) await chanToDelete.delete();
-            } catch (e) { console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
+            } catch (e) { // console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
           }, FIFTEEN_MINUTES);
 
           pendingInactivityCloses.set(channelId, {
@@ -8508,36 +8521,44 @@ client.on("messageCreate", async (message) => {
         }
       }
 
-      // Edit the channel message if we have its ID
+      // Edit the channel message if we have its ID - preserve original author
       if (modmailMsg.channelMessageId) {
         try {
           const channelMsg = await (message.channel as any).messages.fetch(modmailMsg.channelMessageId);
+          // Get the original embed's author info to preserve it
+          const originalEmbed = channelMsg.embeds[0];
+          const originalAuthor = originalEmbed?.author;
+          
           const editedEmbed = new EmbedBuilder()
-            .setAuthor({ name: `${editRoleName} (Edited)`, iconURL: message.author.displayAvatarURL() })
+            .setAuthor(originalAuthor ? { name: originalAuthor.name, iconURL: originalAuthor.iconURL || undefined } : { name: editRoleName })
             .setDescription(newContent)
             .setColor(0x5865f2)
-            .setFooter({ text: `Edited by ${message.author.tag}` })
+            .setFooter(originalEmbed?.footer ? { text: originalEmbed.footer.text } : { text: "Staff" })
             .setTimestamp();
           await channelMsg.edit({ embeds: [editedEmbed] });
         } catch (e) {
-          console.log("Could not edit channel message:", e);
+          console.error("Could not edit channel message:", e);
         }
       }
 
-      // Edit the DM message if we have its ID
+      // Edit the DM message if we have its ID - preserve original author
       if (modmailMsg.dmMessageId) {
         try {
           const dmChannel = await user.createDM();
           const dmMsg = await dmChannel.messages.fetch(modmailMsg.dmMessageId);
+          // Get the original embed's author info to preserve it
+          const originalEmbed = dmMsg.embeds[0];
+          const originalAuthor = originalEmbed?.author;
+          
           const editedEmbed = new EmbedBuilder()
-            .setAuthor({ name: `${editRoleName} (Edited)`, iconURL: message.author.displayAvatarURL() })
+            .setAuthor(originalAuthor ? { name: originalAuthor.name, iconURL: originalAuthor.iconURL || undefined } : { name: editRoleName })
             .setDescription(newContent)
             .setColor(0x5865f2)
-            .setFooter({ text: `Edited by ${message.author.tag}` })
+            .setFooter(originalEmbed?.footer ? { text: originalEmbed.footer.text } : { text: "Staff" })
             .setTimestamp();
           await dmMsg.edit({ embeds: [editedEmbed] });
         } catch (e) {
-          console.log("Could not edit DM message:", e);
+          console.error("Could not edit DM message:", e);
         }
       }
 
@@ -8553,9 +8574,12 @@ client.on("messageCreate", async (message) => {
         await message.delete();
       } catch (e) {}
 
-      // Send confirmation that auto-deletes
-      const confirmMsg = await (message.channel as any).send("✅ Message edited successfully.");
-      setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+      // Send confirmation embed
+      const editConfirmEmbed = new EmbedBuilder()
+        .setDescription("✅ Message edited successfully.")
+        .setColor(0x23a559)
+        .setTimestamp();
+      await (message.channel as any).send({ embeds: [editConfirmEmbed] });
     } catch (error) {
       console.log("Could not edit message:", error);
       await message.reply("❌ Failed to edit message.");
@@ -8639,11 +8663,14 @@ client.on("messageCreate", async (message) => {
         await message.delete();
       } catch (e) {}
 
-      // Send confirmation that auto-deletes
-      const confirmMsg = await (message.channel as any).send("✅ Message deleted successfully.");
-      setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+      // Send confirmation embed (doesn't auto-delete)
+      const deleteConfirmEmbed = new EmbedBuilder()
+        .setDescription("✅ Message deleted successfully.")
+        .setColor(0x23a559)
+        .setTimestamp();
+      await (message.channel as any).send({ embeds: [deleteConfirmEmbed] });
     } catch (error) {
-      console.log("Could not delete message:", error);
+      console.error("Could not delete message:", error);
       await message.reply("❌ Failed to delete message.");
     }
     return;
@@ -8702,7 +8729,7 @@ client.on("messageCreate", async (message) => {
       
       setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
     } catch (error) {
-      console.log("Sub command error:", error);
+      console.error("Sub command error:", error);
     }
     return;
   }
