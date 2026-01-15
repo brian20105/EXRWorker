@@ -4252,9 +4252,17 @@ client.on("interactionCreate", async (interaction) => {
           );
           
           try {
+            console.log(`[modmail-category modal] Showing modal for category: ${categoryId}`);
             await interaction.showModal(modal);
+            console.log(`[modmail-category modal] Modal shown successfully`);
           } catch (e: any) {
-            console.log("Error showing category modal config:", e.message);
+            console.log("Error showing category modal config:", e.message, e.code);
+            // If modal fails, reply with error
+            try {
+              await interaction.reply({ content: `❌ Could not show form: ${e.message}`, ephemeral: true });
+            } catch (replyErr) {
+              // Already replied or interaction expired
+            }
           }
           return;
         }
