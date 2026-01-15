@@ -385,39 +385,6 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
-    .setName("payout_permission")
-    .setDescription("Set which roles can approve/deny payout requests")
-    .addRoleOption((option) =>
-      option
-        .setName("role1")
-        .setDescription("First role that can approve/deny payouts")
-        .setRequired(true)
-    )
-    .addRoleOption((option) =>
-      option
-        .setName("role2")
-        .setDescription("Second role (optional)")
-        .setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option
-        .setName("role3")
-        .setDescription("Third role (optional)")
-        .setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option
-        .setName("role4")
-        .setDescription("Fourth role (optional)")
-        .setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option
-        .setName("role5")
-        .setDescription("Fifth role (optional)")
-        .setRequired(false)
-    ),
-  new SlashCommandBuilder()
     .setName("list_payouts")
     .setDescription("List all payout requests (pending, approved, denied)")
     .setDefaultMemberPermissions(0)
@@ -566,40 +533,6 @@ const commands = [
         .setName("channel")
         .setDescription("The channel where moderation requests will be sent")
         .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName("setup_permissions")
-    .setDescription("Set which roles can approve/deny ban/unban requests")
-    .setDefaultMemberPermissions(0)
-    .addRoleOption((option) =>
-      option
-        .setName("role1")
-        .setDescription("First role that can approve/deny requests")
-        .setRequired(true)
-    )
-    .addRoleOption((option) =>
-      option
-        .setName("role2")
-        .setDescription("Second role (optional)")
-        .setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option
-        .setName("role3")
-        .setDescription("Third role (optional)")
-        .setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option
-        .setName("role4")
-        .setDescription("Fourth role (optional)")
-        .setRequired(false)
-    )
-    .addRoleOption((option) =>
-      option
-        .setName("role5")
-        .setDescription("Fifth role (optional)")
-        .setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("setup_moderation_logs")
@@ -1719,30 +1652,6 @@ client.on("interactionCreate", async (interaction) => {
           console.log("Error in setup_payment_logs:", error.message);
           await interaction.editReply({ content: "Failed to set up payment logs. Please try again." }).catch(() => {});
         }
-      } else if (commandName === "payout_permission") {
-        if (!await safeDeferReply(interaction)) return;
-
-        try {
-          const roles: string[] = [];
-          const roleNames: string[] = [];
-
-          for (let i = 1; i <= 5; i++) {
-            const role = interaction.options.getRole(`role${i}`);
-            if (role) {
-              roles.push(role.id);
-              roleNames.push(role.name);
-            }
-          }
-
-          await storage.updateAllowedRoles(interaction.guildId!, roles);
-
-          await interaction.editReply({
-            content: `Payout permissions updated! The following roles can now approve/deny payouts:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
-          });
-        } catch (error: any) {
-          console.log("Error in payout_permission:", error.message);
-          await interaction.editReply({ content: "Failed to update payout permissions. Please try again." }).catch(() => {});
-        }
       } else if (commandName === "list_payouts") {
         const isPrivate = interaction.options.getBoolean("private") ?? true;
         if (!await safeDeferReply(interaction, isPrivate)) return;
@@ -2440,28 +2349,6 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({
           content: `✅ Moderation request channel configured! Requests will be sent to <#${channel.id}>.`,
-        });
-      } else if (commandName === "setup_permissions") {
-        if (!await safeDeferReply(interaction)) return;
-
-        const roles: string[] = [];
-        const roleNames: string[] = [];
-
-        for (let i = 1; i <= 5; i++) {
-          const role = interaction.options.getRole(`role${i}`);
-          if (role) {
-            roles.push(role.id);
-            roleNames.push(role.name);
-          }
-        }
-
-        await storage.upsertGuildConfig({
-          guildId: interaction.guildId!,
-          modRoleIds: roles,
-        });
-
-        await interaction.editReply({
-          content: `✅ Moderation permissions updated! The following roles can now approve/deny ban/unban requests:\n${roleNames.map(r => `• ${r}`).join('\n')}`,
         });
       } else if (commandName === "setup_moderation_logs") {
         if (!await safeDeferReply(interaction)) return;
