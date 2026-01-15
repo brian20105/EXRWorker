@@ -3065,69 +3065,41 @@ client.on("interactionCreate", async (interaction) => {
           const grandTotal = leaderboardData.reduce((sum, e) => sum + e.total, 0);
 
           // Build header with order explanation
-          const header = `**Activity Check for ${guildRole.name}**\n${timeRangeDesc}\n\n**Order goes as follow:** MM (Modmail) | AP (Appeals) | BN (Bans) | UB (Unbans) | SR (Staff Reports) | Total\n\n`;
-          const totalsLine = `\n**Totals:** MM: ${totalModmail} | AP: ${totalAppeal} | BN: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | **Total: ${grandTotal}**`;
+          const headerText = `Activity Check for ${guildRole.name}\n${timeRangeDesc}\n\nOrder goes as follow: MM (Modmail) | AP (Appeals) | BN (Bans) | UB (Unbans) | SR (Staff Reports) | Total\n`;
+          const totalsText = `\nTotals: MM: ${totalModmail} | AP: ${totalAppeal} | BN: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | Total: ${grandTotal}`;
 
-          // Build rows with pings (outside code block so they actually ping)
-          const rows = leaderboardData.map(entry => {
+          // Build rows with numbers and pings
+          const rows = leaderboardData.map((entry, index) => {
+            const num = (index + 1).toString();
             const mm = entry.modmail.toString();
             const ap = entry.appeal.toString();
             const bn = entry.ban.toString();
             const ub = entry.unban.toString();
             const sr = entry.staffreport.toString();
             const tot = entry.total.toString();
-            return `<@${entry.userId}> | MM: ${mm} | AP: ${ap} | BN: ${bn} | UB: ${ub} | SR: ${sr} | **Total: ${tot}**`;
+            return `${num}. <@${entry.userId}> | MM: ${mm} | AP: ${ap} | BN: ${bn} | UB: ${ub} | SR: ${sr} | Total: ${tot}`;
           });
 
-          // Build copyable version with raw mentions in code block
-          const copyableRows = leaderboardData.map(entry => {
-            const mm = entry.modmail.toString();
-            const ap = entry.appeal.toString();
-            const bn = entry.ban.toString();
-            const ub = entry.unban.toString();
-            const sr = entry.staffreport.toString();
-            const tot = entry.total.toString();
-            return `<@${entry.userId}> | MM: ${mm} | AP: ${ap} | BN: ${bn} | UB: ${ub} | SR: ${sr} | Total: ${tot}`;
-          });
-          const copyableText = copyableRows.join("\n");
+          // Build full copyable text including header, all rows, and totals
+          const fullCopyableText = headerText + "\n" + rows.join("\n") + totalsText;
 
           // Split into chunks if needed (Discord limit is 2000 chars)
           const messages: string[] = [];
-          let currentMessage = header;
+          let currentMessage = "```\n" + headerText + "\n";
           
           for (const row of rows) {
             const testMessage = currentMessage + row + "\n";
-            if (testMessage.length > 1800) {
-              messages.push(currentMessage);
-              currentMessage = row + "\n";
+            if ((testMessage + "```").length > 1800) {
+              messages.push(currentMessage + "```");
+              currentMessage = "```\n" + row + "\n";
             } else {
               currentMessage = testMessage;
             }
           }
           
           // Add totals to the last message
-          currentMessage = currentMessage + totalsLine;
+          currentMessage = currentMessage + totalsText + "\n```";
           messages.push(currentMessage);
-          
-          // Add copyable version at the end
-          const copyableSection = `\n\n**Copyable version:**\n\`\`\`\n${copyableText}\n\`\`\``;
-          if ((messages[messages.length - 1] + copyableSection).length <= 1950) {
-            messages[messages.length - 1] += copyableSection;
-          } else {
-            // Split copyable into chunks if too long
-            const copyableChunks: string[] = [];
-            let currentCopyable = "**Copyable version:**\n```\n";
-            for (const row of copyableRows) {
-              if ((currentCopyable + row + "\n```").length > 1900) {
-                copyableChunks.push(currentCopyable + "```");
-                currentCopyable = "```\n" + row + "\n";
-              } else {
-                currentCopyable += row + "\n";
-              }
-            }
-            copyableChunks.push(currentCopyable + "```");
-            messages.push(...copyableChunks);
-          }
 
           // Send first message as reply, rest as followups
           await interaction.editReply({ content: messages[0] });
