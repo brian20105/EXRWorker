@@ -790,6 +790,28 @@ const commands = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName("activity_check")
+    .setDescription("Check activity stats for members with a specific role (private/ephemeral)")
+    .setDefaultMemberPermissions(0)
+    .addRoleOption((option) =>
+      option
+        .setName("role")
+        .setDescription("The role to check activity for")
+        .setRequired(true)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("from")
+        .setDescription("Start time in days ago (e.g., 7 for last week)")
+        .setRequired(false)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("to")
+        .setDescription("End time in days ago (e.g., 0 for today)")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
     .setName("restore_activity")
     .setDescription("Restore activity stats from the last reset")
     .setDefaultMemberPermissions(0),
@@ -2883,6 +2905,148 @@ client.on("interactionCreate", async (interaction) => {
         } catch (error: any) {
           console.log("Error in /activity_reset command:", error.message);
           await interaction.editReply({ content: "Failed to reset activity stats. Please try again." }).catch(() => {});
+        }
+      } else if (commandName === "activity_check") {
+        // Ephemeral response - only the user can see it
+        if (!await safeDeferReply(interaction, true)) return;
+
+        try {
+          const role = interaction.options.getRole("role", true);
+          let fromDays = interaction.options.getInteger("from") ?? undefined;
+          let toDays = interaction.options.getInteger("to") ?? undefined;
+          const guild = interaction.guild;
+
+          if (!guild) {
+            await interaction.editReply({ content: "This command must be used in a server." });
+            return;
+          }
+
+          // Validate from/to ranges
+          if (fromDays !== undefined && fromDays < 0) fromDays = 0;
+          if (toDays !== undefined && toDays < 0) toDays = 0;
+          if (fromDays !== undefined && toDays !== undefined && fromDays < toDays) {
+            // Swap if from is less than to (from should be further back)
+            [fromDays, toDays] = [toDays, fromDays];
+          }
+
+          // Fetch all members with the role
+          try {
+            await guild.members.fetch({ time: 30000 });
+          } catch (e) {
+            console.log("Could not fully fetch members");
+          }
+
+          const guildRole = guild.roles.cache.get(role.id);
+          if (!guildRole) {
+            await interaction.editReply({ content: "Role not found." });
+            return;
+          }
+
+          const membersWithRole = Array.from(guildRole.members.values());
+          if (membersWithRole.length === 0) {
+            await interaction.editReply({ content: `No members found with the role **${guildRole.name}**.` });
+            return;
+          }
+
+          // Build leaderboard data with parallel fetching for better performance
+          const leaderboardData: { userId: string; username: string; modmail: number; appeal: number; ban: number; unban: number; staffreport: number; total: number }[] = [];
+
+          // Process in batches of 10 for better performance
+          const batchSize = 10;
+          for (let i = 0; i < membersWithRole.length; i += batchSize) {
+            const batch = membersWithRole.slice(i, i + batchSize);
+            const batchResults = await Promise.all(batch.map(async (member) => {
+              const [modmailCount, appealCount, banCount, unbanCount, staffReportCount] = await Promise.all([
+                storage.getModmailStatsForUserAllGuilds(member.id, fromDays, toDays),
+                storage.getAppealStatsForUserAllGuilds(member.id, fromDays, toDays),
+                storage.getActivityStatsForUserAllGuilds(member.id, "ban", fromDays, toDays),
+                storage.getActivityStatsForUserAllGuilds(member.id, "unban", fromDays, toDays),
+                storage.getStaffReportStatsForUserAllGuilds(member.id, fromDays, toDays)
+              ]);
+              const total = modmailCount + appealCount + banCount + unbanCount + staffReportCount;
+              return {
+                userId: member.id,
+                username: member.user.username,
+                modmail: modmailCount,
+                appeal: appealCount,
+                ban: banCount,
+                unban: unbanCount,
+                staffreport: staffReportCount,
+                total: total
+              };
+            }));
+            leaderboardData.push(...batchResults);
+          }
+
+          // Sort by total (descending)
+          leaderboardData.sort((a, b) => b.total - a.total);
+
+          // Build time range description
+          let timeRangeDesc = "";
+          if (fromDays !== undefined && toDays !== undefined) {
+            timeRangeDesc = `Time Range: ${fromDays} to ${toDays} days ago`;
+          } else if (fromDays !== undefined) {
+            timeRangeDesc = `Time Range: Last ${fromDays} days`;
+          } else if (toDays !== undefined) {
+            timeRangeDesc = `Time Range: Up to ${toDays} days ago`;
+          } else {
+            timeRangeDesc = "Time Range: All time";
+          }
+
+          // Calculate totals
+          const totalModmail = leaderboardData.reduce((sum, e) => sum + e.modmail, 0);
+          const totalAppeal = leaderboardData.reduce((sum, e) => sum + e.appeal, 0);
+          const totalBan = leaderboardData.reduce((sum, e) => sum + e.ban, 0);
+          const totalUnban = leaderboardData.reduce((sum, e) => sum + e.unban, 0);
+          const totalStaffReport = leaderboardData.reduce((sum, e) => sum + e.staffreport, 0);
+          const grandTotal = leaderboardData.reduce((sum, e) => sum + e.total, 0);
+
+          // Build header
+          const header = `**Activity Check for ${guildRole.name}**\n${timeRangeDesc}\n**Legend:** MM=Modmail, AP=Appeals, BN=Bans, UB=Unbans, SR=Staff Reports\n`;
+          const totalsLine = `**Totals:** MM: ${totalModmail} | AP: ${totalAppeal} | BN: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | **Total: ${grandTotal}**`;
+
+          // Build table rows
+          const tableHeader = "User                    | MM | AP | BN | UB | SR | Total\n------------------------|----|----|----|----|----|----- \n";
+          const rows = leaderboardData.map(entry => {
+            const name = entry.username.substring(0, 22).padEnd(23);
+            const mm = entry.modmail.toString().padStart(2);
+            const ap = entry.appeal.toString().padStart(2);
+            const bn = entry.ban.toString().padStart(2);
+            const ub = entry.unban.toString().padStart(2);
+            const sr = entry.staffreport.toString().padStart(2);
+            const tot = entry.total.toString().padStart(5);
+            return `${name} | ${mm} | ${ap} | ${bn} | ${ub} | ${sr} | ${tot}`;
+          });
+
+          // Split into chunks if needed (Discord limit is 2000 chars)
+          const messages: string[] = [];
+          let currentMessage = header;
+          let currentTable = "```\n" + tableHeader;
+          
+          for (const row of rows) {
+            const testTable = currentTable + row + "\n";
+            if ((currentMessage + testTable + "```\n").length > 1900) {
+              // Finalize current message
+              messages.push(currentMessage + currentTable + "```");
+              currentMessage = "";
+              currentTable = "```\n" + tableHeader + row + "\n";
+            } else {
+              currentTable = testTable;
+            }
+          }
+          
+          // Add final message with totals
+          currentMessage = currentMessage + currentTable + "```\n" + totalsLine;
+          messages.push(currentMessage);
+
+          // Send first message as reply, rest as followups
+          await interaction.editReply({ content: messages[0] });
+          for (let i = 1; i < messages.length; i++) {
+            await interaction.followUp({ content: messages[i], ephemeral: true });
+          }
+        } catch (error: any) {
+          console.log("Error in /activity_check command:", error.message, error.stack);
+          await interaction.editReply({ content: "Failed to check activity. Please try again." }).catch(() => {});
         }
       } else if (commandName === "restore_activity") {
         if (!await safeDeferReply(interaction, false)) return;
@@ -5379,9 +5543,10 @@ client.on("interactionCreate", async (interaction) => {
 
           const snippetListDisplay = pageSnippets.map((s, i) => {
             const num = start + i + 1;
-            const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
-            return `**${num}.** \`${s.alias}\` - ${truncatedContent}`;
-          }).join("\n");
+            // Cap content at 500 chars to prevent embed overflow
+            const content = s.content.length > 500 ? s.content.substring(0, 500) + "..." : s.content;
+            return `**${num}.** \`${s.alias}\`\n${content}`;
+          }).join("\n\n");
 
           const prefix = (await storage.getGuildConfig(interaction.guildId!))?.commandPrefix || ".";
 
@@ -7473,7 +7638,8 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      const perPage = 10;
+      // Show fewer per page since we're showing full content (5 per page to stay under 4096 char limit)
+      const perPage = 5;
       const totalPages = Math.ceil(allSnippets.length / perPage);
       const pageArg = rest ? parseInt(rest) : 1;
       const page = isNaN(pageArg) || pageArg < 1 ? 1 : Math.min(pageArg, totalPages);
@@ -7482,9 +7648,10 @@ client.on("messageCreate", async (message) => {
 
       const snippetListDisplay = pageSnippets.map((s, i) => {
         const num = start + i + 1;
-        const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
-        return `**${num}.** \`${s.alias}\` - ${truncatedContent}`;
-      }).join("\n");
+        // Cap content at 500 chars to prevent embed overflow
+        const content = s.content.length > 500 ? s.content.substring(0, 500) + "..." : s.content;
+        return `**${num}.** \`${s.alias}\`\n${content}`;
+      }).join("\n\n");
 
       const embed = new EmbedBuilder()
         .setTitle(`📝 Snippet List`)
@@ -7680,7 +7847,8 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      const perPage = 10;
+      // Show fewer per page since we're showing full content (5 per page to stay under 4096 char limit)
+      const perPage = 5;
       const totalPages = Math.ceil(allSnippets.length / perPage);
       const pageArg = rest ? parseInt(rest) : 1;
       const page = isNaN(pageArg) || pageArg < 1 ? 1 : Math.min(pageArg, totalPages);
@@ -7689,9 +7857,10 @@ client.on("messageCreate", async (message) => {
 
       const snippetListDisplay = pageSnippets.map((s, i) => {
         const num = start + i + 1;
-        const truncatedContent = s.content.length > 50 ? s.content.substring(0, 50) + "..." : s.content;
-        return `**${num}.** \`${s.alias}\` - ${truncatedContent}`;
-      }).join("\n");
+        // Cap content at 500 chars to prevent embed overflow
+        const content = s.content.length > 500 ? s.content.substring(0, 500) + "..." : s.content;
+        return `**${num}.** \`${s.alias}\`\n${content}`;
+      }).join("\n\n");
 
       const embed = new EmbedBuilder()
         .setTitle(`📝 Appeal Snippet List`)
