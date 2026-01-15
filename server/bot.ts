@@ -8177,7 +8177,7 @@ client.on("messageCreate", async (message) => {
             try {
               const chanToDelete = await client.channels.fetch(channelId);
               if (chanToDelete) await chanToDelete.delete();
-            } catch (e) { // console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
+            } catch (e) { }
           }, FIFTEEN_MINUTES);
 
           pendingInactivityCloses.set(channelId, {
@@ -8427,7 +8427,7 @@ client.on("messageCreate", async (message) => {
             try {
               const chanToDelete = await client.channels.fetch(channelId);
               if (chanToDelete) await chanToDelete.delete();
-            } catch (e) { // console.log("[MODMAIL] Failed to delete channel on inactivity:", e); }
+            } catch (e) { }
           }, FIFTEEN_MINUTES);
 
           pendingInactivityCloses.set(channelId, {
@@ -8435,7 +8435,7 @@ client.on("messageCreate", async (message) => {
             staffId: staffId,
           });
         } catch (e) {
-          console.log("Could not send inactivity warning:", e);
+          console.error("Could not send inactivity warning:", e);
         }
       }, FIFTEEN_MINUTES);
 
@@ -8446,9 +8446,7 @@ client.on("messageCreate", async (message) => {
 
       try {
         await message.delete();
-      } catch (e) {
-        console.log("Could not delete trigger message:", e);
-      }
+      } catch (e) { }
     } catch (error) {
       console.log("Could not relay anonymous staff message to user:", error);
       await message.react("❌");
