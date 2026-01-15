@@ -414,3 +414,24 @@ export const insertModerationActionSchema = createInsertSchema(moderationActions
 
 export type InsertModerationAction = z.infer<typeof insertModerationActionSchema>;
 export type ModerationAction = typeof moderationActions.$inferSelect;
+
+// Roster configurations (reusable roster templates)
+export const rosterConfigs = pgTable("roster_configs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  name: text("name").notNull(),
+  roleIds: text("role_ids").array().notNull(), // Up to 20 role IDs in order (top to bottom)
+  messageId: text("message_id"), // Posted message ID for real-time updates
+  channelId: text("channel_id"), // Channel where roster is posted
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertRosterConfigSchema = createInsertSchema(rosterConfigs).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertRosterConfig = z.infer<typeof insertRosterConfigSchema>;
+export type RosterConfig = typeof rosterConfigs.$inferSelect;

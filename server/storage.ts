@@ -33,6 +33,8 @@ import {
   type InsertAppealSnippet,
   type ModerationAction,
   type InsertModerationAction,
+  type RosterConfig,
+  type InsertRosterConfig,
   guildConfigs,
   moderationActions,
   payoutRequests,
@@ -49,7 +51,8 @@ import {
   appealThreads,
   appealMessages,
   appealBlocks,
-  appealSnippets
+  appealSnippets,
+  rosterConfigs
 } from "@shared/schema";
 import { db, withRetry } from "./db";
 import { eq, and, desc, or, sql, gte, lte, count, inArray } from "drizzle-orm";
@@ -181,6 +184,13 @@ export interface IStorage {
   createModerationAction(action: InsertModerationAction): Promise<ModerationAction>;
   getModerationStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ moderatorId: string; warns: number; mutes: number; kicks: number; bans: number }[]>;
   getModerationActionExists(guildId: string, sourceMessageId: string): Promise<boolean>;
+  
+  // Roster management
+  createRosterConfig(roster: InsertRosterConfig): Promise<RosterConfig>;
+  getRosterConfig(guildId: string, name: string): Promise<RosterConfig | undefined>;
+  updateRosterConfig(guildId: string, name: string, updates: { roleIds?: string[]; messageId?: string; channelId?: string }): Promise<RosterConfig | undefined>;
+  deleteRosterConfig(guildId: string, name: string): Promise<void>;
+  getAllRosterConfigs(guildId: string): Promise<RosterConfig[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1656,6 +1666,48 @@ export class DatabaseStorage implements IStorage {
       ))
       .limit(1);
     return result.length > 0;
+  }
+
+  // Roster management
+  async createRosterConfig(roster: InsertRosterConfig): Promise<RosterConfig> {
+    const result = await db.insert(rosterConfigs).values(roster).returning();
+    return result[0];
+  }
+
+  async getRosterConfig(guildId: string, name: string): Promise<RosterConfig | undefined> {
+    const result = await db.select().from(rosterConfigs).where(
+      and(
+        eq(rosterConfigs.guildId, guildId),
+        eq(rosterConfigs.name, name.toLowerCase())
+      )
+    );
+    return result[0];
+  }
+
+  async updateRosterConfig(guildId: string, name: string, updates: { roleIds?: string[]; messageId?: string; channelId?: string }): Promise<RosterConfig | undefined> {
+    const result = await db.update(rosterConfigs)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(
+        and(
+          eq(rosterConfigs.guildId, guildId),
+          eq(rosterConfigs.name, name.toLowerCase())
+        )
+      )
+      .returning();
+    return result[0];
+  }
+
+  async deleteRosterConfig(guildId: string, name: string): Promise<void> {
+    await db.delete(rosterConfigs).where(
+      and(
+        eq(rosterConfigs.guildId, guildId),
+        eq(rosterConfigs.name, name.toLowerCase())
+      )
+    );
+  }
+
+  async getAllRosterConfigs(guildId: string): Promise<RosterConfig[]> {
+    return await db.select().from(rosterConfigs).where(eq(rosterConfigs.guildId, guildId));
   }
 }
 
