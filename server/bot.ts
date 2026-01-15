@@ -1157,6 +1157,10 @@ const commands = [
     )
     .addSubcommand((sub) =>
       sub.setName("list").setDescription("List all modmail categories")
+    )
+    .addSubcommand((sub) =>
+      sub.setName("modal").setDescription("Configure a form/modal for a category (up to 3 questions)")
+        .addStringOption((option) => option.setName("category").setDescription("Category ID (use /modmail-category list to see IDs)").setRequired(true))
     ),
   new SlashCommandBuilder()
     .setName("setup_command_logs")
@@ -3520,7 +3524,7 @@ client.on("interactionCreate", async (interaction) => {
         const embedDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
 
         // Parse custom categories
-        let customCategories: { id: string; label: string; description: string; emoji?: string }[] = [];
+        let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
         if (config?.customModmailCategories) {
           try {
             customCategories = JSON.parse(config.customModmailCategories);
@@ -3535,18 +3539,30 @@ client.on("interactionCreate", async (interaction) => {
           .setDescription(embedDescription)
           .setColor(0x2f3136);
 
-        // Build options array from custom categories only (all categories are now configurable)
-        if (customCategories.length === 0) {
-          await interaction.editReply({ content: "❌ No categories configured. Use `/modmail-category add` to create categories first." });
-          return;
-        }
+        // Use built-in categories if no custom categories exist
+        const builtInCategories: { id: string; label: string; description: string; emoji: string; modalQuestions?: string[] }[] = [
+          { id: "general", label: "General Inquiries", description: "General questions or support", emoji: "📥" },
+          { id: "competitive", label: "Apply For Competitive", description: "Apply to join the competitive team", emoji: "🖥️" },
+          { id: "contentcreator", label: "Apply For Content Creator", description: "Apply to become a content creator", emoji: "📷" },
+          { id: "report", label: "User Reports", description: "Report a user", emoji: "🚨" },
+          { id: "partnerships", label: "Partnerships", description: "Partnership inquiries", emoji: "📋" },
+          { id: "gfx", label: "Apply For GFX Editor", description: "Apply to become a GFX editor", emoji: "📝" },
+          { id: "creativewarrior", label: "Apply For Creative Warrior", description: "Apply for creative warrior role", emoji: "⚔️" },
+          { id: "vfxeditor", label: "Apply For VFX Editor", description: "Apply for VFX editor role", emoji: "✨" },
+        ];
+
+        const categoriesToUse = customCategories.length > 0 ? customCategories : builtInCategories;
 
         const selectOptions: StringSelectMenuOptionBuilder[] = [];
-        for (const cat of customCategories) {
+        for (const cat of categoriesToUse) {
+          // Add ::modal suffix to value if category has custom modal questions
+          const hasModal = cat.modalQuestions && cat.modalQuestions.length > 0;
+          const value = hasModal ? `${cat.id}::modal` : cat.id;
+          
           const option = new StringSelectMenuOptionBuilder()
             .setLabel(cat.label)
             .setDescription(cat.description.substring(0, 100))
-            .setValue(cat.id);
+            .setValue(value);
           if (cat.emoji) option.setEmoji(cat.emoji);
           selectOptions.push(option);
         }
@@ -4052,14 +4068,96 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "modmail-category") {
         console.log(`[modmail-category] Command called with subcommand attempt...`);
+        const subcommand = interaction.options.getSubcommand();
+        console.log(`[modmail-category] Subcommand: ${subcommand}`);
+        
+        // Handle modal subcommand separately - don't defer (need to show modal)
+        if (subcommand === "modal") {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
+          if (config?.customModmailCategories) {
+            try {
+              customCategories = JSON.parse(config.customModmailCategories);
+            } catch (e) {
+              customCategories = [];
+            }
+          }
+          
+          const categoryId = interaction.options.getString("category", true);
+          
+          const builtInCategories = [
+            { id: "general", label: "General Inquiries" },
+            { id: "competitive", label: "Apply For Competitive" },
+            { id: "contentcreator", label: "Apply For Content Creator" },
+            { id: "report", label: "User Reports" },
+            { id: "partnerships", label: "Partnerships" },
+            { id: "gfx", label: "Apply For GFX Editor" },
+            { id: "creativewarrior", label: "Apply For Creative Warrior" },
+            { id: "vfxeditor", label: "Apply For VFX Editor" },
+          ];
+          
+          const customCat = customCategories.find(c => c.id === categoryId);
+          const builtInCat = builtInCategories.find(c => c.id === categoryId);
+          
+          if (!customCat && !builtInCat) {
+            await interaction.reply({ 
+              content: `❌ Category \`${categoryId}\` not found. Use \`/modmail-category list\` to see available categories.`,
+              ephemeral: true
+            });
+            return;
+          }
+          
+          const categoryLabel = customCat?.label || builtInCat?.label || categoryId;
+          const existingQuestions = customCat?.modalQuestions || [];
+          
+          const modal = new ModalBuilder()
+            .setCustomId(`category_modal_config_${categoryId}`)
+            .setTitle(`Configure Form: ${categoryLabel.substring(0, 30)}`);
+          
+          const q1Input = new TextInputBuilder()
+            .setCustomId("question1")
+            .setLabel("Question 1 (leave empty to remove form)")
+            .setStyle(TextInputStyle.Short)
+            .setValue(existingQuestions[0] || "")
+            .setMaxLength(45)
+            .setRequired(false);
+          
+          const q2Input = new TextInputBuilder()
+            .setCustomId("question2")
+            .setLabel("Question 2 (optional)")
+            .setStyle(TextInputStyle.Short)
+            .setValue(existingQuestions[1] || "")
+            .setMaxLength(45)
+            .setRequired(false);
+          
+          const q3Input = new TextInputBuilder()
+            .setCustomId("question3")
+            .setLabel("Question 3 (optional)")
+            .setStyle(TextInputStyle.Short)
+            .setValue(existingQuestions[2] || "")
+            .setMaxLength(45)
+            .setRequired(false);
+          
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(q1Input),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(q2Input),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(q3Input)
+          );
+          
+          try {
+            await interaction.showModal(modal);
+          } catch (e: any) {
+            console.log("Error showing category modal config:", e.message);
+          }
+          return;
+        }
+        
         if (!await safeDeferReply(interaction, false)) {
           console.log(`[modmail-category] safeDeferReply failed`);
           return;
         }
         console.log(`[modmail-category] safeDeferReply succeeded`);
 
-        const subcommand = interaction.options.getSubcommand();
-        console.log(`[modmail-category] Subcommand: ${subcommand}`);
         const config = await storage.getGuildConfig(interaction.guildId!);
         
         // Parse existing custom categories
@@ -4165,12 +4263,32 @@ client.on("interactionCreate", async (interaction) => {
             .setTitle("Modmail Categories")
             .setColor(0x5865f2);
 
+          // Include built-in categories in the list
+          const builtInCategories = [
+            { id: "general", label: "General Inquiries", description: "General questions or support", emoji: "📥" },
+            { id: "competitive", label: "Apply For Competitive", description: "Apply to join the competitive team", emoji: "🖥️" },
+            { id: "contentcreator", label: "Apply For Content Creator", description: "Apply to become a content creator", emoji: "📷" },
+            { id: "report", label: "User Reports", description: "Report a user", emoji: "🚨" },
+            { id: "partnerships", label: "Partnerships", description: "Partnership inquiries", emoji: "📋" },
+            { id: "gfx", label: "Apply For GFX Editor", description: "Apply to become a GFX editor", emoji: "📝" },
+            { id: "creativewarrior", label: "Apply For Creative Warrior", description: "Apply for creative warrior role", emoji: "⚔️" },
+            { id: "vfxeditor", label: "Apply For VFX Editor", description: "Apply for VFX editor role", emoji: "✨" },
+          ];
+
+          let description = "";
           if (customCategories.length > 0) {
-            let categoryText = customCategories.map(c => `${c.emoji || "📌"} **${c.label}** (\`${c.id}\`)`).join("\n");
-            embed.setDescription(categoryText);
-          } else {
-            embed.setDescription("No categories configured. Use `/modmail-category add` to create categories.");
+            description += "**Custom Categories:**\n";
+            description += customCategories.map(c => {
+              const hasModal = (c as any).modalQuestions?.length > 0;
+              return `${c.emoji || "📌"} **${c.label}** (\`${c.id}\`)${hasModal ? " 📋" : ""}`;
+            }).join("\n");
           }
+          
+          description += customCategories.length > 0 ? "\n\n**Built-in Categories:**\n" : "**Built-in Categories:**\n";
+          description += builtInCategories.map(c => `${c.emoji} **${c.label}** (\`${c.id}\`)`).join("\n");
+          
+          embed.setDescription(description);
+          embed.setFooter({ text: "📋 = Has form questions configured" });
 
           await interaction.editReply({ embeds: [embed] });
         }
@@ -4354,6 +4472,45 @@ client.on("interactionCreate", async (interaction) => {
         const guildId = interaction.customId.split("_")[2];
         const ticketCategory = interaction.values[0];
         const user = interaction.user;
+
+        // Check for custom modal questions - categories with custom modals have value format: "categoryId::modal"
+        // This allows showing modal immediately without async DB lookup
+        if (ticketCategory.endsWith("::modal")) {
+          const actualCategoryId = ticketCategory.replace("::modal", "");
+          try {
+            const categoryConfig = await storage.getGuildConfig(guildId);
+            let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
+            if (categoryConfig?.customModmailCategories) {
+              try {
+                customCategories = JSON.parse(categoryConfig.customModmailCategories);
+              } catch (e) {}
+            }
+            
+            const categoryWithModal = customCategories.find(c => c.id === actualCategoryId);
+            if (categoryWithModal && categoryWithModal.modalQuestions && categoryWithModal.modalQuestions.length > 0) {
+              // Encode categoryId and guildId as base64 to avoid parsing issues with underscores
+              const encodedData = Buffer.from(JSON.stringify({ categoryId: actualCategoryId, guildId })).toString('base64');
+              const modal = new ModalBuilder()
+                .setCustomId(`ticket_custom_modal::${encodedData}`)
+                .setTitle(`${categoryWithModal.label.substring(0, 40)}`);
+              
+              categoryWithModal.modalQuestions.forEach((question, index) => {
+                const input = new TextInputBuilder()
+                  .setCustomId(`answer${index + 1}`)
+                  .setLabel(question.substring(0, 45))
+                  .setStyle(TextInputStyle.Paragraph)
+                  .setRequired(true);
+                modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+              });
+              
+              await interaction.showModal(modal);
+              return;
+            }
+          } catch (e) {
+            console.log("Error checking custom modal questions:", e);
+          }
+          // If modal questions not found, proceed without modal (fallback)
+        }
 
         // Categories that require application modals - show modal IMMEDIATELY (no async work first)
         if (ticketCategory === "competitive") {
@@ -5698,6 +5855,230 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Inactivity embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_inactivity\` again to post the updated embed.`,
         });
+        return;
+      }
+
+      // Handle category modal configuration
+      if (interaction.customId.startsWith("category_modal_config_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        const categoryId = interaction.customId.replace("category_modal_config_", "");
+        const q1 = interaction.fields.getTextInputValue("question1").trim();
+        const q2 = interaction.fields.getTextInputValue("question2").trim();
+        const q3 = interaction.fields.getTextInputValue("question3").trim();
+
+        // Build questions array (filter out empty)
+        const questions = [q1, q2, q3].filter(q => q.length > 0);
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
+        if (config?.customModmailCategories) {
+          try {
+            customCategories = JSON.parse(config.customModmailCategories);
+          } catch (e) {
+            customCategories = [];
+          }
+        }
+
+        // Built-in category IDs for reference
+        const builtInCategoryIds = ["general", "competitive", "contentcreator", "report", "partnerships", "gfx", "creativewarrior", "vfxeditor"];
+        const builtInLabels: { [key: string]: string } = {
+          "general": "General Inquiries",
+          "competitive": "Apply For Competitive",
+          "contentcreator": "Apply For Content Creator",
+          "report": "User Reports",
+          "partnerships": "Partnerships",
+          "gfx": "Apply For GFX Editor",
+          "creativewarrior": "Apply For Creative Warrior",
+          "vfxeditor": "Apply For VFX Editor"
+        };
+
+        // Find existing category or create if built-in
+        let category = customCategories.find(c => c.id === categoryId);
+        
+        if (!category && builtInCategoryIds.includes(categoryId)) {
+          // For built-in categories, add them to custom with modal questions
+          category = {
+            id: categoryId,
+            label: builtInLabels[categoryId] || categoryId,
+            description: `${builtInLabels[categoryId] || categoryId} category`,
+            emoji: "📌",
+            modalQuestions: questions
+          };
+          customCategories.push(category);
+        } else if (category) {
+          category.modalQuestions = questions;
+        } else {
+          await interaction.editReply({ content: `❌ Category \`${categoryId}\` not found.` });
+          return;
+        }
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customModmailCategories: JSON.stringify(customCategories),
+        });
+
+        if (questions.length === 0) {
+          await interaction.editReply({
+            content: `✅ Form removed from category **${category.label}**. Users will now open tickets without a form.`,
+          });
+        } else {
+          const questionList = questions.map((q, i) => `${i + 1}. ${q}`).join("\n");
+          await interaction.editReply({
+            content: `✅ Form configured for category **${category.label}**!\n\n**Questions:**\n${questionList}\n\n⚠️ Run \`/setup_modmail\` again to update the ticket dropdown.`,
+          });
+        }
+        return;
+      }
+
+      // Handle custom category modals (configured with /modmail-category modal)
+      if (interaction.customId.startsWith("ticket_custom_modal::")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        // Decode base64 encoded data
+        const encodedData = interaction.customId.replace("ticket_custom_modal::", "");
+        let ticketCategory: string;
+        let guildId: string;
+        try {
+          const decoded = JSON.parse(Buffer.from(encodedData, 'base64').toString('utf8'));
+          ticketCategory = decoded.categoryId;
+          guildId = decoded.guildId;
+        } catch (e) {
+          await interaction.editReply({ content: "❌ Invalid ticket data. Please try again." });
+          return;
+        }
+        const user = interaction.user;
+        const guild = interaction.guild;
+
+        if (!guild) {
+          await interaction.editReply({ content: "❌ This can only be used in a server." });
+          return;
+        }
+
+        const config = await storage.getGuildConfig(guildId);
+        if (!config?.modmailCategoryId) {
+          await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
+          return;
+        }
+
+        // Check if user is blocked
+        const block = await storage.getActiveModmailBlock(guildId, user.id);
+        if (block) {
+          const expiresText = block.expiresAt 
+            ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
+            : "You are permanently blocked.";
+          await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
+          return;
+        }
+
+        // Check for existing open thread
+        const existingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (existingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+
+        // Get custom category info
+        let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
+        if (config.customModmailCategories) {
+          try {
+            customCategories = JSON.parse(config.customModmailCategories);
+          } catch (e) {}
+        }
+        const category = customCategories.find(c => c.id === ticketCategory);
+        const categoryLabel = category?.label || ticketCategory;
+        const modalQuestions = category?.modalQuestions || [];
+
+        // Get answers from modal
+        const applicationFields: { name: string; value: string }[] = [];
+        for (let i = 0; i < modalQuestions.length; i++) {
+          try {
+            const answer = interaction.fields.getTextInputValue(`answer${i + 1}`);
+            applicationFields.push({ name: modalQuestions[i], value: answer });
+          } catch (e) {}
+        }
+
+        // Create thread and channel
+        const thread = await storage.createModmailThread({
+          guildId,
+          userId: user.id,
+          status: "open",
+          category: ticketCategory,
+        });
+
+        try {
+          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const newChannel = await guild.channels.create({
+            name: channelName,
+            parent: config.modmailCategoryId!,
+            topic: `${categoryLabel} ticket from ${user.tag} (${user.id})`,
+          });
+
+          await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+
+          // Get staff roles to ping
+          const pingRoles = config.modmailStaffRoleIds || [];
+          const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
+
+          // Create initial embed with application info
+          const initialEmbed = new EmbedBuilder()
+            .setTitle(`New Ticket: ${categoryLabel}`)
+            .setColor(0x5865f2)
+            .addFields(
+              { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
+              { name: "Category", value: categoryLabel, inline: true },
+              ...applicationFields
+            )
+            .setThumbnail(user.displayAvatarURL())
+            .setTimestamp();
+
+          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_claim_${thread.id}`)
+              .setLabel("Claim")
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji("🙋")
+          );
+
+          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+
+          // DM user confirmation
+          try {
+            const dmEmbed = new EmbedBuilder()
+              .setTitle("Ticket Created")
+              .setDescription(`Your **${categoryLabel}** ticket has been created. A staff member will respond shortly.\n\nReply to this DM to send messages to staff.`)
+              .setColor(0x57f287)
+              .setTimestamp();
+            await user.send({ embeds: [dmEmbed] });
+          } catch (e) {}
+
+          await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
+
+          // Log ticket creation
+          if (config.modmailLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const logEmbed = new EmbedBuilder()
+                  .setTitle("📥 Ticket Opened")
+                  .setColor(0x57f287)
+                  .addFields(
+                    { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
+                    { name: "Category", value: categoryLabel, inline: true },
+                    { name: "Channel", value: `<#${newChannel.id}>`, inline: true }
+                  )
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+              }
+            } catch (e) {}
+          }
+
+          // Log activity
+          await storage.logModmailActivity(guildId, user.id);
+        } catch (error) {
+          console.log("Could not create ticket channel:", error);
+          await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+        }
         return;
       }
 
