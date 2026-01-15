@@ -1042,7 +1042,7 @@ const commands = [
       option.setName("user").setDescription("User to unblock").setRequired(true)
     )
     .addStringOption((option) =>
-      option.setName("system").setDescription("Which system to unblock from").setRequired(false)
+      option.setName("system").setDescription("Which system to unblock from").setRequired(true)
         .addChoices(
           { name: "Modmail", value: "modmail" },
           { name: "Ban Appeal", value: "appeal" }
@@ -1112,17 +1112,16 @@ const commands = [
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("modmail-category")
-    .setDescription("Manage custom modmail ticket categories")
+    .setDescription("Manage modmail ticket categories")
     .setDefaultMemberPermissions(0)
     .addSubcommand((sub) =>
       sub.setName("add").setDescription("Add a new custom category")
-        .addStringOption((option) => option.setName("id").setDescription("Category ID (lowercase, no spaces)").setRequired(true))
         .addStringOption((option) => option.setName("label").setDescription("Display name").setRequired(true))
         .addStringOption((option) => option.setName("description").setDescription("Short description").setRequired(true))
         .addStringOption((option) => option.setName("emoji").setDescription("Emoji for the category").setRequired(false))
     )
     .addSubcommand((sub) =>
-      sub.setName("remove").setDescription("Remove a custom category (shows selection menu)")
+      sub.setName("remove").setDescription("Remove a category (shows selection menu)")
     )
     .addSubcommand((sub) =>
       sub.setName("list").setDescription("List all modmail categories")
@@ -3337,51 +3336,13 @@ client.on("interactionCreate", async (interaction) => {
           .setDescription(embedDescription)
           .setColor(0x2f3136);
 
-        // Build options array with built-in categories
-        const selectOptions = [
-          new StringSelectMenuOptionBuilder()
-            .setLabel("General Inquiries")
-            .setDescription("General questions or support")
-            .setValue("general")
-            .setEmoji("📥"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Apply For Competitive")
-            .setDescription("Apply to join the competitive team")
-            .setValue("competitive")
-            .setEmoji("🖥️"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Apply For Content Creator")
-            .setDescription("Apply to become a content creator")
-            .setValue("contentcreator")
-            .setEmoji("📷"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("User Reports")
-            .setDescription("Report a user")
-            .setValue("report")
-            .setEmoji("🚨"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Partnerships")
-            .setDescription("Partnership inquiries")
-            .setValue("partnerships")
-            .setEmoji("📋"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Apply For GFX Editor")
-            .setDescription("Apply to become a GFX editor")
-            .setValue("gfx")
-            .setEmoji("📝"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Apply For Creative Warrior")
-            .setDescription("Apply for creative warrior role")
-            .setValue("creativewarrior")
-            .setEmoji("⚔️"),
-          new StringSelectMenuOptionBuilder()
-            .setLabel("Apply For VFX Editor")
-            .setDescription("Apply for VFX editor role")
-            .setValue("vfxeditor")
-            .setEmoji("✨"),
-        ];
+        // Build options array from custom categories only (all categories are now configurable)
+        if (customCategories.length === 0) {
+          await interaction.editReply({ content: "❌ No categories configured. Use `/modmail-category add` to create categories first." });
+          return;
+        }
 
-        // Add custom categories
+        const selectOptions: StringSelectMenuOptionBuilder[] = [];
         for (const cat of customCategories) {
           const option = new StringSelectMenuOptionBuilder()
             .setLabel(cat.label)
@@ -3924,16 +3885,21 @@ client.on("interactionCreate", async (interaction) => {
         ];
 
         if (subcommand === "add") {
-          const categoryId = interaction.options.getString("id", true).toLowerCase().replace(/\s+/g, "");
           const label = interaction.options.getString("label", true);
           const description = interaction.options.getString("description", true);
           const emoji = interaction.options.getString("emoji") || "📌";
 
-          // Check if ID already exists
-          const allIds = [...builtInCategories.map(c => c.id), ...customCategories.map(c => c.id)];
-          if (allIds.includes(categoryId)) {
-            await interaction.editReply({ content: `❌ A category with ID "${categoryId}" already exists.` });
-            return;
+          // Auto-generate ID from label (lowercase, alphanumeric only)
+          let baseId = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+          if (!baseId) baseId = "category";
+
+          // Ensure uniqueness by appending number if needed
+          let categoryId = baseId;
+          let counter = 1;
+          const existingIds = customCategories.map(c => c.id);
+          while (existingIds.includes(categoryId)) {
+            categoryId = `${baseId}_${counter}`;
+            counter++;
           }
 
           customCategories.push({ id: categoryId, label, description, emoji });
@@ -3943,15 +3909,15 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           await interaction.editReply({ 
-            content: `✅ Added custom category: **${label}** (${emoji})\nID: \`${categoryId}\`\n\n⚠️ You need to run \`/setup_modmail\` again to update the ticket dropdown with the new category.`
+            content: `✅ Added category: **${label}** (${emoji})\n\n⚠️ Run \`/setup_modmail\` again to update the ticket dropdown.`
           });
 
         } else if (subcommand === "remove") {
-          console.log(`[modmail-category] Remove - custom categories count: ${customCategories.length}`);
+          console.log(`[modmail-category] Remove - categories count: ${customCategories.length}`);
           console.log(`[modmail-category] Categories: ${JSON.stringify(customCategories)}`);
           
           if (customCategories.length === 0) {
-            await interaction.editReply({ content: "❌ No custom categories to remove." });
+            await interaction.editReply({ content: "❌ No categories to remove. Use `/modmail-category add` to create categories first." });
             return;
           }
 
@@ -3985,7 +3951,7 @@ client.on("interactionCreate", async (interaction) => {
 
             console.log(`[modmail-category] Sending dropdown...`);
             await interaction.editReply({ 
-              content: "Select a custom category to remove:",
+              content: "Select a category to remove:",
               components: [row]
             });
             console.log(`[modmail-category] Dropdown sent successfully!`);
@@ -3999,14 +3965,11 @@ client.on("interactionCreate", async (interaction) => {
             .setTitle("Modmail Categories")
             .setColor(0x5865f2);
 
-          let builtInText = builtInCategories.map(c => `${c.emoji} **${c.label}** (\`${c.id}\`)`).join("\n");
-          embed.addFields({ name: "Built-in Categories", value: builtInText, inline: false });
-
           if (customCategories.length > 0) {
-            let customText = customCategories.map(c => `${c.emoji || "📌"} **${c.label}** (\`${c.id}\`)`).join("\n");
-            embed.addFields({ name: "Custom Categories", value: customText, inline: false });
+            let categoryText = customCategories.map(c => `${c.emoji || "📌"} **${c.label}** (\`${c.id}\`)`).join("\n");
+            embed.setDescription(categoryText);
           } else {
-            embed.addFields({ name: "Custom Categories", value: "No custom categories added yet.", inline: false });
+            embed.setDescription("No categories configured. Use `/modmail-category add` to create categories.");
           }
 
           await interaction.editReply({ embeds: [embed] });
@@ -7788,57 +7751,41 @@ client.on("messageCreate", async (message) => {
           return;
         }
 
+        // Parse custom categories from config
+        let customCategories: { id: string; label: string; description: string; emoji?: string }[] = [];
+        if (availableConfig?.customModmailCategories) {
+          try {
+            customCategories = JSON.parse(availableConfig.customModmailCategories);
+          } catch (e) {
+            customCategories = [];
+          }
+        }
+
+        if (customCategories.length === 0) {
+          await message.reply("No ticket categories are configured for this server. Please contact a staff member.");
+          return;
+        }
+
         // Send category selection dropdown
         const embed = new EmbedBuilder()
           .setTitle("Open a Support Ticket")
           .setDescription("Select a category below to open a new support ticket.")
           .setColor(0x5865f2);
 
+        const selectOptions: StringSelectMenuOptionBuilder[] = [];
+        for (const cat of customCategories) {
+          const option = new StringSelectMenuOptionBuilder()
+            .setLabel(cat.label)
+            .setDescription(cat.description.substring(0, 100))
+            .setValue(cat.id);
+          if (cat.emoji) option.setEmoji(cat.emoji);
+          selectOptions.push(option);
+        }
+
         const selectMenu = new StringSelectMenuBuilder()
           .setCustomId(`dm_ticket_select_${availableGuild.id}`)
           .setPlaceholder("Select a category...")
-          .addOptions(
-            new StringSelectMenuOptionBuilder()
-              .setLabel("General Inquiries")
-              .setDescription("General questions and support")
-              .setValue("general")
-              .setEmoji("💬"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For Competitive")
-              .setDescription("Apply to join the competitive team")
-              .setValue("competitive")
-              .setEmoji("🏆"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For Content Creator")
-              .setDescription("Apply for content creator role")
-              .setValue("contentcreator")
-              .setEmoji("🎥"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("User Reports")
-              .setDescription("Report a user")
-              .setValue("report")
-              .setEmoji("⚠️"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Partnerships")
-              .setDescription("Partnership inquiries")
-              .setValue("partnerships")
-              .setEmoji("🤝"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For GFX Editor")
-              .setDescription("Apply for graphics editor role")
-              .setValue("gfx")
-              .setEmoji("🎨"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For Creative Warrior")
-              .setDescription("Apply for creative warrior role")
-              .setValue("creativewarrior")
-              .setEmoji("⚔️"),
-            new StringSelectMenuOptionBuilder()
-              .setLabel("Apply For VFX Editor")
-              .setDescription("Apply for VFX editor role")
-              .setValue("vfxeditor")
-              .setEmoji("✨")
-          );
+          .addOptions(selectOptions);
 
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
