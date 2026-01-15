@@ -3247,80 +3247,116 @@ client.on("interactionCreate", async (interaction) => {
               return;
             }
 
-            await interaction.editReply({ content: `🔍 Scanning last ${messagesToScan} messages for moderation stats...` });
+            await interaction.editReply({ content: `🔍 Scanning for *ms embeds in the last ${messagesToScan} messages...` });
 
             // Fetch messages
             const messages = await interaction.channel.messages.fetch({ limit: Math.min(messagesToScan, 100) });
             
-            // Parse stats from bot embeds (looking for patterns like "Bans: X" etc)
-            const statsMap: Map<string, { username: string; bans: number; kicks: number; warns: number; mutes: number; total: number }> = new Map();
+            // Count embeds per user from *ms command responses
+            const statsMap: Map<string, { username: string; embedCount: number; bans: number; kicks: number; warns: number; mutes: number; total: number }> = new Map();
             
             for (const msg of messages.values()) {
-              // Check if message is from a bot and has embeds
+              // Only check bot embeds
               if (!msg.author.bot || msg.embeds.length === 0) continue;
               
               for (const embed of msg.embeds) {
-                // Look for moderation stats patterns in embed
+                const title = embed.title || "";
                 const description = embed.description || "";
+                const authorName = embed.author?.name || "";
                 const fields = embed.fields || [];
-                const fullText = description + " " + fields.map(f => f.name + " " + f.value).join(" ");
+                const fullText = title + " " + authorName + " " + description + " " + fields.map(f => f.name + " " + f.value).join(" ");
                 
-                // Try to extract user ID from title or description
-                const userIdMatch = embed.title?.match(/(\d{17,19})/) || description.match(/<@!?(\d{17,19})>/) || description.match(/ID:\s*(\d{17,19})/i);
+                // Look for moderation stats patterns - these indicate a *ms response embed
+                const hasModerationStats = /Bans?[:\s]+\d+/i.test(fullText) || 
+                                           /Kicks?[:\s]+\d+/i.test(fullText) || 
+                                           /Warn(?:ing)?s?[:\s]+\d+/i.test(fullText) ||
+                                           /Mutes?[:\s]+\d+/i.test(fullText) ||
+                                           /Timeout?s?[:\s]+\d+/i.test(fullText) ||
+                                           /Total[:\s]+\d+/i.test(fullText) ||
+                                           /moderation\s*stats?/i.test(fullText);
+                
+                if (!hasModerationStats) continue;
+                
+                // Try to extract user ID from title, author, description
+                const userIdMatch = title.match(/(\d{17,19})/) || 
+                                   authorName.match(/(\d{17,19})/) ||
+                                   description.match(/<@!?(\d{17,19})>/) || 
+                                   description.match(/ID[:\s]*(\d{17,19})/i) ||
+                                   description.match(/(\d{17,19})/);
                 if (!userIdMatch) continue;
                 
                 const userId = userIdMatch[1];
+                const existing = statsMap.get(userId) || { username: "", embedCount: 0, bans: 0, kicks: 0, warns: 0, mutes: 0, total: 0 };
                 
-                // Parse stats
+                // Count this embed
+                existing.embedCount++;
+                
+                // Parse stats from this embed
                 const bansMatch = fullText.match(/Bans?[:\s]+(\d+)/i);
                 const kicksMatch = fullText.match(/Kicks?[:\s]+(\d+)/i);
                 const warnsMatch = fullText.match(/Warn(?:ing)?s?[:\s]+(\d+)/i);
                 const mutesMatch = fullText.match(/Mutes?[:\s]+(\d+)/i) || fullText.match(/Timeout?s?[:\s]+(\d+)/i);
                 const totalMatch = fullText.match(/Total[:\s]+(\d+)/i);
                 
-                if (bansMatch || kicksMatch || warnsMatch || mutesMatch || totalMatch) {
-                  const existing = statsMap.get(userId) || { username: "", bans: 0, kicks: 0, warns: 0, mutes: 0, total: 0 };
-                  
-                  if (bansMatch) existing.bans = parseInt(bansMatch[1]) || 0;
-                  if (kicksMatch) existing.kicks = parseInt(kicksMatch[1]) || 0;
-                  if (warnsMatch) existing.warns = parseInt(warnsMatch[1]) || 0;
-                  if (mutesMatch) existing.mutes = parseInt(mutesMatch[1]) || 0;
-                  if (totalMatch) existing.total = parseInt(totalMatch[1]) || 0;
-                  
-                  // Try to get username
-                  const usernameMatch = embed.title?.match(/(.+?)\s*\(\d{17,19}\)/) || embed.author?.name?.match(/(.+)/);
-                  if (usernameMatch) existing.username = usernameMatch[1].trim();
-                  
-                  statsMap.set(userId, existing);
-                }
+                // Use the highest values found (in case of multiple embeds per user)
+                if (bansMatch) existing.bans = Math.max(existing.bans, parseInt(bansMatch[1]) || 0);
+                if (kicksMatch) existing.kicks = Math.max(existing.kicks, parseInt(kicksMatch[1]) || 0);
+                if (warnsMatch) existing.warns = Math.max(existing.warns, parseInt(warnsMatch[1]) || 0);
+                if (mutesMatch) existing.mutes = Math.max(existing.mutes, parseInt(mutesMatch[1]) || 0);
+                if (totalMatch) existing.total = Math.max(existing.total, parseInt(totalMatch[1]) || 0);
+                
+                // Try to get username from embed
+                const usernameMatch = title.match(/(.+?)\s*[\(\[]?\d{17,19}/) || 
+                                     authorName.match(/(.+?)\s*[\(\[]?\d{17,19}/) ||
+                                     embed.author?.name?.match(/^([^0-9]+)/);
+                if (usernameMatch) existing.username = usernameMatch[1].trim();
+                
+                statsMap.set(userId, existing);
               }
             }
 
             if (statsMap.size === 0) {
               await interaction.editReply({ 
-                content: `📊 **Moderation Stats Scan Complete**\n\nNo moderation stats found in the last ${messagesToScan} messages.\n\nMake sure the moderation bot's stat responses are in this channel.`
+                content: `📊 **No *ms Embeds Found**\n\nScanned ${messagesToScan} messages but found no moderation stats embeds.\n\n**Tips:**\n• Run the \`*ms <userid>\` commands first\n• Make sure this is the channel with the bot responses`
               });
               return;
             }
 
-            // Build results table
-            const sortedStats = Array.from(statsMap.entries()).sort((a, b) => b[1].total - a[1].total);
+            // Sort by total actions (or by embed count if no totals found)
+            const sortedStats = Array.from(statsMap.entries()).sort((a, b) => {
+              if (b[1].total !== a[1].total) return b[1].total - a[1].total;
+              return (b[1].bans + b[1].kicks + b[1].warns + b[1].mutes) - (a[1].bans + a[1].kicks + a[1].warns + a[1].mutes);
+            });
+
+            // Build leaderboard embed
+            const leaderboardEmbed = new EmbedBuilder()
+              .setTitle("📊 Moderation Stats Leaderboard")
+              .setColor(0x5865f2)
+              .setDescription(`Found **${statsMap.size}** *ms embeds in the last ${messagesToScan} messages`)
+              .setTimestamp();
+
+            let leaderboardText = "";
+            const medals = ["🥇", "🥈", "🥉"];
             
-            let resultText = `📊 **Moderation Stats Found** (${statsMap.size} users)\n\n`;
-            resultText += "```\n";
-            resultText += "User ID            | Bans | Kicks | Warns | Mutes | Total\n";
-            resultText += "-------------------|------|-------|-------|-------|------\n";
-            
-            for (const [userId, stats] of sortedStats.slice(0, 25)) {
-              resultText += `${userId} | ${String(stats.bans).padStart(4)} | ${String(stats.kicks).padStart(5)} | ${String(stats.warns).padStart(5)} | ${String(stats.mutes).padStart(5)} | ${String(stats.total).padStart(5)}\n`;
-            }
-            resultText += "```";
-            
-            if (sortedStats.length > 25) {
-              resultText += `\n*Showing top 25 of ${sortedStats.length} users*`;
+            for (let i = 0; i < Math.min(sortedStats.length, 15); i++) {
+              const [userId, stats] = sortedStats[i];
+              const medal = medals[i] || `**${i + 1}.**`;
+              const totalActions = stats.total || (stats.bans + stats.kicks + stats.warns + stats.mutes);
+              leaderboardText += `${medal} <@${userId}>\n`;
+              leaderboardText += `> Bans: ${stats.bans} | Kicks: ${stats.kicks} | Warns: ${stats.warns} | Mutes: ${stats.mutes} | **Total: ${totalActions}**\n\n`;
             }
 
-            await interaction.editReply({ content: resultText });
+            if (leaderboardText.length > 4000) {
+              leaderboardText = leaderboardText.slice(0, 3950) + "\n*...truncated*";
+            }
+
+            leaderboardEmbed.addFields({ name: "Rankings", value: leaderboardText || "No stats found" });
+
+            if (sortedStats.length > 15) {
+              leaderboardEmbed.setFooter({ text: `Showing top 15 of ${sortedStats.length} staff members` });
+            }
+
+            await interaction.editReply({ content: "", embeds: [leaderboardEmbed] });
             
           } catch (error: any) {
             console.log("Error in /modstats check command:", error.message, error.stack);
