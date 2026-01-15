@@ -3039,14 +3039,19 @@ client.on("interactionCreate", async (interaction) => {
           // Sort by total (descending)
           leaderboardData.sort((a, b) => b.total - a.total);
 
-          // Build time range description
+          // Build time range description with Discord timestamps
           let timeRangeDesc = "";
+          const now = Math.floor(Date.now() / 1000);
           if (fromDays !== undefined && toDays !== undefined) {
-            timeRangeDesc = `Time Range: ${fromDays} to ${toDays} days ago`;
+            const fromTimestamp = now - (fromDays * 24 * 60 * 60);
+            const toTimestamp = now - (toDays * 24 * 60 * 60);
+            timeRangeDesc = `Time Range: <t:${fromTimestamp}:D> to <t:${toTimestamp}:D>`;
           } else if (fromDays !== undefined) {
-            timeRangeDesc = `Time Range: Last ${fromDays} days`;
+            const fromTimestamp = now - (fromDays * 24 * 60 * 60);
+            timeRangeDesc = `Time Range: Since <t:${fromTimestamp}:D>`;
           } else if (toDays !== undefined) {
-            timeRangeDesc = `Time Range: Up to ${toDays} days ago`;
+            const toTimestamp = now - (toDays * 24 * 60 * 60);
+            timeRangeDesc = `Time Range: Up to <t:${toTimestamp}:D>`;
           } else {
             timeRangeDesc = "Time Range: All time";
           }
@@ -3074,6 +3079,18 @@ client.on("interactionCreate", async (interaction) => {
             return `<@${entry.userId}> | MM: ${mm} | AP: ${ap} | BN: ${bn} | UB: ${ub} | SR: ${sr} | **Total: ${tot}**`;
           });
 
+          // Build copyable version with raw mentions in code block
+          const copyableRows = leaderboardData.map(entry => {
+            const mm = entry.modmail.toString();
+            const ap = entry.appeal.toString();
+            const bn = entry.ban.toString();
+            const ub = entry.unban.toString();
+            const sr = entry.staffreport.toString();
+            const tot = entry.total.toString();
+            return `<@${entry.userId}> | MM: ${mm} | AP: ${ap} | BN: ${bn} | UB: ${ub} | SR: ${sr} | Total: ${tot}`;
+          });
+          const copyableText = copyableRows.join("\n");
+
           // Split into chunks if needed (Discord limit is 2000 chars)
           const messages: string[] = [];
           let currentMessage = header;
@@ -3091,6 +3108,26 @@ client.on("interactionCreate", async (interaction) => {
           // Add totals to the last message
           currentMessage = currentMessage + totalsLine;
           messages.push(currentMessage);
+          
+          // Add copyable version at the end
+          const copyableSection = `\n\n**Copyable version:**\n\`\`\`\n${copyableText}\n\`\`\``;
+          if ((messages[messages.length - 1] + copyableSection).length <= 1950) {
+            messages[messages.length - 1] += copyableSection;
+          } else {
+            // Split copyable into chunks if too long
+            const copyableChunks: string[] = [];
+            let currentCopyable = "**Copyable version:**\n```\n";
+            for (const row of copyableRows) {
+              if ((currentCopyable + row + "\n```").length > 1900) {
+                copyableChunks.push(currentCopyable + "```");
+                currentCopyable = "```\n" + row + "\n";
+              } else {
+                currentCopyable += row + "\n";
+              }
+            }
+            copyableChunks.push(currentCopyable + "```");
+            messages.push(...copyableChunks);
+          }
 
           // Send first message as reply, rest as followups
           await interaction.editReply({ content: messages[0] });
