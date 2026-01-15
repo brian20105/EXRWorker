@@ -4881,7 +4881,7 @@ client.on("interactionCreate", async (interaction) => {
         });
 
         try {
-          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const channelName = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 32) || "ticket";
           const newChannel = await guild.channels.create({
             name: channelName,
             parent: config.modmailCategoryId!,
@@ -5019,7 +5019,7 @@ client.on("interactionCreate", async (interaction) => {
         });
 
         try {
-          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const channelName = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 32) || "ticket";
           const newChannel = await guild.channels.create({
             name: channelName,
             parent: config.modmailCategoryId!,
@@ -6148,7 +6148,7 @@ client.on("interactionCreate", async (interaction) => {
         });
 
         try {
-          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const channelName = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 32) || "ticket";
           const newChannel = await guild.channels.create({
             name: channelName,
             parent: config.modmailCategoryId!,
@@ -6321,7 +6321,7 @@ client.on("interactionCreate", async (interaction) => {
         });
 
         try {
-          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const channelName = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 32) || "ticket";
           const newChannel = await guild.channels.create({
             name: channelName,
             parent: config.modmailCategoryId!,
@@ -6493,7 +6493,7 @@ client.on("interactionCreate", async (interaction) => {
         });
 
         try {
-          const channelName = `${ticketCategory}-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
+          const channelName = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 32) || "ticket";
           const newChannel = await guild.channels.create({
             name: channelName,
             parent: config.modmailCategoryId!,
