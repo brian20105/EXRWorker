@@ -3092,34 +3092,40 @@ client.on("interactionCreate", async (interaction) => {
             }
           }
           
-          // Add final message with code block and totals
-          currentMessage = currentMessage + "```" + totalsLine;
-          messages.push(currentMessage);
-
-          // Build ping list (mentions for all users) - copyable
-          const pingList = leaderboardData.map(entry => `<@${entry.userId}>`).join(" ");
-          const pingMessages: string[] = [];
-          let currentPingMsg = "\n**Ping list (copyable):**\n```\n";
-          for (const entry of leaderboardData) {
-            const mention = `<@${entry.userId}> `;
-            if ((currentPingMsg + mention + "```").length > 1900) {
-              pingMessages.push(currentPingMsg + "```");
-              currentPingMsg = "```\n" + mention;
-            } else {
-              currentPingMsg += mention;
+          // Build ping list (copyable in code block)
+          const pingListText = leaderboardData.map(entry => `<@${entry.userId}>`).join(" ");
+          const pingSection = `\n\n**Ping list (copyable):**\n\`\`\`\n${pingListText}\n\`\`\``;
+          
+          // Add final message with code block, totals, and ping list
+          currentMessage = currentMessage + "```" + totalsLine + pingSection;
+          
+          // If message is too long, split ping section
+          if (currentMessage.length > 1900) {
+            // Send table with totals first
+            messages.push(currentMessage.replace(pingSection, ""));
+            
+            // Split ping list into chunks
+            const pingChunks: string[] = [];
+            let currentPingChunk = "**Ping list (copyable):**\n```\n";
+            for (const entry of leaderboardData) {
+              const mention = `<@${entry.userId}> `;
+              if ((currentPingChunk + mention + "```").length > 1900) {
+                pingChunks.push(currentPingChunk + "```");
+                currentPingChunk = "```\n" + mention;
+              } else {
+                currentPingChunk += mention;
+              }
             }
+            pingChunks.push(currentPingChunk + "\n```");
+            messages.push(...pingChunks);
+          } else {
+            messages.push(currentMessage);
           }
-          pingMessages.push(currentPingMsg + "\n```");
 
           // Send first message as reply, rest as followups
           await interaction.editReply({ content: messages[0] });
           for (let i = 1; i < messages.length; i++) {
             await interaction.followUp({ content: messages[i], ephemeral: true });
-          }
-          
-          // Send ping list as followups
-          for (const pingMsg of pingMessages) {
-            await interaction.followUp({ content: pingMsg, ephemeral: true });
           }
         } catch (error: any) {
           console.log("Error in /activity_check command:", error.message, error.stack);
