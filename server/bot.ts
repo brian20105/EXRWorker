@@ -716,6 +716,16 @@ const commands = [
           { name: "Appeals Handled", value: "appeal" },
           { name: "Staff Reports", value: "staffreport" }
         )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("server")
+        .setDescription("Which server to add entries for (default: current)")
+        .setRequired(false)
+        .addChoices(
+          { name: "This Server", value: "current" },
+          { name: "All Servers (Global)", value: "global" }
+        )
     ),
   new SlashCommandBuilder()
     .setName("activity_remove")
@@ -744,6 +754,16 @@ const commands = [
           { name: "Modmails Handled", value: "modmail" },
           { name: "Appeals Handled", value: "appeal" },
           { name: "Staff Reports", value: "staffreport" }
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("server")
+        .setDescription("Which server to remove entries from (default: current)")
+        .setRequired(false)
+        .addChoices(
+          { name: "This Server", value: "current" },
+          { name: "All Servers (Global)", value: "global" }
         )
     ),
   new SlashCommandBuilder()
@@ -2759,26 +2779,31 @@ client.on("interactionCreate", async (interaction) => {
           const user = interaction.options.getUser("user", true);
           const amount = interaction.options.getInteger("amount", true);
           const category = interaction.options.getString("category", true);
+          const serverOption = interaction.options.getString("server") || "current";
+          
+          // Use "global" for cross-server synced entries, otherwise current guild
+          const targetGuildId = serverOption === "global" ? "global" : interaction.guildId!;
 
           try {
             if (category === "modmail") {
-              await storage.addModmailActivityEntries(interaction.guildId!, user.id, amount);
+              await storage.addModmailActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "appeal") {
-              await storage.addAppealActivityEntries(interaction.guildId!, user.id, amount);
+              await storage.addAppealActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "staffreport") {
-              await storage.addStaffReportEntries(interaction.guildId!, user.id, amount);
+              await storage.addStaffReportEntries(targetGuildId, user.id, amount);
             } else if (category === "ban") {
-              await storage.addBanActivityEntries(interaction.guildId!, user.id, amount);
+              await storage.addBanActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "unban") {
-              await storage.addUnbanActivityEntries(interaction.guildId!, user.id, amount);
+              await storage.addUnbanActivityEntries(targetGuildId, user.id, amount);
             }
           } catch (e) {
             console.log("Could not add activity entries:", e);
           }
 
           const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "staffreport" ? "staff report" : category === "appeal" ? "appeal" : "modmail";
+          const serverText = serverOption === "global" ? " (synced across all servers)" : "";
           await interaction.editReply({
-            content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
+            content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity${serverText}.`,
           });
         } catch (error: any) {
           console.log("Error in /activity_add command:", error.message);
@@ -2791,25 +2816,30 @@ client.on("interactionCreate", async (interaction) => {
           const user = interaction.options.getUser("user", true);
           const amount = interaction.options.getInteger("amount", true);
           const category = interaction.options.getString("category", true);
+          const serverOption = interaction.options.getString("server") || "current";
+          
+          // Use "global" for cross-server synced entries, otherwise current guild
+          const targetGuildId = serverOption === "global" ? "global" : interaction.guildId!;
 
           let removed = 0;
           try {
             if (category === "modmail") {
-              removed = await storage.removeModmailActivityEntries(interaction.guildId!, user.id, amount);
+              removed = await storage.removeModmailActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "appeal") {
-              removed = await storage.removeAppealActivityEntries(interaction.guildId!, user.id, amount);
+              removed = await storage.removeAppealActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "staffreport") {
-              removed = await storage.removeStaffReportEntries(interaction.guildId!, user.id, amount);
+              removed = await storage.removeStaffReportEntries(targetGuildId, user.id, amount);
             } else {
-              removed = await storage.removeActivityEntries(interaction.guildId!, user.id, category, amount);
+              removed = await storage.removeActivityEntries(targetGuildId, user.id, category, amount);
             }
           } catch (e) {
             console.log("Could not remove activity entries:", e);
           }
 
           const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "staffreport" ? "staff report" : category === "appeal" ? "appeal" : "modmail";
+          const serverText = serverOption === "global" ? " (synced across all servers)" : "";
           await interaction.editReply({
-            content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
+            content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity${serverText}.`,
           });
         } catch (error: any) {
           console.log("Error in /activity_remove command:", error.message);
@@ -8741,6 +8771,38 @@ client.on("messageCreate", async (message) => {
       // Update in database - preserve [Anonymous] prefix if it was an anonymous message
       const isAnonymousMessage = modmailMsg.content?.startsWith("[Anonymous]");
       const updatedContent = isAnonymousMessage ? `[Anonymous] ${newContent}` : newContent;
+      
+      // Re-edit channel message with proper anonymous handling if this was an anonymous message
+      if (isAnonymousMessage && modmailMsg.channelMessageId) {
+        try {
+          const channelMsg = await (message.channel as any).messages.fetch(modmailMsg.channelMessageId);
+          const anonChannelEmbed = new EmbedBuilder()
+            .setAuthor({ name: "Staff Team (Anonymous)" })
+            .setDescription(newContent)
+            .setColor(0x5865f2)
+            .setFooter({ text: `Edited by ${message.author.tag}` })
+            .setTimestamp();
+          await channelMsg.edit({ embeds: [anonChannelEmbed] });
+        } catch (e) {
+          console.error("Could not edit anonymous channel message:", e);
+        }
+      }
+      
+      // Re-edit DM message with proper anonymous handling if this was an anonymous message
+      if (isAnonymousMessage && modmailMsg.dmMessageId) {
+        try {
+          const dmChannel = await user.createDM();
+          const dmMsg = await dmChannel.messages.fetch(modmailMsg.dmMessageId);
+          const anonDmEmbed = new EmbedBuilder()
+            .setAuthor({ name: "Staff Team" })
+            .setDescription(newContent)
+            .setColor(0x5865f2)
+            .setTimestamp();
+          await dmMsg.edit({ embeds: [anonDmEmbed] });
+        } catch (e) {
+          console.error("Could not edit anonymous DM message:", e);
+        }
+      }
       
       if (isAppeal) {
         await storage.updateAppealMessage(modmailMsg.id, { content: updatedContent });
