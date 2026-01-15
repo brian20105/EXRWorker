@@ -1132,10 +1132,6 @@ const commands = [
     )
     .addSubcommand((sub) =>
       sub.setName("list").setDescription("List all modmail categories")
-    )
-    .addSubcommand((sub) =>
-      sub.setName("modal").setDescription("Configure a form/modal for a category (up to 3 questions)")
-        .addStringOption((option) => option.setName("category").setDescription("Category ID (use /modmail-category list to see IDs)").setRequired(true))
     ),
   new SlashCommandBuilder()
     .setName("setup_command_logs")
@@ -4066,95 +4062,6 @@ client.on("interactionCreate", async (interaction) => {
         const subcommand = interaction.options.getSubcommand();
         console.log(`[modmail-category] Subcommand: ${subcommand}`);
         
-        // Handle modal subcommand separately - don't defer (need to show modal)
-        if (subcommand === "modal") {
-          const config = await storage.getGuildConfig(interaction.guildId!);
-          let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
-          if (config?.customModmailCategories) {
-            try {
-              customCategories = JSON.parse(config.customModmailCategories);
-            } catch (e) {
-              customCategories = [];
-            }
-          }
-          
-          const categoryId = interaction.options.getString("category", true);
-          
-          const builtInCategories = [
-            { id: "general", label: "General Inquiries" },
-            { id: "competitive", label: "Apply For Competitive" },
-            { id: "contentcreator", label: "Apply For Content Creator" },
-            { id: "report", label: "User Reports" },
-            { id: "partnerships", label: "Partnerships" },
-            { id: "gfx", label: "Apply For GFX Editor" },
-            { id: "creativewarrior", label: "Apply For Creative Warrior" },
-            { id: "vfxeditor", label: "Apply For VFX Editor" },
-          ];
-          
-          const customCat = customCategories.find(c => c.id === categoryId);
-          const builtInCat = builtInCategories.find(c => c.id === categoryId);
-          
-          if (!customCat && !builtInCat) {
-            await interaction.reply({ 
-              content: `❌ Category \`${categoryId}\` not found. Use \`/modmail-category list\` to see available categories.`,
-              ephemeral: true
-            });
-            return;
-          }
-          
-          const categoryLabel = customCat?.label || builtInCat?.label || categoryId;
-          const existingQuestions = customCat?.modalQuestions || [];
-          
-          const modal = new ModalBuilder()
-            .setCustomId(`category_modal_config_${categoryId}`)
-            .setTitle(`Configure Form: ${categoryLabel.substring(0, 30)}`);
-          
-          const q1Input = new TextInputBuilder()
-            .setCustomId("question1")
-            .setLabel("Question 1 (leave empty to remove form)")
-            .setStyle(TextInputStyle.Short)
-            .setValue(existingQuestions[0] || "")
-            .setMaxLength(45)
-            .setRequired(false);
-          
-          const q2Input = new TextInputBuilder()
-            .setCustomId("question2")
-            .setLabel("Question 2 (optional)")
-            .setStyle(TextInputStyle.Short)
-            .setValue(existingQuestions[1] || "")
-            .setMaxLength(45)
-            .setRequired(false);
-          
-          const q3Input = new TextInputBuilder()
-            .setCustomId("question3")
-            .setLabel("Question 3 (optional)")
-            .setStyle(TextInputStyle.Short)
-            .setValue(existingQuestions[2] || "")
-            .setMaxLength(45)
-            .setRequired(false);
-          
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(q1Input),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(q2Input),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(q3Input)
-          );
-          
-          try {
-            console.log(`[modmail-category modal] Showing modal for category: ${categoryId}`);
-            await interaction.showModal(modal);
-            console.log(`[modmail-category modal] Modal shown successfully`);
-          } catch (e: any) {
-            console.log("Error showing category modal config:", e.message, e.code);
-            // If modal fails, reply with error
-            try {
-              await interaction.reply({ content: `❌ Could not show form: ${e.message}`, ephemeral: true });
-            } catch (replyErr) {
-              // Already replied or interaction expired
-            }
-          }
-          return;
-        }
-        
         if (!await safeDeferReply(interaction, false)) {
           console.log(`[modmail-category] safeDeferReply failed`);
           return;
@@ -4889,9 +4796,23 @@ client.on("interactionCreate", async (interaction) => {
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
+          
+          // Get user's roles from the guild
+          let userRoles = "None";
+          try {
+            const member = await guild.members.fetch(user.id);
+            const roles = member.roles.cache
+              .filter(r => r.id !== guild.id) // Exclude @everyone
+              .sort((a, b) => b.position - a.position)
+              .map(r => `<@&${r.id}>`)
+              .slice(0, 15); // Limit to 15 roles
+            userRoles = roles.length > 0 ? roles.join(", ") : "None";
+          } catch (e) {}
+          
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Ticket: ${categoryLabel}`)
             .setColor(0x5865f2)
+            .setDescription(`**Roles:** ${userRoles}`)
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
               { name: "Category", value: categoryLabel, inline: true }
@@ -5013,9 +4934,23 @@ client.on("interactionCreate", async (interaction) => {
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
+          
+          // Get user's roles from the guild
+          let userRoles = "None";
+          try {
+            const member = await guild.members.fetch(user.id);
+            const roles = member.roles.cache
+              .filter(r => r.id !== guild.id) // Exclude @everyone
+              .sort((a, b) => b.position - a.position)
+              .map(r => `<@&${r.id}>`)
+              .slice(0, 15); // Limit to 15 roles
+            userRoles = roles.length > 0 ? roles.join(", ") : "None";
+          } catch (e) {}
+          
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Ticket: ${categoryLabel}`)
             .setColor(0x5865f2)
+            .setDescription(`**Roles:** ${userRoles}`)
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
               { name: "Category", value: categoryLabel, inline: true }
@@ -5305,9 +5240,23 @@ client.on("interactionCreate", async (interaction) => {
           await storage.updateAppealThread(thread.id, { channelId: newChannel.id });
 
           const staffRoleMentions = config.appealStaffRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
+          
+          // Get user's roles from the guild
+          let userRoles = "None";
+          try {
+            const member = await guild.members.fetch(user.id);
+            const roles = member.roles.cache
+              .filter(r => r.id !== guild.id)
+              .sort((a, b) => b.position - a.position)
+              .map(r => `<@&${r.id}>`)
+              .slice(0, 15);
+            userRoles = roles.length > 0 ? roles.join(", ") : "None";
+          } catch (e) {}
+          
           const initialEmbed = new EmbedBuilder()
             .setTitle("New Ban Appeal")
             .setColor(0xff6b6b)
+            .setDescription(`**Roles:** ${userRoles}`)
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true }
             )
@@ -6018,80 +5967,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      // Handle category modal configuration
-      if (interaction.customId.startsWith("category_modal_config_")) {
-        if (!await safeDeferReply(interaction)) return;
-
-        const categoryId = interaction.customId.replace("category_modal_config_", "");
-        const q1 = interaction.fields.getTextInputValue("question1").trim();
-        const q2 = interaction.fields.getTextInputValue("question2").trim();
-        const q3 = interaction.fields.getTextInputValue("question3").trim();
-
-        // Build questions array (filter out empty)
-        const questions = [q1, q2, q3].filter(q => q.length > 0);
-
-        const config = await storage.getGuildConfig(interaction.guildId!);
-        let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
-        if (config?.customModmailCategories) {
-          try {
-            customCategories = JSON.parse(config.customModmailCategories);
-          } catch (e) {
-            customCategories = [];
-          }
-        }
-
-        // Built-in category IDs for reference
-        const builtInCategoryIds = ["general", "competitive", "contentcreator", "report", "partnerships", "gfx", "creativewarrior", "vfxeditor"];
-        const builtInLabels: { [key: string]: string } = {
-          "general": "General Inquiries",
-          "competitive": "Apply For Competitive",
-          "contentcreator": "Apply For Content Creator",
-          "report": "User Reports",
-          "partnerships": "Partnerships",
-          "gfx": "Apply For GFX Editor",
-          "creativewarrior": "Apply For Creative Warrior",
-          "vfxeditor": "Apply For VFX Editor"
-        };
-
-        // Find existing category or create if built-in
-        let category = customCategories.find(c => c.id === categoryId);
-        
-        if (!category && builtInCategoryIds.includes(categoryId)) {
-          // For built-in categories, add them to custom with modal questions
-          category = {
-            id: categoryId,
-            label: builtInLabels[categoryId] || categoryId,
-            description: `${builtInLabels[categoryId] || categoryId} category`,
-            emoji: "📌",
-            modalQuestions: questions
-          };
-          customCategories.push(category);
-        } else if (category) {
-          category.modalQuestions = questions;
-        } else {
-          await interaction.editReply({ content: `❌ Category \`${categoryId}\` not found.` });
-          return;
-        }
-
-        await storage.upsertGuildConfig({
-          guildId: interaction.guildId!,
-          customModmailCategories: JSON.stringify(customCategories),
-        });
-
-        if (questions.length === 0) {
-          await interaction.editReply({
-            content: `✅ Form removed from category **${category.label}**. Users will now open tickets without a form.`,
-          });
-        } else {
-          const questionList = questions.map((q, i) => `${i + 1}. ${q}`).join("\n");
-          await interaction.editReply({
-            content: `✅ Form configured for category **${category.label}**!\n\n**Questions:**\n${questionList}\n\n⚠️ Run \`/setup_modmail\` again to update the ticket dropdown.`,
-          });
-        }
-        return;
-      }
-
-      // Handle custom category modals (configured with /modmail-category modal)
+      // Handle custom category modals
       if (interaction.customId.startsWith("ticket_custom_modal::")) {
         if (!await safeDeferReply(interaction)) return;
 
@@ -6180,10 +6056,23 @@ client.on("interactionCreate", async (interaction) => {
           const pingRoles = config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
+          // Get user's roles from the guild
+          let userRoles = "None";
+          try {
+            const member = await guild.members.fetch(user.id);
+            const roles = member.roles.cache
+              .filter(r => r.id !== guild.id)
+              .sort((a, b) => b.position - a.position)
+              .map(r => `<@&${r.id}>`)
+              .slice(0, 15);
+            userRoles = roles.length > 0 ? roles.join(", ") : "None";
+          } catch (e) {}
+
           // Create initial embed with application info
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Ticket: ${categoryLabel}`)
             .setColor(0x5865f2)
+            .setDescription(`**Roles:** ${userRoles}`)
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
               { name: "Category", value: categoryLabel, inline: true },
@@ -6233,8 +6122,6 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) {}
           }
 
-          // Log activity
-          await storage.logModmailActivity(guildId, user.id);
         } catch (error) {
           console.log("Could not create ticket channel:", error);
           await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
@@ -6349,10 +6236,23 @@ client.on("interactionCreate", async (interaction) => {
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
+          // Get user's roles from the guild
+          let userRoles = "None";
+          try {
+            const member = await guild.members.fetch(user.id);
+            const roles = member.roles.cache
+              .filter(r => r.id !== guild.id)
+              .sort((a, b) => b.position - a.position)
+              .map(r => `<@&${r.id}>`)
+              .slice(0, 15);
+            userRoles = roles.length > 0 ? roles.join(", ") : "None";
+          } catch (e) {}
+
           // Create initial embed with application info
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Application: ${categoryLabel}`)
             .setColor(0x5865f2)
+            .setDescription(`**Roles:** ${userRoles}`)
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
               { name: "Category", value: categoryLabel, inline: true },
@@ -6508,9 +6408,21 @@ client.on("interactionCreate", async (interaction) => {
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
+          // Get user's roles from the guild
+          let userRoles = "None";
+          try {
+            const member = await guild.members.fetch(user.id);
+            const roles = member.roles.cache
+              .filter(r => r.id !== guild.id)
+              .sort((a, b) => b.position - a.position)
+              .map(r => `<@&${r.id}>`)
+              .slice(0, 15);
+            userRoles = roles.length > 0 ? roles.join(", ") : "None";
+          } catch (e) {}
+
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Application: ${categoryLabel}`)
-            .setDescription("**Submitted via DM**")
+            .setDescription(`**Submitted via DM**\n\n**Roles:** ${userRoles}`)
             .setColor(0x5865f2)
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
