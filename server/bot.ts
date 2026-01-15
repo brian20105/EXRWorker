@@ -3060,67 +3060,37 @@ client.on("interactionCreate", async (interaction) => {
           const grandTotal = leaderboardData.reduce((sum, e) => sum + e.total, 0);
 
           // Build header with order explanation
-          const header = `**Activity Check for ${guildRole.name}**\n${timeRangeDesc}\n\n**Order goes as follow:** MM (Modmail) | AP (Appeals) | BN (Bans) | UB (Unbans) | SR (Staff Reports) | Total\n`;
+          const header = `**Activity Check for ${guildRole.name}**\n${timeRangeDesc}\n\n**Order goes as follow:** MM (Modmail) | AP (Appeals) | BN (Bans) | UB (Unbans) | SR (Staff Reports) | Total\n\n`;
           const totalsLine = `\n**Totals:** MM: ${totalModmail} | AP: ${totalAppeal} | BN: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | **Total: ${grandTotal}**`;
 
-          // Build table rows with usernames (copyable in code block)
-          const tableHeader = "User                         | MM | AP | BN | UB | SR | Total";
-          const tableDivider = "-----------------------------|----|----|----|----|----|----- ";
+          // Build rows with pings (outside code block so they actually ping)
           const rows = leaderboardData.map(entry => {
-            const name = entry.username.substring(0, 28).padEnd(28);
-            const mm = entry.modmail.toString().padStart(2);
-            const ap = entry.appeal.toString().padStart(2);
-            const bn = entry.ban.toString().padStart(2);
-            const ub = entry.unban.toString().padStart(2);
-            const sr = entry.staffreport.toString().padStart(2);
-            const tot = entry.total.toString().padStart(5);
-            return `${name} | ${mm} | ${ap} | ${bn} | ${ub} | ${sr} | ${tot}`;
+            const mm = entry.modmail.toString();
+            const ap = entry.appeal.toString();
+            const bn = entry.ban.toString();
+            const ub = entry.unban.toString();
+            const sr = entry.staffreport.toString();
+            const tot = entry.total.toString();
+            return `<@${entry.userId}> | MM: ${mm} | AP: ${ap} | BN: ${bn} | UB: ${ub} | SR: ${sr} | **Total: ${tot}**`;
           });
 
           // Split into chunks if needed (Discord limit is 2000 chars)
           const messages: string[] = [];
-          let currentMessage = header + "```\n" + tableHeader + "\n" + tableDivider + "\n";
+          let currentMessage = header;
           
           for (const row of rows) {
             const testMessage = currentMessage + row + "\n";
-            if ((testMessage + "```").length > 1900) {
-              // Finalize current message with code block
-              messages.push(currentMessage + "```");
-              currentMessage = "```\n" + tableHeader + "\n" + tableDivider + "\n" + row + "\n";
+            if (testMessage.length > 1800) {
+              messages.push(currentMessage);
+              currentMessage = row + "\n";
             } else {
               currentMessage = testMessage;
             }
           }
           
-          // Build ping list (copyable in code block)
-          const pingListText = leaderboardData.map(entry => `<@${entry.userId}>`).join(" ");
-          const pingSection = `\n\n**Ping list (copyable):**\n\`\`\`\n${pingListText}\n\`\`\``;
-          
-          // Add final message with code block, totals, and ping list
-          currentMessage = currentMessage + "```" + totalsLine + pingSection;
-          
-          // If message is too long, split ping section
-          if (currentMessage.length > 1900) {
-            // Send table with totals first
-            messages.push(currentMessage.replace(pingSection, ""));
-            
-            // Split ping list into chunks
-            const pingChunks: string[] = [];
-            let currentPingChunk = "**Ping list (copyable):**\n```\n";
-            for (const entry of leaderboardData) {
-              const mention = `<@${entry.userId}> `;
-              if ((currentPingChunk + mention + "```").length > 1900) {
-                pingChunks.push(currentPingChunk + "```");
-                currentPingChunk = "```\n" + mention;
-              } else {
-                currentPingChunk += mention;
-              }
-            }
-            pingChunks.push(currentPingChunk + "\n```");
-            messages.push(...pingChunks);
-          } else {
-            messages.push(currentMessage);
-          }
+          // Add totals to the last message
+          currentMessage = currentMessage + totalsLine;
+          messages.push(currentMessage);
 
           // Send first message as reply, rest as followups
           await interaction.editReply({ content: messages[0] });
