@@ -5301,14 +5301,12 @@ client.on("interactionCreate", async (interaction) => {
             // console.log("[MODMAIL] Could not DM user about ticket close");
           }
 
-          // Delete channel after delay
+          // Delete channel immediately (no delay)
           if (channelId) {
-            setTimeout(async () => {
-              try {
-                const chan = await client.channels.fetch(channelId);
-                if (chan) await chan.delete();
-              } catch (e) { }
-            }, 3000);
+            try {
+              const chan = await client.channels.fetch(channelId);
+              if (chan) await chan.delete();
+            } catch (e) { }
           }
         })().catch(e => {});
         } catch (error: any) {
@@ -7898,13 +7896,11 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    // Delete channel after delay
-    await message.reply("Ticket closed. Deleting channel...");
-    setTimeout(async () => {
-      try {
-        await (message.channel as any).delete();
-      } catch (e) {}
-    }, 3000);
+    // Delete channel immediately
+    await message.reply("Ticket closed.");
+    try {
+      await (message.channel as any).delete();
+    } catch (e) {}
     return;
   }
 
