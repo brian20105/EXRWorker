@@ -1383,31 +1383,18 @@ async function updateRosterMessages(guildId: string): Promise<void> {
         if (channel && "send" in channel) {
           const newContent = await generatePlayerRoster(guild);
 
-          // Try to edit existing message
+          // Only update existing message - never create new ones automatically
           if (config.playerRosterMessageId) {
             try {
               const message = await (channel as any).messages.fetch(config.playerRosterMessageId);
               await message.edit({ content: newContent });
               // console.log("[ROSTER] Updated player roster successfully");
             } catch (fetchError: any) {
-              // Message deleted - create new one
-              // console.log("[ROSTER] Player roster message not found, creating new one");
-              const newMessage = await (channel as any).send({ content: newContent });
-              await storage.upsertGuildConfig({
-                guildId,
-                playerRosterMessageId: newMessage.id,
-              });
-              // console.log("[ROSTER] Created new player roster message");
+              // Message deleted - don't create new one, require manual setup
+              console.log("[ROSTER] Player roster message not found, skipping auto-update (use /roster to re-setup)");
             }
-          } else {
-            // No message ID configured - create new one
-            const newMessage = await (channel as any).send({ content: newContent });
-            await storage.upsertGuildConfig({
-              guildId,
-              playerRosterMessageId: newMessage.id,
-            });
-            // console.log("[ROSTER] Created new player roster message");
           }
+          // If no message ID, skip - require explicit /roster command to set up
         } else {
           // console.log("[ROSTER] Channel not a text channel");
         }
@@ -1426,31 +1413,18 @@ async function updateRosterMessages(guildId: string): Promise<void> {
         if (channel && "send" in channel) {
           const newContent = await generateStaffRoster(guild);
 
-          // Try to edit existing message
+          // Only update existing message - never create new ones automatically
           if (config.staffRosterMessageId) {
             try {
               const message = await (channel as any).messages.fetch(config.staffRosterMessageId);
               await message.edit({ content: newContent });
               // console.log("[ROSTER] Updated staff roster successfully");
             } catch (fetchError: any) {
-              // Message deleted - create new one
-              // console.log("[ROSTER] Staff roster message not found, creating new one");
-              const newMessage = await (channel as any).send({ content: newContent });
-              await storage.upsertGuildConfig({
-                guildId,
-                staffRosterMessageId: newMessage.id,
-              });
-              // console.log("[ROSTER] Created new staff roster message");
+              // Message deleted - don't create new one, require manual setup
+              console.log("[ROSTER] Staff roster message not found, skipping auto-update (use /roster to re-setup)");
             }
-          } else {
-            // No message ID configured - create new one
-            const newMessage = await (channel as any).send({ content: newContent });
-            await storage.upsertGuildConfig({
-              guildId,
-              staffRosterMessageId: newMessage.id,
-            });
-            // console.log("[ROSTER] Created new staff roster message");
           }
+          // If no message ID, skip - require explicit /roster command to set up
         } else {
           // console.log("[ROSTER] Channel not a text channel");
         }
