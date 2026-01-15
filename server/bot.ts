@@ -8725,11 +8725,14 @@ client.on("messageCreate", async (message) => {
         }
       }
 
-      // Update in database
+      // Update in database - preserve [Anonymous] prefix if it was an anonymous message
+      const isAnonymousMessage = modmailMsg.content?.startsWith("[Anonymous]");
+      const updatedContent = isAnonymousMessage ? `[Anonymous] ${newContent}` : newContent;
+      
       if (isAppeal) {
-        await storage.updateAppealMessage(modmailMsg.id, { content: newContent });
+        await storage.updateAppealMessage(modmailMsg.id, { content: updatedContent });
       } else {
-        await storage.updateModmailMessage(modmailMsg.id, { content: newContent });
+        await storage.updateModmailMessage(modmailMsg.id, { content: updatedContent });
       }
 
       // Delete the edit command message
