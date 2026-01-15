@@ -4607,8 +4607,8 @@ client.on("interactionCreate", async (interaction) => {
           await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
 
           const claimEmbed = new EmbedBuilder()
-            .setDescription(`**Ticket claimed by <@${interaction.user.id}>**`)
-            .setColor(0x5865f2)
+            .setDescription(`Claimed by ${interaction.user.username}`)
+            .setColor(0xed4245)
             .setTimestamp();
 
           // Update button to show claimed state while preserving other buttons
@@ -7088,10 +7088,43 @@ client.on("messageCreate", async (message) => {
     }
 
     const claimEmbed = new EmbedBuilder()
-      .setDescription(`Ticket claimed by <@${message.author.id}>`)
-      .setColor(0x5865f2)
+      .setDescription(`Claimed by ${message.author.username}`)
+      .setColor(0xed4245)
       .setTimestamp();
     await (message.channel as any).send({ embeds: [claimEmbed] });
+
+    // Find and update the message with the claim button to show claimed state
+    try {
+      const messages = await (message.channel as any).messages.fetch({ limit: 50 });
+      const buttonMessage = messages.find((m: any) => 
+        m.components.length > 0 && 
+        m.components.some((row: any) => 
+          row.components.some((c: any) => c.customId === `modmail_claim_${thread.id}` || c.customId === `appeal_claim_${thread.id}`)
+        )
+      );
+      if (buttonMessage) {
+        const claimButtonId = isAppeal ? `appeal_claim_${thread.id}` : `modmail_claim_${thread.id}`;
+        const closeButtonId = isAppeal ? `appeal_close_${thread.id}` : `modmail_close_${thread.id}`;
+        await buttonMessage.edit({
+          components: [
+            new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(claimButtonId)
+                .setLabel(`Claimed by ${message.author.username}`)
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(true),
+              new ButtonBuilder()
+                .setCustomId(closeButtonId)
+                .setLabel("Close")
+                .setStyle(ButtonStyle.Danger)
+                .setEmoji("🔒")
+            )
+          ]
+        });
+      }
+    } catch (e) {
+      console.log("Could not update claim button:", e);
+    }
 
     // Start 15-minute claim expiry timer
     const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
@@ -7167,8 +7200,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !or and !unclaim command (claimer or admin can unclaim) - works in both modmail and appeal channels
-  if (message.guild && (lowerContent === `${lowerPrefix}or` || lowerContent === `${lowerPrefix}unclaim`)) {
+  // Handle !or, !override, and !unclaim command (claimer or admin can unclaim) - works in both modmail and appeal channels
+  if (message.guild && (lowerContent === `${lowerPrefix}or` || lowerContent === `${lowerPrefix}override` || lowerContent === `${lowerPrefix}unclaim`)) {
     const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
@@ -8632,8 +8665,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle .sub command to subscribe/unsubscribe from a ticket
-  if (message.guild && lowerContent.startsWith(`${lowerPrefix}sub`)) {
+  // Handle .sub, .subscribe, .unsubscribe commands to subscribe/unsubscribe from a ticket
+  if (message.guild && (lowerContent === `${lowerPrefix}sub` || lowerContent === `${lowerPrefix}subscribe` || lowerContent === `${lowerPrefix}unsubscribe`)) {
     // Check for modmail thread first, then appeal thread
     const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
@@ -8647,13 +8680,26 @@ client.on("messageCreate", async (message) => {
     try {
       const currentSubs = thread.subscribedUserIds || [];
       const isSubscribed = currentSubs.includes(message.author.id);
+      const wantsToUnsubscribe = lowerContent === `${lowerPrefix}unsubscribe`;
       let newSubs;
       let action;
 
-      if (isSubscribed) {
+      if (wantsToUnsubscribe) {
+        if (!isSubscribed) {
+          const confirmMsg = await (message.channel as any).send("❌ You are not subscribed to this ticket.");
+          try { await message.delete(); } catch (e) {}
+          setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+          return;
+        }
         newSubs = currentSubs.filter(id => id !== message.author.id);
         action = "unsubscribed from";
       } else {
+        if (isSubscribed) {
+          const confirmMsg = await (message.channel as any).send("❌ You are already subscribed to this ticket.");
+          try { await message.delete(); } catch (e) {}
+          setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+          return;
+        }
         newSubs = [...currentSubs, message.author.id];
         action = "subscribed to";
       }
