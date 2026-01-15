@@ -3114,37 +3114,40 @@ client.on("interactionCreate", async (interaction) => {
           const grandTotal = leaderboardData.reduce((sum, e) => sum + e.total, 0);
 
           // Build header with order explanation
-          const header = `**Activity Check for ${guildRole.name}**\n${timeRangeDesc}\n\n**Order goes as follow:** MM (Modmail) | AP (Appeals) | BN (Bans) | UB (Unbans) | SR (Staff Reports) | Total\n\n`;
-          const totalsLine = `**Totals:** MM: ${totalModmail} | AP: ${totalAppeal} | BN: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | **Total: ${grandTotal}**`;
+          const header = `**Activity Check for ${guildRole.name}**\n${timeRangeDesc}\n\n**Order goes as follow:** MM (Modmail) | AP (Appeals) | BN (Bans) | UB (Unbans) | SR (Staff Reports) | Total\n`;
+          const totalsLine = `\n**Totals:** MM: ${totalModmail} | AP: ${totalAppeal} | BN: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | **Total: ${grandTotal}**`;
 
-          // Build table rows with pings
+          // Build table rows with usernames (copyable in code block)
+          const tableHeader = "User                         | MM | AP | BN | UB | SR | Total";
+          const tableDivider = "-----------------------------|----|----|----|----|----|----- ";
           const rows = leaderboardData.map(entry => {
-            const mm = entry.modmail.toString();
-            const ap = entry.appeal.toString();
-            const bn = entry.ban.toString();
-            const ub = entry.unban.toString();
-            const sr = entry.staffreport.toString();
-            const tot = entry.total.toString();
-            return `<@${entry.userId}> - ${mm} | ${ap} | ${bn} | ${ub} | ${sr} | ${tot}`;
+            const name = entry.username.substring(0, 28).padEnd(28);
+            const mm = entry.modmail.toString().padStart(2);
+            const ap = entry.appeal.toString().padStart(2);
+            const bn = entry.ban.toString().padStart(2);
+            const ub = entry.unban.toString().padStart(2);
+            const sr = entry.staffreport.toString().padStart(2);
+            const tot = entry.total.toString().padStart(5);
+            return `${name} | ${mm} | ${ap} | ${bn} | ${ub} | ${sr} | ${tot}`;
           });
 
           // Split into chunks if needed (Discord limit is 2000 chars)
           const messages: string[] = [];
-          let currentMessage = header;
+          let currentMessage = header + "```\n" + tableHeader + "\n" + tableDivider + "\n";
           
           for (const row of rows) {
             const testMessage = currentMessage + row + "\n";
-            if (testMessage.length > 1900) {
-              // Finalize current message
-              messages.push(currentMessage);
-              currentMessage = row + "\n";
+            if ((testMessage + "```").length > 1900) {
+              // Finalize current message with code block
+              messages.push(currentMessage + "```");
+              currentMessage = "```\n" + tableHeader + "\n" + tableDivider + "\n" + row + "\n";
             } else {
               currentMessage = testMessage;
             }
           }
           
-          // Add final message with totals
-          currentMessage = currentMessage + "\n" + totalsLine;
+          // Add final message with code block and totals
+          currentMessage = currentMessage + "```" + totalsLine;
           messages.push(currentMessage);
 
           // Send first message as reply, rest as followups
