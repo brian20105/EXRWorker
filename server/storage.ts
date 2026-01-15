@@ -1618,23 +1618,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getModerationStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ moderatorId: string; warns: number; mutes: number; kicks: number; bans: number }[]> {
-    let query = db.select({
-      moderatorId: moderationActions.moderatorId,
-      actionType: moderationActions.actionType,
-    }).from(moderationActions).where(eq(moderationActions.guildId, guildId));
+    const conditions = [eq(moderationActions.guildId, guildId)];
 
     if (fromDays !== undefined) {
       const fromDate = new Date();
       fromDate.setDate(fromDate.getDate() - fromDays);
-      query = query.where(gte(moderationActions.createdAt, fromDate)) as any;
+      conditions.push(gte(moderationActions.createdAt, fromDate));
     }
     if (toDays !== undefined) {
       const toDate = new Date();
       toDate.setDate(toDate.getDate() - toDays);
-      query = query.where(lte(moderationActions.createdAt, toDate)) as any;
+      conditions.push(lte(moderationActions.createdAt, toDate));
     }
 
-    const results = await query;
+    const results = await db.select({
+      moderatorId: moderationActions.moderatorId,
+      actionType: moderationActions.actionType,
+    }).from(moderationActions).where(and(...conditions));
     
     // Aggregate by moderator
     const statsMap = new Map<string, { warns: number; mutes: number; kicks: number; bans: number }>();

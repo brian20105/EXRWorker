@@ -1172,6 +1172,72 @@ const commands = [
         .setDescription("The channel where command logs will be sent")
         .setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName("roster")
+    .setDescription("Manage roster configurations")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub.setName("add").setDescription("Create a new roster configuration")
+        .addStringOption((option) => option.setName("name").setDescription("Roster name").setRequired(true))
+        .addRoleOption((option) => option.setName("role1").setDescription("Role 1 (top)").setRequired(true))
+        .addRoleOption((option) => option.setName("role2").setDescription("Role 2").setRequired(false))
+        .addRoleOption((option) => option.setName("role3").setDescription("Role 3").setRequired(false))
+        .addRoleOption((option) => option.setName("role4").setDescription("Role 4").setRequired(false))
+        .addRoleOption((option) => option.setName("role5").setDescription("Role 5").setRequired(false))
+        .addRoleOption((option) => option.setName("role6").setDescription("Role 6").setRequired(false))
+        .addRoleOption((option) => option.setName("role7").setDescription("Role 7").setRequired(false))
+        .addRoleOption((option) => option.setName("role8").setDescription("Role 8").setRequired(false))
+        .addRoleOption((option) => option.setName("role9").setDescription("Role 9").setRequired(false))
+        .addRoleOption((option) => option.setName("role10").setDescription("Role 10").setRequired(false))
+        .addRoleOption((option) => option.setName("role11").setDescription("Role 11").setRequired(false))
+        .addRoleOption((option) => option.setName("role12").setDescription("Role 12").setRequired(false))
+        .addRoleOption((option) => option.setName("role13").setDescription("Role 13").setRequired(false))
+        .addRoleOption((option) => option.setName("role14").setDescription("Role 14").setRequired(false))
+        .addRoleOption((option) => option.setName("role15").setDescription("Role 15").setRequired(false))
+        .addRoleOption((option) => option.setName("role16").setDescription("Role 16").setRequired(false))
+        .addRoleOption((option) => option.setName("role17").setDescription("Role 17").setRequired(false))
+        .addRoleOption((option) => option.setName("role18").setDescription("Role 18").setRequired(false))
+        .addRoleOption((option) => option.setName("role19").setDescription("Role 19").setRequired(false))
+        .addRoleOption((option) => option.setName("role20").setDescription("Role 20 (bottom)").setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub.setName("edit").setDescription("Edit an existing roster configuration")
+        .addStringOption((option) => option.setName("name").setDescription("Roster name").setRequired(true))
+        .addRoleOption((option) => option.setName("role1").setDescription("Role 1 (top)").setRequired(true))
+        .addRoleOption((option) => option.setName("role2").setDescription("Role 2").setRequired(false))
+        .addRoleOption((option) => option.setName("role3").setDescription("Role 3").setRequired(false))
+        .addRoleOption((option) => option.setName("role4").setDescription("Role 4").setRequired(false))
+        .addRoleOption((option) => option.setName("role5").setDescription("Role 5").setRequired(false))
+        .addRoleOption((option) => option.setName("role6").setDescription("Role 6").setRequired(false))
+        .addRoleOption((option) => option.setName("role7").setDescription("Role 7").setRequired(false))
+        .addRoleOption((option) => option.setName("role8").setDescription("Role 8").setRequired(false))
+        .addRoleOption((option) => option.setName("role9").setDescription("Role 9").setRequired(false))
+        .addRoleOption((option) => option.setName("role10").setDescription("Role 10").setRequired(false))
+        .addRoleOption((option) => option.setName("role11").setDescription("Role 11").setRequired(false))
+        .addRoleOption((option) => option.setName("role12").setDescription("Role 12").setRequired(false))
+        .addRoleOption((option) => option.setName("role13").setDescription("Role 13").setRequired(false))
+        .addRoleOption((option) => option.setName("role14").setDescription("Role 14").setRequired(false))
+        .addRoleOption((option) => option.setName("role15").setDescription("Role 15").setRequired(false))
+        .addRoleOption((option) => option.setName("role16").setDescription("Role 16").setRequired(false))
+        .addRoleOption((option) => option.setName("role17").setDescription("Role 17").setRequired(false))
+        .addRoleOption((option) => option.setName("role18").setDescription("Role 18").setRequired(false))
+        .addRoleOption((option) => option.setName("role19").setDescription("Role 19").setRequired(false))
+        .addRoleOption((option) => option.setName("role20").setDescription("Role 20 (bottom)").setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub.setName("delete").setDescription("Delete a roster configuration")
+        .addStringOption((option) => option.setName("name").setDescription("Roster name to delete").setRequired(true))
+    )
+    .addSubcommand((sub) =>
+      sub.setName("list").setDescription("List all roster configurations")
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_roster")
+    .setDescription("Post a roster display in the current channel")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option.setName("name").setDescription("Roster name to display").setRequired(true)
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -1497,6 +1563,48 @@ async function updateRosterMessages(guildId: string): Promise<void> {
       }
     } else {
       // console.log("[ROSTER] No staff roster channel configured");
+    }
+
+    // Update custom rosters
+    try {
+      const customRosters = await storage.getAllRosterConfigs(guildId);
+      for (const roster of customRosters) {
+        if (!roster.messageId || !roster.channelId) continue;
+
+        try {
+          const channel = await client.channels.fetch(roster.channelId);
+          if (channel && "send" in channel) {
+            // Generate roster content
+            let rosterContent = `**${roster.name.charAt(0).toUpperCase() + roster.name.slice(1)} Roster**\n\n`;
+
+            for (const roleId of roster.roleIds) {
+              const role = guild.roles.cache.get(roleId);
+              if (!role) continue;
+
+              rosterContent += `<@&${roleId}>\n\n`;
+              const members = role.members.map((m: any) => `<@${m.id}>`);
+              if (members.length === 0) {
+                rosterContent += "N/A\n";
+              } else {
+                rosterContent += members.join("\n") + "\n";
+              }
+              rosterContent += "\n";
+            }
+
+            try {
+              const message = await (channel as any).messages.fetch(roster.messageId);
+              await message.edit({ content: rosterContent });
+            } catch (fetchError: any) {
+              // Message deleted - clear the message ID
+              await storage.updateRosterConfig(guildId, roster.name, { messageId: undefined, channelId: undefined });
+            }
+          }
+        } catch (error: any) {
+          // Channel not found or other error
+        }
+      }
+    } catch (error: any) {
+      // Could not fetch custom rosters
     }
   } catch (error) {
     console.error("[ROSTER] Error updating roster messages:", error);
@@ -4301,6 +4409,163 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Command logs will be sent to <#${channel.id}>!`,
         });
+      } else if (commandName === "roster") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const subcommand = interaction.options.getSubcommand();
+
+        if (subcommand === "add") {
+          const name = interaction.options.getString("name", true).toLowerCase();
+          
+          // Check if roster already exists
+          const existing = await storage.getRosterConfig(interaction.guildId!, name);
+          if (existing) {
+            await interaction.editReply({ content: `❌ A roster named **${name}** already exists. Use \`/roster edit\` to modify it.` });
+            return;
+          }
+
+          // Collect roles
+          const roleIds: string[] = [];
+          for (let i = 1; i <= 20; i++) {
+            const role = interaction.options.getRole(`role${i}`);
+            if (role) roleIds.push(role.id);
+          }
+
+          if (roleIds.length === 0) {
+            await interaction.editReply({ content: "❌ You must provide at least one role." });
+            return;
+          }
+
+          await storage.createRosterConfig({
+            guildId: interaction.guildId!,
+            name: name,
+            roleIds: roleIds,
+          });
+
+          await interaction.editReply({ 
+            content: `✅ Created roster **${name}** with ${roleIds.length} role(s).\n\nUse \`/setup_roster ${name}\` to post it in a channel.` 
+          });
+
+        } else if (subcommand === "edit") {
+          const name = interaction.options.getString("name", true).toLowerCase();
+          
+          // Check if roster exists
+          const existing = await storage.getRosterConfig(interaction.guildId!, name);
+          if (!existing) {
+            await interaction.editReply({ content: `❌ No roster named **${name}** found. Use \`/roster add\` to create one.` });
+            return;
+          }
+
+          // Collect new roles
+          const roleIds: string[] = [];
+          for (let i = 1; i <= 20; i++) {
+            const role = interaction.options.getRole(`role${i}`);
+            if (role) roleIds.push(role.id);
+          }
+
+          if (roleIds.length === 0) {
+            await interaction.editReply({ content: "❌ You must provide at least one role." });
+            return;
+          }
+
+          await storage.updateRosterConfig(interaction.guildId!, name, { roleIds });
+
+          await interaction.editReply({ 
+            content: `✅ Updated roster **${name}** with ${roleIds.length} role(s).` 
+          });
+
+        } else if (subcommand === "delete") {
+          const name = interaction.options.getString("name", true).toLowerCase();
+          
+          const existing = await storage.getRosterConfig(interaction.guildId!, name);
+          if (!existing) {
+            await interaction.editReply({ content: `❌ No roster named **${name}** found.` });
+            return;
+          }
+
+          await storage.deleteRosterConfig(interaction.guildId!, name);
+
+          await interaction.editReply({ content: `✅ Deleted roster **${name}**.` });
+
+        } else if (subcommand === "list") {
+          const rosters = await storage.getAllRosterConfigs(interaction.guildId!);
+
+          if (rosters.length === 0) {
+            await interaction.editReply({ content: "No rosters configured yet. Use `/roster add` to create one." });
+            return;
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle("Roster Configurations")
+            .setColor(0x5865f2)
+            .setDescription(rosters.map(r => {
+              const rolesList = r.roleIds.slice(0, 5).map(id => `<@&${id}>`).join(", ");
+              const moreRoles = r.roleIds.length > 5 ? ` +${r.roleIds.length - 5} more` : "";
+              const posted = r.messageId ? " 📌" : "";
+              return `**${r.name}**${posted} (${r.roleIds.length} roles)\n${rolesList}${moreRoles}`;
+            }).join("\n\n"))
+            .setFooter({ text: "📌 = Posted in a channel" });
+
+          await interaction.editReply({ embeds: [embed] });
+        }
+
+      } else if (commandName === "setup_roster") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const name = interaction.options.getString("name", true).toLowerCase();
+        const roster = await storage.getRosterConfig(interaction.guildId!, name);
+
+        if (!roster) {
+          await interaction.editReply({ content: `❌ No roster named **${name}** found. Use \`/roster add\` to create one first.` });
+          return;
+        }
+
+        const guild = interaction.guild;
+        if (!guild) {
+          await interaction.editReply({ content: "❌ This command must be used in a server." });
+          return;
+        }
+
+        // Fetch members
+        try {
+          await guild.members.fetch({ time: 30000 });
+        } catch (e) {
+          console.log("Could not fully fetch members for roster");
+        }
+
+        // Generate roster content
+        let rosterContent = `**${name.charAt(0).toUpperCase() + name.slice(1)} Roster**\n\n`;
+
+        for (const roleId of roster.roleIds) {
+          const role = guild.roles.cache.get(roleId);
+          if (!role) continue;
+
+          rosterContent += `<@&${roleId}>\n\n`;
+          const members = role.members.map((m: any) => `<@${m.id}>`);
+          if (members.length === 0) {
+            rosterContent += "N/A\n";
+          } else {
+            rosterContent += members.join("\n") + "\n";
+          }
+          rosterContent += "\n";
+        }
+
+        // Post the roster
+        if (interaction.channel && "send" in interaction.channel) {
+          const sentMessage = await interaction.channel.send({ content: rosterContent });
+          
+          // Save the message ID and channel ID for real-time updates
+          await storage.updateRosterConfig(interaction.guildId!, name, {
+            messageId: sentMessage.id,
+            channelId: interaction.channel.id,
+          });
+
+          await interaction.editReply({
+            content: `✅ Posted **${name}** roster! It will update automatically when role membership changes.`,
+          });
+        } else {
+          await interaction.editReply({ content: "❌ Could not send message in this channel." });
+        }
       }
     } else if (interaction.isStringSelectMenu()) {
       // Handle category removal selection
