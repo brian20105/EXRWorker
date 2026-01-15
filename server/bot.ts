@@ -1178,7 +1178,7 @@ const commands = [
     )
     .addSubcommand((sub) =>
       sub.setName("edit").setDescription("Edit an existing roster configuration")
-        .addStringOption((option) => option.setName("name").setDescription("Roster name").setRequired(true))
+        .addStringOption((option) => option.setName("name").setDescription("Roster name").setRequired(true).setAutocomplete(true))
         .addRoleOption((option) => option.setName("role1").setDescription("Role 1 (top)").setRequired(true))
         .addRoleOption((option) => option.setName("role2").setDescription("Role 2").setRequired(false))
         .addRoleOption((option) => option.setName("role3").setDescription("Role 3").setRequired(false))
@@ -1202,7 +1202,7 @@ const commands = [
     )
     .addSubcommand((sub) =>
       sub.setName("delete").setDescription("Delete a roster configuration")
-        .addStringOption((option) => option.setName("name").setDescription("Roster name to delete").setRequired(true))
+        .addStringOption((option) => option.setName("name").setDescription("Roster name to delete").setRequired(true).setAutocomplete(true))
     )
     .addSubcommand((sub) =>
       sub.setName("list").setDescription("List all roster configurations")
@@ -1212,7 +1212,7 @@ const commands = [
     .setDescription("Post a roster display in the current channel")
     .setDefaultMemberPermissions(0)
     .addStringOption((option) =>
-      option.setName("name").setDescription("Roster name to display").setRequired(true)
+      option.setName("name").setDescription("Roster name to display").setRequired(true).setAutocomplete(true)
     ),
 ].map((command) => command.toJSON());
 
@@ -1630,6 +1630,36 @@ client.on("interactionCreate", async (interaction) => {
     // Check if interaction is still valid
     if (interaction.isRepliable() && interaction.replied) {
       console.log('Interaction already replied to:', interaction.id);
+      return;
+    }
+
+    // Handle autocomplete interactions
+    if (interaction.isAutocomplete()) {
+      const { commandName } = interaction;
+      const focusedOption = interaction.options.getFocused(true);
+      
+      // Handle roster name autocomplete
+      if ((commandName === "roster" || commandName === "setup_roster") && focusedOption.name === "name") {
+        try {
+          const guildId = interaction.guildId;
+          if (!guildId) {
+            await interaction.respond([]);
+            return;
+          }
+          
+          const rosters = await storage.getRosterConfigsByGuild(guildId);
+          const filtered = rosters
+            .filter(r => r.name.toLowerCase().includes(focusedOption.value.toLowerCase()))
+            .slice(0, 25)
+            .map(r => ({ name: r.name, value: r.name }));
+          
+          await interaction.respond(filtered);
+        } catch (e) {
+          await interaction.respond([]).catch(() => {});
+        }
+        return;
+      }
+      
       return;
     }
 
