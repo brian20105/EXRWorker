@@ -2531,7 +2531,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (!category || category === "ban") {
               banStats = useAllGuilds
-                ? await storage.getAllGuildsActivityStats(fromDays, toDays)
+                ? await storage.getAllGuildsBanStats(fromDays, toDays)
                 : await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
             }
           } catch (e) {
@@ -2541,7 +2541,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (!category || category === "unban") {
               unbanStats = useAllGuilds
-                ? [] // Combined in banStats for all guilds
+                ? await storage.getAllGuildsUnbanStats(fromDays, toDays)
                 : await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
             }
           } catch (e) {
@@ -6683,21 +6683,34 @@ client.on("interactionCreate", async (interaction) => {
         });
 
         const message = interaction.message;
-        if (message && message.embeds[0]) {
+        if (message) {
           const status = action === "approve" ? "✅ Approved" : "❌ Denied";
           const color = action === "approve" ? 0x23a559 : 0xda373c;
 
-          const oldEmbed = message.embeds[0];
+          // Get config to rebuild questions
+          const config = await storage.getGuildConfig(submission.guildId);
+          const fullQuestions = getFullQuestions(config);
+
           const embed = new EmbedBuilder()
             .setTitle(`Staff Intro Submission - ${action === "approve" ? "Approved" : "Denied"}`)
             .setColor(color)
-            .setDescription(oldEmbed.description || "");
+            .setDescription(`**Submitted by:** <@${submission.userId}>`);
 
-          // Preserve the original Q&A fields from the embed
-          if (oldEmbed.fields && oldEmbed.fields.length > 0) {
-            for (const field of oldEmbed.fields) {
-              embed.addFields({ name: field.name, value: field.value, inline: field.inline || false });
-            }
+          // Rebuild Q&A fields from stored submission data (not from old embed which may be stripped)
+          if (submission.answer1) {
+            embed.addFields({ name: `Q1: ${fullQuestions[0]}`, value: submission.answer1, inline: false });
+          }
+          if (submission.answer2) {
+            embed.addFields({ name: `Q2: ${fullQuestions[1]}`, value: submission.answer2, inline: false });
+          }
+          if (submission.answer3) {
+            embed.addFields({ name: `Q3: ${fullQuestions[2]}`, value: submission.answer3, inline: false });
+          }
+          if (submission.answer4) {
+            embed.addFields({ name: `Q4: ${fullQuestions[3]}`, value: submission.answer4, inline: false });
+          }
+          if (submission.answer5) {
+            embed.addFields({ name: `Q5: ${fullQuestions[4]}`, value: submission.answer5, inline: false });
           }
 
           embed.addFields(

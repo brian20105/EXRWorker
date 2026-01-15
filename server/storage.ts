@@ -123,6 +123,8 @@ export interface IStorage {
   getStaffReportStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
   getStaffReportStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
   getAllGuildsActivityStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsBanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsUnbanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   getAllGuildsModmailStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   
@@ -804,6 +806,58 @@ export class DatabaseStorage implements IStorage {
     }
     for (const r of unbanReqs) {
       // Filter out placeholder entries like staff_report_entry and manual_entry
+      if (r.reviewedById && r.reviewedById !== "staff_report_entry" && r.reviewedById !== "manual_entry") {
+        counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
+      }
+    }
+    
+    return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
+  }
+
+  async getAllGuildsBanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    const now = new Date();
+    
+    let banConditions: any[] = [eq(banRequests.status, "approved")];
+    
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      banConditions.push(gte(banRequests.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      banConditions.push(lte(banRequests.createdAt, toDate));
+    }
+    
+    const banReqs = await db.select().from(banRequests).where(and(...banConditions));
+    
+    const counts: { [userId: string]: number } = {};
+    for (const r of banReqs) {
+      if (r.reviewedById && r.reviewedById !== "staff_report_entry" && r.reviewedById !== "manual_entry") {
+        counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
+      }
+    }
+    
+    return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
+  }
+
+  async getAllGuildsUnbanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+    const now = new Date();
+    
+    let unbanConditions: any[] = [eq(unbanRequests.status, "approved")];
+    
+    if (fromDays !== undefined) {
+      const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
+      unbanConditions.push(gte(unbanRequests.createdAt, fromDate));
+    }
+    if (toDays !== undefined) {
+      const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
+      unbanConditions.push(lte(unbanRequests.createdAt, toDate));
+    }
+    
+    const unbanReqs = await db.select().from(unbanRequests).where(and(...unbanConditions));
+    
+    const counts: { [userId: string]: number } = {};
+    for (const r of unbanReqs) {
       if (r.reviewedById && r.reviewedById !== "staff_report_entry" && r.reviewedById !== "manual_entry") {
         counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
       }
