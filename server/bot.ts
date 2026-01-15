@@ -9642,8 +9642,8 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle .sub, .subscribe, .unsubscribe commands to subscribe/unsubscribe from a ticket
-  if (message.guild && (lowerContent === `${lowerPrefix}sub` || lowerContent === `${lowerPrefix}subscribe` || lowerContent === `${lowerPrefix}unsubscribe`)) {
+  // Handle .sub, .subscribe, .unsub, .unsubscribe commands to subscribe/unsubscribe from a ticket
+  if (message.guild && (lowerContent === `${lowerPrefix}sub` || lowerContent === `${lowerPrefix}subscribe` || lowerContent === `${lowerPrefix}unsub` || lowerContent === `${lowerPrefix}unsubscribe`)) {
     // Check for modmail thread first, then appeal thread
     const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
@@ -9657,24 +9657,20 @@ client.on("messageCreate", async (message) => {
     try {
       const currentSubs = thread.subscribedUserIds || [];
       const isSubscribed = currentSubs.includes(message.author.id);
-      const wantsToUnsubscribe = lowerContent === `${lowerPrefix}unsubscribe`;
+      const wantsToUnsubscribe = lowerContent === `${lowerPrefix}unsub` || lowerContent === `${lowerPrefix}unsubscribe`;
       let newSubs;
       let action;
 
       if (wantsToUnsubscribe) {
         if (!isSubscribed) {
-          const confirmMsg = await (message.channel as any).send("❌ You are not subscribed to this ticket.");
-          try { await message.delete(); } catch (e) {}
-          setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+          await (message.channel as any).send("❌ You are not subscribed to this ticket.");
           return;
         }
         newSubs = currentSubs.filter(id => id !== message.author.id);
         action = "unsubscribed from";
       } else {
         if (isSubscribed) {
-          const confirmMsg = await (message.channel as any).send("❌ You are already subscribed to this ticket.");
-          try { await message.delete(); } catch (e) {}
-          setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+          await (message.channel as any).send("❌ You are already subscribed to this ticket.");
           return;
         }
         newSubs = [...currentSubs, message.author.id];
@@ -9687,13 +9683,7 @@ client.on("messageCreate", async (message) => {
         await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
       }
 
-      const confirmMsg = await (message.channel as any).send(`✅ You have ${action} this ticket.`);
-      
-      try {
-        await message.delete();
-      } catch (e) {}
-      
-      setTimeout(() => confirmMsg.delete().catch(() => {}), 3000);
+      await (message.channel as any).send(`✅ You have ${action} this ticket.`);
     } catch (error) {
       console.error("Sub command error:", error);
     }
