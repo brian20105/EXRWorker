@@ -438,19 +438,6 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
-    .setName("setup")
-    .setDescription("Setup roster displays")
-    .addStringOption((option) =>
-      option
-        .setName("roster")
-        .setDescription("Choose which roster to display")
-        .setRequired(true)
-        .addChoices(
-          { name: "Player Roster", value: "player" },
-          { name: "Staff Roster", value: "staff" }
-        )
-    ),
-  new SlashCommandBuilder()
     .setName("refresh_roster")
     .setDescription("Manually refresh roster displays")
     .setDefaultMemberPermissions(0),
@@ -1836,54 +1823,6 @@ client.on("interactionCreate", async (interaction) => {
         } catch (error: any) {
           console.log("Error in list_payouts:", error.message);
           await interaction.editReply({ content: "Failed to list payouts. Please try again." }).catch(() => {});
-        }
-      } else if (commandName === "setup") {
-        const rosterType = interaction.options.getString("roster", true);
-
-        if (!await safeDeferReply(interaction)) return;
-
-        const guild = interaction.guild;
-        if (!guild) {
-          await interaction.editReply({ content: "❌ Could not fetch guild information." });
-          return;
-        }
-
-        try {
-          await guild.members.fetch({ time: 30000 });
-        } catch (error) {
-          console.log("Could not fetch all members, using cached members");
-        }
-
-        if (rosterType === "player") {
-          const playerRoster = await generatePlayerRoster(guild);
-
-          if (interaction.channel && "send" in interaction.channel) {
-            const sentMessage = await interaction.channel.send(playerRoster);
-            await storage.upsertGuildConfig({
-              guildId: guild.id,
-              playerRosterMessageId: sentMessage.id,
-              playerRosterChannelId: interaction.channelId,
-            });
-          }
-
-          await interaction.editReply({
-            content: "✅ Player roster has been posted! It will update automatically when roles change.",
-          });
-        } else if (rosterType === "staff") {
-          const staffRoster = await generateStaffRoster(guild);
-
-          if (interaction.channel && "send" in interaction.channel) {
-            const sentMessage = await interaction.channel.send(staffRoster);
-            await storage.upsertGuildConfig({
-              guildId: guild.id,
-              staffRosterMessageId: sentMessage.id,
-              staffRosterChannelId: interaction.channelId,
-            });
-          }
-
-          await interaction.editReply({
-            content: "✅ Staff roster has been posted! It will update automatically when roles change.",
-          });
         }
       } else if (commandName === "refresh_roster") {
         if (!await safeDeferReply(interaction)) return;
