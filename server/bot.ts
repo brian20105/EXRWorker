@@ -7958,7 +7958,8 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle snip commands for snippet management
-  if (message.guild && (lowerContent.startsWith(`${lowerPrefix}snip `) || lowerContent.startsWith(`${lowerPrefix}snippet `))) {
+  // Note: Check for .snippet first (longer match) before .snip to avoid partial matching
+  if (message.guild && (lowerContent.startsWith(`${lowerPrefix}snippet `) || (lowerContent.startsWith(`${lowerPrefix}snip `) && !lowerContent.startsWith(`${lowerPrefix}snippet`)))) {
     const cmdLen = lowerContent.startsWith(`${lowerPrefix}snippet `) ? 8 : 5;
     const args = message.content.substring(prefix.length + cmdLen).trim();
     const spaceIndex = args.indexOf(" ");
@@ -8052,7 +8053,9 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
+      console.log(`[SNIPPET LIST] Guild: ${message.guild.id} (${message.guild.name}), Channel: ${message.channel.id}, User: ${message.author.tag}, MsgID: ${message.id}`);
       const allSnippets = await storage.getAllSnippets(message.guild.id);
+      console.log(`[SNIPPET LIST] Found ${allSnippets.length} snippets for guild ${message.guild.id}`);
       if (allSnippets.length === 0) {
         await message.reply(`No snippets configured. Use \`${prefix}snip create <alias> "<text>"\` to create one.`);
         return;
