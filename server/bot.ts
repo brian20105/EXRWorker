@@ -9510,7 +9510,11 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle .sub, .subscribe, .unsub, .unsubscribe commands to subscribe/unsubscribe from a ticket
-  if (message.guild && (lowerContent === `${lowerPrefix}sub` || lowerContent === `${lowerPrefix}subscribe` || lowerContent === `${lowerPrefix}unsub` || lowerContent === `${lowerPrefix}unsubscribe`)) {
+  // Supports: .sub (self), .sub @user (other), .unsub (self), .unsub @user (other)
+  if (message.guild && (lowerContent === `${lowerPrefix}sub` || lowerContent === `${lowerPrefix}subscribe` || 
+      lowerContent === `${lowerPrefix}unsub` || lowerContent === `${lowerPrefix}unsubscribe` ||
+      lowerContent.startsWith(`${lowerPrefix}sub `) || lowerContent.startsWith(`${lowerPrefix}subscribe `) ||
+      lowerContent.startsWith(`${lowerPrefix}unsub `) || lowerContent.startsWith(`${lowerPrefix}unsubscribe `))) {
     // Check for modmail thread first, then appeal thread
     const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
@@ -9522,25 +9526,33 @@ client.on("messageCreate", async (message) => {
     }
 
     try {
+      // Determine if unsubscribe command
+      const wantsToUnsubscribe = lowerContent.startsWith(`${lowerPrefix}unsub`);
+      
+      // Check for mentioned user
+      const mentionedUser = message.mentions.users.first();
+      const targetUserId = mentionedUser ? mentionedUser.id : message.author.id;
+      const targetLabel = mentionedUser ? `<@${mentionedUser.id}>` : "You";
+      const targetLabelLower = mentionedUser ? `<@${mentionedUser.id}>` : "you";
+      
       const currentSubs = thread.subscribedUserIds || [];
-      const isSubscribed = currentSubs.includes(message.author.id);
-      const wantsToUnsubscribe = lowerContent === `${lowerPrefix}unsub` || lowerContent === `${lowerPrefix}unsubscribe`;
+      const isSubscribed = currentSubs.includes(targetUserId);
       let newSubs;
       let action;
 
       if (wantsToUnsubscribe) {
         if (!isSubscribed) {
-          await (message.channel as any).send("❌ You are not subscribed to this ticket.");
+          await (message.channel as any).send(`❌ ${targetLabel} ${mentionedUser ? "is" : "are"} not subscribed to this ticket.`);
           return;
         }
-        newSubs = currentSubs.filter(id => id !== message.author.id);
+        newSubs = currentSubs.filter(id => id !== targetUserId);
         action = "unsubscribed from";
       } else {
         if (isSubscribed) {
-          await (message.channel as any).send("❌ You are already subscribed to this ticket.");
+          await (message.channel as any).send(`❌ ${targetLabel} ${mentionedUser ? "is" : "are"} already subscribed to this ticket.`);
           return;
         }
-        newSubs = [...currentSubs, message.author.id];
+        newSubs = [...currentSubs, targetUserId];
         action = "subscribed to";
       }
 
@@ -9550,7 +9562,11 @@ client.on("messageCreate", async (message) => {
         await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
       }
 
-      await (message.channel as any).send(`✅ You have ${action} this ticket.`);
+      if (mentionedUser) {
+        await (message.channel as any).send(`✅ ${targetLabel} has been ${action} this ticket.`);
+      } else {
+        await (message.channel as any).send(`✅ You have ${action} this ticket.`);
+      }
     } catch (error) {
       console.error("Sub command error:", error);
     }
