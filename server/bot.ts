@@ -9055,12 +9055,11 @@ client.on("messageCreate", async (message) => {
       // Send to user DM
       const dmMessage = await user.send({ embeds: [staffEmbed] });
 
-      // For channel message, show who sent it (for staff visibility)
+      // For channel message, also keep it anonymous (no pfp or name visible)
       const channelEmbed = new EmbedBuilder()
-        .setAuthor({ name: "Staff Team (Anonymous)", iconURL: message.author.displayAvatarURL() })
+        .setAuthor({ name: "Staff Team (Anonymous)" })
         .setDescription(replyContent || "(Attachment)")
         .setColor(0x5865f2)
-        .setFooter({ text: `Sent by ${message.author.tag}` })
         .setTimestamp();
 
       if (attachmentUrls.length > 0) {
