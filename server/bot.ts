@@ -7871,10 +7871,10 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle .ignore command to disable inactivity warnings for a ticket
-  if (message.guild && message.content.toLowerCase() === ".ignore") {
+  if (message.guild && lowerContent === `${lowerPrefix}ignore`) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (!thread) {
-      await message.reply("❌ This is not a modmail ticket channel.");
+      // Silently ignore if not in a modmail channel
       return;
     }
     if (thread.status !== "open") {
@@ -9529,27 +9529,44 @@ client.on("messageCreate", async (message) => {
       // Determine if unsubscribe command
       const wantsToUnsubscribe = lowerContent.startsWith(`${lowerPrefix}unsub`);
       
-      // Check for mentioned user
+      // Check for mentioned user or user ID
       const mentionedUser = message.mentions.users.first();
-      const targetUserId = mentionedUser ? mentionedUser.id : message.author.id;
-      const targetLabel = mentionedUser ? `<@${mentionedUser.id}>` : "You";
-      const targetLabelLower = mentionedUser ? `<@${mentionedUser.id}>` : "you";
+      let targetUserId = message.author.id;
+      let targetLabel = "You";
+      
+      if (mentionedUser) {
+        targetUserId = mentionedUser.id;
+        targetLabel = `<@${mentionedUser.id}>`;
+      } else {
+        // Check for user ID in message content
+        const parts = message.content.split(/\s+/);
+        if (parts.length > 1) {
+          const possibleId = parts[1];
+          // Check if it's a valid Discord snowflake (17-19 digits)
+          if (/^\d{17,19}$/.test(possibleId)) {
+            targetUserId = possibleId;
+            targetLabel = `<@${possibleId}>`;
+          }
+        }
+      }
       
       const currentSubs = thread.subscribedUserIds || [];
       const isSubscribed = currentSubs.includes(targetUserId);
       let newSubs;
       let action;
 
+      const isOtherUser = targetUserId !== message.author.id;
+      
       if (wantsToUnsubscribe) {
         if (!isSubscribed) {
-          await (message.channel as any).send(`❌ ${targetLabel} ${mentionedUser ? "is" : "are"} not subscribed to this ticket.`);
+          await (message.channel as any).send(`❌ ${targetLabel} ${isOtherUser ? "is" : "are"} not subscribed to this ticket.`);
           return;
         }
         newSubs = currentSubs.filter(id => id !== targetUserId);
         action = "unsubscribed from";
       } else {
         if (isSubscribed) {
-          await (message.channel as any).send(`❌ ${targetLabel} ${mentionedUser ? "is" : "are"} already subscribed to this ticket.`);
+          await (message.channel as any).send(`❌ ${targetLabel} ${isOtherUser ? "is" : "are"} already subscribed to this ticket.`);
           return;
         }
         newSubs = [...currentSubs, targetUserId];
@@ -9562,7 +9579,7 @@ client.on("messageCreate", async (message) => {
         await storage.updateModmailThread(thread.id, { subscribedUserIds: newSubs });
       }
 
-      if (mentionedUser) {
+      if (isOtherUser) {
         await (message.channel as any).send(`✅ ${targetLabel} has been ${action} this ticket.`);
       } else {
         await (message.channel as any).send(`✅ You have ${action} this ticket.`);
