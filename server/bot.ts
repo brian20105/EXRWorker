@@ -8598,6 +8598,7 @@ client.on("messageCreate", async (message) => {
 
         if (!availableGuild || !availableConfig) {
           console.log(`[DM] No available guild found for user ${message.author.id}`);
+          await message.reply("❌ Sorry, the support ticket system is not configured yet. Please contact a server administrator to set up the modmail system using `/setup_modmail`.");
           return;
         }
 
