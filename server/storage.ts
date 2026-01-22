@@ -93,18 +93,18 @@ export interface IStorage {
   createStaffIntroSubmission(submission: InsertStaffIntroSubmission): Promise<StaffIntroSubmission>;
   getStaffIntroSubmission(id: string): Promise<StaffIntroSubmission | undefined>;
   updateStaffIntroSubmission(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<StaffIntroSubmission>;
-  
+
   createInactivityRequest(request: InsertInactivityRequest): Promise<InactivityRequest>;
   getInactivityRequest(id: string): Promise<InactivityRequest | undefined>;
   updateInactivityRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<InactivityRequest>;
-  
+
   createModmailThread(thread: InsertModmailThread): Promise<ModmailThread>;
   getModmailThread(id: string): Promise<ModmailThread | undefined>;
   getOpenModmailThread(guildId: string, userId: string): Promise<ModmailThread | undefined>;
   getModmailThreadByChannel(channelId: string): Promise<ModmailThread | undefined>;
   updateModmailThread(id: string, updates: { status?: string; claimedById?: string; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[]; ignoreInactivity?: string }): Promise<ModmailThread>;
   getAllModmailThreads(guildId: string): Promise<ModmailThread[]>;
-  
+
   addModmailMessage(message: InsertModmailMessage): Promise<ModmailMessage>;
   getModmailMessages(threadId: string): Promise<ModmailMessage[]>;
   getModmailMessage(id: string): Promise<ModmailMessage | undefined>;
@@ -117,7 +117,7 @@ export interface IStorage {
   getActivityStatsForUser(guildId: string, userId: string, category: string, fromDays?: number, toDays?: number): Promise<number>;
   getModmailStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
   getModmailStatsByCategoryForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
-  
+
   // Cross-server activity stats (aggregates from all servers)
   getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number): Promise<number>;
   getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
@@ -130,18 +130,18 @@ export interface IStorage {
   getAllGuildsUnbanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   getAllGuildsModmailStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
-  
+
   createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock>;
   getActiveModmailBlock(guildId: string, userId: string): Promise<ModmailBlock | undefined>;
   removeModmailBlock(guildId: string, userId: string): Promise<void>;
   getAllModmailBlocks(guildId: string): Promise<ModmailBlock[]>;
-  
+
   createSnippet(snippet: InsertSnippet): Promise<Snippet>;
   getSnippet(guildId: string, alias: string): Promise<Snippet | undefined>;
   updateSnippet(guildId: string, alias: string, content: string): Promise<Snippet | undefined>;
   deleteSnippet(guildId: string, alias: string): Promise<void>;
   getAllSnippets(guildId: string): Promise<Snippet[]>;
-  
+
   addModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<void>;
   removeModmailActivityEntries(guildId: string, userId: string, amount: number): Promise<number>;
   addAppealActivityEntries(guildId: string, userId: string, amount: number): Promise<void>;
@@ -152,7 +152,7 @@ export interface IStorage {
   getLatestActivityResetBackup(guildId: string): Promise<ActivityResetBackup | undefined>;
   restoreActivityStats(guildId: string): Promise<number>;
   deleteActivityResetBackup(id: string): Promise<void>;
-  
+
   // Appeal system methods
   createAppealThread(thread: InsertAppealThread): Promise<AppealThread>;
   getAppealThread(id: string): Promise<AppealThread | undefined>;
@@ -160,7 +160,7 @@ export interface IStorage {
   getAppealThreadByChannel(channelId: string): Promise<AppealThread | undefined>;
   updateAppealThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[] }): Promise<AppealThread>;
   getAllAppealThreads(guildId: string): Promise<AppealThread[]>;
-  
+
   addAppealMessage(message: InsertAppealMessage): Promise<AppealMessage>;
   getAppealMessages(threadId: string): Promise<AppealMessage[]>;
   getAppealMessage(id: string): Promise<AppealMessage | undefined>;
@@ -168,23 +168,23 @@ export interface IStorage {
   updateAppealMessage(id: string, updates: { content?: string; channelMessageId?: string; dmMessageId?: string }): Promise<AppealMessage | undefined>;
   deleteAppealMessage(id: string): Promise<void>;
   getLatestStaffAppealMessage(threadId: string): Promise<AppealMessage | undefined>;
-  
+
   createAppealBlock(block: InsertAppealBlock): Promise<AppealBlock>;
   getActiveAppealBlock(guildId: string, userId: string): Promise<AppealBlock | undefined>;
   removeAppealBlock(guildId: string, userId: string): Promise<void>;
   getAllAppealBlocks(guildId: string): Promise<AppealBlock[]>;
-  
+
   createAppealSnippet(snippet: InsertAppealSnippet): Promise<AppealSnippet>;
   getAppealSnippet(guildId: string, alias: string): Promise<AppealSnippet | undefined>;
   updateAppealSnippet(guildId: string, alias: string, content: string): Promise<AppealSnippet | undefined>;
   deleteAppealSnippet(guildId: string, alias: string): Promise<void>;
   getAllAppealSnippets(guildId: string): Promise<AppealSnippet[]>;
-  
+
   // Moderation actions tracking
   createModerationAction(action: InsertModerationAction): Promise<ModerationAction>;
   getModerationStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ moderatorId: string; warns: number; mutes: number; kicks: number; bans: number }[]>;
   getModerationActionExists(guildId: string, sourceMessageId: string): Promise<boolean>;
-  
+
   // Roster management
   createRosterConfig(roster: InsertRosterConfig): Promise<RosterConfig>;
   getRosterConfig(guildId: string, name: string): Promise<RosterConfig | undefined>;
@@ -208,7 +208,7 @@ export class DatabaseStorage implements IStorage {
   async upsertGuildConfig(config: InsertGuildConfig): Promise<GuildConfig> {
     return withRetry(async () => {
       const existing = await this.getGuildConfig(config.guildId);
-      
+
       if (existing) {
         const updated = await db
           .update(guildConfigs)
@@ -424,7 +424,7 @@ export class DatabaseStorage implements IStorage {
   async getActivityStats(guildId: string, category: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
     const table = category === "ban" ? banRequests : unbanRequests;
     let requests = await db.select().from(table).where(eq(table.guildId, guildId));
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -434,7 +434,7 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       requests = requests.filter(r => r.createdAt <= toDate);
     }
-    
+
     const counts: { [userId: string]: number } = {};
     for (const r of requests) {
       // Filter out placeholder entries like staff_report_entry and manual_entry
@@ -442,7 +442,7 @@ export class DatabaseStorage implements IStorage {
         counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
       }
     }
-    
+
     return Object.entries(counts)
       .map(([userId, count]) => ({ userId, count }))
       .sort((a, b) => b.count - a.count);
@@ -453,7 +453,7 @@ export class DatabaseStorage implements IStorage {
     const requests = await db.select().from(table)
       .where(and(eq(table.guildId, guildId), eq(table.reviewedById, userId)))
       .orderBy(desc(table.createdAt));
-    
+
     const idsToDelete = requests.slice(0, amount).map(r => r.id);
     const BATCH_SIZE = 100;
     for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
@@ -611,9 +611,9 @@ export class DatabaseStorage implements IStorage {
         eq(modmailThreads.status, "closed")
       )
     );
-    
+
     if (threads.length === 0) return [];
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -623,14 +623,14 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
     }
-    
+
     const counts: { [userId: string]: number } = {};
     for (const t of threads) {
       if (t.closedById) {
         counts[t.closedById] = (counts[t.closedById] || 0) + 1;
       }
     }
-    
+
     return Object.entries(counts)
       .map(([userId, count]) => ({ userId, count }))
       .sort((a, b) => b.count - a.count);
@@ -644,9 +644,9 @@ export class DatabaseStorage implements IStorage {
           eq(modmailThreads.status, "closed")
         )
       );
-      
+
       if (threads.length === 0) return [];
-      
+
       const now = new Date();
       if (fromDays !== undefined) {
         const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -656,13 +656,13 @@ export class DatabaseStorage implements IStorage {
         const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
         threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
       }
-      
+
       const counts: { [category: string]: number } = {};
       for (const t of threads) {
         const cat = t.category || "unknown";
         counts[cat] = (counts[cat] || 0) + 1;
       }
-      
+
       return Object.entries(counts)
         .map(([category, count]) => ({ category, count }))
         .sort((a, b) => b.count - a.count);
@@ -678,13 +678,13 @@ export class DatabaseStorage implements IStorage {
 
   async getActivityStatsForUser(guildId: string, userId: string, category: string, fromDays?: number, toDays?: number): Promise<number> {
     const table = category === "ban" ? banRequests : unbanRequests;
-    
+
     let conditions: any[] = [
       eq(table.guildId, guildId),
       eq(table.reviewedById, userId),
       eq(table.status, "approved")
     ];
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -694,7 +694,7 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       conditions.push(lte(table.createdAt, toDate));
     }
-    
+
     const result = await db.select({ count: count() }).from(table).where(and(...conditions));
     return result[0]?.count || 0;
   }
@@ -702,12 +702,12 @@ export class DatabaseStorage implements IStorage {
   // Cross-server activity stats - aggregates from ALL guilds
   async getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number): Promise<number> {
     const table = category === "ban" ? banRequests : unbanRequests;
-    
+
     let conditions: any[] = [
       eq(table.reviewedById, userId),
       eq(table.status, "approved")
     ];
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -717,7 +717,7 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       conditions.push(lte(table.createdAt, toDate));
     }
-    
+
     const result = await db.select({ count: count() }).from(table).where(and(...conditions));
     return result[0]?.count || 0;
   }
@@ -727,7 +727,7 @@ export class DatabaseStorage implements IStorage {
       eq(modmailThreads.closedById, userId),
       eq(modmailThreads.status, "closed")
     ];
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -737,7 +737,7 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       conditions.push(lte(modmailThreads.createdAt, toDate));
     }
-    
+
     const result = await db.select({ count: count() }).from(modmailThreads).where(and(...conditions));
     return result[0]?.count || 0;
   }
@@ -747,7 +747,7 @@ export class DatabaseStorage implements IStorage {
       eq(modmailThreads.closedById, userId),
       eq(modmailThreads.status, "closed")
     ];
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -757,7 +757,7 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       conditions.push(lte(modmailThreads.createdAt, toDate));
     }
-    
+
     const threads = await db.select().from(modmailThreads).where(and(...conditions));
     const categoryCounts: { [category: string]: number } = {};
     for (const thread of threads) {
@@ -772,7 +772,7 @@ export class DatabaseStorage implements IStorage {
       eq(appealThreads.closedById, userId),
       eq(appealThreads.status, "closed")
     ];
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -782,17 +782,17 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       conditions.push(lte(appealThreads.createdAt, toDate));
     }
-    
+
     const result = await db.select({ count: count() }).from(appealThreads).where(and(...conditions));
     return result[0]?.count || 0;
   }
 
   async getAllGuildsActivityStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
     const now = new Date();
-    
+
     let banConditions: any[] = [eq(banRequests.status, "approved")];
     let unbanConditions: any[] = [eq(unbanRequests.status, "approved")];
-    
+
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
       banConditions.push(gte(banRequests.createdAt, fromDate));
@@ -803,10 +803,10 @@ export class DatabaseStorage implements IStorage {
       banConditions.push(lte(banRequests.createdAt, toDate));
       unbanConditions.push(lte(unbanRequests.createdAt, toDate));
     }
-    
+
     const banReqs = await db.select().from(banRequests).where(and(...banConditions));
     const unbanReqs = await db.select().from(unbanRequests).where(and(...unbanConditions));
-    
+
     const counts: { [userId: string]: number } = {};
     for (const r of banReqs) {
       // Filter out placeholder entries like staff_report_entry and manual_entry
@@ -820,15 +820,15 @@ export class DatabaseStorage implements IStorage {
         counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
       }
     }
-    
+
     return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
   }
 
   async getAllGuildsBanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
     const now = new Date();
-    
+
     let banConditions: any[] = [eq(banRequests.status, "approved")];
-    
+
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
       banConditions.push(gte(banRequests.createdAt, fromDate));
@@ -837,24 +837,24 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       banConditions.push(lte(banRequests.createdAt, toDate));
     }
-    
+
     const banReqs = await db.select().from(banRequests).where(and(...banConditions));
-    
+
     const counts: { [userId: string]: number } = {};
     for (const r of banReqs) {
       if (r.reviewedById && r.reviewedById !== "staff_report_entry" && r.reviewedById !== "manual_entry") {
         counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
       }
     }
-    
+
     return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
   }
 
   async getAllGuildsUnbanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
     const now = new Date();
-    
+
     let unbanConditions: any[] = [eq(unbanRequests.status, "approved")];
-    
+
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
       unbanConditions.push(gte(unbanRequests.createdAt, fromDate));
@@ -863,22 +863,22 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       unbanConditions.push(lte(unbanRequests.createdAt, toDate));
     }
-    
+
     const unbanReqs = await db.select().from(unbanRequests).where(and(...unbanConditions));
-    
+
     const counts: { [userId: string]: number } = {};
     for (const r of unbanReqs) {
       if (r.reviewedById && r.reviewedById !== "staff_report_entry" && r.reviewedById !== "manual_entry") {
         counts[r.reviewedById] = (counts[r.reviewedById] || 0) + 1;
       }
     }
-    
+
     return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
   }
 
   async getAllGuildsModmailStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
     let conditions: any[] = [eq(modmailThreads.status, "closed")];
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -888,17 +888,17 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       conditions.push(lte(modmailThreads.createdAt, toDate));
     }
-    
+
     const threads = await db.select().from(modmailThreads).where(and(...conditions));
     console.log(`[getAllGuildsModmailStats] Found ${threads.length} closed threads across all guilds`);
-    
+
     const counts: { [userId: string]: number } = {};
     for (const thread of threads) {
       if (thread.closedById) {
         counts[thread.closedById] = (counts[thread.closedById] || 0) + 1;
       }
     }
-    
+
     const result = Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
     console.log(`[getAllGuildsModmailStats] Returning stats for ${result.length} users:`, result.slice(0, 5));
     return result;
@@ -906,7 +906,7 @@ export class DatabaseStorage implements IStorage {
 
   async getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
     let conditions: any[] = [eq(appealThreads.status, "closed")];
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -916,17 +916,17 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       conditions.push(lte(appealThreads.createdAt, toDate));
     }
-    
+
     const threads = await db.select().from(appealThreads).where(and(...conditions));
     console.log(`[getAllGuildsAppealStats] Found ${threads.length} closed appeals across all guilds`);
-    
+
     const counts: { [userId: string]: number } = {};
     for (const thread of threads) {
       if (thread.closedById) {
         counts[thread.closedById] = (counts[thread.closedById] || 0) + 1;
       }
     }
-    
+
     const result = Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
     console.log(`[getAllGuildsAppealStats] Returning stats for ${result.length} users:`, result.slice(0, 5));
     return result;
@@ -934,10 +934,10 @@ export class DatabaseStorage implements IStorage {
 
   async getStaffReportStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
     const now = new Date();
-    
+
     let banReqs = await db.select().from(banRequests).where(eq(banRequests.guildId, guildId));
     let unbanReqs = await db.select().from(unbanRequests).where(eq(unbanRequests.guildId, guildId));
-    
+
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
       banReqs = banReqs.filter(r => r.createdAt >= fromDate);
@@ -948,14 +948,14 @@ export class DatabaseStorage implements IStorage {
       banReqs = banReqs.filter(r => r.createdAt <= toDate);
       unbanReqs = unbanReqs.filter(r => r.createdAt <= toDate);
     }
-    
+
     const counts: { [userId: string]: number } = {};
     for (const r of [...banReqs, ...unbanReqs]) {
       if (r.requestedById && r.requestedById !== "manual_entry") {
         counts[r.requestedById] = (counts[r.requestedById] || 0) + 1;
       }
     }
-    
+
     return Object.entries(counts)
       .map(([userId, count]) => ({ userId, count }))
       .sort((a, b) => b.count - a.count);
@@ -963,10 +963,10 @@ export class DatabaseStorage implements IStorage {
 
   async getStaffReportStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number> {
     const now = new Date();
-    
+
     let conditions = [eq(banRequests.guildId, guildId), eq(banRequests.requestedById, userId)];
     let conditions2 = [eq(unbanRequests.guildId, guildId), eq(unbanRequests.requestedById, userId)];
-    
+
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
       conditions.push(gte(banRequests.createdAt, fromDate));
@@ -977,7 +977,7 @@ export class DatabaseStorage implements IStorage {
       conditions.push(lte(banRequests.createdAt, toDate));
       conditions2.push(lte(unbanRequests.createdAt, toDate));
     }
-    
+
     const banResult = await db.select({ count: count() }).from(banRequests).where(and(...conditions));
     const unbanResult = await db.select({ count: count() }).from(unbanRequests).where(and(...conditions2));
     return (banResult[0]?.count || 0) + (unbanResult[0]?.count || 0);
@@ -985,10 +985,10 @@ export class DatabaseStorage implements IStorage {
 
   async getStaffReportStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
     const now = new Date();
-    
+
     let conditions = [eq(banRequests.requestedById, userId)];
     let conditions2 = [eq(unbanRequests.requestedById, userId)];
-    
+
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
       conditions.push(gte(banRequests.createdAt, fromDate));
@@ -999,7 +999,7 @@ export class DatabaseStorage implements IStorage {
       conditions.push(lte(banRequests.createdAt, toDate));
       conditions2.push(lte(unbanRequests.createdAt, toDate));
     }
-    
+
     const banResult = await db.select({ count: count() }).from(banRequests).where(and(...conditions));
     const unbanResult = await db.select({ count: count() }).from(unbanRequests).where(and(...conditions2));
     return (banResult[0]?.count || 0) + (unbanResult[0]?.count || 0);
@@ -1031,14 +1031,14 @@ export class DatabaseStorage implements IStorage {
     const unbanReqs = await db.select().from(unbanRequests)
       .where(and(eq(unbanRequests.guildId, guildId), eq(unbanRequests.requestedById, userId)))
       .orderBy(desc(unbanRequests.createdAt));
-    
+
     const allReqs = [...banReqs.map(r => ({ ...r, type: 'ban' as const })), ...unbanReqs.map(r => ({ ...r, type: 'unban' as const }))]
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, amount);
-    
+
     const banIdsToDelete = allReqs.filter(r => r.type === 'ban').map(r => r.id);
     const unbanIdsToDelete = allReqs.filter(r => r.type === 'unban').map(r => r.id);
-    
+
     const BATCH_SIZE = 100;
     for (let i = 0; i < banIdsToDelete.length; i += BATCH_SIZE) {
       const batch = banIdsToDelete.slice(i, i + BATCH_SIZE);
@@ -1048,7 +1048,7 @@ export class DatabaseStorage implements IStorage {
       const batch = unbanIdsToDelete.slice(i, i + BATCH_SIZE);
       await db.delete(unbanRequests).where(inArray(unbanRequests.id, batch));
     }
-    
+
     return allReqs.length;
   }
 
@@ -1080,9 +1080,9 @@ export class DatabaseStorage implements IStorage {
         eq(modmailThreads.status, "closed")
       )
     );
-    
+
     if (threads.length === 0) return 0;
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -1092,7 +1092,7 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
     }
-    
+
     return threads.length;
   }
 
@@ -1105,9 +1105,9 @@ export class DatabaseStorage implements IStorage {
           eq(modmailThreads.status, "closed")
         )
       );
-      
+
       if (threads.length === 0) return [];
-      
+
       const now = new Date();
       if (fromDays !== undefined) {
         const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -1117,13 +1117,13 @@ export class DatabaseStorage implements IStorage {
         const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
         threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
       }
-      
+
       const counts: { [category: string]: number } = {};
       for (const t of threads) {
         const cat = t.category || "unknown";
         counts[cat] = (counts[cat] || 0) + 1;
       }
-      
+
       return Object.entries(counts)
         .map(([category, count]) => ({ category, count }))
         .sort((a, b) => b.count - a.count);
@@ -1237,7 +1237,7 @@ export class DatabaseStorage implements IStorage {
         eq(modmailThreads.status, "closed")
       ))
       .orderBy(desc(modmailThreads.closedAt));
-    
+
     const idsToDelete = threads.slice(0, amount).map(t => t.id);
     const BATCH_SIZE = 100;
     for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
@@ -1273,7 +1273,7 @@ export class DatabaseStorage implements IStorage {
         eq(appealThreads.status, "closed")
       ))
       .orderBy(desc(appealThreads.closedAt));
-    
+
     const idsToDelete = threads.slice(0, amount).map(t => t.id);
     const BATCH_SIZE = 100;
     for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
@@ -1289,7 +1289,7 @@ export class DatabaseStorage implements IStorage {
         eq(appealThreads.guildId, guildId),
         eq(appealThreads.status, "closed")
       ));
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -1299,14 +1299,14 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
     }
-    
+
     const counts: { [userId: string]: number } = {};
     for (const t of threads) {
       if (t.closedById) {
         counts[t.closedById] = (counts[t.closedById] || 0) + 1;
       }
     }
-    
+
     return Object.entries(counts)
       .map(([userId, count]) => ({ userId, count }))
       .sort((a, b) => b.count - a.count);
@@ -1319,7 +1319,7 @@ export class DatabaseStorage implements IStorage {
         eq(appealThreads.closedById, userId),
         eq(appealThreads.status, "closed")
       ));
-    
+
     const now = new Date();
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -1329,7 +1329,7 @@ export class DatabaseStorage implements IStorage {
       const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
       threads = threads.filter(t => t.closedAt && t.closedAt <= toDate);
     }
-    
+
     return threads.length;
   }
 
@@ -1340,7 +1340,7 @@ export class DatabaseStorage implements IStorage {
     let modmailData: any[] = [];
     let appealData: any[] = [];
     let staffReportData: any[] = [];
-    
+
     if (!category || category === "ban") {
       const conditions = [eq(banRequests.guildId, guildId)];
       if (userId) conditions.push(eq(banRequests.reviewedById, userId));
@@ -1348,7 +1348,7 @@ export class DatabaseStorage implements IStorage {
       const result = await db.delete(banRequests).where(and(...conditions)).returning();
       count += result.length;
     }
-    
+
     if (!category || category === "unban") {
       const conditions = [eq(unbanRequests.guildId, guildId)];
       if (userId) conditions.push(eq(unbanRequests.reviewedById, userId));
@@ -1356,7 +1356,7 @@ export class DatabaseStorage implements IStorage {
       const result = await db.delete(unbanRequests).where(and(...conditions)).returning();
       count += result.length;
     }
-    
+
     if (!category || category === "modmail") {
       const conditions = [eq(modmailThreads.guildId, guildId), eq(modmailThreads.status, "closed")];
       if (userId) conditions.push(eq(modmailThreads.closedById, userId));
@@ -1364,7 +1364,7 @@ export class DatabaseStorage implements IStorage {
       const result = await db.delete(modmailThreads).where(and(...conditions)).returning();
       count += result.length;
     }
-    
+
     if (!category || category === "appeal") {
       const conditions = [eq(appealThreads.guildId, guildId), eq(appealThreads.status, "closed")];
       if (userId) conditions.push(eq(appealThreads.closedById, userId));
@@ -1372,7 +1372,7 @@ export class DatabaseStorage implements IStorage {
       const result = await db.delete(appealThreads).where(and(...conditions)).returning();
       count += result.length;
     }
-    
+
     if (category === "staffreport") {
       await this.resetStaffReportStats(guildId, userId);
       const banConditions = [eq(banRequests.guildId, guildId)];
@@ -1386,7 +1386,7 @@ export class DatabaseStorage implements IStorage {
       count = banReqs.length + unbanReqs.length;
       staffReportData = [...banReqs, ...unbanReqs];
     }
-    
+
     if (count > 0) {
       await db.insert(activityResetBackups).values({
         guildId,
@@ -1400,7 +1400,7 @@ export class DatabaseStorage implements IStorage {
         entryCount: count.toString(),
       });
     }
-    
+
     return count;
   }
 
@@ -1415,9 +1415,9 @@ export class DatabaseStorage implements IStorage {
   async restoreActivityStats(guildId: string): Promise<number> {
     const backup = await this.getLatestActivityResetBackup(guildId);
     if (!backup) return 0;
-    
+
     let restoredCount = 0;
-    
+
     if (backup.banRequestsData) {
       const banData = JSON.parse(backup.banRequestsData);
       for (const item of banData) {
@@ -1426,7 +1426,7 @@ export class DatabaseStorage implements IStorage {
         restoredCount++;
       }
     }
-    
+
     if (backup.unbanRequestsData) {
       const unbanData = JSON.parse(backup.unbanRequestsData);
       for (const item of unbanData) {
@@ -1435,7 +1435,7 @@ export class DatabaseStorage implements IStorage {
         restoredCount++;
       }
     }
-    
+
     if (backup.modmailThreadsData) {
       const modmailData = JSON.parse(backup.modmailThreadsData);
       for (const item of modmailData) {
@@ -1444,7 +1444,7 @@ export class DatabaseStorage implements IStorage {
         restoredCount++;
       }
     }
-    
+
     if (backup.appealThreadsData) {
       const appealData = JSON.parse(backup.appealThreadsData);
       for (const item of appealData) {
@@ -1453,9 +1453,9 @@ export class DatabaseStorage implements IStorage {
         restoredCount++;
       }
     }
-    
+
     await this.deleteActivityResetBackup(backup.id);
-    
+
     return restoredCount;
   }
 
@@ -1635,7 +1635,7 @@ export class DatabaseStorage implements IStorage {
       moderatorId: moderationActions.moderatorId,
       actionType: moderationActions.actionType,
     }).from(moderationActions).where(and(...conditions));
-    
+
     // Aggregate by moderator
     const statsMap = new Map<string, { warns: number; mutes: number; kicks: number; bans: number }>();
     for (const row of results) {
@@ -1650,7 +1650,7 @@ export class DatabaseStorage implements IStorage {
         case 'ban': stats.bans++; break;
       }
     }
-    
+
     return Array.from(statsMap.entries()).map(([moderatorId, stats]) => ({
       moderatorId,
       ...stats
