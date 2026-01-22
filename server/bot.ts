@@ -47,6 +47,51 @@ const activeQuizzes = new Map<string, QuizState>();
 // Prevent duplicate Start Quiz button processing
 const processingQuizStart = new Set<string>();
 
+// DM message cache for tracking edits/deletions (stores last 50 messages per user)
+interface CachedDMMessage {
+  id: string;
+  content: string;
+  authorId: string;
+  authorTag: string;
+  authorAvatar: string;
+  timestamp: number;
+}
+const dmMessageCache = new Map<string, CachedDMMessage[]>();
+const MAX_CACHED_MESSAGES_PER_USER = 50;
+
+function cacheDMMessage(userId: string, message: any) {
+  if (!message.author || message.author.bot) return;
+  
+  const cached: CachedDMMessage = {
+    id: message.id,
+    content: message.content || "",
+    authorId: message.author.id,
+    authorTag: message.author.tag,
+    authorAvatar: message.author.displayAvatarURL(),
+    timestamp: Date.now(),
+  };
+  
+  let userCache = dmMessageCache.get(userId) || [];
+  userCache.push(cached);
+  if (userCache.length > MAX_CACHED_MESSAGES_PER_USER) {
+    userCache = userCache.slice(-MAX_CACHED_MESSAGES_PER_USER);
+  }
+  dmMessageCache.set(userId, userCache);
+}
+
+function getCachedDMMessage(userId: string, messageId: string): CachedDMMessage | undefined {
+  const userCache = dmMessageCache.get(userId);
+  if (!userCache) return undefined;
+  return userCache.find(m => m.id === messageId);
+}
+
+function updateCachedDMMessage(userId: string, messageId: string, newContent: string) {
+  const userCache = dmMessageCache.get(userId);
+  if (!userCache) return;
+  const msg = userCache.find(m => m.id === messageId);
+  if (msg) msg.content = newContent;
+}
+
 // Track users with pending DM ticket category selection (userId -> messageId)
 const pendingDMTickets = new Map<string, { messageId: string; guildId: string; sentAt: number }>();
 const pendingServerSelections = new Map<string, { messageContent: string; attachments: any[]; tickets: any[]; sentAt: number; originalMessageId: string; originalChannelId: string }>();
@@ -263,6 +308,46 @@ function getFullQuestions(config: any): string[] {
   ];
 }
 
+async function logQuizProgress(guildId: string, userId: string, action: "started" | "question" | "completed", questionNumber?: number): Promise<void> {
+  try {
+    const config = await storage.getGuildConfig(guildId);
+    if (!config?.quizLogChannelId) return;
+
+    const logChannel = await client.channels.fetch(config.quizLogChannelId);
+    if (!logChannel || !("send" in logChannel)) return;
+
+    const user = await client.users.fetch(userId).catch(() => null);
+    const userTag = user?.tag || userId;
+
+    let embed: EmbedBuilder;
+    
+    if (action === "started") {
+      embed = new EmbedBuilder()
+        .setTitle("📝 Quiz Started")
+        .setColor(0x57F287)
+        .setDescription(`<@${userId}> (${userTag}) started the staff intro quiz`)
+        .setTimestamp();
+    } else if (action === "question") {
+      const questions = getQuizQuestions(config);
+      embed = new EmbedBuilder()
+        .setTitle("📋 Quiz Progress")
+        .setColor(0x5865F2)
+        .setDescription(`<@${userId}> is now on **Question ${questionNumber}** of ${questions.length}`)
+        .setTimestamp();
+    } else {
+      embed = new EmbedBuilder()
+        .setTitle("✅ Quiz Completed")
+        .setColor(0xFEE75C)
+        .setDescription(`<@${userId}> (${userTag}) completed the staff intro quiz`)
+        .setTimestamp();
+    }
+
+    await (logChannel as any).send({ embeds: [embed] });
+  } catch (e) {
+    console.log("[QUIZ LOG] Error logging quiz progress:", e);
+  }
+}
+
 async function sendQuizQuestion(userId: string, dmChannel: any, isFirst: boolean = false): Promise<void> {
   const quizState = activeQuizzes.get(userId);
   if (!quizState) return;
@@ -276,6 +361,12 @@ async function sendQuizQuestion(userId: string, dmChannel: any, isFirst: boolean
     : question.text;
 
   console.log(`[QUIZ] Sending message to ${userId}: "${content.substring(0, 50)}..."`);
+
+  // Log quiz progress
+  if (isFirst) {
+    await logQuizProgress(quizState.guildId, userId, "started");
+  }
+  await logQuizProgress(quizState.guildId, userId, "question", quizState.currentQuestion + 1);
 
   await dmChannel.send({
     content: content,
@@ -295,6 +386,8 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
   if (quizState.currentQuestion < questions.length) {
     await sendQuizQuestion(userId, dmChannel);
   } else {
+    // Log quiz completion
+    await logQuizProgress(quizState.guildId, userId, "completed");
     activeQuizzes.delete(userId);
 
     if (!config?.staffIntroSubmissionsChannelId) {
@@ -783,6 +876,16 @@ const commands = [
     .setName("setup_staff_intro")
     .setDescription("Post the staff introduction quiz in the current channel")
     .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("setup_quiz_log")
+    .setDescription("Set the channel for quiz progress logging")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where quiz progress will be logged")
+        .setRequired(true)
+    ),
   new SlashCommandBuilder()
     .setName("setup_staff_intro_submissions")
     .setDescription("Set the channel for staff intro quiz submissions")
@@ -3366,6 +3469,19 @@ client.on("interactionCreate", async (interaction) => {
             content: "✅ Staff introduction quiz has been posted!",
           });
         } catch (e) {}
+      } else if (commandName === "setup_quiz_log") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          quizLogChannelId: channel.id,
+        });
+
+        await interaction.editReply({
+          content: `✅ Quiz progress will now be logged to <#${channel.id}>!`,
+        });
       } else if (commandName === "setup_staff_intro_submissions") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -7783,7 +7899,19 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
   if (!newMessage.author || newMessage.author.bot) return;
   if (newMessage.channel.type !== ChannelType.DM) return;
 
-  const thread = await storage.getOpenModmailThread("global", newMessage.author.id);
+  const userId = newMessage.author.id;
+  
+  // Get old content from cache if partial
+  let oldContent = oldMessage.content;
+  if (!oldContent || oldMessage.partial) {
+    const cached = getCachedDMMessage(userId, newMessage.id);
+    oldContent = cached?.content || "*Message was not cached*";
+  }
+  
+  // Update cache with new content
+  updateCachedDMMessage(userId, newMessage.id, newMessage.content || "");
+
+  const thread = await storage.getOpenModmailThread("global", userId);
   if (!thread || !thread.channelId) return;
 
   try {
@@ -7793,8 +7921,8 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
         .setTitle("📝 Message Edited")
         .setColor(0xFFA500)
         .addFields(
-          { name: "Old Message", value: oldMessage.content?.slice(0, 1024) || "*No content*", inline: false },
-          { name: "New Message", value: newMessage.content?.slice(0, 1024) || "*No content*", inline: false }
+          { name: "Before", value: oldContent?.slice(0, 1024) || "*No content*", inline: false },
+          { name: "After", value: newMessage.content?.slice(0, 1024) || "*No content*", inline: false }
         )
         .setAuthor({ name: newMessage.author.tag, iconURL: newMessage.author.displayAvatarURL() })
         .setTimestamp();
@@ -7807,15 +7935,43 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
 });
 
 client.on("messageDelete", async (message) => {
-  if (message.partial) {
-    try {
-      await message.fetch();
-    } catch (e) { return; }
+  // Try to get author info from cache first
+  let authorId = message.author?.id;
+  let authorTag = message.author?.tag;
+  let authorAvatar = message.author?.displayAvatarURL();
+  let content = message.content;
+  let isDM = false;
+  
+  // Check if this is a DM (handle potential undefined channel on partials)
+  try {
+    if (message.channel && message.channel.type === ChannelType.DM) {
+      isDM = true;
+    }
+  } catch (e) {
+    // Channel type check failed, try to determine from cache
   }
-  if (!message.author || message.author.bot) return;
-  if (message.channel.type !== ChannelType.DM) return;
+  
+  // For partial messages, try to get from cache
+  if (message.partial || !authorId) {
+    // Try to find in any user's cache (only DM messages are cached)
+    for (const [userId, userCache] of dmMessageCache.entries()) {
+      const cached = userCache.find(m => m.id === message.id);
+      if (cached) {
+        authorId = cached.authorId;
+        authorTag = cached.authorTag;
+        authorAvatar = cached.authorAvatar;
+        content = cached.content;
+        isDM = true; // If found in DM cache, it's a DM
+        break;
+      }
+    }
+  }
+  
+  if (!authorId) return;
+  if (message.author?.bot) return;
+  if (!isDM) return;
 
-  const thread = await storage.getOpenModmailThread("global", message.author.id);
+  const thread = await storage.getOpenModmailThread("global", authorId);
   if (!thread || !thread.channelId) return;
 
   try {
@@ -7825,8 +7981,8 @@ client.on("messageDelete", async (message) => {
         .setTitle("🗑️ Message Deleted")
         .setColor(0xFF0000)
         .setDescription(`User deleted a message <t:${Math.floor(Date.now() / 1000)}:R>`)
-        .addFields({ name: "Deleted Content", value: message.content?.slice(0, 1024) || "*No content*", inline: false })
-        .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+        .addFields({ name: "Deleted Content", value: content?.slice(0, 1024) || "*Message was not cached*", inline: false })
+        .setAuthor({ name: authorTag || "Unknown User", iconURL: authorAvatar })
         .setTimestamp();
 
       await (staffChannel as any).send({ embeds: [deleteEmbed] });
@@ -8847,6 +9003,9 @@ client.on("messageCreate", async (message) => {
   // Handle DM messages
   if (!message.guild) {
     console.log(`[DM] Received DM from ${message.author.id} (${message.author.tag}): "${message.content.substring(0, 50)}..."`);
+
+    // Cache DM message for edit/delete tracking
+    cacheDMMessage(message.author.id, message);
 
     // Check for active quiz first
     const quizState = activeQuizzes.get(message.author.id);

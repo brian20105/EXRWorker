@@ -65,6 +65,7 @@ export const guildConfigs = pgTable("guild_configs", {
   activityTrackedRoleIds: text("activity_tracked_role_ids").array(),
   moderatorBotId: text("moderator_bot_id"),
   modLogChannelId: text("mod_log_channel_id"), // Channel where TRL | Moderator posts logs
+  quizLogChannelId: text("quiz_log_channel_id"), // Channel for quiz progress logging
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
