@@ -1182,10 +1182,12 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("roster-embed")
-    .setDescription("Post a roster selection embed with all available rosters")
+    .setDescription("Post a roster embed with buttons")
     .setDefaultMemberPermissions(0)
-    .addStringOption((option) => option.setName("title").setDescription("Embed title").setRequired(false))
-    .addStringOption((option) => option.setName("description").setDescription("Embed description").setRequired(false)),
+    .addStringOption((option) => option.setName("title").setDescription("Embed title").setRequired(true))
+    .addStringOption((option) => option.setName("description").setDescription("Embed description").setRequired(true))
+    .addStringOption((option) => option.setName("buttons").setDescription("Button config: 'emoji|label|rosterName|color, ...' (colors: blue, green, red, grey)").setRequired(true))
+    .addStringOption((option) => option.setName("embed_color").setDescription("Embed color (hex without #, e.g. 5865f2)").setRequired(false)),
   new SlashCommandBuilder()
     .setName("roster")
     .setDescription("Manage roster configurations")
@@ -2821,43 +2823,95 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "roster-embed") {
         if (!await safeDeferReply(interaction)) return;
 
-        const title = interaction.options.getString("title") || "📋 Rosters";
-        const description = interaction.options.getString("description") || "Select a roster to view its members.";
+        const title = interaction.options.getString("title", true);
+        const description = interaction.options.getString("description", true);
+        const buttonConfigStr = interaction.options.getString("buttons", true);
+        const embedColorStr = interaction.options.getString("embed_color");
 
         try {
-          const rosters = await storage.getAllRosterConfigs(interaction.guildId!);
-          
-          if (rosters.length === 0) {
-            return interaction.editReply("❌ No rosters have been configured. Use `/roster add` to create rosters first.");
+          let embedColor = 0x5865f2;
+          if (embedColorStr) {
+            const parsed = parseInt(embedColorStr.replace("#", ""), 16);
+            if (!isNaN(parsed) && parsed >= 0 && parsed <= 0xFFFFFF) {
+              embedColor = parsed;
+            }
           }
-
+          
           const embed = new EmbedBuilder()
             .setTitle(title)
             .setDescription(description)
-            .setColor(0x5865f2);
+            .setColor(embedColor);
 
-          const options: any[] = [];
+          const buttonConfigs = buttonConfigStr.split(",").map(s => s.trim());
+          const buttons: ButtonBuilder[] = [];
+          const missingRosters: string[] = [];
 
-          for (const roster of rosters) {
-            const option = new StringSelectMenuOptionBuilder()
-              .setLabel(roster.name.charAt(0).toUpperCase() + roster.name.slice(1))
-              .setValue(roster.name)
-              .setDescription(`View the ${roster.name} roster`);
+          const invalidConfigs: string[] = [];
+          
+          for (const config of buttonConfigs) {
+            const parts = config.split("|").map(s => s.trim());
+            if (parts.length < 4) {
+              invalidConfigs.push(config);
+              continue;
+            }
 
-            options.push(option);
+            const emoji = parts[0];
+            const label = parts[1];
+            const rosterName = parts[2].toLowerCase();
+            const colorStr = parts[3].toLowerCase();
+
+            const roster = await storage.getRosterConfig(interaction.guildId!, rosterName);
+            if (!roster) {
+              missingRosters.push(rosterName);
+              continue;
+            }
+
+            let buttonStyle = ButtonStyle.Primary;
+            if (colorStr === "green") buttonStyle = ButtonStyle.Success;
+            else if (colorStr === "red") buttonStyle = ButtonStyle.Danger;
+            else if (colorStr === "grey" || colorStr === "gray") buttonStyle = ButtonStyle.Secondary;
+
+            const button = new ButtonBuilder()
+              .setCustomId(`roster_btn_${rosterName}`)
+              .setLabel(label)
+              .setStyle(buttonStyle);
+
+            const customEmojiMatch = emoji.match(/<a?:(.+):(\d+)>/);
+            if (customEmojiMatch) {
+              button.setEmoji({ name: customEmojiMatch[1], id: customEmojiMatch[2] });
+            } else if (emoji.length > 0 && emoji !== "-") {
+              button.setEmoji(emoji);
+            }
+
+            buttons.push(button);
           }
 
-          const select = new StringSelectMenuBuilder()
-            .setCustomId("roster_selection")
-            .setPlaceholder("Select a roster to view...")
-            .addOptions(options);
+          if (missingRosters.length > 0) {
+            return interaction.editReply(`❌ The following rosters don't exist: ${missingRosters.join(", ")}. Create them first with \`/roster add\`.`);
+          }
 
-          const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+          if (invalidConfigs.length > 0 && buttons.length === 0) {
+            return interaction.editReply(`❌ Invalid button format. Each button needs 4 parts separated by |.\nFormat: \`emoji|label|rosterName|color\`\nExample: \`🎮|Fortnite Roster Display|fortnite|blue\``);
+          }
 
-          await interaction.editReply({ embeds: [embed], components: [row] });
+          if (buttons.length === 0) {
+            return interaction.editReply("❌ No valid button configurations provided.\nFormat: `emoji|label|rosterName|color, ...`\nExample: `🎮|Fortnite Roster Display|fortnite|blue, 🚗|Rocket League Roster|rocketleague|green`");
+          }
+
+          if (buttons.length > 20) {
+            return interaction.editReply("❌ Maximum 20 buttons allowed.");
+          }
+
+          const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+          for (let i = 0; i < buttons.length; i += 5) {
+            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(i, i + 5));
+            rows.push(row);
+          }
+
+          await interaction.editReply({ embeds: [embed], components: rows });
         } catch (error: any) {
           console.error("Error in /roster-embed:", error);
-          await interaction.editReply("❌ Failed to create roster embed.");
+          await interaction.editReply("❌ Failed to create roster embed. Check your configuration format.");
         }
 
       } else if (commandName === "clear-role") {
@@ -4415,7 +4469,7 @@ client.on("interactionCreate", async (interaction) => {
 
           await storage.createRosterConfig({
             guildId: interaction.guildId!,
-            name: name,
+            name: name.toLowerCase(),
             roleIds: roleIds,
           });
 
@@ -5188,6 +5242,38 @@ client.on("interactionCreate", async (interaction) => {
       // End of select menu handlers
       } else if (interaction.isButton()) {
         const customId = interaction.customId;
+        
+        if (customId.startsWith("roster_btn_")) {
+          const rosterName = customId.replace("roster_btn_", "");
+          const roster = await storage.getRosterConfig(interaction.guildId!, rosterName);
+
+          if (!roster) {
+            return interaction.reply({ content: "❌ Roster configuration not found.", ephemeral: true });
+          }
+
+          try {
+            await interaction.guild?.members.fetch({ time: 30000 });
+          } catch (e) {}
+
+          const embed = new EmbedBuilder()
+            .setTitle(`${roster.name.charAt(0).toUpperCase() + roster.name.slice(1)} Roster`)
+            .setColor(0x5865f2)
+            .setTimestamp();
+
+          let rosterText = "";
+          for (const roleId of roster.roleIds) {
+            const role = interaction.guild?.roles.cache.get(roleId);
+            if (role) {
+              const members = role.members.map((m: any) => `<@${m.id}>`).join("\n");
+              rosterText += `**${role.name}**\n${members || "No members"}\n\n`;
+            }
+          }
+
+          embed.setDescription(rosterText || "No roles configured for this roster.");
+          await interaction.reply({ embeds: [embed], ephemeral: true });
+          return;
+        }
+        
         if (customId.startsWith("activity_page_")) {
           try {
             if (!await safeDeferUpdate(interaction)) return;
