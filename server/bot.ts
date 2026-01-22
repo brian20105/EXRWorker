@@ -2868,7 +2868,7 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "❌ Failed to fetch activity stats. Please try again." }).catch(() => {});
         }
       } else if (commandName === "roster-embed") {
-        if (!await safeDeferReply(interaction, true)) return;
+        if (!await safeDeferReply(interaction)) return;
 
         const title = interaction.options.getString("title", true);
         const description = interaction.options.getString("description", true);
