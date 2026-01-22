@@ -2648,7 +2648,10 @@ client.on("interactionCreate", async (interaction) => {
           } else {
             let leaderboardText = "";
             currentLeaderboard.forEach((entry, index) => {
-              leaderboardText += `${start + index + 1}. <@${entry.userId}> - ${entry.count}\n`;
+              const line = `${start + index + 1}. <@${entry.userId}> - ${entry.count}\n`;
+              if ((leaderboardText + line).length <= 1020) {
+                leaderboardText += line;
+              }
             });
 
             embed.addFields({ name: "Leaderboard", value: leaderboardText || "None", inline: false });
@@ -2685,7 +2688,7 @@ client.on("interactionCreate", async (interaction) => {
                 }
               }
             }
-            embed.addFields({ name: "Stats", value: statsText, inline: false });
+            embed.addFields({ name: "Stats", value: statsText.slice(0, 1024), inline: false });
           }
 
           // Add footer with page and timestamp
@@ -2712,30 +2715,6 @@ client.on("interactionCreate", async (interaction) => {
           console.log("Error in /activity command:", error.message, error.stack);
           await interaction.editReply({ content: "❌ Failed to fetch activity stats. Please try again." }).catch(() => {});
         }
-      } else if (interaction.isStringSelectMenu() && interaction.customId === "roster_selection") {
-        const rosterId = interaction.values[0];
-        const roster = await storage.getRosterConfig(interaction.guildId!, rosterId);
-
-        if (!roster) {
-          return interaction.reply({ content: "❌ Roster configuration not found.", ephemeral: true });
-        }
-
-        const embed = new EmbedBuilder()
-          .setTitle(`${roster.name} Roster`)
-          .setColor(0x5865f2)
-          .setTimestamp();
-
-        let rosterText = "";
-        for (const roleId of roster.roleIds) {
-          const role = interaction.guild?.roles.cache.get(roleId);
-          if (role) {
-            const members = role.members.map(m => `<@${m.id}>`).join("\n");
-            rosterText += `**${role.name}**\n${members || "No members"}\n\n`;
-          }
-        }
-
-        embed.setDescription(rosterText || "No roles configured for this roster.");
-        await interaction.reply({ embeds: [embed], ephemeral: true });
       } else if (commandName === "roster-embed") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -4464,6 +4443,33 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
     } else if (interaction.isStringSelectMenu()) {
+      // Handle roster selection
+      if (interaction.customId === "roster_selection") {
+        const rosterId = interaction.values[0];
+        const roster = await storage.getRosterConfig(interaction.guildId!, rosterId);
+
+        if (!roster) {
+          return interaction.reply({ content: "❌ Roster configuration not found.", ephemeral: true });
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle(`${roster.name} Roster`)
+          .setColor(0x5865f2)
+          .setTimestamp();
+
+        let rosterText = "";
+        for (const roleId of roster.roleIds) {
+          const role = interaction.guild?.roles.cache.get(roleId);
+          if (role) {
+            const members = role.members.map((m: any) => `<@${m.id}>`).join("\n");
+            rosterText += `**${role.name}**\n${members || "No members"}\n\n`;
+          }
+        }
+
+        embed.setDescription(rosterText || "No roles configured for this roster.");
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+        return;
+      }
       // Handle category removal selection
       if (interaction.customId.startsWith("remove_category_")) {
         if (!await safeDeferUpdate(interaction)) return;
