@@ -1182,11 +1182,35 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("roster-embed")
-    .setDescription("Post a roster embed with buttons")
+    .setDescription("Post a roster embed with buttons (up to 5 buttons)")
     .setDefaultMemberPermissions(0)
     .addStringOption((option) => option.setName("title").setDescription("Embed title").setRequired(true))
     .addStringOption((option) => option.setName("description").setDescription("Embed description").setRequired(true))
-    .addStringOption((option) => option.setName("buttons").setDescription("Button config: 'emoji|label|rosterName|color, ...' (colors: blue, green, red, grey)").setRequired(true))
+    .addStringOption((option) => option.setName("roster1").setDescription("First roster name").setRequired(true).setAutocomplete(true))
+    .addStringOption((option) => option.setName("label1").setDescription("First button label").setRequired(true))
+    .addStringOption((option) => option.setName("color1").setDescription("First button color").setRequired(true)
+      .addChoices({ name: "Blue", value: "blue" }, { name: "Green", value: "green" }, { name: "Red", value: "red" }, { name: "Grey", value: "grey" }))
+    .addStringOption((option) => option.setName("emoji1").setDescription("First button emoji (optional)").setRequired(false))
+    .addStringOption((option) => option.setName("roster2").setDescription("Second roster name").setRequired(false).setAutocomplete(true))
+    .addStringOption((option) => option.setName("label2").setDescription("Second button label").setRequired(false))
+    .addStringOption((option) => option.setName("color2").setDescription("Second button color").setRequired(false)
+      .addChoices({ name: "Blue", value: "blue" }, { name: "Green", value: "green" }, { name: "Red", value: "red" }, { name: "Grey", value: "grey" }))
+    .addStringOption((option) => option.setName("emoji2").setDescription("Second button emoji (optional)").setRequired(false))
+    .addStringOption((option) => option.setName("roster3").setDescription("Third roster name").setRequired(false).setAutocomplete(true))
+    .addStringOption((option) => option.setName("label3").setDescription("Third button label").setRequired(false))
+    .addStringOption((option) => option.setName("color3").setDescription("Third button color").setRequired(false)
+      .addChoices({ name: "Blue", value: "blue" }, { name: "Green", value: "green" }, { name: "Red", value: "red" }, { name: "Grey", value: "grey" }))
+    .addStringOption((option) => option.setName("emoji3").setDescription("Third button emoji (optional)").setRequired(false))
+    .addStringOption((option) => option.setName("roster4").setDescription("Fourth roster name").setRequired(false).setAutocomplete(true))
+    .addStringOption((option) => option.setName("label4").setDescription("Fourth button label").setRequired(false))
+    .addStringOption((option) => option.setName("color4").setDescription("Fourth button color").setRequired(false)
+      .addChoices({ name: "Blue", value: "blue" }, { name: "Green", value: "green" }, { name: "Red", value: "red" }, { name: "Grey", value: "grey" }))
+    .addStringOption((option) => option.setName("emoji4").setDescription("Fourth button emoji (optional)").setRequired(false))
+    .addStringOption((option) => option.setName("roster5").setDescription("Fifth roster name").setRequired(false).setAutocomplete(true))
+    .addStringOption((option) => option.setName("label5").setDescription("Fifth button label").setRequired(false))
+    .addStringOption((option) => option.setName("color5").setDescription("Fifth button color").setRequired(false)
+      .addChoices({ name: "Blue", value: "blue" }, { name: "Green", value: "green" }, { name: "Red", value: "red" }, { name: "Grey", value: "grey" }))
+    .addStringOption((option) => option.setName("emoji5").setDescription("Fifth button emoji (optional)").setRequired(false))
     .addStringOption((option) => option.setName("embed_color").setDescription("Embed color (hex without #, e.g. 5865f2)").setRequired(false)),
   new SlashCommandBuilder()
     .setName("roster")
@@ -1670,6 +1694,29 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.respond(filtered);
         } catch (e) {
           console.log("Roster autocomplete error:", e);
+          await interaction.respond([]).catch(() => {});
+        }
+        return;
+      }
+
+      // Handle roster-embed roster autocomplete
+      if (commandName === "roster-embed" && focusedOption.name.startsWith("roster")) {
+        try {
+          const guildId = interaction.guildId;
+          if (!guildId) {
+            await interaction.respond([]);
+            return;
+          }
+
+          const rosters = await storage.getAllRosterConfigs(guildId);
+          const filtered = rosters
+            .filter(r => r.name.toLowerCase().includes(focusedOption.value.toLowerCase()))
+            .slice(0, 25)
+            .map(r => ({ name: r.name.charAt(0).toUpperCase() + r.name.slice(1), value: r.name }));
+
+          await interaction.respond(filtered);
+        } catch (e) {
+          console.log("Roster-embed autocomplete error:", e);
           await interaction.respond([]).catch(() => {});
         }
         return;
@@ -2825,7 +2872,6 @@ client.on("interactionCreate", async (interaction) => {
 
         const title = interaction.options.getString("title", true);
         const description = interaction.options.getString("description", true);
-        const buttonConfigStr = interaction.options.getString("buttons", true);
         const embedColorStr = interaction.options.getString("embed_color");
 
         try {
@@ -2836,29 +2882,22 @@ client.on("interactionCreate", async (interaction) => {
               embedColor = parsed;
             }
           }
-          
+
           const embed = new EmbedBuilder()
             .setTitle(title)
             .setDescription(description)
             .setColor(embedColor);
 
-          const buttonConfigs = buttonConfigStr.split(",").map(s => s.trim());
           const buttons: ButtonBuilder[] = [];
           const missingRosters: string[] = [];
 
-          const invalidConfigs: string[] = [];
-          
-          for (const config of buttonConfigs) {
-            const parts = config.split("|").map(s => s.trim());
-            if (parts.length < 4) {
-              invalidConfigs.push(config);
-              continue;
-            }
+          for (let i = 1; i <= 5; i++) {
+            const rosterName = interaction.options.getString(`roster${i}`);
+            const label = interaction.options.getString(`label${i}`);
+            const colorStr = interaction.options.getString(`color${i}`);
+            const emoji = interaction.options.getString(`emoji${i}`);
 
-            const emoji = parts[0];
-            const label = parts[1];
-            const rosterName = parts[2].toLowerCase();
-            const colorStr = parts[3].toLowerCase();
+            if (!rosterName || !label || !colorStr) continue;
 
             const roster = await storage.getRosterConfig(interaction.guildId!, rosterName);
             if (!roster) {
@@ -2872,15 +2911,17 @@ client.on("interactionCreate", async (interaction) => {
             else if (colorStr === "grey" || colorStr === "gray") buttonStyle = ButtonStyle.Secondary;
 
             const button = new ButtonBuilder()
-              .setCustomId(`roster_btn_${rosterName}`)
+              .setCustomId(`roster_btn_${rosterName.toLowerCase()}`)
               .setLabel(label)
               .setStyle(buttonStyle);
 
-            const customEmojiMatch = emoji.match(/<a?:(.+):(\d+)>/);
-            if (customEmojiMatch) {
-              button.setEmoji({ name: customEmojiMatch[1], id: customEmojiMatch[2] });
-            } else if (emoji.length > 0 && emoji !== "-") {
-              button.setEmoji(emoji);
+            if (emoji) {
+              const customEmojiMatch = emoji.match(/<a?:(.+):(\d+)>/);
+              if (customEmojiMatch) {
+                button.setEmoji({ name: customEmojiMatch[1], id: customEmojiMatch[2] });
+              } else {
+                button.setEmoji(emoji);
+              }
             }
 
             buttons.push(button);
@@ -2890,28 +2931,16 @@ client.on("interactionCreate", async (interaction) => {
             return interaction.editReply(`❌ The following rosters don't exist: ${missingRosters.join(", ")}. Create them first with \`/roster add\`.`);
           }
 
-          if (invalidConfigs.length > 0 && buttons.length === 0) {
-            return interaction.editReply(`❌ Invalid button format. Each button needs 4 parts separated by |.\nFormat: \`emoji|label|rosterName|color\`\nExample: \`🎮|Fortnite Roster Display|fortnite|blue\``);
-          }
-
           if (buttons.length === 0) {
-            return interaction.editReply("❌ No valid button configurations provided.\nFormat: `emoji|label|rosterName|color, ...`\nExample: `🎮|Fortnite Roster Display|fortnite|blue, 🚗|Rocket League Roster|rocketleague|green`");
+            return interaction.editReply("❌ No valid buttons configured. Make sure to fill in roster, label, and color for at least one button.");
           }
 
-          if (buttons.length > 20) {
-            return interaction.editReply("❌ Maximum 20 buttons allowed.");
-          }
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
 
-          const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-          for (let i = 0; i < buttons.length; i += 5) {
-            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(i, i + 5));
-            rows.push(row);
-          }
-
-          await interaction.editReply({ embeds: [embed], components: rows });
+          await interaction.editReply({ embeds: [embed], components: [row] });
         } catch (error: any) {
           console.error("Error in /roster-embed:", error);
-          await interaction.editReply("❌ Failed to create roster embed. Check your configuration format.");
+          await interaction.editReply("❌ Failed to create roster embed.");
         }
 
       } else if (commandName === "clear-role") {
