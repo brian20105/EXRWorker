@@ -1,6 +1,7 @@
 import {
   Client,
   GatewayIntentBits,
+  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -33,7 +34,7 @@ export const client = new Client({
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
   ],
-  partials: [1], // Partials.Channel for DMs
+  partials: [Partials.Channel, Partials.Message],
 });
 
 interface QuizState {
@@ -1181,11 +1182,10 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("roster-embed")
-    .setDescription("Post a roster embed with interactive buttons")
+    .setDescription("Post a roster selection embed with all available rosters")
     .setDefaultMemberPermissions(0)
-    .addStringOption((option) => option.setName("title").setDescription("Embed title").setRequired(true))
-    .addStringOption((option) => option.setName("description").setDescription("Embed description").setRequired(true))
-    .addStringOption((option) => option.setName("buttons").setDescription("Button config (format: 'Emoji Name RosterName, ...')").setRequired(true)),
+    .addStringOption((option) => option.setName("title").setDescription("Embed title").setRequired(false))
+    .addStringOption((option) => option.setName("description").setDescription("Embed description").setRequired(false)),
   new SlashCommandBuilder()
     .setName("roster")
     .setDescription("Manage roster configurations")
@@ -2821,44 +2821,30 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "roster-embed") {
         if (!await safeDeferReply(interaction)) return;
 
-        const title = interaction.options.getString("title", true);
-        const description = interaction.options.getString("description", true);
-        const buttonConfigStr = interaction.options.getString("buttons", true); // format: "Emoji Name RosterName, ..."
+        const title = interaction.options.getString("title") || "📋 Rosters";
+        const description = interaction.options.getString("description") || "Select a roster to view its members.";
 
         try {
+          const rosters = await storage.getAllRosterConfigs(interaction.guildId!);
+          
+          if (rosters.length === 0) {
+            return interaction.editReply("❌ No rosters have been configured. Use `/roster add` to create rosters first.");
+          }
+
           const embed = new EmbedBuilder()
             .setTitle(title)
             .setDescription(description)
             .setColor(0x5865f2);
 
-          const buttonConfigs = buttonConfigStr.split(",").map(s => s.trim());
           const options: any[] = [];
 
-          for (const config of buttonConfigs) {
-            const parts = config.split(" ");
-            if (parts.length < 3) continue;
-
-            const emoji = parts[0];
-            const label = parts[1];
-            const rosterName = parts[2];
-
+          for (const roster of rosters) {
             const option = new StringSelectMenuOptionBuilder()
-              .setLabel(`${label} Roster`)
-              .setValue(rosterName)
-              .setDescription(`View the ${label} roster`);
-
-            const customEmojiMatch = emoji.match(/<a?:.+:(\d+)>/);
-            if (customEmojiMatch) {
-              option.setEmoji(customEmojiMatch[1]);
-            } else if (emoji.length > 0) {
-              option.setEmoji(emoji);
-            }
+              .setLabel(roster.name.charAt(0).toUpperCase() + roster.name.slice(1))
+              .setValue(roster.name)
+              .setDescription(`View the ${roster.name} roster`);
 
             options.push(option);
-          }
-
-          if (options.length === 0) {
-            return interaction.editReply("❌ No valid roster options provided.");
           }
 
           const select = new StringSelectMenuBuilder()
@@ -2871,7 +2857,7 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ embeds: [embed], components: [row] });
         } catch (error: any) {
           console.error("Error in /roster-embed:", error);
-          await interaction.editReply("❌ Failed to create roster embed. Check your configuration format.");
+          await interaction.editReply("❌ Failed to create roster embed.");
         }
 
       } else if (commandName === "clear-role") {
@@ -7896,10 +7882,18 @@ const processedMessages = new Set<string>();
 const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
-  if (!newMessage.author || newMessage.author.bot) return;
-  if (newMessage.channel.type !== ChannelType.DM) return;
+  console.log("[DM TRACKING] messageUpdate event fired");
+  if (!newMessage.author || newMessage.author.bot) {
+    console.log("[DM TRACKING] Skipping: no author or bot message");
+    return;
+  }
+  if (newMessage.channel.type !== ChannelType.DM) {
+    console.log("[DM TRACKING] Skipping: not a DM channel");
+    return;
+  }
 
   const userId = newMessage.author.id;
+  console.log(`[DM TRACKING] Processing edit from user ${userId}`);
   
   // Get old content from cache if partial
   let oldContent = oldMessage.content;
@@ -7935,6 +7929,7 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
 });
 
 client.on("messageDelete", async (message) => {
+  console.log("[DM TRACKING] messageDelete event fired");
   // Try to get author info from cache first
   let authorId = message.author?.id;
   let authorTag = message.author?.tag;
@@ -7946,9 +7941,10 @@ client.on("messageDelete", async (message) => {
   try {
     if (message.channel && message.channel.type === ChannelType.DM) {
       isDM = true;
+      console.log("[DM TRACKING] Detected as DM from channel type");
     }
   } catch (e) {
-    // Channel type check failed, try to determine from cache
+    console.log("[DM TRACKING] Channel type check failed, trying cache");
   }
   
   // For partial messages, try to get from cache
