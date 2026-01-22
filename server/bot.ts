@@ -13,6 +13,8 @@ import {
   TextInputStyle,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  ChannelType,
+  AttachmentBuilder,
 } from "discord.js";
 import { storage } from "./storage";
 
@@ -75,7 +77,7 @@ setInterval(() => {
       console.log(`[QUIZ] Cleaned up expired quiz session for user ${userId}`);
     }
   }
-  
+
   // Safety cleanup for processingQuizStart
   if (processingQuizStart.size > 20) {
     console.log(`[CLEANUP] Clearing ${processingQuizStart.size} stale quiz starts`);
@@ -107,12 +109,12 @@ async function parseModLogMessage(msg: any, guildId: string): Promise<{ guildId:
     const embedDesc = msg.embeds?.[0]?.description?.toLowerCase() || "";
     const embedFields = msg.embeds?.[0]?.fields || [];
     const fullText = `${content} ${embedTitle} ${embedDesc}`;
-    
+
     let actionType: string | null = null;
     let moderatorId: string | null = null;
     let targetId: string | null = null;
     let reason: string | null = null;
-    
+
     // Detect action type from various common formats
     if (fullText.includes("warn") && !fullText.includes("unwarned")) actionType = "warn";
     else if (fullText.includes("mute") && !fullText.includes("unmute")) actionType = "mute";
@@ -121,19 +123,19 @@ async function parseModLogMessage(msg: any, guildId: string): Promise<{ guildId:
     else if (fullText.includes("ban") && !fullText.includes("unban")) actionType = "ban";
     else if (fullText.includes("unban")) actionType = "unban";
     else if (fullText.includes("unmute")) actionType = "unmute";
-    
+
     if (!actionType) return null;
-    
+
     // Extract user IDs from mentions or field values
     const idRegex = /<@!?(\d{17,19})>|ID:\s*(\d{17,19})|User ID:\s*(\d{17,19})|(\d{17,19})/gi;
     const fullContent = `${msg.content || ""} ${msg.embeds?.[0]?.description || ""} ${embedFields.map((f: any) => `${f.name} ${f.value}`).join(" ")}`;
     const matches = [...fullContent.matchAll(idRegex)];
-    
+
     // Try to find moderator from embed fields
     for (const field of embedFields) {
       const fieldName = field.name.toLowerCase();
       const fieldValue = field.value;
-      
+
       if (fieldName.includes("moderator") || fieldName.includes("staff") || fieldName.includes("by") || fieldName.includes("executor")) {
         const modMatch = fieldValue.match(/<@!?(\d{17,19})>|(\d{17,19})/);
         if (modMatch) moderatorId = modMatch[1] || modMatch[2];
@@ -146,7 +148,7 @@ async function parseModLogMessage(msg: any, guildId: string): Promise<{ guildId:
         reason = fieldValue;
       }
     }
-    
+
     // If we still don't have moderator/target, try to extract from author/footer
     if (!moderatorId) {
       const footerText = msg.embeds?.[0]?.footer?.text || "";
@@ -158,14 +160,14 @@ async function parseModLogMessage(msg: any, guildId: string): Promise<{ guildId:
         else moderatorId = potentialId;
       }
     }
-    
+
     // Try to get from embed author
     if (!targetId && msg.embeds?.[0]?.author?.name) {
       const authorText = msg.embeds[0].author.name;
       const authorMatch = authorText.match(/\((\d{17,19})\)/);
       if (authorMatch) targetId = authorMatch[1];
     }
-    
+
     // If no moderator found but we have IDs, try to infer from message structure
     if (!moderatorId && matches.length >= 1) {
       // First ID is usually the target, second might be moderator
@@ -176,10 +178,10 @@ async function parseModLogMessage(msg: any, guildId: string): Promise<{ guildId:
         targetId = matches[0][1] || matches[0][2] || matches[0][3] || matches[0][4];
       }
     }
-    
+
     // Need at least moderator ID to track stats
     if (!moderatorId) return null;
-    
+
     return {
       guildId,
       moderatorId,
@@ -322,13 +324,13 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
           .setTitle("Staff Intro Quiz Submission")
           .setColor(0xf0b232)
           .setDescription(`**Submitted by:** <@${userId}>`)
-          .addFields(
+          .addFields([
             { name: `Q1: ${fullQuestions[0]}`, value: quizState.answers[0] || "No answer", inline: false },
             { name: `Q2: ${fullQuestions[1]}`, value: quizState.answers[1] || "No answer", inline: false },
             { name: `Q3: ${fullQuestions[2]}`, value: quizState.answers[2] || "No answer", inline: false },
             { name: `Q4: ${fullQuestions[3]}`, value: quizState.answers[3] || "No answer", inline: false },
             { name: `Q5: ${fullQuestions[4]}`, value: quizState.answers[4] || "No answer", inline: false }
-          )
+          ])
           .setFooter({ text: `Submission ID: ${submission.id}` })
           .setTimestamp();
 
@@ -596,6 +598,12 @@ const commands = [
       option
         .setName("to")
         .setDescription("End time in days ago (e.g., 0 for today, leave empty for all time)")
+        .setRequired(false)
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("page")
+        .setDescription("Page number (for leaderboard)")
         .setRequired(false)
     ),
   new SlashCommandBuilder()
@@ -1069,6 +1077,13 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("roster-embed")
+    .setDescription("Post a roster embed with interactive buttons")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) => option.setName("title").setDescription("Embed title").setRequired(true))
+    .addStringOption((option) => option.setName("description").setDescription("Embed description").setRequired(true))
+    .addStringOption((option) => option.setName("buttons").setDescription("Button config (format: 'Emoji Name RosterName, ...')").setRequired(true)),
+  new SlashCommandBuilder()
     .setName("roster")
     .setDescription("Manage roster configurations")
     .setDefaultMemberPermissions(0)
@@ -1498,7 +1513,7 @@ client.once("clientReady", async () => {
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error("Command registration timed out after 30s")), 30000)
       );
-      
+
       await Promise.race([
         rest.put(Routes.applicationCommands(APPLICATION_ID), { body: commands }),
         timeoutPromise
@@ -1531,7 +1546,7 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.isAutocomplete()) {
       const { commandName } = interaction;
       const focusedOption = interaction.options.getFocused(true);
-      
+
       // Handle roster name autocomplete
       if ((commandName === "roster" || commandName === "setup_roster") && focusedOption.name === "name") {
         try {
@@ -1540,13 +1555,13 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.respond([]);
             return;
           }
-          
+
           const rosters = await storage.getAllRosterConfigs(guildId);
           const filtered = rosters
             .filter(r => r.name.toLowerCase().includes(focusedOption.value.toLowerCase()))
             .slice(0, 25)
             .map(r => ({ name: r.name, value: r.name }));
-          
+
           await interaction.respond(filtered);
         } catch (e) {
           console.log("Roster autocomplete error:", e);
@@ -1554,7 +1569,7 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       }
-      
+
       return;
     }
 
@@ -2373,7 +2388,7 @@ client.on("interactionCreate", async (interaction) => {
           const now = new Date();
           const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
           const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
-          
+
           let timeRangeDesc = useAllGuilds ? "📊 **All Servers**" : "📊 **This Server Only**";
           if (fromDate || toDays !== undefined) {
             const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
@@ -2578,7 +2593,7 @@ client.on("interactionCreate", async (interaction) => {
               } catch (e) {
                 console.log("[ACTIVITY] Could not fetch all members:", e);
               }
-              
+
               let addedCount = 0;
               for (const roleId of config.activityTrackedRoleIds) {
                 const trackedRole = interaction.guild.roles.cache.get(roleId);
@@ -2600,8 +2615,13 @@ client.on("interactionCreate", async (interaction) => {
 
           const leaderboard = Object.entries(combinedStats)
             .map(([userId, count]) => ({ userId, count }))
-            .sort((a, b) => b.count - a.count)
-            .slice(0, 100);
+            .sort((a, b) => b.count - a.count);
+
+          const totalPages = Math.ceil(leaderboard.length / 10);
+          const page = interaction.options.getInteger("page") || 1;
+          const start = (page - 1) * 10;
+          const end = start + 10;
+          const currentLeaderboard = leaderboard.slice(start, end);
 
           const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
 
@@ -2612,6 +2632,8 @@ client.on("interactionCreate", async (interaction) => {
           if (timeRangeDesc) {
             embed.setDescription(timeRangeDesc);
           }
+
+          const components: any[] = [];
 
           // Calculate totals
           const totalCount = leaderboard.reduce((sum, e) => sum + e.count, 0);
@@ -2624,12 +2646,13 @@ client.on("interactionCreate", async (interaction) => {
           if (leaderboard.length === 0) {
             embed.addFields({ name: "\u200B", value: "No activity found for the specified filters.", inline: false });
           } else {
-            let description = "";
-            leaderboard.forEach((entry, index) => {
-              description += `${index + 1}. <@${entry.userId}> - ${entry.count}\n`;
+            let leaderboardText = "";
+            currentLeaderboard.forEach((entry, index) => {
+              leaderboardText += `${start + index + 1}. <@${entry.userId}> - ${entry.count}\n`;
             });
-            embed.addFields({ name: "\u200B", value: description, inline: false });
-            
+
+            embed.addFields({ name: "Leaderboard", value: leaderboardText || "None", inline: false });
+
             // Add total and category breakdown
             let statsText = `**Total in the specified time:** ${totalCount}`;
             if (!category) {
@@ -2662,17 +2685,113 @@ client.on("interactionCreate", async (interaction) => {
                 }
               }
             }
-            embed.addFields({ name: "\u200B", value: statsText, inline: false });
+            embed.addFields({ name: "Stats", value: statsText, inline: false });
           }
 
           // Add footer with page and timestamp
-          embed.setFooter({ text: `Page 1 of 1 | ${now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}` });
+          embed.setFooter({ text: `Page ${page} of ${totalPages} | ${now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}` });
 
-          await interaction.editReply({ embeds: [embed] });
+          if (totalPages > 1) {
+            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`activity_page_${page - 1}_${category || "all"}_${scope}_${fromDays ?? "none"}_${toDays ?? "none"}`)
+                .setLabel("◀ Previous")
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(page <= 1),
+              new ButtonBuilder()
+                .setCustomId(`activity_page_${page + 1}_${category || "all"}_${scope}_${fromDays ?? "none"}_${toDays ?? "none"}`)
+                .setLabel("Next ▶")
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(page >= totalPages)
+            );
+            components.push(row);
+          }
+
+          await interaction.editReply({ embeds: [embed], components });
         } catch (error: any) {
           console.log("Error in /activity command:", error.message, error.stack);
           await interaction.editReply({ content: "❌ Failed to fetch activity stats. Please try again." }).catch(() => {});
         }
+      } else if (interaction.isStringSelectMenu() && interaction.customId === "roster_selection") {
+        const rosterId = interaction.values[0];
+        const roster = await storage.getRosterConfig(interaction.guildId!, rosterId);
+
+        if (!roster) {
+          return interaction.reply({ content: "❌ Roster configuration not found.", ephemeral: true });
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle(`${roster.name} Roster`)
+          .setColor(0x5865f2)
+          .setTimestamp();
+
+        let rosterText = "";
+        for (const roleId of roster.roleIds) {
+          const role = interaction.guild?.roles.cache.get(roleId);
+          if (role) {
+            const members = role.members.map(m => `<@${m.id}>`).join("\n");
+            rosterText += `**${role.name}**\n${members || "No members"}\n\n`;
+          }
+        }
+
+        embed.setDescription(rosterText || "No roles configured for this roster.");
+        await interaction.reply({ embeds: [embed], ephemeral: true });
+      } else if (commandName === "roster-embed") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const title = interaction.options.getString("title", true);
+        const description = interaction.options.getString("description", true);
+        const buttonConfigStr = interaction.options.getString("buttons", true); // format: "Emoji Name RosterName, ..."
+
+        try {
+          const embed = new EmbedBuilder()
+            .setTitle(title)
+            .setDescription(description)
+            .setColor(0x5865f2);
+
+          const buttonConfigs = buttonConfigStr.split(",").map(s => s.trim());
+          const options: any[] = [];
+
+          for (const config of buttonConfigs) {
+            const parts = config.split(" ");
+            if (parts.length < 3) continue;
+
+            const emoji = parts[0];
+            const label = parts[1];
+            const rosterName = parts[2];
+
+            const option = new StringSelectMenuOptionBuilder()
+              .setLabel(`${label} Roster`)
+              .setValue(rosterName)
+              .setDescription(`View the ${label} roster`);
+
+            const customEmojiMatch = emoji.match(/<a?:.+:(\d+)>/);
+            if (customEmojiMatch) {
+              option.setEmoji(customEmojiMatch[1]);
+            } else if (emoji.length > 0) {
+              option.setEmoji(emoji);
+            }
+
+            options.push(option);
+          }
+
+          if (options.length === 0) {
+            return interaction.editReply("❌ No valid roster options provided.");
+          }
+
+          const select = new StringSelectMenuBuilder()
+            .setCustomId("roster_selection")
+            .setPlaceholder("Select a roster to view...")
+            .addOptions(options);
+
+          const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+
+          await interaction.editReply({ embeds: [embed], components: [row] });
+        } catch (error: any) {
+          console.error("Error in /roster-embed:", error);
+          await interaction.editReply("❌ Failed to create roster embed. Check your configuration format.");
+        }
+
       } else if (commandName === "clear-role") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -2721,7 +2840,7 @@ client.on("interactionCreate", async (interaction) => {
           const amount = interaction.options.getInteger("amount", true);
           const category = interaction.options.getString("category", true);
           const serverOption = interaction.options.getString("server") || "current";
-          
+
           // Use "global" for cross-server synced entries, otherwise current guild
           const targetGuildId = serverOption === "global" ? "global" : interaction.guildId!;
 
@@ -2758,7 +2877,7 @@ client.on("interactionCreate", async (interaction) => {
           const amount = interaction.options.getInteger("amount", true);
           const category = interaction.options.getString("category", true);
           const serverOption = interaction.options.getString("server") || "current";
-          
+
           // Use "global" for cross-server synced entries, otherwise current guild
           const targetGuildId = serverOption === "global" ? "global" : interaction.guildId!;
 
@@ -2947,7 +3066,7 @@ client.on("interactionCreate", async (interaction) => {
           // Split into chunks if needed (Discord limit is 2000 chars)
           const messages: string[] = [];
           let currentMessage = "```\n" + headerText + "\n";
-          
+
           for (const row of rows) {
             const testMessage = currentMessage + row + "\n";
             if ((testMessage + "```").length > 1800) {
@@ -2957,7 +3076,7 @@ client.on("interactionCreate", async (interaction) => {
               currentMessage = testMessage;
             }
           }
-          
+
           // Add totals to the last message
           currentMessage = currentMessage + totalsText + "\n```";
           messages.push(currentMessage);
@@ -3028,7 +3147,7 @@ client.on("interactionCreate", async (interaction) => {
               roleNames.push(role.name);
             }
           }
-          
+
           await storage.upsertGuildConfig({
             guildId: interaction.guildId!,
             activityTrackedRoleIds: roles.length > 0 ? roles : null,
@@ -3049,14 +3168,14 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (commandName === "modstats") {
         const subcommand = interaction.options.getSubcommand();
-        
+
         if (subcommand === "list") {
           // Ephemeral response - only the user can see it
           if (!await safeDeferReply(interaction, true)) return;
 
           try {
             const role = interaction.options.getRole("role", true);
-            
+
             if (!interaction.guild) {
               await interaction.editReply({ content: "This command must be used in a server." });
               return;
@@ -3078,10 +3197,10 @@ client.on("interactionCreate", async (interaction) => {
 
             // Build copyable list of *ms commands - each in separate code block
             const header = `**Moderation Stats Commands for ${trackedRole.name}** (${roleMembers.length} members)\n\nCopy and paste these commands in the channel where the moderation bot is:\n\n`;
-            
+
             const messages: string[] = [];
             let currentMessage = header;
-            
+
             for (const member of roleMembers) {
               const cmdBlock = `\`*ms ${member.id}\`\n`;
               if ((currentMessage + cmdBlock).length > 1900) {
@@ -3098,7 +3217,7 @@ client.on("interactionCreate", async (interaction) => {
             for (let i = 1; i < messages.length; i++) {
               await interaction.followUp({ content: messages[i], ephemeral: true });
             }
-            
+
           } catch (error: any) {
             console.log("Error in /modstats list command:", error.message, error.stack);
             await interaction.editReply({ content: "Failed to generate mod stats commands. Please try again." }).catch(() => {});
@@ -3108,7 +3227,7 @@ client.on("interactionCreate", async (interaction) => {
 
           try {
             const messagesToScan = interaction.options.getInteger("messages") || 100;
-            
+
             if (!interaction.channel || !("messages" in interaction.channel)) {
               await interaction.editReply({ content: "This command must be used in a text channel." });
               return;
@@ -3118,21 +3237,21 @@ client.on("interactionCreate", async (interaction) => {
 
             // Fetch messages
             const messages = await interaction.channel.messages.fetch({ limit: Math.min(messagesToScan, 100) });
-            
+
             // Count embeds per user from *ms command responses
             const statsMap: Map<string, { username: string; embedCount: number; bans: number; kicks: number; warns: number; mutes: number; total: number }> = new Map();
-            
+
             for (const msg of messages.values()) {
               // Only check bot embeds
               if (!msg.author.bot || msg.embeds.length === 0) continue;
-              
+
               for (const embed of msg.embeds) {
                 const title = embed.title || "";
                 const description = embed.description || "";
                 const authorName = embed.author?.name || "";
                 const fields = embed.fields || [];
                 const fullText = title + " " + authorName + " " + description + " " + fields.map(f => f.name + " " + f.value).join(" ");
-                
+
                 // Look for moderation stats patterns - these indicate a *ms response embed
                 const hasModerationStats = /Bans?[:\s]+\d+/i.test(fullText) || 
                                            /Kicks?[:\s]+\d+/i.test(fullText) || 
@@ -3141,9 +3260,9 @@ client.on("interactionCreate", async (interaction) => {
                                            /Timeout?s?[:\s]+\d+/i.test(fullText) ||
                                            /Total[:\s]+\d+/i.test(fullText) ||
                                            /moderation\s*stats?/i.test(fullText);
-                
+
                 if (!hasModerationStats) continue;
-                
+
                 // Try to extract user ID from title, author, description
                 const userIdMatch = title.match(/(\d{17,19})/) || 
                                    authorName.match(/(\d{17,19})/) ||
@@ -3151,33 +3270,33 @@ client.on("interactionCreate", async (interaction) => {
                                    description.match(/ID[:\s]*(\d{17,19})/i) ||
                                    description.match(/(\d{17,19})/);
                 if (!userIdMatch) continue;
-                
+
                 const userId = userIdMatch[1];
                 const existing = statsMap.get(userId) || { username: "", embedCount: 0, bans: 0, kicks: 0, warns: 0, mutes: 0, total: 0 };
-                
+
                 // Count this embed
                 existing.embedCount++;
-                
+
                 // Parse stats from this embed
                 const bansMatch = fullText.match(/Bans?[:\s]+(\d+)/i);
                 const kicksMatch = fullText.match(/Kicks?[:\s]+(\d+)/i);
                 const warnsMatch = fullText.match(/Warn(?:ing)?s?[:\s]+(\d+)/i);
                 const mutesMatch = fullText.match(/Mutes?[:\s]+(\d+)/i) || fullText.match(/Timeout?s?[:\s]+(\d+)/i);
                 const totalMatch = fullText.match(/Total[:\s]+(\d+)/i);
-                
+
                 // Use the highest values found (in case of multiple embeds per user)
                 if (bansMatch) existing.bans = Math.max(existing.bans, parseInt(bansMatch[1]) || 0);
                 if (kicksMatch) existing.kicks = Math.max(existing.kicks, parseInt(kicksMatch[1]) || 0);
                 if (warnsMatch) existing.warns = Math.max(existing.warns, parseInt(warnsMatch[1]) || 0);
                 if (mutesMatch) existing.mutes = Math.max(existing.mutes, parseInt(mutesMatch[1]) || 0);
                 if (totalMatch) existing.total = Math.max(existing.total, parseInt(totalMatch[1]) || 0);
-                
+
                 // Try to get username from embed
                 const usernameMatch = title.match(/(.+?)\s*[\(\[]?\d{17,19}/) || 
                                      authorName.match(/(.+?)\s*[\(\[]?\d{17,19}/) ||
                                      embed.author?.name?.match(/^([^0-9]+)/);
                 if (usernameMatch) existing.username = usernameMatch[1].trim();
-                
+
                 statsMap.set(userId, existing);
               }
             }
@@ -3204,7 +3323,7 @@ client.on("interactionCreate", async (interaction) => {
 
             let leaderboardText = "";
             const medals = ["🥇", "🥈", "🥉"];
-            
+
             for (let i = 0; i < Math.min(sortedStats.length, 15); i++) {
               const [userId, stats] = sortedStats[i];
               const medal = medals[i] || `**${i + 1}.**`;
@@ -3224,7 +3343,7 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             await interaction.editReply({ content: "", embeds: [leaderboardEmbed] });
-            
+
           } catch (error: any) {
             console.log("Error in /modstats check command:", error.message, error.stack);
             await interaction.editReply({ content: "Failed to scan channel for stats. Please try again." }).catch(() => {});
@@ -3456,7 +3575,7 @@ client.on("interactionCreate", async (interaction) => {
         // Debug: log interaction details
         const age = Date.now() - interaction.createdTimestamp;
         console.log(`[setup_modmail] Received interaction ${interaction.id}, age: ${age}ms, replied: ${interaction.replied}, deferred: ${interaction.deferred}`);
-        
+
         // Reply immediately to avoid timeout
         try {
           await interaction.reply({ content: "⏳ Setting up modmail system..." });
@@ -3517,7 +3636,7 @@ client.on("interactionCreate", async (interaction) => {
           // Add ::modal suffix to value if category has custom modal questions
           const hasModal = cat.modalQuestions && cat.modalQuestions.length > 0;
           const value = hasModal ? `${cat.id}::modal` : cat.id;
-          
+
           const option = new StringSelectMenuOptionBuilder()
             .setLabel(cat.label)
             .setDescription(cat.description.substring(0, 100))
@@ -3538,7 +3657,7 @@ client.on("interactionCreate", async (interaction) => {
             embeds: [ticketEmbed],
             components: [row],
           });
-          
+
           // Save message ID for real-time updates
           await storage.upsertGuildConfig({
             guildId: interaction.guildId!,
@@ -3554,7 +3673,7 @@ client.on("interactionCreate", async (interaction) => {
         const embedType = interaction.options.getString("type", true);
         const messageId = interaction.options.getString("message_id");
         const config = await storage.getGuildConfig(interaction.guildId!);
-        
+
         // If message_id provided, save it to database for the modal handler to use
         if (embedType === "modmail" && messageId) {
           await storage.upsertGuildConfig({
@@ -3563,7 +3682,7 @@ client.on("interactionCreate", async (interaction) => {
             modmailEmbedChannelId: interaction.channelId,
           });
         }
-        
+
         if (embedType === "modmail") {
           const currentTitle = config?.modmailEmbedTitle || "Support Tickets";
           const currentDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
@@ -4032,7 +4151,7 @@ client.on("interactionCreate", async (interaction) => {
         console.log(`[modmail-category] Command called with subcommand attempt...`);
         const subcommand = interaction.options.getSubcommand();
         console.log(`[modmail-category] Subcommand: ${subcommand}`);
-        
+
         if (!await safeDeferReply(interaction, false)) {
           console.log(`[modmail-category] safeDeferReply failed`);
           return;
@@ -4040,7 +4159,7 @@ client.on("interactionCreate", async (interaction) => {
         console.log(`[modmail-category] safeDeferReply succeeded`);
 
         const config = await storage.getGuildConfig(interaction.guildId!);
-        
+
         // Parse existing custom categories
         let customCategories: { id: string; label: string; description: string; emoji?: string }[] = [];
         if (config?.customModmailCategories) {
@@ -4094,7 +4213,7 @@ client.on("interactionCreate", async (interaction) => {
         } else if (subcommand === "remove") {
           console.log(`[modmail-category] Remove - categories count: ${customCategories.length}`);
           console.log(`[modmail-category] Categories: ${JSON.stringify(customCategories)}`);
-          
+
           if (customCategories.length === 0) {
             await interaction.editReply({ content: "❌ No categories to remove. Use `/modmail-category add` to create categories first." });
             return;
@@ -4107,7 +4226,7 @@ client.on("interactionCreate", async (interaction) => {
                 .setLabel(cat.label.substring(0, 100))
                 .setDescription((cat.description || "No description").substring(0, 100))
                 .setValue(cat.id);
-              
+
               // Only set emoji if it exists and is a simple emoji (not a custom Discord emoji ID)
               if (cat.emoji && cat.emoji.length <= 4 && !/^\d+$/.test(cat.emoji)) {
                 try {
@@ -4116,7 +4235,7 @@ client.on("interactionCreate", async (interaction) => {
                   // Invalid emoji, skip it
                 }
               }
-              
+
               return option;
             });
 
@@ -4164,10 +4283,10 @@ client.on("interactionCreate", async (interaction) => {
               return `${c.emoji || "📌"} **${c.label}** (\`${c.id}\`)${hasModal ? " 📋" : ""}`;
             }).join("\n");
           }
-          
+
           description += customCategories.length > 0 ? "\n\n**Built-in Categories:**\n" : "**Built-in Categories:**\n";
           description += builtInCategories.map(c => `${c.emoji} **${c.label}** (\`${c.id}\`)`).join("\n");
-          
+
           embed.setDescription(description);
           embed.setFooter({ text: "📋 = Has form questions configured" });
 
@@ -4193,7 +4312,7 @@ client.on("interactionCreate", async (interaction) => {
 
         if (subcommand === "add") {
           const name = interaction.options.getString("name", true).toLowerCase();
-          
+
           // Check if roster already exists
           const existing = await storage.getRosterConfig(interaction.guildId!, name);
           if (existing) {
@@ -4225,7 +4344,7 @@ client.on("interactionCreate", async (interaction) => {
 
         } else if (subcommand === "edit") {
           const name = interaction.options.getString("name", true).toLowerCase();
-          
+
           // Check if roster exists
           const existing = await storage.getRosterConfig(interaction.guildId!, name);
           if (!existing) {
@@ -4253,7 +4372,7 @@ client.on("interactionCreate", async (interaction) => {
 
         } else if (subcommand === "delete") {
           const name = interaction.options.getString("name", true).toLowerCase();
-          
+
           const existing = await storage.getRosterConfig(interaction.guildId!, name);
           if (!existing) {
             await interaction.editReply({ content: `❌ No roster named **${name}** found.` });
@@ -4330,7 +4449,7 @@ client.on("interactionCreate", async (interaction) => {
         // Post the roster
         if (interaction.channel && "send" in interaction.channel) {
           const sentMessage = await interaction.channel.send({ content: rosterContent });
-          
+
           // Save the message ID and channel ID for real-time updates
           await storage.updateRosterConfig(interaction.guildId!, name, {
             messageId: sentMessage.id,
@@ -4381,7 +4500,7 @@ client.on("interactionCreate", async (interaction) => {
               .setLabel(cat.label.substring(0, 100))
               .setDescription((cat.description || "No description").substring(0, 100))
               .setValue(cat.id);
-            
+
             if (cat.emoji && cat.emoji.length <= 4 && !/^\d+$/.test(cat.emoji)) {
               try { option.setEmoji(cat.emoji); } catch (e) {}
             }
@@ -4411,38 +4530,38 @@ client.on("interactionCreate", async (interaction) => {
       // Handle server selection for multi-server DM routing
       if (interaction.customId.startsWith("dm_server_select_")) {
         if (!await safeDeferUpdate(interaction)) return;
-        
+
         const userId = interaction.customId.replace("dm_server_select_", "");
         const pendingData = pendingServerSelections.get(userId);
-        
+
         if (!pendingData) {
           await interaction.followUp({ content: "This selection has expired. Please send your message again.", flags: 64 });
           return;
         }
-        
+
         const selectedIndex = parseInt(interaction.values[0]);
         const selectedTicket = pendingData.tickets[selectedIndex];
-        
+
         if (!selectedTicket) {
           await interaction.followUp({ content: "Invalid selection.", flags: 64 });
           return;
         }
-        
+
         // Clear the pending data
         pendingServerSelections.delete(userId);
-        
+
         // Relay the message to the selected ticket
         try {
           const ticketChannel = await client.channels.fetch(selectedTicket.thread.channelId);
           if (ticketChannel && "send" in ticketChannel) {
             const user = await client.users.fetch(userId);
-            
+
             const userEmbed = new EmbedBuilder()
               .setAuthor({ name: user.tag, iconURL: user.displayAvatarURL() })
               .setDescription(pendingData.messageContent || "(No text content)")
               .setColor(0x57f287)
               .setTimestamp();
-            
+
             // Add attachments if any
             if (pendingData.attachments.length > 0) {
               const urls = pendingData.attachments.map((a: any) => a.url);
@@ -4452,9 +4571,9 @@ client.on("interactionCreate", async (interaction) => {
                 userEmbed.setImage(firstImage.url);
               }
             }
-            
+
             await ticketChannel.send({ embeds: [userEmbed] });
-            
+
             // Ping subscribed users
             const subs = selectedTicket.thread.subscribedUserIds || [];
             if (subs.length > 0) {
@@ -4462,7 +4581,7 @@ client.on("interactionCreate", async (interaction) => {
               const pingMsg = await ticketChannel.send({ content: pingContent });
               setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
             }
-            
+
             // Save message
             if (selectedTicket.isAppeal) {
               await storage.addAppealMessage({
@@ -4479,7 +4598,7 @@ client.on("interactionCreate", async (interaction) => {
                 isStaff: "false",
               });
             }
-            
+
             // React to original message with checkmark and delete the selection message
             try {
               const originalChannel = await client.channels.fetch(pendingData.originalChannelId);
@@ -4490,7 +4609,7 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) {
               console.log("Could not react to original message:", e);
             }
-            
+
             // Delete the selection message
             try {
               await interaction.message.delete();
@@ -4504,7 +4623,7 @@ client.on("interactionCreate", async (interaction) => {
         }
         return;
       }
-      
+
       // Handle ticket dropdown selection
       if (interaction.customId.startsWith("ticket_select_")) {
         const guildId = interaction.customId.split("_")[2];
@@ -4523,7 +4642,7 @@ client.on("interactionCreate", async (interaction) => {
                 customCategories = JSON.parse(categoryConfig.customModmailCategories);
               } catch (e) {}
             }
-            
+
             const categoryWithModal = customCategories.find(c => c.id === actualCategoryId);
             if (categoryWithModal && categoryWithModal.modalQuestions && categoryWithModal.modalQuestions.length > 0) {
               // Encode categoryId and guildId as base64 to avoid parsing issues with underscores
@@ -4531,7 +4650,7 @@ client.on("interactionCreate", async (interaction) => {
               const modal = new ModalBuilder()
                 .setCustomId(`ticket_custom_modal::${encodedData}`)
                 .setTitle(`${categoryWithModal.label.substring(0, 40)}`);
-              
+
               categoryWithModal.modalQuestions.forEach((question, index) => {
                 const input = new TextInputBuilder()
                   .setCustomId(`answer${index + 1}`)
@@ -4540,7 +4659,7 @@ client.on("interactionCreate", async (interaction) => {
                   .setRequired(true);
                 modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
               });
-              
+
               await interaction.showModal(modal);
               return;
             }
@@ -4767,7 +4886,7 @@ client.on("interactionCreate", async (interaction) => {
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
-          
+
           // Get user's roles from the guild
           let userRoles = "None";
           try {
@@ -4779,7 +4898,7 @@ client.on("interactionCreate", async (interaction) => {
               .slice(0, 15); // Limit to 15 roles
             userRoles = roles.length > 0 ? roles.join(", ") : "None";
           } catch (e) {}
-          
+
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Ticket: ${categoryLabel}`)
             .setColor(0x5865f2)
@@ -4905,7 +5024,7 @@ client.on("interactionCreate", async (interaction) => {
           };
           const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
-          
+
           // Get user's roles from the guild
           let userRoles = "None";
           try {
@@ -4917,7 +5036,7 @@ client.on("interactionCreate", async (interaction) => {
               .slice(0, 15); // Limit to 15 roles
             userRoles = roles.length > 0 ? roles.join(", ") : "None";
           } catch (e) {}
-          
+
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Ticket: ${categoryLabel}`)
             .setColor(0x5865f2)
@@ -4959,7 +5078,180 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       // End of select menu handlers
-    } else if (interaction.isButton()) {
+      } else if (interaction.isButton()) {
+        const customId = interaction.customId;
+        if (customId.startsWith("activity_page_")) {
+          try {
+            if (!await safeDeferUpdate(interaction)) return;
+            const parts = customId.split("_");
+            const page = parseInt(parts[2]);
+            const category = parts[3] === "all" ? null : parts[3];
+            const scope = parts[4];
+            const fromDays = parts[5] === "none" ? undefined : parseInt(parts[5]);
+            const toDays = parts[6] === "none" ? undefined : parseInt(parts[6]);
+            const useAllGuilds = scope === "all";
+
+            // Reuse the activity command logic
+            const now = new Date();
+            const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
+            const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
+
+            let timeRangeDesc = useAllGuilds ? "📊 **All Servers**" : "📊 **This Server Only**";
+            if (fromDate || toDays !== undefined) {
+              const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
+              const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
+              timeRangeDesc += "\n" + (fromTimestamp ? `From ${fromTimestamp} to ${toTimestamp}` : `Up to ${toTimestamp}`);
+            }
+
+            let banStats: { userId: string; count: number }[] = [];
+            let unbanStats: { userId: string; count: number }[] = [];
+            let modmailStats: { userId: string; count: number }[] = [];
+            let appealStats: { userId: string; count: number }[] = [];
+            let staffReportStats: { userId: string; count: number }[] = [];
+            let modmailCategoryStats: { category: string; count: number }[] = [];
+
+            try {
+              if (!category || category === "ban") {
+                banStats = useAllGuilds
+                  ? await storage.getAllGuildsBanStats(fromDays, toDays)
+                  : await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
+              }
+            } catch (e) {}
+            try {
+              if (!category || category === "unban") {
+                unbanStats = useAllGuilds
+                  ? await storage.getAllGuildsUnbanStats(fromDays, toDays)
+                  : await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
+              }
+            } catch (e) {}
+            try {
+              if (!category || category === "modmail") {
+                modmailStats = useAllGuilds
+                  ? await storage.getAllGuildsModmailStats(fromDays, toDays)
+                  : await storage.getModmailStats(interaction.guildId!, fromDays, toDays);
+              }
+            } catch (e) {}
+            try {
+              if (!category || category === "appeal") {
+                appealStats = useAllGuilds
+                  ? await storage.getAllGuildsAppealStats(fromDays, toDays)
+                  : await storage.getAppealStats(interaction.guildId!, fromDays, toDays);
+              }
+            } catch (e) {}
+            try {
+              if (!category || category === "staffreport") {
+                staffReportStats = await storage.getStaffReportStats(interaction.guildId!, fromDays, toDays);
+              }
+            } catch (e) {}
+            try {
+              if (!category || category === "modmail") {
+                modmailCategoryStats = await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays);
+              }
+            } catch (e) {}
+
+            const combinedStats: { [userId: string]: number } = {};
+            for (const stat of banStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of unbanStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of modmailStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of appealStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of staffReportStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+
+            delete combinedStats["staff_report_entry"];
+            delete combinedStats["manual_entry"];
+
+            try {
+              const config = await storage.getGuildConfig(interaction.guildId!);
+              if (config?.activityTrackedRoleIds && config.activityTrackedRoleIds.length > 0 && interaction.guild) {
+                for (const roleId of config.activityTrackedRoleIds) {
+                  const trackedRole = interaction.guild.roles.cache.get(roleId);
+                  if (trackedRole) {
+                    trackedRole.members.forEach((member, memberId) => {
+                      if (!(memberId in combinedStats)) combinedStats[memberId] = 0;
+                    });
+                  }
+                }
+              }
+            } catch (e) {}
+
+            const leaderboard = Object.entries(combinedStats)
+              .map(([userId, count]) => ({ userId, count }))
+              .sort((a, b) => b.count - a.count);
+
+            const totalPages = Math.ceil(leaderboard.length / 10);
+            const start = (page - 1) * 10;
+            const currentLeaderboard = leaderboard.slice(start, start + 10);
+
+            const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
+
+            const embed = new EmbedBuilder()
+              .setTitle(`${categoryText} Leaderboard`)
+              .setColor(0x5865f2)
+              .setDescription(timeRangeDesc || null);
+
+            const totalCount = leaderboard.reduce((sum, e) => sum + e.count, 0);
+            const banTotal = banStats.reduce((sum, e) => sum + e.count, 0);
+            const unbanTotal = unbanStats.reduce((sum, e) => sum + e.count, 0);
+            const modmailTotal = modmailStats.reduce((sum, e) => sum + e.count, 0);
+            const appealTotal = appealStats.reduce((sum, e) => sum + e.count, 0);
+            const staffReportTotal = staffReportStats.reduce((sum, e) => sum + e.count, 0);
+
+            let leaderboardText = "";
+            currentLeaderboard.forEach((entry, index) => {
+              leaderboardText += `${start + index + 1}. <@${entry.userId}> - ${entry.count}\n`;
+            });
+            embed.addFields({ name: "Leaderboard", value: leaderboardText || "None", inline: false });
+
+            let statsText = `**Total in the specified time:** ${totalCount}`;
+            if (!category) {
+              if (banTotal > 0) statsText += `\nBan Requests: ${banTotal}`;
+              if (unbanTotal > 0) statsText += `\nUnban Requests: ${unbanTotal}`;
+              if (modmailTotal > 0) statsText += `\nModmails Handled: ${modmailTotal}`;
+              if (appealTotal > 0) statsText += `\nAppeals Handled: ${appealTotal}`;
+              if (staffReportTotal > 0) statsText += `\nStaff Reports: ${staffReportTotal}`;
+            } else if (category === "modmail") {
+              if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
+                const categoryLabels: { [key: string]: string } = {};
+                const config = await storage.getGuildConfig(interaction.guildId!);
+                if (config?.customModmailCategories) {
+                  try {
+                    const cats = JSON.parse(config.customModmailCategories);
+                    for (const cat of cats) categoryLabels[cat.id] = cat.label;
+                  } catch (e) {}
+                }
+                statsText += "\n\n**Category Breakdown:**";
+                for (const catStat of modmailCategoryStats) {
+                  if (catStat.category === "unknown" || !catStat.category) continue;
+                  statsText += `\n• ${categoryLabels[catStat.category] || catStat.category}: ${catStat.count}`;
+                }
+              }
+            }
+            embed.addFields({ name: "Stats", value: statsText, inline: false });
+
+            embed.setFooter({ text: `Page ${page} of ${totalPages} | ${now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}` });
+
+            const components = [];
+            if (totalPages > 1) {
+              const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`activity_page_${page - 1}_${category || "all"}_${scope}_${fromDays ?? "none"}_${toDays ?? "none"}`)
+                  .setLabel("◀ Previous")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(page <= 1),
+                new ButtonBuilder()
+                  .setCustomId(`activity_page_${page + 1}_${category || "all"}_${scope}_${fromDays ?? "none"}_${toDays ?? "none"}`)
+                  .setLabel("Next ▶")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(page >= totalPages)
+              );
+              components.push(row);
+            }
+
+            await interaction.editReply({ embeds: [embed], components });
+          } catch (e) {
+            console.log("Error handling activity page button:", e);
+          }
+          return;
+        }
       // Handle button interactions
       if (interaction.customId.startsWith("modmail_claim_")) {
         if (!await safeDeferUpdate(interaction)) return;
@@ -5106,22 +5398,27 @@ client.on("interactionCreate", async (interaction) => {
             if (config?.modmailLogChannelId) {
               const logChannel = await client.channels.fetch(config.modmailLogChannelId);
               if (logChannel && "send" in logChannel) {
-                const messages = await storage.getModmailMessages(threadIdForLog);
-                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-                if (!transcript) transcript = "No messages";
+          const messages = await storage.getModmailMessages(threadIdForLog);
+          // Include all messages in the .txt transcript, even if they weren't sent to the user (like staff notes)
+          const transcriptContent = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] ${m.authorId}: ${m.content}`).join("\n");
+          const buffer = Buffer.from(transcriptContent, "utf-8");
+          const attachment = new AttachmentBuilder(buffer, { name: `transcript-${threadIdForLog}.txt` });
 
-                const logEmbed = new EmbedBuilder()
-                  .setTitle("Ticket Closed")
-                  .setColor(0xed4245)
-                  .addFields(
-                    { name: "User", value: `<@${threadUserId}>`, inline: true },
-                    { name: "Closed By", value: `<@${closerId}>`, inline: true },
-                    { name: "Transcript", value: transcript, inline: false }
-                  )
-                  .setTimestamp();
-                await logChannel.send({ embeds: [logEmbed] });
-                console.log(`[MODMAIL] Log sent for thread ${threadIdForLog}`);
+          let transcriptPreview = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+          if (transcriptPreview.length > 1900) transcriptPreview = transcriptPreview.substring(0, 1900) + "...";
+          if (!transcriptPreview) transcriptPreview = "No messages";
+
+          const logEmbed = new EmbedBuilder()
+            .setTitle("Ticket Closed")
+            .setColor(0xed4245)
+            .addFields(
+              { name: "User", value: `<@${threadUserId}>`, inline: true },
+              { name: "Closed By", value: `<@${closerId}>`, inline: true },
+              { name: "Transcript Preview", value: transcriptPreview, inline: false }
+            )
+            .setTimestamp();
+          await logChannel.send({ embeds: [logEmbed], files: [attachment] });
+          console.log(`[MODMAIL] Log sent for thread ${threadIdForLog}`);
               }
             }
           } catch (e: any) {
@@ -5209,7 +5506,7 @@ client.on("interactionCreate", async (interaction) => {
           await storage.updateAppealThread(thread.id, { channelId: newChannel.id });
 
           const staffRoleMentions = config.appealStaffRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
-          
+
           // Get user's roles from the guild
           let userRoles = "None";
           try {
@@ -5221,7 +5518,7 @@ client.on("interactionCreate", async (interaction) => {
               .slice(0, 15);
             userRoles = roles.length > 0 ? roles.join(", ") : "None";
           } catch (e) {}
-          
+
           const initialEmbed = new EmbedBuilder()
             .setTitle("New Ban Appeal")
             .setColor(0xff6b6b)
@@ -5760,11 +6057,11 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const isAppeal = interaction.customId.startsWith("asniplist_");
           const pageNum = parseInt(interaction.customId.split("_")[1]);
-          
+
           const allSnippets = isAppeal 
             ? await storage.getAllAppealSnippets(interaction.guildId!)
             : await storage.getAllSnippets(interaction.guildId!);
-          
+
           if (allSnippets.length === 0) {
             await interaction.update({ content: "No snippets found.", embeds: [], components: [] });
             return;
@@ -7425,7 +7722,7 @@ const pendingClaimExpiry = new Map<string, ClaimExpiryTimer>();
 setInterval(() => {
   const MAX_TIMER_AGE = 60 * 60 * 1000; // 1 hour - clear any timer older than this
   const now = Date.now();
-  
+
   // Log current map sizes for monitoring
   const sizes = {
     timedCloses: pendingTimedCloses.size,
@@ -7433,11 +7730,11 @@ setInterval(() => {
     inactivityCloses: pendingInactivityCloses.size,
     claimExpiry: pendingClaimExpiry.size,
   };
-  
+
   if (sizes.timedCloses + sizes.inactivityWarnings + sizes.inactivityCloses + sizes.claimExpiry > 0) {
     console.log(`[CLEANUP] Timer map sizes: ${JSON.stringify(sizes)}`);
   }
-  
+
   // Clear all pending timers if they've accumulated too many (safety valve)
   if (sizes.timedCloses > 100) {
     console.log(`[CLEANUP] Clearing ${sizes.timedCloses} stale timed closes`);
@@ -7446,7 +7743,7 @@ setInterval(() => {
     }
     pendingTimedCloses.clear();
   }
-  
+
   if (sizes.inactivityWarnings > 100) {
     console.log(`[CLEANUP] Clearing ${sizes.inactivityWarnings} stale inactivity warnings`);
     for (const [id, timer] of Array.from(pendingInactivityWarnings.entries())) {
@@ -7454,7 +7751,7 @@ setInterval(() => {
     }
     pendingInactivityWarnings.clear();
   }
-  
+
   if (sizes.inactivityCloses > 100) {
     console.log(`[CLEANUP] Clearing ${sizes.inactivityCloses} stale inactivity closes`);
     for (const [id, timer] of Array.from(pendingInactivityCloses.entries())) {
@@ -7462,7 +7759,7 @@ setInterval(() => {
     }
     pendingInactivityCloses.clear();
   }
-  
+
   if (sizes.claimExpiry > 100) {
     console.log(`[CLEANUP] Clearing ${sizes.claimExpiry} stale claim expiry timers`);
     for (const [id, timer] of Array.from(pendingClaimExpiry.entries())) {
@@ -7475,6 +7772,63 @@ setInterval(() => {
 // Prevent duplicate message processing (in case of multiple bot instances)
 const processedMessages = new Set<string>();
 const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
+
+client.on("messageUpdate", async (oldMessage, newMessage) => {
+  if (!newMessage.author || newMessage.author.bot) return;
+  if (newMessage.channel.type !== ChannelType.DM) return;
+
+  const thread = await storage.getOpenModmailThread("global", newMessage.author.id);
+  if (!thread || !thread.channelId) return;
+
+  try {
+    const staffChannel = await client.channels.fetch(thread.channelId);
+    if (staffChannel && "send" in staffChannel) {
+      const editEmbed = new EmbedBuilder()
+        .setTitle("📝 Message Edited")
+        .setColor(0xFFA500)
+        .addFields(
+          { name: "Old Message", value: oldMessage.content?.slice(0, 1024) || "*No content*", inline: false },
+          { name: "New Message", value: newMessage.content?.slice(0, 1024) || "*No content*", inline: false }
+        )
+        .setAuthor({ name: newMessage.author.tag, iconURL: newMessage.author.displayAvatarURL() })
+        .setTimestamp();
+
+      await (staffChannel as any).send({ embeds: [editEmbed] });
+    }
+  } catch (e) {
+    console.log("[EDIT TRACKING] Error sending to staff channel:", e);
+  }
+});
+
+client.on("messageDelete", async (message) => {
+  if (message.partial) {
+    try {
+      await message.fetch();
+    } catch (e) { return; }
+  }
+  if (!message.author || message.author.bot) return;
+  if (message.channel.type !== ChannelType.DM) return;
+
+  const thread = await storage.getOpenModmailThread("global", message.author.id);
+  if (!thread || !thread.channelId) return;
+
+  try {
+    const staffChannel = await client.channels.fetch(thread.channelId);
+    if (staffChannel && "send" in staffChannel) {
+      const deleteEmbed = new EmbedBuilder()
+        .setTitle("🗑️ Message Deleted")
+        .setColor(0xFF0000)
+        .setDescription(`User deleted a message <t:${Math.floor(Date.now() / 1000)}:R>`)
+        .addFields({ name: "Deleted Content", value: message.content?.slice(0, 1024) || "*No content*", inline: false })
+        .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+        .setTimestamp();
+
+      await (staffChannel as any).send({ embeds: [deleteEmbed] });
+    }
+  } catch (e) {
+    console.log("[DELETE TRACKING] Error sending to staff channel:", e);
+  }
+});
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
@@ -7636,35 +7990,39 @@ client.on("messageCreate", async (message) => {
           // console.log("Could not DM user about timed ticket close");
         }
 
-        // Log to log channel
-        if (timedGuildId) {
-          const config = await storage.getGuildConfig(timedGuildId);
-          const logChannelId = timedIsAppeal ? config?.appealLogChannelId : config?.modmailLogChannelId;
-          if (logChannelId) {
-            try {
-              const logChannel = await client.channels.fetch(logChannelId);
-              if (logChannel && "send" in logChannel) {
-                const messages = timedIsAppeal 
-                  ? await storage.getAppealMessages(currentThread.id)
-                  : await storage.getModmailMessages(currentThread.id);
-                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+        // Send log BEFORE replying or deleting (critical to ensure it happens)
+        try {
+          const guildId = timedGuildId;
+          const config = await storage.getGuildConfig(guildId);
+          if (config?.modmailLogChannelId) {
+            const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+            if (logChannel && "send" in logChannel) {
+              const messages = timedIsAppeal 
+                ? await storage.getAppealMessages(currentThread.id)
+                : await storage.getModmailMessages(currentThread.id);
 
-                const logEmbed = new EmbedBuilder()
-                  .setTitle(timedIsAppeal ? "Appeal Closed (Timed)" : "Ticket Closed (Timed)")
-                  .setColor(0xed4245)
-                  .addFields(
-                    { name: "User", value: `<@${currentThread.userId}>`, inline: true },
-                    { name: "Closed By", value: `<@${timedStaffId}>`, inline: true },
-                    { name: "Transcript", value: transcript || "No messages", inline: false }
-                  )
-                  .setTimestamp();
-                await logChannel.send({ embeds: [logEmbed] });
-              }
-            } catch (e) {
-              console.log("Could not send log");
+              const transcriptContent = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] ${m.authorId}: ${m.content}`).join("\n");
+              const buffer = Buffer.from(transcriptContent, "utf-8");
+              const attachment = new AttachmentBuilder(buffer, { name: `transcript-${currentThread.id}.txt` });
+
+              let transcriptPreview = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+              if (transcriptPreview.length > 1900) transcriptPreview = transcriptPreview.substring(0, 1900) + "...";
+
+              const logEmbed = new EmbedBuilder()
+                .setTitle(timedIsAppeal ? "Appeal Closed (Timed)" : "Ticket Closed (Timed)")
+                .setColor(0xed4245)
+                .addFields(
+                  { name: "User", value: `<@${currentThread.userId}>`, inline: true },
+                  { name: "Closed By", value: `<@${timedStaffId}>`, inline: true },
+                  { name: "Transcript Preview", value: transcriptPreview || "No messages", inline: false }
+                )
+                .setTimestamp();
+              await logChannel.send({ embeds: [logEmbed], files: [attachment] });
+              console.log(`[MODMAIL TIMED] Log sent for thread ${currentThread.id}`);
             }
           }
+        } catch (e: any) {
+          console.log("[MODMAIL TIMED] Could not send log:", e.message);
         }
 
         // Delete the channel
@@ -7699,9 +8057,15 @@ client.on("messageCreate", async (message) => {
       await storage.addModmailActivityEntries(message.guild.id, message.author.id, 1);
     }
 
+    // Capture values before sync logic
+    const threadUserId = thread.userId;
+    const threadId = thread.id;
+    const closerId = message.author.id;
+    const guildId = message.guild.id;
+
     // Notify user
     try {
-      const user = await client.users.fetch(thread.userId);
+      const user = await client.users.fetch(threadUserId);
       const closeEmbed = new EmbedBuilder()
         .setTitle(isAppeal ? "Appeal Closed" : "Ticket Closed")
         .setDescription(isAppeal ? "Your appeal has been closed by staff." : "Your ticket has been closed by staff.")
@@ -7713,32 +8077,38 @@ client.on("messageCreate", async (message) => {
     }
 
     // Log to log channel
-    const config = await storage.getGuildConfig(message.guild.id);
-    const logChannelId = isAppeal ? config?.appealLogChannelId : config?.modmailLogChannelId;
-    if (logChannelId) {
-      try {
+    try {
+      const config = await storage.getGuildConfig(guildId);
+      const logChannelId = isAppeal ? config?.appealLogChannelId : config?.modmailLogChannelId;
+      if (logChannelId) {
         const logChannel = await client.channels.fetch(logChannelId);
         if (logChannel && "send" in logChannel) {
           const messages = isAppeal 
-            ? await storage.getAppealMessages(thread.id)
-            : await storage.getModmailMessages(thread.id);
-          let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-          if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+            ? await storage.getAppealMessages(threadId)
+            : await storage.getModmailMessages(threadId);
+
+          // Include all messages in the .txt transcript
+          const transcriptContent = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] ${m.authorId}: ${m.content}`).join("\n");
+          const buffer = Buffer.from(transcriptContent, "utf-8");
+          const attachment = new AttachmentBuilder(buffer, { name: `transcript-${threadId}.txt` });
+
+          let transcriptPreview = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+          if (transcriptPreview.length > 1900) transcriptPreview = transcriptPreview.substring(0, 1900) + "...";
 
           const logEmbed = new EmbedBuilder()
             .setTitle(isAppeal ? "Appeal Closed" : "Ticket Closed")
             .setColor(0xed4245)
             .addFields(
-              { name: "User", value: `<@${thread.userId}>`, inline: true },
-              { name: "Closed By", value: `<@${message.author.id}>`, inline: true },
-              { name: "Transcript", value: transcript || "No messages", inline: false }
+              { name: "User", value: `<@${threadUserId}>`, inline: true },
+              { name: "Closed By", value: `<@${closerId}>`, inline: true },
+              { name: "Transcript Preview", value: transcriptPreview || "No messages", inline: false }
             )
             .setTimestamp();
-          await logChannel.send({ embeds: [logEmbed] });
+          await (logChannel as any).send({ embeds: [logEmbed], files: [attachment] });
         }
-      } catch (e) {
-        console.log("Could not send log");
       }
+    } catch (e) {
+      console.log("[CLOSE COMMAND] Could not send log:", e);
     }
 
     // Delete channel immediately
@@ -7910,7 +8280,7 @@ client.on("messageCreate", async (message) => {
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
-    
+
     if (!thread) {
       return;
     }
@@ -8133,7 +8503,7 @@ client.on("messageCreate", async (message) => {
         const thread = await storage.getModmailThreadByChannel(message.channel.id);
         if (thread && thread.status === "open") {
           const user = await client.users.fetch(thread.userId);
-          
+
           let roleName = "Staff";
           const memberRole = message.member;
           if (memberRole && memberRole.roles.cache.size > 0) {
@@ -8342,7 +8712,7 @@ client.on("messageCreate", async (message) => {
         const thread = await storage.getAppealThreadByChannel(message.channel.id);
         if (thread && thread.status === "open") {
           const user = await client.users.fetch(thread.userId);
-          
+
           let roleName = "Staff";
           const memberRole = message.member;
           if (memberRole && memberRole.roles.cache.size > 0) {
@@ -8397,13 +8767,13 @@ client.on("messageCreate", async (message) => {
       const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
       const thread = modmailThread || appealThread;
       const isAppealSnippet = !modmailThread && !!appealThread;
-      
+
       if (thread && thread.status === "open") {
         // Use appeal snippets for appeal channels, modmail snippets for modmail channels
         const snippet = isAppealSnippet 
           ? await storage.getAppealSnippet(message.guild.id, alias)
           : await storage.getSnippet(message.guild.id, alias);
-          
+
         if (snippet) {
           try {
             const user = await client.users.fetch(thread.userId);
@@ -9015,7 +9385,7 @@ client.on("messageCreate", async (message) => {
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
-    
+
     if (!thread) {
       return;
     }
@@ -9327,7 +9697,7 @@ client.on("messageCreate", async (message) => {
           // Get the original embed's author info to preserve it
           const originalEmbed = channelMsg.embeds[0];
           const originalAuthor = originalEmbed?.author;
-          
+
           const editedEmbed = new EmbedBuilder()
             .setAuthor(originalAuthor ? { name: originalAuthor.name, iconURL: originalAuthor.iconURL || undefined } : { name: editRoleName })
             .setDescription(newContent)
@@ -9348,7 +9718,7 @@ client.on("messageCreate", async (message) => {
           // Get the original embed's author info to preserve it
           const originalEmbed = dmMsg.embeds[0];
           const originalAuthor = originalEmbed?.author;
-          
+
           const editedEmbed = new EmbedBuilder()
             .setAuthor(originalAuthor ? { name: originalAuthor.name, iconURL: originalAuthor.iconURL || undefined } : { name: editRoleName })
             .setDescription(newContent)
@@ -9364,7 +9734,7 @@ client.on("messageCreate", async (message) => {
       // Update in database - preserve [Anonymous] prefix if it was an anonymous message
       const isAnonymousMessage = modmailMsg.content?.startsWith("[Anonymous]");
       const updatedContent = isAnonymousMessage ? `[Anonymous] ${newContent}` : newContent;
-      
+
       // Re-edit channel message with proper anonymous handling if this was an anonymous message
       if (isAnonymousMessage && modmailMsg.channelMessageId) {
         try {
@@ -9380,7 +9750,7 @@ client.on("messageCreate", async (message) => {
           console.error("Could not edit anonymous channel message:", e);
         }
       }
-      
+
       // Re-edit DM message with proper anonymous handling if this was an anonymous message
       if (isAnonymousMessage && modmailMsg.dmMessageId) {
         try {
@@ -9396,7 +9766,7 @@ client.on("messageCreate", async (message) => {
           console.error("Could not edit anonymous DM message:", e);
         }
       }
-      
+
       if (isAppeal) {
         await storage.updateAppealMessage(modmailMsg.id, { content: updatedContent });
       } else {
@@ -9529,12 +9899,12 @@ client.on("messageCreate", async (message) => {
     try {
       // Determine if unsubscribe command
       const wantsToUnsubscribe = lowerContent.startsWith(`${lowerPrefix}unsub`);
-      
+
       // Check for mentioned user or user ID
       const mentionedUser = message.mentions.users.first();
       let targetUserId = message.author.id;
       let targetLabel = "You";
-      
+
       if (mentionedUser) {
         targetUserId = mentionedUser.id;
         targetLabel = `<@${mentionedUser.id}>`;
@@ -9550,14 +9920,14 @@ client.on("messageCreate", async (message) => {
           }
         }
       }
-      
+
       const currentSubs = thread.subscribedUserIds || [];
       const isSubscribed = currentSubs.includes(targetUserId);
       let newSubs;
       let action;
 
       const isOtherUser = targetUserId !== message.author.id;
-      
+
       if (wantsToUnsubscribe) {
         if (!isSubscribed) {
           await (message.channel as any).send(`❌ ${targetLabel} ${isOtherUser ? "is" : "are"} not subscribed to this ticket.`);
@@ -9617,7 +9987,7 @@ setInterval(() => {
     console.log(`[CLEANUP] Clearing ${syncingUsers.size} stale syncing users`);
     syncingUsers.clear();
   }
-  
+
   // Clear stale roster updates
   if (pendingRosterUpdates.size > 20) {
     console.log(`[CLEANUP] Clearing ${pendingRosterUpdates.size} stale roster updates`);
@@ -9626,7 +9996,7 @@ setInterval(() => {
     }
     pendingRosterUpdates.clear();
   }
-  
+
   // Clear stale active roster updates
   if (activeRosterUpdates.size > 10) {
     console.log(`[CLEANUP] Clearing ${activeRosterUpdates.size} stale active roster updates`);
@@ -9639,15 +10009,15 @@ function scheduleRosterUpdate(guildId: string) {
   if (existing) {
     clearTimeout(existing);
   }
-  
+
   const timeout = setTimeout(async () => {
     pendingRosterUpdates.delete(guildId);
-    
+
     if (activeRosterUpdates.has(guildId)) {
       console.log(`[ROSTER] Update already in progress for guild ${guildId}, skipping`);
       return;
     }
-    
+
     try {
       activeRosterUpdates.add(guildId);
       await updateRosterMessages(guildId);
@@ -9657,7 +10027,7 @@ function scheduleRosterUpdate(guildId: string) {
       activeRosterUpdates.delete(guildId);
     }
   }, 2000);
-  
+
   pendingRosterUpdates.set(guildId, timeout);
 }
 
