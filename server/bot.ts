@@ -5849,6 +5849,43 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.followUp({ content: "Failed to claim ticket. Please try again.", flags: 64 }).catch(() => {});
         }
         return;
+      } else if (interaction.customId.startsWith("modmail_toggle_")) {
+        // Show modal to add/remove member from ticket
+        const threadId = interaction.customId.replace("modmail_toggle_", "");
+        
+        const modal = new ModalBuilder()
+          .setCustomId(`modmail_toggle_modal_${threadId}`)
+          .setTitle("Toggle Ticket Member");
+
+        const actionInput = new TextInputBuilder()
+          .setCustomId("action")
+          .setLabel("Action (add or remove)")
+          .setPlaceholder("Type 'add' to add a member, 'remove' to remove")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+
+        const userIdInput = new TextInputBuilder()
+          .setCustomId("user_id")
+          .setLabel("User ID")
+          .setPlaceholder("Enter the Discord user ID")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+
+        const reasonInput = new TextInputBuilder()
+          .setCustomId("reason")
+          .setLabel("Reason")
+          .setPlaceholder("Why are you adding/removing this member?")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true);
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(actionInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+        );
+
+        await interaction.showModal(modal);
+        return;
       } else if (interaction.customId.startsWith("modmail_close_")) {
         if (!await safeDeferReply(interaction)) return;
 
@@ -6625,6 +6662,172 @@ client.on("interactionCreate", async (interaction) => {
       // Silently ignore unhandled button interactions (e.g., Discord's native attachment buttons)
       return;
     } else if (interaction.isModalSubmit()) {
+      // Handle toggle member modal for modmail
+      if (interaction.customId.startsWith("modmail_toggle_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        try {
+          const threadId = interaction.customId.replace("modmail_toggle_modal_", "");
+          const action = interaction.fields.getTextInputValue("action").toLowerCase().trim();
+          const userId = interaction.fields.getTextInputValue("user_id").trim();
+          const reason = interaction.fields.getTextInputValue("reason").trim();
+
+          // Validate action
+          if (action !== "add" && action !== "remove") {
+            await interaction.editReply({ content: "❌ Invalid action. Please use 'add' or 'remove'." });
+            return;
+          }
+
+          // Get the thread
+          const thread = await storage.getModmailThread(threadId);
+          if (!thread) {
+            await interaction.editReply({ content: "❌ Thread not found." });
+            return;
+          }
+
+          // Validate user ID format
+          if (!/^\d+$/.test(userId)) {
+            await interaction.editReply({ content: "❌ Invalid user ID format. Please provide a valid Discord user ID." });
+            return;
+          }
+
+          // Try to fetch the user
+          let targetUser;
+          try {
+            targetUser = await client.users.fetch(userId);
+          } catch {
+            await interaction.editReply({ content: "❌ Could not find a user with that ID." });
+            return;
+          }
+
+          // Get current added members
+          const currentMembers = thread.addedMemberIds || [];
+
+          if (action === "add") {
+            // Check if user is already added or is the original creator
+            if (userId === thread.userId) {
+              await interaction.editReply({ content: "❌ The ticket creator is already part of this ticket." });
+              return;
+            }
+            if (currentMembers.includes(userId)) {
+              await interaction.editReply({ content: `❌ <@${userId}> is already added to this ticket.` });
+              return;
+            }
+
+            // Add the user
+            const newMembers = [...currentMembers, userId];
+            await storage.updateModmailThread(threadId, { addedMemberIds: newMembers });
+
+            // DM the added user
+            try {
+              const ticketCreator = await client.users.fetch(thread.userId);
+              const addEmbed = new EmbedBuilder()
+                .setTitle("Added to Ticket")
+                .setDescription(`You have been added to **${ticketCreator.username}**'s ticket.\n\nType here to reply. Your messages will be visible to staff and other ticket members.`)
+                .setColor(0x57f287)
+                .setTimestamp();
+              await targetUser.send({ embeds: [addEmbed] });
+            } catch {
+              // Could not DM user
+            }
+
+            // Log to modmail log channel
+            const config = await storage.getGuildConfig(thread.guildId);
+            if (config?.modmailLogChannelId) {
+              try {
+                const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+                if (logChannel && "send" in logChannel) {
+                  const logEmbed = new EmbedBuilder()
+                    .setTitle("Member Added to Ticket")
+                    .setColor(0x57f287)
+                    .addFields(
+                      { name: "Added User", value: `<@${userId}> (${targetUser.tag})`, inline: true },
+                      { name: "Added By", value: `<@${interaction.user.id}>`, inline: true },
+                      { name: "Ticket Channel", value: `<#${thread.channelId}>`, inline: true },
+                      { name: "Reason", value: reason }
+                    )
+                    .setTimestamp();
+                  await logChannel.send({ embeds: [logEmbed] });
+                }
+              } catch {}
+            }
+
+            // Send confirmation in the ticket channel
+            const confirmEmbed = new EmbedBuilder()
+              .setTitle("Member Added")
+              .setDescription(`<@${userId}> has been added to this ticket.`)
+              .addFields({ name: "Reason", value: reason })
+              .setColor(0x57f287)
+              .setTimestamp();
+            await interaction.editReply({ embeds: [confirmEmbed] });
+
+          } else {
+            // Remove action
+            // Check if trying to remove the original creator
+            if (userId === thread.userId) {
+              await interaction.editReply({ content: "❌ You cannot remove the original ticket creator." });
+              return;
+            }
+
+            if (!currentMembers.includes(userId)) {
+              await interaction.editReply({ content: `❌ <@${userId}> is not in this ticket.` });
+              return;
+            }
+
+            // Remove the user
+            const newMembers = currentMembers.filter((id: string) => id !== userId);
+            await storage.updateModmailThread(threadId, { addedMemberIds: newMembers });
+
+            // DM the removed user
+            try {
+              const ticketCreator = await client.users.fetch(thread.userId);
+              const removeEmbed = new EmbedBuilder()
+                .setTitle("Removed from Ticket")
+                .setDescription(`You have been removed from **${ticketCreator.username}**'s ticket.\n\nYou will no longer see their messages.`)
+                .setColor(0xed4245)
+                .setTimestamp();
+              await targetUser.send({ embeds: [removeEmbed] });
+            } catch {
+              // Could not DM user
+            }
+
+            // Log to modmail log channel
+            const config = await storage.getGuildConfig(thread.guildId);
+            if (config?.modmailLogChannelId) {
+              try {
+                const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+                if (logChannel && "send" in logChannel) {
+                  const logEmbed = new EmbedBuilder()
+                    .setTitle("Member Removed from Ticket")
+                    .setColor(0xed4245)
+                    .addFields(
+                      { name: "Removed User", value: `<@${userId}> (${targetUser.tag})`, inline: true },
+                      { name: "Removed By", value: `<@${interaction.user.id}>`, inline: true },
+                      { name: "Ticket Channel", value: `<#${thread.channelId}>`, inline: true },
+                      { name: "Reason", value: reason }
+                    )
+                    .setTimestamp();
+                  await logChannel.send({ embeds: [logEmbed] });
+                }
+              } catch {}
+            }
+
+            // Send confirmation in the ticket channel
+            const confirmEmbed = new EmbedBuilder()
+              .setTitle("Member Removed")
+              .setDescription(`<@${userId}> has been removed from this ticket.`)
+              .addFields({ name: "Reason", value: reason })
+              .setColor(0xed4245)
+              .setTimestamp();
+            await interaction.editReply({ embeds: [confirmEmbed] });
+          }
+        } catch (error: any) {
+          console.log("Error in modmail_toggle_modal:", error.message);
+          await interaction.editReply({ content: "❌ Failed to toggle member. Please try again." }).catch(() => {});
+        }
+        return;
+      }
+
       // Handle config modmail embed modal
       if (interaction.customId.startsWith("config_modmail_modal_")) {
         if (!await safeDeferReply(interaction)) return;
