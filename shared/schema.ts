@@ -227,6 +227,7 @@ export const modmailThreads = pgTable("modmail_threads", {
   closedById: text("closed_by_id"),
   closeReason: text("close_reason"),
   subscribedUserIds: text("subscribed_user_ids").array().default([]),
+  addedMemberIds: text("added_member_ids").array().default([]),
   ignoreInactivity: text("ignore_inactivity").default("false"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   closedAt: timestamp("closed_at"),
