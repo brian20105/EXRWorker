@@ -4231,6 +4231,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!await safeDeferReply(interaction)) return;
 
         const permType = interaction.options.getString("type", true);
+        console.log(`[PERMISSIONS] permType received: "${permType}"`);
         const roles: string[] = [];
         for (let i = 1; i <= 20; i++) {
           const role = interaction.options.getRole(`role${i}`);
