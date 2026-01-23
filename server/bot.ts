@@ -9350,6 +9350,45 @@ client.on("messageCreate", async (message) => {
             await modmailChannel.send({ content: "⏰ Timed close cancelled - user responded." });
           }
 
+          // Restart claim expiry timer if ticket is claimed (claimer has 15 mins to respond to user's message)
+          if (targetThread.claimedById) {
+            const existingClaimTimer = pendingClaimExpiry.get(channelId);
+            if (existingClaimTimer) {
+              clearTimeout(existingClaimTimer.timeout);
+            }
+
+            const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
+            const claimerId = targetThread.claimedById;
+            const claimExpiryTimeout = setTimeout(async () => {
+              pendingClaimExpiry.delete(channelId);
+
+              try {
+                const currentThread = isAppealThread
+                  ? await storage.getAppealThreadByChannel(channelId)
+                  : await storage.getModmailThreadByChannel(channelId);
+                if (!currentThread || currentThread.status !== "open") return;
+                if (currentThread.claimedById !== claimerId) return;
+
+                if (isAppealThread) {
+                  await storage.updateAppealThread(currentThread.id, { claimedById: null });
+                } else {
+                  await storage.updateModmailThread(currentThread.id, { claimedById: null });
+                }
+                const channel = await client.channels.fetch(channelId);
+                if (channel && "send" in channel) {
+                  await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
+                }
+              } catch (e) {
+                console.log("Could not process auto-unclaim on user message");
+              }
+            }, CLAIM_EXPIRY_TIME);
+
+            pendingClaimExpiry.set(channelId, {
+              timeout: claimExpiryTimeout,
+              claimerId: claimerId,
+            });
+          }
+
           const userEmbed = new EmbedBuilder()
             .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
             .setDescription(message.content || "(No text content)")
@@ -9495,9 +9534,9 @@ client.on("messageCreate", async (message) => {
         });
       }
 
-      // Clear claim expiry timer when any staff responds (ticket is being actively handled)
+      // Clear claim expiry timer only when the CLAIMER responds (not just any staff)
       const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
-      if (existingClaimTimer) {
+      if (existingClaimTimer && existingClaimTimer.claimerId === message.author.id) {
         clearTimeout(existingClaimTimer.timeout);
         pendingClaimExpiry.delete(message.channel.id);
       }
@@ -9742,9 +9781,9 @@ client.on("messageCreate", async (message) => {
         });
       }
 
-      // Clear claim expiry timer when any staff responds
+      // Clear claim expiry timer only when the CLAIMER responds (not just any staff)
       const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
-      if (existingClaimTimer) {
+      if (existingClaimTimer && existingClaimTimer.claimerId === message.author.id) {
         clearTimeout(existingClaimTimer.timeout);
         pendingClaimExpiry.delete(message.channel.id);
       }
