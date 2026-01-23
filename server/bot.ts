@@ -9346,9 +9346,14 @@ client.on("messageCreate", async (message) => {
             try {
               await message.delete();
             } catch (e) {}
-          } catch (error) {
+          } catch (error: any) {
             console.log("Could not send snippet to user:", error);
-            await message.react("❌");
+            // Send embed explaining user left or has DMs off
+            const errorEmbed = new EmbedBuilder()
+              .setColor(0xed4245)
+              .setDescription("⚠️ **User has left the server or has their DMs turned off.**")
+              .setTimestamp();
+            await message.reply({ embeds: [errorEmbed] });
           }
           return;
         }
