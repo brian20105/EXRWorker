@@ -5546,7 +5546,17 @@ client.on("interactionCreate", async (interaction) => {
         // Handle modmail copy button for mobile users
         if (customId.startsWith("modmail_copy_")) {
           const messageId = customId.replace("modmail_copy_", "");
-          const content = getModmailCopyContent(messageId);
+          
+          // First try cache
+          let content = getModmailCopyContent(messageId);
+          
+          // If not in cache, try to get from the message embed
+          if (!content && interaction.message) {
+            const embeds = interaction.message.embeds;
+            if (embeds.length > 0 && embeds[0].description) {
+              content = embeds[0].description;
+            }
+          }
           
           if (content) {
             // Send the content as a plain text message so mobile users can copy it
@@ -5556,7 +5566,7 @@ client.on("interactionCreate", async (interaction) => {
             });
           } else {
             await interaction.reply({ 
-              content: "Message content is no longer cached. This may happen if the bot was restarted.", 
+              content: "Could not retrieve message content.", 
               flags: 64 
             });
           }
