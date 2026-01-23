@@ -9042,11 +9042,15 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle <prefix><alias> snippet usage in modmail/appeal ticket channels
+  // Note: Use exact command matches or command+space to avoid blocking snippets like .content
   if (message.guild && lowerContent.startsWith(lowerPrefix) && !lowerContent.startsWith(`${lowerPrefix}snip`) && 
       !lowerContent.startsWith(`${lowerPrefix}asnip`) &&
-      !lowerContent.startsWith(`${lowerPrefix}close`) && !lowerContent.startsWith(`${lowerPrefix}c`) &&
-      !lowerContent.startsWith(`${lowerPrefix}claim`) && !lowerContent.startsWith(`${lowerPrefix}or`) &&
-      !lowerContent.startsWith(`${lowerPrefix}r`) && !lowerContent.startsWith(`${lowerPrefix}ar`) &&
+      !lowerContent.startsWith(`${lowerPrefix}close`) && 
+      !(lowerContent === `${lowerPrefix}c` || lowerContent.startsWith(`${lowerPrefix}c `)) &&
+      !lowerContent.startsWith(`${lowerPrefix}claim`) && 
+      !(lowerContent === `${lowerPrefix}or` || lowerContent.startsWith(`${lowerPrefix}or `)) &&
+      !(lowerContent === `${lowerPrefix}r` || lowerContent.startsWith(`${lowerPrefix}r `)) && 
+      !(lowerContent === `${lowerPrefix}ar` || lowerContent.startsWith(`${lowerPrefix}ar `)) &&
       !lowerContent.startsWith(`${lowerPrefix}edit `) && !lowerContent.startsWith(`${lowerPrefix}delete`)) {
     const alias = message.content.substring(prefix.length).toLowerCase().split(" ")[0];
     if (alias) {
