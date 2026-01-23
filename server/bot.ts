@@ -8702,6 +8702,15 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
+      // Check for duplicate processing
+      const snippetListKey = `sniplist_${message.id}`;
+      if (processedMessages.has(snippetListKey)) {
+        console.log(`[SNIPPET LIST] Duplicate detected, skipping MsgID: ${message.id}`);
+        return;
+      }
+      processedMessages.add(snippetListKey);
+      setTimeout(() => processedMessages.delete(snippetListKey), 10000);
+
       console.log(`[SNIPPET LIST] Guild: ${message.guild.id} (${message.guild.name}), Channel: ${message.channel.id}, User: ${message.author.tag}, MsgID: ${message.id}`);
       const allSnippets = await storage.getAllSnippets(message.guild.id);
       console.log(`[SNIPPET LIST] Found ${allSnippets.length} snippets for guild ${message.guild.id}`);
