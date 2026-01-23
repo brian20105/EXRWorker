@@ -9691,16 +9691,16 @@ client.on("messageCreate", async (message) => {
     // New tickets must be created via the dropdown menu or button in the server
     try {
       // Find ALL existing open threads for this user across all guilds (check both modmail and appeal)
-      const openTickets: { thread: any; guild: any; isAppeal: boolean; type: string }[] = [];
+      const openTickets: { thread: any; guild: any; isAppeal: boolean; type: string; isAddedMember?: boolean }[] = [];
 
       for (const guild of Array.from(client.guilds.cache.values())) {
         try {
-          // Check modmail
+          // Check modmail (own ticket)
           const modmailThread = await storage.getOpenModmailThread(guild.id, message.author.id);
           if (modmailThread && modmailThread.channelId) {
             openTickets.push({ thread: modmailThread, guild, isAppeal: false, type: "Support Ticket" });
           }
-          // Check appeal
+          // Check appeal (own ticket)
           const appealThread = await storage.getOpenAppealThread(guild.id, message.author.id);
           if (appealThread && appealThread.channelId) {
             openTickets.push({ thread: appealThread, guild, isAppeal: true, type: "Ban Appeal" });
@@ -9708,6 +9708,22 @@ client.on("messageCreate", async (message) => {
         } catch (e) {
           // No thread in this guild
         }
+      }
+
+      // Also check if user is an added member to any ticket
+      const addedMemberThread = await storage.getOpenModmailThreadByAddedMember(message.author.id);
+      if (addedMemberThread && addedMemberThread.channelId) {
+        try {
+          const addedGuild = await client.guilds.fetch(addedMemberThread.guildId);
+          const ticketCreator = await client.users.fetch(addedMemberThread.userId);
+          openTickets.push({ 
+            thread: addedMemberThread, 
+            guild: addedGuild, 
+            isAppeal: false, 
+            type: `${ticketCreator.username}'s Ticket`,
+            isAddedMember: true 
+          });
+        } catch {}
       }
 
       // If multiple open tickets, show dropdown to select which one
@@ -9750,6 +9766,7 @@ client.on("messageCreate", async (message) => {
       let targetThread: any = openTickets.length === 1 ? openTickets[0].thread : null;
       let targetGuild = openTickets.length === 1 ? openTickets[0].guild : null;
       let isAppealThread = openTickets.length === 1 ? openTickets[0].isAppeal : false;
+      let isAddedMember = openTickets.length === 1 ? openTickets[0].isAddedMember : false;
 
       if (!targetThread || !targetGuild) {
         // No existing open ticket - ignore the DM silently
@@ -9842,8 +9859,13 @@ client.on("messageCreate", async (message) => {
           const userEmbed = new EmbedBuilder()
             .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
             .setDescription(message.content || "(No text content)")
-            .setColor(0x57f287)
+            .setColor(isAddedMember ? 0x3498db : 0x57f287)
             .setTimestamp();
+
+          // Add indicator if message is from an added member
+          if (isAddedMember) {
+            userEmbed.setFooter({ text: "Added Member" });
+          }
 
           // Collect attachment URLs
           const attachmentUrls = message.attachments.map(a => a.url);
@@ -9900,6 +9922,36 @@ client.on("messageCreate", async (message) => {
               dmMessageId: message.id,
               channelMessageId: channelMsg.id,
             });
+          }
+
+          // Forward message to other ticket participants (original creator + added members)
+          if (!isAppealThread) {
+            const allParticipants = [targetThread.userId, ...(targetThread.addedMemberIds || [])];
+            const otherParticipants = allParticipants.filter((id: string) => id !== message.author.id);
+            
+            for (const participantId of otherParticipants) {
+              try {
+                const participant = await client.users.fetch(participantId);
+                const forwardEmbed = new EmbedBuilder()
+                  .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+                  .setDescription(message.content || "(No text content)")
+                  .setColor(0x3498db)
+                  .setFooter({ text: participantId === targetThread.userId ? "Ticket Participant" : "Added Member" })
+                  .setTimestamp();
+                
+                if (attachmentUrls.length > 0) {
+                  forwardEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
+                  const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
+                  if (firstImageAttachment) {
+                    forwardEmbed.setImage(firstImageAttachment.url);
+                  }
+                }
+                
+                await participant.send({ embeds: [forwardEmbed] });
+              } catch {
+                // Could not DM participant
+              }
+            }
           }
 
           // React to confirm
