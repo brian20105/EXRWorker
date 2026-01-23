@@ -8189,18 +8189,17 @@ const processedMessages = new Set<string>();
 const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
-  console.log("[DM TRACKING] messageUpdate event fired");
-  if (!newMessage.author || newMessage.author.bot) {
-    console.log("[DM TRACKING] Skipping: no author or bot message");
-    return;
-  }
-  if (newMessage.channel.type !== ChannelType.DM) {
-    console.log("[DM TRACKING] Skipping: not a DM channel");
-    return;
-  }
+  // Only track DMs from non-bot users
+  if (!newMessage.author || newMessage.author.bot) return;
+  if (newMessage.channel.type !== ChannelType.DM) return;
 
   const userId = newMessage.author.id;
-  console.log(`[DM TRACKING] Processing edit from user ${userId}`);
+  
+  // Only process if user has an active modmail thread
+  const thread = await storage.getOpenModmailThreadByUserId(userId);
+  if (!thread || !thread.channelId) return;
+  
+  console.log(`[DM EDIT] Processing edit from user ${userId}`);
   
   // Get old content from cache if partial
   let oldContent = oldMessage.content;
@@ -8212,16 +8211,8 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
   // Update cache with new content
   updateCachedDMMessage(userId, newMessage.id, newMessage.content || "");
 
-  const thread = await storage.getOpenModmailThreadByUserId(userId);
-  console.log(`[EDIT TRACKING] Thread lookup result for ${userId}:`, thread ? `found (channel: ${thread.channelId})` : "not found");
-  if (!thread || !thread.channelId) {
-    console.log("[EDIT TRACKING] No open thread found, skipping");
-    return;
-  }
-
   try {
     const staffChannel = await client.channels.fetch(thread.channelId);
-    console.log(`[EDIT TRACKING] Staff channel fetch result:`, staffChannel ? "found" : "not found");
     if (staffChannel && "send" in staffChannel) {
       const newContent = newMessage.content?.slice(0, 1024) || "*No content*";
       const oldContentTrimmed = oldContent?.slice(0, 1024) || "*No content*";
@@ -8261,7 +8252,6 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
 });
 
 client.on("messageDelete", async (message) => {
-  console.log("[DM TRACKING] messageDelete event fired");
   // Try to get author info from cache first
   let authorId = message.author?.id;
   let authorTag = message.author?.tag;
@@ -8273,10 +8263,9 @@ client.on("messageDelete", async (message) => {
   try {
     if (message.channel && message.channel.type === ChannelType.DM) {
       isDM = true;
-      console.log("[DM TRACKING] Detected as DM from channel type");
     }
   } catch (e) {
-    console.log("[DM TRACKING] Channel type check failed, trying cache");
+    // Channel type check failed, will try cache below
   }
   
   // For partial messages, try to get from cache
@@ -8295,12 +8284,15 @@ client.on("messageDelete", async (message) => {
     }
   }
   
+  // Only process DMs from non-bot users with active modmail threads
   if (!authorId) return;
   if (message.author?.bot) return;
   if (!isDM) return;
 
   const thread = await storage.getOpenModmailThreadByUserId(authorId);
   if (!thread || !thread.channelId) return;
+  
+  console.log(`[DM DELETE] Processing delete from user ${authorId}`);
 
   try {
     const staffChannel = await client.channels.fetch(thread.channelId);
