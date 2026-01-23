@@ -8154,10 +8154,14 @@ client.on("messageDelete", async (message) => {
 });
 
 client.on("messageCreate", async (message) => {
+  console.log(`[MSG CREATE] ID: ${message.id}, Author: ${message.author?.tag}, Content: "${message.content?.substring(0, 30)}..."`);
   if (message.author.bot) return;
 
   // Deduplicate messages to prevent double responses
-  if (processedMessages.has(message.id)) return;
+  if (processedMessages.has(message.id)) {
+    console.log(`[MSG CREATE] DUPLICATE DETECTED - skipping ${message.id}`);
+    return;
+  }
   processedMessages.add(message.id);
   setTimeout(() => processedMessages.delete(message.id), MESSAGE_DEDUP_TIMEOUT);
 
