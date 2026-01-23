@@ -5,8 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Hash, Shield, Settings } from "lucide-react";
-import { Link } from "wouter";
+import { ArrowLeft, Save, Server, Hash, Shield, CheckCircle2, AlertCircle, ExternalLink, Copy } from "lucide-react";
 
 interface Guild {
   id: string;
@@ -50,7 +49,19 @@ export default function Dashboard() {
   const [guildName, setGuildName] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [botStatus, setBotStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [applicationId, setApplicationId] = useState<string | null>(null);
   const { toast } = useToast();
+
+  useEffect(() => {
+    fetch("/api/bot-status")
+      .then((res) => res.json())
+      .then((data) => {
+        setBotStatus(data.status);
+        setApplicationId(data.applicationId);
+      })
+      .catch(() => setBotStatus("offline"));
+  }, []);
 
   useEffect(() => {
     fetch("/api/guilds")
@@ -112,58 +123,113 @@ export default function Dashboard() {
     }
   };
 
+  const inviteUrl = applicationId
+    ? `https://discord.com/api/oauth2/authorize?client_id=${applicationId}&permissions=2147486720&scope=bot%20applications.commands`
+    : null;
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    toast({ title: "Copied!", description: `${label} copied to clipboard` });
+  };
+
   if (!selectedGuild) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-purple-50 p-6">
         <div className="max-w-4xl mx-auto space-y-6">
-          <div className="flex items-center gap-4">
-            <Link href="/">
-              <Button variant="ghost" size="sm" data-testid="button-back">
-                <ArrowLeft className="w-4 h-4 mr-2" />
-                Back
-              </Button>
-            </Link>
-            <h1 className="text-2xl font-bold">Select a Server</h1>
+          <div className="text-center space-y-2 pt-8 pb-4">
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+              Discord Bot Dashboard
+            </h1>
+            <p className="text-gray-600">Configure your bot settings from here</p>
           </div>
 
-          {loading ? (
-            <Card>
-              <CardContent className="p-8 text-center text-muted-foreground">
-                Loading servers...
+          <Card data-testid="card-bot-status">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle>Bot Status</CardTitle>
+                {botStatus === "online" && (
+                  <Badge variant="default" className="bg-green-500" data-testid="badge-status-online">
+                    <CheckCircle2 className="w-3 h-3 mr-1" />
+                    Online
+                  </Badge>
+                )}
+                {botStatus === "offline" && (
+                  <Badge variant="destructive" data-testid="badge-status-offline">
+                    <AlertCircle className="w-3 h-3 mr-1" />
+                    Offline
+                  </Badge>
+                )}
+                {botStatus === "checking" && (
+                  <Badge variant="secondary" data-testid="badge-status-checking">
+                    Checking...
+                  </Badge>
+                )}
+              </div>
+              <CardDescription>
+                {botStatus === "online"
+                  ? "Your bot is running and ready"
+                  : botStatus === "offline"
+                  ? "Bot is not responding. Check your credentials."
+                  : "Checking bot connection..."}
+              </CardDescription>
+            </CardHeader>
+            {inviteUrl && (
+              <CardContent className="pt-0">
+                <div className="flex gap-2">
+                  <Button asChild className="flex-1" data-testid="button-invite-bot">
+                    <a href={inviteUrl} target="_blank" rel="noopener noreferrer">
+                      <ExternalLink className="w-4 h-4 mr-2" />
+                      Add Bot to Server
+                    </a>
+                  </Button>
+                  <Button variant="outline" onClick={() => copyToClipboard(inviteUrl, "Invite link")} data-testid="button-copy-invite">
+                    <Copy className="w-4 h-4" />
+                  </Button>
+                </div>
               </CardContent>
-            </Card>
-          ) : guilds.length === 0 ? (
-            <Card>
-              <CardContent className="p-8 text-center text-muted-foreground">
-                No servers found. Make sure the bot is added to at least one server.
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid gap-4 md:grid-cols-2">
-              {guilds.map((guild) => (
-                <Card
-                  key={guild.id}
-                  className="cursor-pointer hover:border-indigo-300 transition-colors"
-                  onClick={() => setSelectedGuild(guild.id)}
-                  data-testid={`card-guild-${guild.id}`}
-                >
-                  <CardContent className="p-4 flex items-center gap-4">
-                    {guild.icon ? (
-                      <img src={guild.icon} alt={guild.name} className="w-12 h-12 rounded-full" />
-                    ) : (
-                      <div className="w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center">
-                        <Server className="w-6 h-6 text-indigo-600" />
-                      </div>
-                    )}
-                    <div>
-                      <h3 className="font-semibold">{guild.name}</h3>
-                      <p className="text-sm text-muted-foreground">{guild.memberCount} members</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
+            )}
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Select a Server to Configure</CardTitle>
+              <CardDescription>Choose a server to manage its bot settings</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <p className="text-center text-muted-foreground py-4">Loading servers...</p>
+              ) : guilds.length === 0 ? (
+                <p className="text-center text-muted-foreground py-4">
+                  No servers found. Add the bot to a server first using the invite link above.
+                </p>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {guilds.map((guild) => (
+                    <Card
+                      key={guild.id}
+                      className="cursor-pointer hover:border-indigo-300 transition-colors"
+                      onClick={() => setSelectedGuild(guild.id)}
+                      data-testid={`card-guild-${guild.id}`}
+                    >
+                      <CardContent className="p-4 flex items-center gap-4">
+                        {guild.icon ? (
+                          <img src={guild.icon} alt={guild.name} className="w-12 h-12 rounded-full" />
+                        ) : (
+                          <div className="w-12 h-12 rounded-full bg-indigo-100 flex items-center justify-center">
+                            <Server className="w-6 h-6 text-indigo-600" />
+                          </div>
+                        )}
+                        <div>
+                          <h3 className="font-semibold">{guild.name}</h3>
+                          <p className="text-sm text-muted-foreground">{guild.memberCount} members</p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       </div>
     );
