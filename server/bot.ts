@@ -5349,7 +5349,12 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋")
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_toggle_${thread.id}`)
+              .setLabel("Toggle Member")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("👥")
           );
 
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
@@ -5487,7 +5492,12 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋")
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_toggle_${thread.id}`)
+              .setLabel("Toggle Member")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("👥")
           );
 
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
@@ -5785,6 +5795,11 @@ client.on("interactionCreate", async (interaction) => {
                   .setLabel(`Claimed by ${interaction.user.username}`)
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(true),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_toggle_${threadId}`)
+                  .setLabel("Toggle Member")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("👥"),
                 new ButtonBuilder()
                   .setCustomId(`modmail_close_${threadId}`)
                   .setLabel("Close")
@@ -6838,7 +6853,12 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋")
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_toggle_${thread.id}`)
+              .setLabel("Toggle Member")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("👥")
           );
 
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
@@ -7018,7 +7038,12 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋")
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_toggle_${thread.id}`)
+              .setLabel("Toggle Member")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("👥")
           );
 
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
@@ -7189,7 +7214,12 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋")
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_toggle_${thread.id}`)
+              .setLabel("Toggle Member")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("👥")
           );
 
           await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
