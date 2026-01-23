@@ -8096,6 +8096,30 @@ client.on("messageDelete", async (message) => {
       const deletedContent = content?.slice(0, 1024) || "*Message was not cached*";
       const deleteTimestamp = Math.floor(Date.now() / 1000);
       
+      // Try to find the original message in the database and edit it
+      const modmailMsg = await storage.getModmailMessageByDmMessageId(message.id);
+      
+      if (modmailMsg && modmailMsg.channelMessageId) {
+        // Edit the existing message instead of sending a new one
+        try {
+          const channelMsg = await (staffChannel as any).messages.fetch(modmailMsg.channelMessageId);
+          if (channelMsg && channelMsg.editable) {
+            const editedEmbed = new EmbedBuilder()
+              .setColor(0xFF0000)
+              .setDescription(`${deletedContent}\n\n*(message deleted <t:${deleteTimestamp}:R>)*`)
+              .setAuthor({ name: authorTag || "Unknown User", iconURL: authorAvatar })
+              .setTimestamp();
+            
+            await channelMsg.edit({ embeds: [editedEmbed] });
+            console.log("[DELETE TRACKING] Edited existing staff message");
+            return;
+          }
+        } catch (fetchError) {
+          console.log("[DELETE TRACKING] Could not fetch/edit original message, sending new:", fetchError);
+        }
+      }
+      
+      // Fallback: send new message if we couldn't edit the original
       const deleteEmbed = new EmbedBuilder()
         .setColor(0xFF0000)
         .setDescription(`${deletedContent}\n\n*(message deleted <t:${deleteTimestamp}:R>)*`)
