@@ -3057,6 +3057,16 @@ client.on("interactionCreate", async (interaction) => {
           content: `Cleared **${removed}** members from the role **${guildRole.name}**.${failed > 0 ? ` (${failed} failed)` : ""}`,
         });
       } else if (commandName === "activity_add") {
+        // Check for activity permission before deferring
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id) || [];
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasActivityPerm = await hasActivityPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasActivityPerm) {
+          await interaction.reply({ content: "You don't have permission to use this command.", flags: 64 });
+          return;
+        }
+
         if (!await safeDeferReply(interaction, false)) return;
 
         try {
@@ -3094,6 +3104,16 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "Failed to add activity entries. Please try again." }).catch(() => {});
         }
       } else if (commandName === "activity_remove") {
+        // Check for activity permission before deferring
+        const memberRolesRemove = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id) || [];
+        const memberPermissionsRemove = (interaction.member as any)?.permissions?.bitfield;
+        const hasActivityPermRemove = await hasActivityPermission(memberRolesRemove, memberPermissionsRemove, interaction.guildId!);
+
+        if (!hasActivityPermRemove) {
+          await interaction.reply({ content: "You don't have permission to use this command.", flags: 64 });
+          return;
+        }
+
         if (!await safeDeferReply(interaction, false)) return;
 
         try {
