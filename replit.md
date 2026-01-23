@@ -52,6 +52,13 @@ The server handles both the web API and Discord bot in a single process. The Exp
 
 ## Recent Changes (January 2026)
 
+### Web Dashboard
+- Added `/dashboard` route for configuring bot settings via web UI
+- Select a server, then configure channels and permission roles
+- API endpoints: GET/POST `/api/guilds/:guildId/config`
+- Channels: Payout request, payment logs, modmail, appeal, quiz log
+- Permission roles: Payout approval, moderation, modmail block/claim, snippets, activity
+
 ### Quiz Progress Logging
 - Added `/setup_quiz_log` command to configure a channel for quiz progress logging
 - Logs when users start quizzes, progress through each question, and complete quizzes
