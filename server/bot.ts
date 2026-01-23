@@ -9066,9 +9066,10 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle <prefix><alias> snippet usage in modmail/appeal ticket channels
-  // Note: Use exact command matches or command+space to avoid blocking snippets like .content
-  if (message.guild && lowerContent.startsWith(lowerPrefix) && !lowerContent.startsWith(`${lowerPrefix}snip`) && 
-      !lowerContent.startsWith(`${lowerPrefix}asnip`) &&
+  // Note: Use exact command matches or command+space to avoid blocking snippets like .content, .asnippet
+  if (message.guild && lowerContent.startsWith(lowerPrefix) && 
+      !lowerContent.startsWith(`${lowerPrefix}snip `) && lowerContent !== `${lowerPrefix}snip` &&
+      !lowerContent.startsWith(`${lowerPrefix}asnip `) && lowerContent !== `${lowerPrefix}asnip` &&
       !lowerContent.startsWith(`${lowerPrefix}close`) && 
       !(lowerContent === `${lowerPrefix}c` || lowerContent.startsWith(`${lowerPrefix}c `)) &&
       !lowerContent.startsWith(`${lowerPrefix}claim`) && 
@@ -9451,7 +9452,7 @@ client.on("messageCreate", async (message) => {
             }
           }
 
-          await modmailChannel.send({ embeds: [userEmbed] });
+          const channelMsg = await modmailChannel.send({ embeds: [userEmbed] });
 
           // Ping subscribed users
           const subs = targetThread.subscribedUserIds || [];
@@ -9462,13 +9463,15 @@ client.on("messageCreate", async (message) => {
             setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
           }
 
-          // Save message
+          // Save message with both DM message ID and channel message ID for edit/delete tracking
           if (isAppealThread) {
             await storage.addAppealMessage({
               threadId: targetThread.id,
               authorId: message.author.id,
               content: message.content,
               isStaff: "false",
+              dmMessageId: message.id,
+              channelMessageId: channelMsg.id,
             });
           } else {
             await storage.addModmailMessage({
@@ -9476,6 +9479,8 @@ client.on("messageCreate", async (message) => {
               authorId: message.author.id,
               content: message.content,
               isStaff: "false",
+              dmMessageId: message.id,
+              channelMessageId: channelMsg.id,
             });
           }
 
