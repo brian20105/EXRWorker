@@ -9628,6 +9628,19 @@ client.on("messageCreate", async (message) => {
             // Send to user DM
             const dmMessage = await user.send({ embeds: [staffEmbed] });
 
+            // Also send to added members if this is a modmail thread
+            const snippetAddedMemberIds = (thread as any).addedMemberIds as string[] | null | undefined;
+            if (!isAppealSnippet && snippetAddedMemberIds && snippetAddedMemberIds.length > 0) {
+              for (const memberId of snippetAddedMemberIds) {
+                try {
+                  const addedMember = await client.users.fetch(memberId);
+                  await addedMember.send({ embeds: [staffEmbed] });
+                } catch {
+                  // Could not DM added member
+                }
+              }
+            }
+
             // Send to channel as well
             const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
 
@@ -10031,6 +10044,19 @@ client.on("messageCreate", async (message) => {
       const dmMessage = await user.send({ embeds: [staffEmbed] });
       console.log(`[.r HANDLER] DM sent: ${dmMessage.id}`);
 
+      // Also send to added members if this is a modmail thread
+      const addedMemberIds = (thread as any).addedMemberIds as string[] | null | undefined;
+      if (!isAppeal && addedMemberIds && addedMemberIds.length > 0) {
+        for (const memberId of addedMemberIds) {
+          try {
+            const addedMember = await client.users.fetch(memberId);
+            await addedMember.send({ embeds: [staffEmbed] });
+          } catch {
+            // Could not DM added member
+          }
+        }
+      }
+
       // Send to channel as well
       console.log(`[.r HANDLER] Sending to channel ${message.channel.id}...`);
       const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
@@ -10268,6 +10294,19 @@ client.on("messageCreate", async (message) => {
 
       // Send to user DM
       const dmMessage = await user.send({ embeds: [staffEmbed] });
+
+      // Also send to added members if this is a modmail thread
+      const addedMemberIdsAr = (thread as any).addedMemberIds as string[] | null | undefined;
+      if (!isAppeal && addedMemberIdsAr && addedMemberIdsAr.length > 0) {
+        for (const memberId of addedMemberIdsAr) {
+          try {
+            const addedMember = await client.users.fetch(memberId);
+            await addedMember.send({ embeds: [staffEmbed] });
+          } catch {
+            // Could not DM added member
+          }
+        }
+      }
 
       // For channel message, show sender name for staff visibility but no pfp
       const channelEmbed = new EmbedBuilder()
