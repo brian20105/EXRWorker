@@ -67,7 +67,10 @@ export default function Dashboard() {
     fetch("/api/guilds")
       .then((res) => res.json())
       .then((data) => {
-        setGuilds(data);
+        // Only set guilds if data is an array (handles error responses)
+        if (Array.isArray(data)) {
+          setGuilds(data);
+        }
         setLoading(false);
       })
       .catch(() => setLoading(false));
