@@ -4228,7 +4228,7 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.` });
         }
       } else if (commandName === "permissions") {
-        if (!await safeDeferReply(interaction)) return;
+        if (!await safeDeferReply(interaction, false)) return;
 
         const permType = interaction.options.getString("type", true);
         console.log(`[PERMISSIONS] permType received: "${permType}"`);
