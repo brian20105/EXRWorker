@@ -2587,9 +2587,7 @@ client.on("interactionCreate", async (interaction) => {
           content: `Changed server prefix to \`${newPrefix}\``,
         });
       } else if (commandName === "activity") {
-        if (!await safeDeferReply(interaction, false)) return;
-
-        // Check for activity permission
+        // Check for activity permission BEFORE deferring so we can make denial ephemeral
         const memberRoles = interaction.member?.roles;
         const roleIds = memberRoles && "cache" in memberRoles ? memberRoles.cache.map(r => r.id) : [];
         const memberPermissions = interaction.member?.permissions;
@@ -2597,9 +2595,11 @@ client.on("interactionCreate", async (interaction) => {
         const hasActivityPerm = await hasActivityPermission(roleIds, permBits, interaction.guildId!);
 
         if (!hasActivityPerm) {
-          await interaction.editReply({ content: "❌ You don't have permission to use the activity command." });
+          await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
           return;
         }
+
+        if (!await safeDeferReply(interaction, false)) return;
 
         try {
           const targetMember = interaction.options.getUser("member");
