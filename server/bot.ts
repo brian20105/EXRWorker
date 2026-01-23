@@ -5772,7 +5772,12 @@ client.on("interactionCreate", async (interaction) => {
 
         try {
           const threadId = interaction.customId.replace("modmail_claim_", "");
-          const thread = await storage.getModmailThread(threadId);
+          // Try to find thread by ID first, then fall back to channel lookup
+          let thread = await storage.getModmailThread(threadId);
+          if (!thread) {
+            // Fallback: look up by current channel ID
+            thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+          }
 
           if (!thread) {
             await interaction.followUp({ content: "Thread not found.", flags: 64 });
@@ -5909,7 +5914,11 @@ client.on("interactionCreate", async (interaction) => {
 
         try {
           const threadId = interaction.customId.replace("modmail_close_", "");
-          const thread = await storage.getModmailThread(threadId);
+          // Try to find thread by ID first, then fall back to channel lookup
+          let thread = await storage.getModmailThread(threadId);
+          if (!thread) {
+            thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+          }
 
           if (!thread) {
             await interaction.editReply({ content: "Thread not found." });
@@ -6696,8 +6705,11 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          // Get the thread
-          const thread = await storage.getModmailThread(threadId);
+          // Get the thread - try by ID first, then fall back to channel lookup
+          let thread = await storage.getModmailThread(threadId);
+          if (!thread) {
+            thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+          }
           if (!thread) {
             await interaction.editReply({ content: "❌ Thread not found." });
             return;
