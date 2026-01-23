@@ -4271,7 +4271,8 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-        const labelName = typeLabels[permType] || permType;
+        const labelName = typeLabels[permType] || permType || "Unknown";
+        console.log(`[PERMISSIONS] Saving type=${permType}, label=${labelName}, roles=${roles.join(",")}`);
         await interaction.editReply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}` });
       } else if (commandName === "category_ping") {
         if (!await safeDeferReply(interaction)) return;
