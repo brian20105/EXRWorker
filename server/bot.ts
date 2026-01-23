@@ -3189,6 +3189,16 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "Failed to reset activity stats. Please try again." }).catch(() => {});
         }
       } else if (commandName === "activity_check") {
+        // Check for activity permission before deferring
+        const memberRolesCheck = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id) || [];
+        const memberPermissionsCheck = (interaction.member as any)?.permissions?.bitfield;
+        const hasActivityPermCheck = await hasActivityPermission(memberRolesCheck, memberPermissionsCheck, interaction.guildId!);
+
+        if (!hasActivityPermCheck) {
+          await interaction.reply({ content: "You don't have permission to use this command.", flags: 64 });
+          return;
+        }
+
         // Ephemeral response - only the user can see it
         if (!await safeDeferReply(interaction, true)) return;
 
@@ -3379,6 +3389,16 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "Failed to restore activity stats. Please try again." }).catch(() => {});
         }
       } else if (commandName === "activity_role") {
+        // Check for activity permission before deferring
+        const memberRolesRole = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id) || [];
+        const memberPermissionsRole = (interaction.member as any)?.permissions?.bitfield;
+        const hasActivityPermRole = await hasActivityPermission(memberRolesRole, memberPermissionsRole, interaction.guildId!);
+
+        if (!hasActivityPermRole) {
+          await interaction.reply({ content: "You don't have permission to use this command.", flags: 64 });
+          return;
+        }
+
         if (!await safeDeferReply(interaction, false)) return;
 
         try {
