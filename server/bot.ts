@@ -1115,7 +1115,9 @@ const commands = [
           { name: "Modmail Block", value: "block" },
           { name: "Modmail Claim", value: "claim" },
           { name: "Activity Reset", value: "activity_reset" },
-          { name: "Appeal Claim", value: "appeal_claim" }
+          { name: "Appeal Claim", value: "appeal_claim" },
+          { name: "Snippets", value: "snippets" },
+          { name: "Activity", value: "activity" }
         )
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
@@ -1318,6 +1320,44 @@ async function hasPayoutPermission(
 
   if (!memberRoles) return false;
   return config.allowedRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasSnippetPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+
+  if (!config?.snippetRoleIds || config.snippetRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string' 
+      ? BigInt(memberPermissions) 
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return config.snippetRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasActivityPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+
+  if (!config?.activityRoleIds || config.activityRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string' 
+      ? BigInt(memberPermissions) 
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return config.activityRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
 async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, moneyOwed: string, paypal: string, actionReason?: string): Promise<void> {
@@ -2548,6 +2588,18 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "activity") {
         if (!await safeDeferReply(interaction, false)) return;
+
+        // Check for activity permission
+        const memberRoles = interaction.member?.roles;
+        const roleIds = memberRoles && "cache" in memberRoles ? memberRoles.cache.map(r => r.id) : [];
+        const memberPermissions = interaction.member?.permissions;
+        const permBits = memberPermissions && typeof memberPermissions !== "string" && "bitfield" in memberPermissions ? memberPermissions.bitfield : undefined;
+        const hasActivityPerm = await hasActivityPermission(roleIds, permBits, interaction.guildId!);
+
+        if (!hasActivityPerm) {
+          await interaction.editReply({ content: "❌ You don't have permission to use the activity command." });
+          return;
+        }
 
         try {
           const targetMember = interaction.options.getUser("member");
@@ -4193,6 +4245,8 @@ client.on("interactionCreate", async (interaction) => {
           claim: "Modmail Claim",
           activity_reset: "Activity Reset",
           appeal_claim: "Appeal Claim",
+          snippets: "Snippets",
+          activity: "Activity",
         };
 
         if (permType === "payout") {
@@ -4209,6 +4263,10 @@ client.on("interactionCreate", async (interaction) => {
           await storage.upsertGuildConfig({ guildId: interaction.guildId!, activityResetRoleIds: roles });
         } else if (permType === "appeal_claim") {
           await storage.upsertGuildConfig({ guildId: interaction.guildId!, appealStaffRoleIds: roles });
+        } else if (permType === "snippets") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, snippetRoleIds: roles });
+        } else if (permType === "activity") {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, activityRoleIds: roles });
         }
 
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
@@ -8795,13 +8853,15 @@ client.on("messageCreate", async (message) => {
     const subCommand = spaceIndex === -1 ? args.toLowerCase() : args.substring(0, spaceIndex).toLowerCase();
     const rest = spaceIndex === -1 ? "" : args.substring(spaceIndex + 1).trim();
 
-    // Check for admin permission for create/edit/delete
+    // Check for snippet permission for create/edit/delete
     const member = message.member;
-    const hasAdminPermission = member && member.permissions.has("Administrator");
+    const memberRoles = member?.roles.cache.map(r => r.id);
+    const memberPermissions = member?.permissions.bitfield;
+    const hasSnippetPerm = await hasSnippetPermission(memberRoles, memberPermissions, message.guild.id);
 
     if (subCommand === "create") {
-      if (!hasAdminPermission) {
-        await message.reply("❌ Only administrators can create snippets.");
+      if (!hasSnippetPerm) {
+        await message.reply("❌ You don't have permission to create snippets.");
         return;
       }
 
@@ -8832,8 +8892,8 @@ client.on("messageCreate", async (message) => {
       await message.reply(`Snippet \`${alias}\` created. Use \`${prefix}${alias}\` in ticket channels to send it.`);
       return;
     } else if (subCommand === "edit") {
-      if (!hasAdminPermission) {
-        await message.reply("❌ Only administrators can edit snippets.");
+      if (!hasSnippetPerm) {
+        await message.reply("❌ You don't have permission to edit snippets.");
         return;
       }
 
@@ -8856,8 +8916,8 @@ client.on("messageCreate", async (message) => {
       await message.reply(`✅ Snippet \`${alias}\` updated.`);
       return;
     } else if (subCommand === "delete") {
-      if (!hasAdminPermission) {
-        await message.reply("❌ Only administrators can delete snippets.");
+      if (!hasSnippetPerm) {
+        await message.reply("❌ You don't have permission to delete snippets.");
         return;
       }
 
@@ -8877,8 +8937,8 @@ client.on("messageCreate", async (message) => {
       await message.reply(`✅ Snippet \`${alias}\` deleted.`);
       return;
     } else if (subCommand === "list") {
-      // Only admins can list snippets - silently ignore otherwise
-      if (!hasAdminPermission) {
+      // Only users with snippet permission can list snippets - silently ignore otherwise
+      if (!hasSnippetPerm) {
         return;
       }
 
@@ -9019,13 +9079,15 @@ client.on("messageCreate", async (message) => {
     const subCommand = spaceIndex === -1 ? args.toLowerCase() : args.substring(0, spaceIndex).toLowerCase();
     const rest = spaceIndex === -1 ? "" : args.substring(spaceIndex + 1).trim();
 
-    // Check for admin permission for create/edit/delete
+    // Check for snippet permission for create/edit/delete
     const member = message.member;
-    const hasAdminPermission = member && member.permissions.has("Administrator");
+    const memberRoles = member?.roles.cache.map(r => r.id);
+    const memberPermissions = member?.permissions.bitfield;
+    const hasSnippetPerm = await hasSnippetPermission(memberRoles, memberPermissions, message.guild.id);
 
     if (subCommand === "create") {
-      if (!hasAdminPermission) {
-        await message.reply("Only administrators can create appeal snippets.");
+      if (!hasSnippetPerm) {
+        await message.reply("❌ You don't have permission to create appeal snippets.");
         return;
       }
 
@@ -9054,8 +9116,8 @@ client.on("messageCreate", async (message) => {
       await message.reply(`Appeal snippet \`${alias}\` created. Use \`${prefix}${alias}\` in appeal channels to send it.`);
       return;
     } else if (subCommand === "edit") {
-      if (!hasAdminPermission) {
-        await message.reply("Only administrators can edit appeal snippets.");
+      if (!hasSnippetPerm) {
+        await message.reply("❌ You don't have permission to edit appeal snippets.");
         return;
       }
 
@@ -9077,8 +9139,8 @@ client.on("messageCreate", async (message) => {
       await message.reply(`Appeal snippet \`${alias}\` updated.`);
       return;
     } else if (subCommand === "delete") {
-      if (!hasAdminPermission) {
-        await message.reply("Only administrators can delete appeal snippets.");
+      if (!hasSnippetPerm) {
+        await message.reply("❌ You don't have permission to delete appeal snippets.");
         return;
       }
 
@@ -9098,7 +9160,7 @@ client.on("messageCreate", async (message) => {
       await message.reply(`Appeal snippet \`${alias}\` deleted.`);
       return;
     } else if (subCommand === "list") {
-      if (!hasAdminPermission) {
+      if (!hasSnippetPerm) {
         return;
       }
 
