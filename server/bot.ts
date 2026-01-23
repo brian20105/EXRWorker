@@ -107,6 +107,41 @@ function getCachedDMMessage(userId: string, messageId: string): CachedDMMessage 
   return userCache.find(m => m.id === messageId);
 }
 
+// Cache for pending ticket invites (inviteId -> invite data)
+interface PendingTicketInvite {
+  threadId: string;
+  guildId: string;
+  targetUserId: string;
+  invitedById: string;
+  reason: string;
+  createdAt: number;
+}
+const pendingTicketInvites = new Map<string, PendingTicketInvite>();
+const INVITE_EXPIRY_TIME = 24 * 60 * 60 * 1000; // 24 hours
+
+function generateInviteId(): string {
+  return `invite_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+function storePendingInvite(inviteId: string, invite: PendingTicketInvite) {
+  // Clean up expired invites
+  const now = Date.now();
+  for (const [id, inv] of pendingTicketInvites.entries()) {
+    if (now - inv.createdAt > INVITE_EXPIRY_TIME) {
+      pendingTicketInvites.delete(id);
+    }
+  }
+  pendingTicketInvites.set(inviteId, invite);
+}
+
+function getPendingInvite(inviteId: string): PendingTicketInvite | undefined {
+  return pendingTicketInvites.get(inviteId);
+}
+
+function removePendingInvite(inviteId: string) {
+  pendingTicketInvites.delete(inviteId);
+}
+
 function updateCachedDMMessage(userId: string, messageId: string, newContent: string) {
   const userCache = dmMessageCache.get(userId);
   if (!userCache) return;
@@ -1031,6 +1066,22 @@ const commands = [
     .setName("config_modmail")
     .setDescription("Configure the modmail ticket embed title and description (opens a form)")
     .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("force_add_member")
+    .setDescription("Force add a user to a modmail ticket without their consent (admin only)")
+    .setDefaultMemberPermissions(0)
+    .addUserOption((option) =>
+      option
+        .setName("user")
+        .setDescription("The user to add to the ticket")
+        .setRequired(true)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("reason")
+        .setDescription("Reason for adding this user")
+        .setRequired(true)
+    ),
   new SlashCommandBuilder()
     .setName("edit_embed")
     .setDescription("Edit system embeds with line breaks support")
@@ -4133,6 +4184,82 @@ client.on("interactionCreate", async (interaction) => {
         );
 
         await interaction.showModal(modal);
+      } else if (commandName === "force_add_member") {
+        if (!await safeDeferReply(interaction)) return;
+
+        // This command must be used in a modmail ticket channel
+        const thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+        if (!thread) {
+          await interaction.editReply({ content: "❌ This command can only be used in a modmail ticket channel." });
+          return;
+        }
+
+        if (thread.status !== "open") {
+          await interaction.editReply({ content: "❌ This ticket is closed." });
+          return;
+        }
+
+        const targetUser = interaction.options.getUser("user", true);
+        const reason = interaction.options.getString("reason", true);
+
+        // Check if user is already added or is the original creator
+        if (targetUser.id === thread.userId) {
+          await interaction.editReply({ content: "❌ The ticket creator is already part of this ticket." });
+          return;
+        }
+
+        const currentMembers = thread.addedMemberIds || [];
+        if (currentMembers.includes(targetUser.id)) {
+          await interaction.editReply({ content: `❌ <@${targetUser.id}> is already added to this ticket.` });
+          return;
+        }
+
+        // Force add the user directly
+        const newMembers = [...currentMembers, targetUser.id];
+        await storage.updateModmailThread(thread.id, { addedMemberIds: newMembers });
+
+        // DM the added user
+        try {
+          const ticketCreator = await client.users.fetch(thread.userId);
+          const addEmbed = new EmbedBuilder()
+            .setTitle("Added to Ticket")
+            .setDescription(`You have been added to **${ticketCreator.username}**'s ticket by staff.\n\nType here to reply. Your messages will be visible to staff and other ticket members.`)
+            .setColor(0x57f287)
+            .setTimestamp();
+          await targetUser.send({ embeds: [addEmbed] });
+        } catch {
+          // Could not DM user
+        }
+
+        // Log to modmail log channel
+        const config = await storage.getGuildConfig(thread.guildId);
+        if (config?.modmailLogChannelId) {
+          try {
+            const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+            if (logChannel && "send" in logChannel) {
+              const logEmbed = new EmbedBuilder()
+                .setTitle("Member Force Added to Ticket")
+                .setColor(0x57f287)
+                .addFields(
+                  { name: "Added User", value: `<@${targetUser.id}> (${targetUser.tag})`, inline: true },
+                  { name: "Added By", value: `<@${interaction.user.id}>`, inline: true },
+                  { name: "Ticket Channel", value: `<#${thread.channelId}>`, inline: true },
+                  { name: "Reason", value: reason }
+                )
+                .setTimestamp();
+              await logChannel.send({ embeds: [logEmbed] });
+            }
+          } catch {}
+        }
+
+        // Send confirmation in the ticket channel
+        const confirmEmbed = new EmbedBuilder()
+          .setTitle("Member Added")
+          .setDescription(`<@${targetUser.id}> has been force added to this ticket.`)
+          .addFields({ name: "Reason", value: reason })
+          .setColor(0x57f287)
+          .setTimestamp();
+        await interaction.editReply({ embeds: [confirmEmbed] });
       } else if (commandName === "setup_appeal") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -5589,6 +5716,152 @@ client.on("interactionCreate", async (interaction) => {
           }
           return;
         }
+
+        // Handle ticket invite accept button
+        if (customId.startsWith("ticket_invite_accept_")) {
+          const inviteId = customId.replace("ticket_invite_accept_", "");
+          const invite = getPendingInvite(inviteId);
+
+          if (!invite) {
+            await interaction.reply({ content: "❌ This invite has expired or is no longer valid.", flags: 64 });
+            // Disable the buttons
+            try {
+              await interaction.message.edit({ components: [] });
+            } catch {}
+            return;
+          }
+
+          // Check if user is the invitee
+          if (interaction.user.id !== invite.targetUserId) {
+            await interaction.reply({ content: "❌ This invite is not for you.", flags: 64 });
+            return;
+          }
+
+          // Get the thread
+          const thread = await storage.getModmailThread(invite.threadId);
+          if (!thread || thread.status !== "open") {
+            await interaction.reply({ content: "❌ This ticket is no longer open.", flags: 64 });
+            removePendingInvite(inviteId);
+            try {
+              await interaction.message.edit({ components: [] });
+            } catch {}
+            return;
+          }
+
+          // Add the user to the ticket
+          const currentMembers = thread.addedMemberIds || [];
+          if (!currentMembers.includes(invite.targetUserId)) {
+            const newMembers = [...currentMembers, invite.targetUserId];
+            await storage.updateModmailThread(invite.threadId, { addedMemberIds: newMembers });
+          }
+
+          // Remove the pending invite
+          removePendingInvite(inviteId);
+
+          // Update the DM message
+          try {
+            const ticketCreator = await client.users.fetch(thread.userId);
+            const acceptEmbed = new EmbedBuilder()
+              .setTitle("Joined Ticket")
+              .setDescription(`You have joined **${ticketCreator.username}**'s ticket.\n\nType here to reply. Your messages will be visible to staff and other ticket members.`)
+              .setColor(0x57f287)
+              .setTimestamp();
+            await interaction.update({ embeds: [acceptEmbed], components: [] });
+          } catch {
+            await interaction.reply({ content: "✅ You have joined the ticket!", flags: 64 });
+          }
+
+          // Log to modmail log channel and notify ticket channel
+          const config = await storage.getGuildConfig(thread.guildId);
+          if (config?.modmailLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const logEmbed = new EmbedBuilder()
+                  .setTitle("Member Accepted Ticket Invite")
+                  .setColor(0x57f287)
+                  .addFields(
+                    { name: "User", value: `<@${invite.targetUserId}>`, inline: true },
+                    { name: "Invited By", value: `<@${invite.invitedById}>`, inline: true },
+                    { name: "Ticket Channel", value: `<#${thread.channelId}>`, inline: true },
+                    { name: "Reason", value: invite.reason }
+                  )
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+              }
+            } catch {}
+          }
+
+          // Notify ticket channel
+          if (thread.channelId) {
+            try {
+              const ticketChannel = await client.channels.fetch(thread.channelId);
+              if (ticketChannel && "send" in ticketChannel) {
+                const joinEmbed = new EmbedBuilder()
+                  .setTitle("Member Joined")
+                  .setDescription(`<@${invite.targetUserId}> has accepted the invite and joined this ticket.`)
+                  .setColor(0x57f287)
+                  .setTimestamp();
+                await ticketChannel.send({ embeds: [joinEmbed] });
+              }
+            } catch {}
+          }
+
+          return;
+        }
+
+        // Handle ticket invite deny button
+        if (customId.startsWith("ticket_invite_deny_")) {
+          const inviteId = customId.replace("ticket_invite_deny_", "");
+          const invite = getPendingInvite(inviteId);
+
+          if (!invite) {
+            await interaction.reply({ content: "❌ This invite has expired or is no longer valid.", flags: 64 });
+            try {
+              await interaction.message.edit({ components: [] });
+            } catch {}
+            return;
+          }
+
+          // Check if user is the invitee
+          if (interaction.user.id !== invite.targetUserId) {
+            await interaction.reply({ content: "❌ This invite is not for you.", flags: 64 });
+            return;
+          }
+
+          // Remove the pending invite
+          removePendingInvite(inviteId);
+
+          // Update the DM message
+          try {
+            const denyEmbed = new EmbedBuilder()
+              .setTitle("Invite Declined")
+              .setDescription("You have declined the ticket invite.")
+              .setColor(0xed4245)
+              .setTimestamp();
+            await interaction.update({ embeds: [denyEmbed], components: [] });
+          } catch {
+            await interaction.reply({ content: "❌ You have declined the invite.", flags: 64 });
+          }
+
+          // Notify ticket channel
+          const thread = await storage.getModmailThread(invite.threadId);
+          if (thread && thread.status === "open" && thread.channelId) {
+            try {
+              const ticketChannel = await client.channels.fetch(thread.channelId);
+              if (ticketChannel && "send" in ticketChannel) {
+                const declineEmbed = new EmbedBuilder()
+                  .setTitle("Invite Declined")
+                  .setDescription(`<@${invite.targetUserId}> has declined the invite to join this ticket.`)
+                  .setColor(0xed4245)
+                  .setTimestamp();
+                await ticketChannel.send({ embeds: [declineEmbed] });
+              }
+            } catch {}
+          }
+
+          return;
+        }
         
         if (customId.startsWith("roster_btn_")) {
           const rosterName = customId.replace("roster_btn_", "");
@@ -6771,50 +7044,57 @@ client.on("interactionCreate", async (interaction) => {
               return;
             }
 
-            // Add the user
-            const newMembers = [...currentMembers, userId];
-            await storage.updateModmailThread(threadId, { addedMemberIds: newMembers });
+            // Generate invite ID and store pending invite
+            const inviteId = generateInviteId();
+            storePendingInvite(inviteId, {
+              threadId: thread.id,
+              guildId: thread.guildId,
+              targetUserId: userId,
+              invitedById: interaction.user.id,
+              reason: reason,
+              createdAt: Date.now(),
+            });
 
-            // DM the added user
+            // DM the user with Accept/Deny buttons
             try {
               const ticketCreator = await client.users.fetch(thread.userId);
-              const addEmbed = new EmbedBuilder()
-                .setTitle("Added to Ticket")
-                .setDescription(`You have been added to **${ticketCreator.username}**'s ticket.\n\nType here to reply. Your messages will be visible to staff and other ticket members.`)
-                .setColor(0x57f287)
+              const inviteEmbed = new EmbedBuilder()
+                .setTitle("Ticket Invite")
+                .setDescription(`You have been invited to join **${ticketCreator.username}**'s ticket.\n\nIf you accept, you will be able to see and reply to their messages. Your messages will be visible to staff and other ticket members.`)
+                .addFields({ name: "Reason", value: reason })
+                .setColor(0x5865f2)
                 .setTimestamp();
-              await targetUser.send({ embeds: [addEmbed] });
-            } catch {
-              // Could not DM user
-            }
 
-            // Log to modmail log channel
-            const config = await storage.getGuildConfig(thread.guildId);
-            if (config?.modmailLogChannelId) {
-              try {
-                const logChannel = await client.channels.fetch(config.modmailLogChannelId);
-                if (logChannel && "send" in logChannel) {
-                  const logEmbed = new EmbedBuilder()
-                    .setTitle("Member Added to Ticket")
-                    .setColor(0x57f287)
-                    .addFields(
-                      { name: "Added User", value: `<@${userId}> (${targetUser.tag})`, inline: true },
-                      { name: "Added By", value: `<@${interaction.user.id}>`, inline: true },
-                      { name: "Ticket Channel", value: `<#${thread.channelId}>`, inline: true },
-                      { name: "Reason", value: reason }
-                    )
-                    .setTimestamp();
-                  await logChannel.send({ embeds: [logEmbed] });
-                }
-              } catch {}
+              const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`ticket_invite_accept_${inviteId}`)
+                  .setLabel("Accept")
+                  .setStyle(ButtonStyle.Success)
+                  .setEmoji("✅"),
+                new ButtonBuilder()
+                  .setCustomId(`ticket_invite_deny_${inviteId}`)
+                  .setLabel("Deny")
+                  .setStyle(ButtonStyle.Danger)
+                  .setEmoji("❌")
+              );
+
+              await targetUser.send({ embeds: [inviteEmbed], components: [buttonRow] });
+            } catch {
+              // Could not DM user - add them directly instead
+              const newMembers = [...currentMembers, userId];
+              await storage.updateModmailThread(thread.id, { addedMemberIds: newMembers });
+              removePendingInvite(inviteId);
+
+              await interaction.editReply({ content: `⚠️ Could not DM <@${userId}>, so they were added directly to the ticket.` });
+              return;
             }
 
             // Send confirmation in the ticket channel
             const confirmEmbed = new EmbedBuilder()
-              .setTitle("Member Added")
-              .setDescription(`<@${userId}> has been added to this ticket.`)
+              .setTitle("Invite Sent")
+              .setDescription(`An invite has been sent to <@${userId}>. They must accept to join this ticket.`)
               .addFields({ name: "Reason", value: reason })
-              .setColor(0x57f287)
+              .setColor(0x5865f2)
               .setTimestamp();
             await interaction.editReply({ embeds: [confirmEmbed] });
 
