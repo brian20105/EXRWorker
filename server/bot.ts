@@ -60,6 +60,23 @@ interface CachedDMMessage {
 const dmMessageCache = new Map<string, CachedDMMessage[]>();
 const MAX_CACHED_MESSAGES_PER_USER = 50;
 
+// Cache for modmail copy button content (message ID -> content)
+const modmailCopyCache = new Map<string, string>();
+const MAX_COPY_CACHE_ENTRIES = 500;
+
+function storeModmailCopyContent(messageId: string, content: string) {
+  // Clean up old entries if cache is too large
+  if (modmailCopyCache.size >= MAX_COPY_CACHE_ENTRIES) {
+    const firstKey = modmailCopyCache.keys().next().value;
+    if (firstKey) modmailCopyCache.delete(firstKey);
+  }
+  modmailCopyCache.set(messageId, content);
+}
+
+function getModmailCopyContent(messageId: string): string | undefined {
+  return modmailCopyCache.get(messageId);
+}
+
 function cacheDMMessage(userId: string, message: any) {
   if (!message.author || message.author.bot) return;
   
@@ -5498,6 +5515,26 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.isButton()) {
         const customId = interaction.customId;
         
+        // Handle modmail copy button for mobile users
+        if (customId.startsWith("modmail_copy_")) {
+          const messageId = customId.replace("modmail_copy_", "");
+          const content = getModmailCopyContent(messageId);
+          
+          if (content) {
+            // Send the content as a plain text message so mobile users can copy it
+            await interaction.reply({ 
+              content: content, 
+              flags: 64 // Ephemeral 
+            });
+          } else {
+            await interaction.reply({ 
+              content: "Message content is no longer cached. This may happen if the bot was restarted.", 
+              flags: 64 
+            });
+          }
+          return;
+        }
+        
         if (customId.startsWith("roster_btn_")) {
           const rosterName = customId.replace("roster_btn_", "");
           const roster = await storage.getRosterConfig(interaction.guildId!, rosterName);
@@ -9588,7 +9625,19 @@ client.on("messageCreate", async (message) => {
             }
           }
 
-          const channelMsg = await modmailChannel.send({ embeds: [userEmbed] });
+          // Add "Send Message" button for mobile users to copy text
+          const copyButton = new ButtonBuilder()
+            .setCustomId(`modmail_copy_${message.id}`)
+            .setLabel("Send Message")
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji("📋");
+
+          const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(copyButton);
+
+          const channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [buttonRow] });
+
+          // Store the message content for the copy button
+          storeModmailCopyContent(message.id, message.content);
 
           // Ping subscribed users
           const subs = targetThread.subscribedUserIds || [];
