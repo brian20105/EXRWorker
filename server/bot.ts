@@ -9830,9 +9830,14 @@ client.on("messageCreate", async (message) => {
       } catch (e) {
         console.log("Could not delete trigger message:", e);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.log("Could not relay staff message to user:", error);
-      await message.react("❌");
+      // Send embed explaining user left or has DMs off
+      const errorEmbed = new EmbedBuilder()
+        .setColor(0xed4245)
+        .setDescription("⚠️ **User has left the server or has their DMs turned off.**")
+        .setTimestamp();
+      await message.reply({ embeds: [errorEmbed] });
     }
     return;
   }
@@ -10077,9 +10082,14 @@ client.on("messageCreate", async (message) => {
       try {
         await message.delete();
       } catch (e) { }
-    } catch (error) {
+    } catch (error: any) {
       console.log("Could not relay anonymous staff message to user:", error);
-      await message.react("❌");
+      // Send embed explaining user left or has DMs off
+      const errorEmbed = new EmbedBuilder()
+        .setColor(0xed4245)
+        .setDescription("⚠️ **User has left the server or has their DMs turned off.**")
+        .setTimestamp();
+      await message.reply({ embeds: [errorEmbed] });
     }
     return;
   }
@@ -10622,6 +10632,47 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         syncingUsers.delete(`${newMember.id}-${pair.targetGuildId}`);
       }
     }, 5000);
+  }
+});
+
+// Handle user leaving server - notify open modmail/appeal threads
+client.on("guildMemberRemove", async (member) => {
+  try {
+    // Check for open modmail thread
+    const modmailThread = await storage.getOpenModmailThread(member.guild.id, member.id);
+    if (modmailThread && modmailThread.channelId) {
+      try {
+        const channel = await client.channels.fetch(modmailThread.channelId);
+        if (channel && "send" in channel) {
+          const leaveEmbed = new EmbedBuilder()
+            .setColor(0xed4245)
+            .setDescription(`⚠️ **${member.user.tag} has left the server!**`)
+            .setTimestamp();
+          await channel.send({ embeds: [leaveEmbed] });
+        }
+      } catch (e) {
+        console.log("Could not notify modmail channel about user leave:", e);
+      }
+    }
+
+    // Check for open appeal thread
+    const appealThread = await storage.getOpenAppealThread(member.guild.id, member.id);
+    if (appealThread && appealThread.channelId) {
+      try {
+        const channel = await client.channels.fetch(appealThread.channelId);
+        if (channel && "send" in channel) {
+          const leaveEmbed = new EmbedBuilder()
+            .setColor(0xed4245)
+            .setDescription(`⚠️ **${member.user.tag} has left the server!**`)
+            .setTimestamp();
+          await channel.send({ embeds: [leaveEmbed] });
+        }
+      } catch (e) {
+        console.log("Could not notify appeal channel about user leave:", e);
+      }
+    }
+  } catch (e) {
+    console.log("Error in guildMemberRemove handler:", e);
   }
 });
 
