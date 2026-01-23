@@ -1278,6 +1278,27 @@ const commands = [
     .addStringOption((option) =>
       option.setName("name").setDescription("Roster name to display").setRequired(true).setAutocomplete(true)
     ),
+  new SlashCommandBuilder()
+    .setName("role")
+    .setDescription("Give a role to members")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub.setName("all")
+        .setDescription("Give a role to all members in the server")
+        .addRoleOption((option) =>
+          option.setName("role").setDescription("The role to give").setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub.setName("random")
+        .setDescription("Give a role to random members")
+        .addRoleOption((option) =>
+          option.setName("role").setDescription("The role to give").setRequired(true)
+        )
+        .addIntegerOption((option) =>
+          option.setName("count").setDescription("Number of random members to give the role to").setRequired(true).setMinValue(1)
+        )
+    ),
 ].map((command) => command.toJSON());
 
 async function hasPayoutPermission(
@@ -4625,6 +4646,117 @@ client.on("interactionCreate", async (interaction) => {
           });
         } else {
           await interaction.editReply({ content: "❌ Could not send message in this channel." });
+        }
+
+      } else if (commandName === "role") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const subcommand = interaction.options.getSubcommand();
+        const role = interaction.options.getRole("role", true);
+        const guild = interaction.guild;
+
+        if (!guild) {
+          await interaction.editReply({ content: "❌ This command must be used in a server." });
+          return;
+        }
+
+        const botMember = guild.members.me;
+        if (!botMember) {
+          await interaction.editReply({ content: "❌ Could not find bot member." });
+          return;
+        }
+
+        if (role.position >= botMember.roles.highest.position) {
+          await interaction.editReply({ content: "❌ I cannot assign this role because it is higher than or equal to my highest role." });
+          return;
+        }
+
+        const guildRole = guild.roles.cache.get(role.id);
+        if (!guildRole || !guildRole.editable) {
+          await interaction.editReply({ content: "❌ I cannot assign this role. It may be managed by an integration or higher than my role." });
+          return;
+        }
+
+        try {
+          await guild.members.fetch({ time: 60000 });
+        } catch (e) {
+          console.log("Could not fully fetch members for role command");
+        }
+
+        if (subcommand === "all") {
+          const membersWithoutRole = guild.members.cache.filter((m: any) => !m.roles.cache.has(role.id) && !m.user.bot);
+          const totalCount = membersWithoutRole.size;
+
+          if (totalCount === 0) {
+            await interaction.editReply({ content: `✅ All members already have the ${role} role.` });
+            return;
+          }
+
+          await interaction.editReply({ content: `⏳ Giving ${role} to ${totalCount} members... This may take a while.` });
+
+          let successCount = 0;
+          let failCount = 0;
+
+          for (const [, member] of membersWithoutRole) {
+            try {
+              await (member as any).roles.add(role);
+              successCount++;
+              if (successCount % 10 === 0) {
+                await interaction.editReply({ content: `⏳ Progress: ${successCount}/${totalCount} members given ${role}...` });
+              }
+            } catch (e) {
+              failCount++;
+              console.log(`Failed to add role to ${(member as any).user?.tag}:`, e);
+            }
+          }
+
+          await interaction.editReply({ content: `✅ Done! Gave ${role} to **${successCount}** members.${failCount > 0 ? ` Failed for ${failCount} members.` : ''}` });
+
+        } else if (subcommand === "random") {
+          const count = interaction.options.getInteger("count", true);
+          const membersWithoutRole = guild.members.cache.filter((m: any) => !m.roles.cache.has(role.id) && !m.user.bot);
+          const eligibleMembers = Array.from(membersWithoutRole.values());
+
+          if (eligibleMembers.length === 0) {
+            await interaction.editReply({ content: `❌ No members found without the ${role} role.` });
+            return;
+          }
+
+          const actualCount = Math.min(count, eligibleMembers.length);
+
+          for (let i = eligibleMembers.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [eligibleMembers[i], eligibleMembers[j]] = [eligibleMembers[j], eligibleMembers[i]];
+          }
+
+          const selectedMembers = eligibleMembers.slice(0, actualCount);
+
+          await interaction.editReply({ content: `⏳ Giving ${role} to ${actualCount} random members...` });
+
+          let successCount = 0;
+          let failCount = 0;
+          const successfulMembers: string[] = [];
+
+          for (const member of selectedMembers) {
+            try {
+              await (member as any).roles.add(role);
+              successCount++;
+              successfulMembers.push(`<@${(member as any).id}>`);
+            } catch (e) {
+              failCount++;
+              console.log(`Failed to add role to ${(member as any).user?.tag}:`, e);
+            }
+          }
+
+          let response = `✅ Gave ${role} to **${successCount}** random members!`;
+          if (failCount > 0) {
+            response += ` Failed for ${failCount} members.`;
+          }
+          if (successfulMembers.length <= 20) {
+            response += `\n\n**Winners:**\n${successfulMembers.join("\n")}`;
+          }
+
+          await interaction.editReply({ content: response });
         }
       }
     } else if (interaction.isStringSelectMenu()) {
