@@ -9097,6 +9097,7 @@ client.on("messageCreate", async (message) => {
       !(lowerContent === `${lowerPrefix}r` || lowerContent.startsWith(`${lowerPrefix}r `)) && 
       !(lowerContent === `${lowerPrefix}ar` || lowerContent.startsWith(`${lowerPrefix}ar `)) &&
       !lowerContent.startsWith(`${lowerPrefix}edit `) && !lowerContent.startsWith(`${lowerPrefix}delete`)) {
+    console.log(`[SNIPPET ALIAS] Checking alias for: ${message.id} - "${message.content}"`);
     const alias = message.content.substring(prefix.length).toLowerCase().split(" ")[0];
     if (alias) {
       // Check for modmail thread first, then appeal thread
@@ -9518,6 +9519,7 @@ client.on("messageCreate", async (message) => {
 
   // Handle .r <message> reply command in modmail/appeal channels (also allows .r with just attachments)
   if (message.guild && (lowerContent.startsWith(`${lowerPrefix}r `) || (lowerContent === `${lowerPrefix}r` && message.attachments.size > 0))) {
+    console.log(`[.r HANDLER] Processing reply command: ${message.id} - "${message.content}"`);
     // Check for modmail thread first, then appeal thread
     const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
