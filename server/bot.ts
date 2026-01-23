@@ -9578,10 +9578,14 @@ client.on("messageCreate", async (message) => {
       }
 
       // Send to user DM
+      console.log(`[.r HANDLER] Sending DM to user ${user.id}...`);
       const dmMessage = await user.send({ embeds: [staffEmbed] });
+      console.log(`[.r HANDLER] DM sent: ${dmMessage.id}`);
 
       // Send to channel as well
+      console.log(`[.r HANDLER] Sending to channel ${message.channel.id}...`);
       const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
+      console.log(`[.r HANDLER] Channel message sent: ${channelMessage.id}`);
 
       // Save message with message IDs
       if (isAppeal) {
