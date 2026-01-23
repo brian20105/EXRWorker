@@ -110,6 +110,7 @@ export interface IStorage {
   getModmailMessages(threadId: string): Promise<ModmailMessage[]>;
   getModmailMessage(id: string): Promise<ModmailMessage | undefined>;
   getModmailMessageByChannelMessageId(channelMessageId: string): Promise<ModmailMessage | undefined>;
+  getModmailMessageByDmMessageId(dmMessageId: string): Promise<ModmailMessage | undefined>;
   updateModmailMessage(id: string, updates: { content?: string; channelMessageId?: string; dmMessageId?: string }): Promise<ModmailMessage | undefined>;
   deleteModmailMessage(id: string): Promise<void>;
   getLatestStaffModmailMessage(threadId: string): Promise<ModmailMessage | undefined>;
@@ -593,6 +594,11 @@ export class DatabaseStorage implements IStorage {
 
   async getModmailMessageByChannelMessageId(channelMessageId: string): Promise<ModmailMessage | undefined> {
     const result = await db.select().from(modmailMessages).where(eq(modmailMessages.channelMessageId, channelMessageId));
+    return result[0];
+  }
+
+  async getModmailMessageByDmMessageId(dmMessageId: string): Promise<ModmailMessage | undefined> {
+    const result = await db.select().from(modmailMessages).where(eq(modmailMessages.dmMessageId, dmMessageId));
     return result[0];
   }
 
