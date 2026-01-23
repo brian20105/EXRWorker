@@ -8026,13 +8026,12 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
   try {
     const staffChannel = await client.channels.fetch(thread.channelId);
     if (staffChannel && "send" in staffChannel) {
+      const newContent = newMessage.content?.slice(0, 1024) || "*No content*";
+      const oldContentTrimmed = oldContent?.slice(0, 1024) || "*No content*";
+      
       const editEmbed = new EmbedBuilder()
-        .setTitle("📝 Message Edited")
         .setColor(0xFFA500)
-        .addFields(
-          { name: "Before", value: oldContent?.slice(0, 1024) || "*No content*", inline: false },
-          { name: "After", value: newMessage.content?.slice(0, 1024) || "*No content*", inline: false }
-        )
+        .setDescription(`${newContent}\n\n*edited, old message:* ${oldContentTrimmed}`)
         .setAuthor({ name: newMessage.author.tag, iconURL: newMessage.author.displayAvatarURL() })
         .setTimestamp();
 
@@ -8088,11 +8087,12 @@ client.on("messageDelete", async (message) => {
   try {
     const staffChannel = await client.channels.fetch(thread.channelId);
     if (staffChannel && "send" in staffChannel) {
+      const deletedContent = content?.slice(0, 1024) || "*Message was not cached*";
+      const deleteTimestamp = Math.floor(Date.now() / 1000);
+      
       const deleteEmbed = new EmbedBuilder()
-        .setTitle("🗑️ Message Deleted")
         .setColor(0xFF0000)
-        .setDescription(`User deleted a message <t:${Math.floor(Date.now() / 1000)}:R>`)
-        .addFields({ name: "Deleted Content", value: content?.slice(0, 1024) || "*Message was not cached*", inline: false })
+        .setDescription(`${deletedContent}\n\n*(message deleted <t:${deleteTimestamp}:R>)*`)
         .setAuthor({ name: authorTag || "Unknown User", iconURL: authorAvatar })
         .setTimestamp();
 
