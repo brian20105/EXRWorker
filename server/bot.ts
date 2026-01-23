@@ -4228,17 +4228,14 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.` });
         }
       } else if (commandName === "permissions") {
-        if (!await safeDeferReply(interaction, false)) return;
-
         const permType = interaction.options.getString("type", true);
-        console.log(`[PERMISSIONS] permType received: "${permType}"`);
         const roles: string[] = [];
         for (let i = 1; i <= 20; i++) {
           const role = interaction.options.getRole(`role${i}`);
           if (role) roles.push(role.id);
         }
 
-        const typeLabels: { [key: string]: string } = {
+        const typeLabels: Record<string, string> = {
           payout: "Payout Approval",
           moderation: "Ban/Unban Approval",
           inactivity: "Inactivity Approval",
@@ -4250,30 +4247,26 @@ client.on("interactionCreate", async (interaction) => {
           activity: "Activity",
         };
 
-        if (permType === "payout") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, allowedRoleIds: roles });
-        } else if (permType === "moderation") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, modRoleIds: roles });
-        } else if (permType === "inactivity") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, inactivityPingRoleIds: roles });
-        } else if (permType === "block") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, modmailBlockRoleIds: roles });
-        } else if (permType === "claim") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, modmailClaimRoleIds: roles });
-        } else if (permType === "activity_reset") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, activityResetRoleIds: roles });
-        } else if (permType === "appeal_claim") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, appealStaffRoleIds: roles });
-        } else if (permType === "snippets") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, snippetRoleIds: roles });
-        } else if (permType === "activity") {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, activityRoleIds: roles });
+        const fieldMap: Record<string, string> = {
+          payout: "allowedRoleIds",
+          moderation: "modRoleIds",
+          inactivity: "inactivityPingRoleIds",
+          block: "modmailBlockRoleIds",
+          claim: "modmailClaimRoleIds",
+          activity_reset: "activityResetRoleIds",
+          appeal_claim: "appealStaffRoleIds",
+          snippets: "snippetRoleIds",
+          activity: "activityRoleIds",
+        };
+
+        const field = fieldMap[permType];
+        if (field) {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, [field]: roles });
         }
 
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-        const labelName = typeLabels[permType] || permType || "Unknown";
-        console.log(`[PERMISSIONS] Saving type=${permType}, label=${labelName}, roles=${roles.join(",")}`);
-        await interaction.editReply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}` });
+        const labelName = typeLabels[permType] || permType;
+        await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}` });
       } else if (commandName === "category_ping") {
         if (!await safeDeferReply(interaction)) return;
 
