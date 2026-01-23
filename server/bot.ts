@@ -8040,8 +8040,28 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
         .setAuthor({ name: newMessage.author.tag, iconURL: newMessage.author.displayAvatarURL() })
         .setTimestamp();
 
+      // Try to find the original message in the database and edit it
+      const modmailMsg = await storage.getModmailMessageByDmMessageId(newMessage.id);
+      
+      if (modmailMsg && modmailMsg.channelMessageId) {
+        // Edit the existing message instead of sending a new one
+        try {
+          const channelMsg = await (staffChannel as any).messages.fetch(modmailMsg.channelMessageId);
+          if (channelMsg && channelMsg.editable) {
+            await channelMsg.edit({ embeds: [editEmbed] });
+            // Update stored content
+            await storage.updateModmailMessage(modmailMsg.id, { content: newMessage.content || "" });
+            console.log("[EDIT TRACKING] Edited existing staff message");
+            return;
+          }
+        } catch (fetchError) {
+          console.log("[EDIT TRACKING] Could not fetch/edit original message, sending new:", fetchError);
+        }
+      }
+      
+      // Fallback: send new message if we couldn't edit the original
       await (staffChannel as any).send({ embeds: [editEmbed] });
-      console.log("[EDIT TRACKING] Edit embed sent successfully");
+      console.log("[EDIT TRACKING] Edit embed sent as new message (fallback)");
     }
   } catch (e) {
     console.log("[EDIT TRACKING] Error sending to staff channel:", e);
