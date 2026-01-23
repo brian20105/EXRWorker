@@ -8020,11 +8020,16 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
   // Update cache with new content
   updateCachedDMMessage(userId, newMessage.id, newMessage.content || "");
 
-  const thread = await storage.getOpenModmailThread("global", userId);
-  if (!thread || !thread.channelId) return;
+  const thread = await storage.getOpenModmailThreadByUserId(userId);
+  console.log(`[EDIT TRACKING] Thread lookup result for ${userId}:`, thread ? `found (channel: ${thread.channelId})` : "not found");
+  if (!thread || !thread.channelId) {
+    console.log("[EDIT TRACKING] No open thread found, skipping");
+    return;
+  }
 
   try {
     const staffChannel = await client.channels.fetch(thread.channelId);
+    console.log(`[EDIT TRACKING] Staff channel fetch result:`, staffChannel ? "found" : "not found");
     if (staffChannel && "send" in staffChannel) {
       const newContent = newMessage.content?.slice(0, 1024) || "*No content*";
       const oldContentTrimmed = oldContent?.slice(0, 1024) || "*No content*";
@@ -8036,6 +8041,7 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
         .setTimestamp();
 
       await (staffChannel as any).send({ embeds: [editEmbed] });
+      console.log("[EDIT TRACKING] Edit embed sent successfully");
     }
   } catch (e) {
     console.log("[EDIT TRACKING] Error sending to staff channel:", e);
@@ -8081,7 +8087,7 @@ client.on("messageDelete", async (message) => {
   if (message.author?.bot) return;
   if (!isDM) return;
 
-  const thread = await storage.getOpenModmailThread("global", authorId);
+  const thread = await storage.getOpenModmailThreadByUserId(authorId);
   if (!thread || !thread.channelId) return;
 
   try {
