@@ -4270,7 +4270,8 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-        await interaction.editReply({ content: `✅ **${typeLabels[permType]}** permissions updated!\nRoles: ${roleMentions}` });
+        const labelName = typeLabels[permType] || permType;
+        await interaction.editReply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}` });
       } else if (commandName === "category_ping") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -8861,7 +8862,6 @@ client.on("messageCreate", async (message) => {
 
     if (subCommand === "create") {
       if (!hasSnippetPerm) {
-        await message.reply("❌ You don't have permission to create snippets.");
         return;
       }
 
@@ -8893,7 +8893,6 @@ client.on("messageCreate", async (message) => {
       return;
     } else if (subCommand === "edit") {
       if (!hasSnippetPerm) {
-        await message.reply("❌ You don't have permission to edit snippets.");
         return;
       }
 
@@ -8917,7 +8916,6 @@ client.on("messageCreate", async (message) => {
       return;
     } else if (subCommand === "delete") {
       if (!hasSnippetPerm) {
-        await message.reply("❌ You don't have permission to delete snippets.");
         return;
       }
 
@@ -9087,7 +9085,6 @@ client.on("messageCreate", async (message) => {
 
     if (subCommand === "create") {
       if (!hasSnippetPerm) {
-        await message.reply("❌ You don't have permission to create appeal snippets.");
         return;
       }
 
@@ -9117,7 +9114,6 @@ client.on("messageCreate", async (message) => {
       return;
     } else if (subCommand === "edit") {
       if (!hasSnippetPerm) {
-        await message.reply("❌ You don't have permission to edit appeal snippets.");
         return;
       }
 
@@ -9140,7 +9136,6 @@ client.on("messageCreate", async (message) => {
       return;
     } else if (subCommand === "delete") {
       if (!hasSnippetPerm) {
-        await message.reply("❌ You don't have permission to delete appeal snippets.");
         return;
       }
 
