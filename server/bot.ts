@@ -5060,6 +5060,9 @@ client.on("interactionCreate", async (interaction) => {
 
       // Handle ticket dropdown selection
       if (interaction.customId.startsWith("ticket_select_")) {
+        const interactionAge = Date.now() - interaction.createdTimestamp;
+        console.log(`[ticket_select] Received: customId=${interaction.customId}, category=${interaction.values[0]}, age=${interactionAge}ms, replied=${interaction.replied}, deferred=${interaction.deferred}`);
+        
         const guildId = interaction.customId.split("_")[2];
         const ticketCategory = interaction.values[0];
         const user = interaction.user;
@@ -5241,36 +5244,51 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         // For general, report, partnerships - defer first, then validate and create ticket
-        if (!await safeDeferReply(interaction)) return;
+        console.log(`[ticket_select] About to defer for category: ${ticketCategory}`);
+        if (!await safeDeferReply(interaction)) {
+          console.log(`[ticket_select] Defer failed, returning`);
+          return;
+        }
+        console.log(`[ticket_select] Defer succeeded`);
 
         const guild = interaction.guild;
         if (!guild) {
+          console.log(`[ticket_select] No guild found`);
           await interaction.editReply({ content: "❌ This can only be used in a server." });
           return;
         }
 
+        console.log(`[ticket_select] Fetching config for guild: ${guildId}`);
         const config = await storage.getGuildConfig(guildId);
         if (!config?.modmailCategoryId) {
+          console.log(`[ticket_select] No modmailCategoryId configured`);
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
           return;
         }
+        console.log(`[ticket_select] Config found, modmailCategoryId: ${config.modmailCategoryId}`);
 
         // Check if user is blocked
+        console.log(`[ticket_select] Checking if user ${user.id} is blocked`);
         const block = await storage.getActiveModmailBlock(guildId, user.id);
         if (block) {
+          console.log(`[ticket_select] User is blocked`);
           const expiresText = block.expiresAt 
             ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
             : "You are permanently blocked.";
           await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
           return;
         }
+        console.log(`[ticket_select] User is not blocked`);
 
         // Check for existing open thread
+        console.log(`[ticket_select] Checking for existing open thread`);
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
+          console.log(`[ticket_select] User already has open thread: ${existingThread.id}`);
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
+        console.log(`[ticket_select] No existing thread, proceeding to create`)
 
         // Parse custom categories for label lookup
         let customCategories: { id: string; label: string; description: string; emoji?: string }[] = [];
