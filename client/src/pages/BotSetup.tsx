@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle2, Copy, ExternalLink, Terminal, AlertCircle } from "lucide-react";
+import { CheckCircle2, Copy, ExternalLink, Terminal, AlertCircle, Settings } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { Link } from "wouter";
 
 export default function BotSetup() {
   const [botStatus, setBotStatus] = useState<"checking" | "online" | "offline">("checking");
@@ -40,6 +41,12 @@ export default function BotSetup() {
             Discord Payout Bot
           </h1>
           <p className="text-gray-600">Manage payout requests in your Discord server</p>
+          <Link href="/dashboard">
+            <Button variant="outline" className="mt-4" data-testid="button-dashboard">
+              <Settings className="w-4 h-4 mr-2" />
+              Open Dashboard
+            </Button>
+          </Link>
         </div>
 
         {/* Bot Status Card */}
