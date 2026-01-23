@@ -60,20 +60,24 @@ interface CachedDMMessage {
 const dmMessageCache = new Map<string, CachedDMMessage[]>();
 const MAX_CACHED_MESSAGES_PER_USER = 50;
 
-// Cache for modmail copy button content (message ID -> content)
-const modmailCopyCache = new Map<string, string>();
+// Cache for modmail copy button content (message ID -> content + attachments)
+interface ModmailCopyData {
+  content: string;
+  attachments?: string[];
+}
+const modmailCopyCache = new Map<string, ModmailCopyData>();
 const MAX_COPY_CACHE_ENTRIES = 500;
 
-function storeModmailCopyContent(messageId: string, content: string) {
+function storeModmailCopyContent(messageId: string, content: string, attachments?: string[]) {
   // Clean up old entries if cache is too large
   if (modmailCopyCache.size >= MAX_COPY_CACHE_ENTRIES) {
     const firstKey = modmailCopyCache.keys().next().value;
     if (firstKey) modmailCopyCache.delete(firstKey);
   }
-  modmailCopyCache.set(messageId, content);
+  modmailCopyCache.set(messageId, { content, attachments });
 }
 
-function getModmailCopyContent(messageId: string): string | undefined {
+function getModmailCopyContent(messageId: string): ModmailCopyData | undefined {
   return modmailCopyCache.get(messageId);
 }
 
@@ -5548,20 +5552,33 @@ client.on("interactionCreate", async (interaction) => {
           const messageId = customId.replace("modmail_copy_", "");
           
           // First try cache
-          let content = getModmailCopyContent(messageId);
+          let copyData = getModmailCopyContent(messageId);
           
-          // If not in cache, try to get from the message embed
-          if (!content && interaction.message) {
+          // If not in cache, try to get from the message embed and attachments
+          if (!copyData && interaction.message) {
             const embeds = interaction.message.embeds;
+            const attachmentUrls: string[] = [];
+            
+            // Get image from embed if present
+            if (embeds.length > 0 && embeds[0].image?.url) {
+              attachmentUrls.push(embeds[0].image.url);
+            }
+            
             if (embeds.length > 0 && embeds[0].description) {
-              content = embeds[0].description;
+              copyData = { content: embeds[0].description, attachments: attachmentUrls.length > 0 ? attachmentUrls : undefined };
             }
           }
           
-          if (content) {
+          if (copyData) {
+            // Build response with content and attachments
+            let response = copyData.content;
+            if (copyData.attachments && copyData.attachments.length > 0) {
+              response += "\n\n**Attachments:**\n" + copyData.attachments.join("\n");
+            }
+            
             // Send the content as a plain text message so mobile users can copy it
             await interaction.reply({ 
-              content: content, 
+              content: response, 
               flags: 64 // Ephemeral 
             });
           } else {
@@ -9944,8 +9961,8 @@ client.on("messageCreate", async (message) => {
 
           const channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [buttonRow] });
 
-          // Store the message content for the copy button
-          storeModmailCopyContent(message.id, message.content);
+          // Store the message content and attachments for the copy button
+          storeModmailCopyContent(message.id, message.content, attachmentUrls.length > 0 ? attachmentUrls : undefined);
 
           // Ping subscribed users
           const subs = targetThread.subscribedUserIds || [];
