@@ -92,7 +92,7 @@ export async function registerRoutes(
         await storage.addMuteActivityEntry(guildId, targetUserId, moderatorId, reason || "Muted", duration);
         res.json({ success: true, message: "Mute logged successfully" });
       } else if (type === "ban") {
-        await storage.addBanActivityEntries(guildId, moderatorId, 1);
+        await storage.addBanActionEntry(guildId, targetUserId, moderatorId, reason || "Banned");
         res.json({ success: true, message: "Ban logged successfully" });
       } else if (type === "unban") {
         await storage.addUnbanActivityEntries(guildId, moderatorId, 1);
