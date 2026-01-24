@@ -33,6 +33,7 @@ export const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildModeration,
   ],
   partials: [Partials.Channel, Partials.Message],
 });
@@ -11259,6 +11260,59 @@ function scheduleRosterUpdate(guildId: string) {
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   console.log(`[ROLE SYNC] guildMemberUpdate triggered for ${newMember.user.tag} in guild ${newMember.guild.name} (${newMember.guild.id})`);
 
+  // Detect timeout/mute - when communicationDisabledUntil changes from null to a date
+  const wasTimedOut = oldMember.communicationDisabledUntil;
+  const isTimedOut = newMember.communicationDisabledUntil;
+  
+  if (!wasTimedOut && isTimedOut) {
+    // User was just timed out (muted)
+    console.log(`[MUTE TRACK] ${newMember.user.tag} was timed out in ${newMember.guild.name}`);
+    
+    try {
+      // Fetch audit log to find who did the timeout
+      const auditLogs = await newMember.guild.fetchAuditLogs({
+        type: 24, // MEMBER_UPDATE
+        limit: 5,
+      });
+      
+      const timeoutLog = auditLogs.entries.find(entry => 
+        entry.target?.id === newMember.id &&
+        entry.changes?.some(change => change.key === "communication_disabled_until")
+      );
+      
+      if (timeoutLog && timeoutLog.executor) {
+        const moderatorId = timeoutLog.executor.id;
+        const reason = timeoutLog.reason || "No reason provided";
+        
+        // Calculate duration
+        const durationMs = isTimedOut.getTime() - Date.now();
+        const durationMinutes = Math.round(durationMs / 60000);
+        let durationStr = `${durationMinutes}m`;
+        if (durationMinutes >= 60) {
+          const hours = Math.floor(durationMinutes / 60);
+          durationStr = `${hours}h`;
+        }
+        if (durationMinutes >= 1440) {
+          const days = Math.floor(durationMinutes / 1440);
+          durationStr = `${days}d`;
+        }
+        
+        // Log the mute to activity
+        await storage.addMuteActivityEntry(
+          newMember.guild.id,
+          newMember.id,
+          moderatorId,
+          reason,
+          durationStr
+        );
+        
+        console.log(`[MUTE TRACK] Logged mute by ${timeoutLog.executor.tag} for ${newMember.user.tag}`);
+      }
+    } catch (error) {
+      console.log(`[MUTE TRACK] Could not fetch audit log:`, error);
+    }
+  }
+
   const oldRoles = Array.from(oldMember.roles.cache.keys());
   const newRoles = Array.from(newMember.roles.cache.keys());
 
@@ -11429,6 +11483,35 @@ client.on("guildMemberRemove", async (member) => {
     }
   } catch (e) {
     console.log("Error in guildMemberRemove handler:", e);
+  }
+});
+
+// Track bans from any bot via audit log
+client.on("guildBanAdd", async (ban) => {
+  console.log(`[BAN TRACK] ${ban.user.tag} was banned from ${ban.guild.name}`);
+  
+  try {
+    // Fetch audit log to find who did the ban
+    const auditLogs = await ban.guild.fetchAuditLogs({
+      type: 22, // MEMBER_BAN_ADD
+      limit: 5,
+    });
+    
+    const banLog = auditLogs.entries.find(entry => 
+      entry.target?.id === ban.user.id
+    );
+    
+    if (banLog && banLog.executor) {
+      const moderatorId = banLog.executor.id;
+      const reason = banLog.reason || "No reason provided";
+      
+      // Log the ban to activity
+      await storage.addBanActivityEntries(ban.guild.id, moderatorId, 1);
+      
+      console.log(`[BAN TRACK] Logged ban by ${banLog.executor.tag} for ${ban.user.tag}`);
+    }
+  } catch (error) {
+    console.log(`[BAN TRACK] Could not fetch audit log:`, error);
   }
 });
 
