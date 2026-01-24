@@ -65,6 +65,7 @@ export const guildConfigs = pgTable("guild_configs", {
   activityTrackedRoleIds: text("activity_tracked_role_ids").array(),
   moderatorBotId: text("moderator_bot_id"),
   modLogChannelId: text("mod_log_channel_id"), // Channel where TRL | Moderator posts logs
+  dynoLogChannelId: text("dyno_log_channel_id"), // Channel where Dyno posts mod logs
   quizLogChannelId: text("quiz_log_channel_id"), // Channel for quiz progress logging
   snippetRoleIds: text("snippet_role_ids").array(), // Roles allowed to use snippet commands
   activityRoleIds: text("activity_role_ids").array(), // Roles allowed to use activity commands

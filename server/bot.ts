@@ -947,6 +947,16 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("setup_dyno_log")
+    .setDescription("Set the channel where Dyno posts mod logs (for tracking mutes/bans)")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where Dyno posts moderation logs")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
     .setName("setup_staff_intro_submissions")
     .setDescription("Set the channel for staff intro quiz submissions")
     .setDefaultMemberPermissions(0)
@@ -3316,24 +3326,28 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Build leaderboard data with parallel fetching for better performance
-          const leaderboardData: { userId: string; username: string; modmail: number; appeal: number; ban: number; unban: number; staffreport: number; total: number }[] = [];
+          const leaderboardData: { userId: string; username: string; mutes: number; bans: number; modmail: number; appeal: number; ban: number; unban: number; staffreport: number; total: number }[] = [];
 
           // Process in batches of 10 for better performance
           const batchSize = 10;
           for (let i = 0; i < membersWithRole.length; i += batchSize) {
             const batch = membersWithRole.slice(i, i + batchSize);
             const batchResults = await Promise.all(batch.map(async (member) => {
-              const [modmailCount, appealCount, banCount, unbanCount, staffReportCount] = await Promise.all([
+              const [mutesCount, bansCount, modmailCount, appealCount, banCount, unbanCount, staffReportCount] = await Promise.all([
+                storage.getActivityStatsForUserAllGuilds(member.id, "mute", fromDays, toDays),
+                storage.getActivityStatsForUserAllGuilds(member.id, "bans", fromDays, toDays),
                 storage.getModmailStatsForUserAllGuilds(member.id, fromDays, toDays),
                 storage.getAppealStatsForUserAllGuilds(member.id, fromDays, toDays),
                 storage.getActivityStatsForUserAllGuilds(member.id, "ban", fromDays, toDays),
                 storage.getActivityStatsForUserAllGuilds(member.id, "unban", fromDays, toDays),
                 storage.getStaffReportStatsForUserAllGuilds(member.id, fromDays, toDays)
               ]);
-              const total = modmailCount + appealCount + banCount + unbanCount + staffReportCount;
+              const total = mutesCount + bansCount + modmailCount + appealCount + banCount + unbanCount + staffReportCount;
               return {
                 userId: member.id,
                 username: member.user.username,
+                mutes: mutesCount,
+                bans: bansCount,
                 modmail: modmailCount,
                 appeal: appealCount,
                 ban: banCount,
@@ -3366,6 +3380,8 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Calculate totals
+          const totalMutes = leaderboardData.reduce((sum, e) => sum + e.mutes, 0);
+          const totalBans = leaderboardData.reduce((sum, e) => sum + e.bans, 0);
           const totalModmail = leaderboardData.reduce((sum, e) => sum + e.modmail, 0);
           const totalAppeal = leaderboardData.reduce((sum, e) => sum + e.appeal, 0);
           const totalBan = leaderboardData.reduce((sum, e) => sum + e.ban, 0);
@@ -3374,19 +3390,21 @@ client.on("interactionCreate", async (interaction) => {
           const grandTotal = leaderboardData.reduce((sum, e) => sum + e.total, 0);
 
           // Build header with order explanation
-          const headerText = `Activity Check for ${guildRole.name}\n${timeRangeDesc}\n\nOrder goes as follow: MM (Modmail) | AP (Appeals) | BN (Bans) | UB (Unbans) | SR (Staff Reports) | Total\n`;
-          const totalsText = `\nTotals: MM: ${totalModmail} | AP: ${totalAppeal} | BN: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | Total: ${grandTotal}`;
+          const headerText = `Activity Check for ${guildRole.name}\n${timeRangeDesc}\n\nOrder: MT (Mutes) | BN (Bans) | MM (Modmail) | AP (Appeals) | BR (Ban Req) | UB (Unbans) | SR (Staff Reports) | Total\n`;
+          const totalsText = `\nTotals: MT: ${totalMutes} | BN: ${totalBans} | MM: ${totalModmail} | AP: ${totalAppeal} | BR: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | Total: ${grandTotal}`;
 
           // Build rows with numbers and pings
           const rows = leaderboardData.map((entry, index) => {
             const num = (index + 1).toString();
+            const mt = entry.mutes.toString();
+            const bn = entry.bans.toString();
             const mm = entry.modmail.toString();
             const ap = entry.appeal.toString();
-            const bn = entry.ban.toString();
+            const br = entry.ban.toString();
             const ub = entry.unban.toString();
             const sr = entry.staffreport.toString();
             const tot = entry.total.toString();
-            return `${num}. <@${entry.userId}> | MM: ${mm} | AP: ${ap} | BN: ${bn} | UB: ${ub} | SR: ${sr} | Total: ${tot}`;
+            return `${num}. <@${entry.userId}> | MT: ${mt} | BN: ${bn} | MM: ${mm} | AP: ${ap} | BR: ${br} | UB: ${ub} | SR: ${sr} | Total: ${tot}`;
           });
 
           // Build full copyable text including header, all rows, and totals
@@ -3738,6 +3756,19 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({
           content: `✅ Quiz progress will now be logged to <#${channel.id}>!`,
+        });
+      } else if (commandName === "setup_dyno_log") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          dynoLogChannelId: channel.id,
+        });
+
+        await interaction.editReply({
+          content: `✅ Dyno mod log channel set to <#${channel.id}>!\nI'll now track mutes and bans from Dyno's logs.`,
         });
       } else if (commandName === "setup_staff_intro_submissions") {
         if (!await safeDeferReply(interaction)) return;
@@ -8983,6 +9014,102 @@ client.on("messageDelete", async (message) => {
 
 client.on("messageCreate", async (message) => {
   console.log(`[MSG CREATE] ID: ${message.id}, Author: ${message.author?.tag}, Content: "${message.content?.substring(0, 30)}..."`);
+  
+  // Parse Dyno mod log messages (BEFORE bot return check since Dyno is a bot)
+  if (message.author.bot && message.guild && message.embeds.length > 0) {
+    try {
+      const config = await storage.getGuildConfig(message.guild.id);
+      if (config?.dynoLogChannelId === message.channel.id) {
+        // This is the Dyno log channel, parse the embed
+        for (const embed of message.embeds) {
+          const title = embed.title?.toLowerCase() || "";
+          const description = embed.description || "";
+          
+          // Dyno formats: "Member Muted" or "Member Banned"
+          if (title.includes("muted") || title.includes("mute")) {
+            // Parse moderator from embed fields or footer
+            let moderatorId: string | null = null;
+            let targetUserId: string | null = null;
+            let reason = "Muted via Dyno";
+            
+            // Dyno usually puts moderator in a field called "Moderator" or in the footer
+            for (const field of embed.fields || []) {
+              if (field.name.toLowerCase().includes("moderator") || field.name.toLowerCase().includes("responsible")) {
+                const match = field.value.match(/<@!?(\d+)>/);
+                if (match) moderatorId = match[1];
+                // Also check for plain ID
+                const idMatch = field.value.match(/\((\d+)\)/);
+                if (idMatch) moderatorId = idMatch[1];
+              }
+              if (field.name.toLowerCase().includes("user") || field.name.toLowerCase().includes("member")) {
+                const match = field.value.match(/<@!?(\d+)>/);
+                if (match) targetUserId = match[1];
+                const idMatch = field.value.match(/\((\d+)\)/);
+                if (idMatch) targetUserId = idMatch[1];
+              }
+              if (field.name.toLowerCase().includes("reason")) {
+                reason = field.value || reason;
+              }
+            }
+            
+            // Try to extract from description
+            const userMention = description.match(/<@!?(\d+)>/);
+            if (userMention && !targetUserId) targetUserId = userMention[1];
+            
+            // Check footer for moderator
+            if (embed.footer?.text) {
+              const footerMatch = embed.footer.text.match(/(\d{17,20})/);
+              if (footerMatch && !moderatorId) moderatorId = footerMatch[1];
+            }
+            
+            if (moderatorId) {
+              await storage.addMuteActivityEntry(message.guild.id, targetUserId || "unknown", moderatorId, reason);
+              console.log(`[DYNO TRACK] Logged mute by ${moderatorId} in ${message.guild.name}`);
+            }
+          } else if (title.includes("banned") || title.includes("ban")) {
+            // Parse moderator from embed fields or footer
+            let moderatorId: string | null = null;
+            let targetUserId: string | null = null;
+            let reason = "Banned via Dyno";
+            
+            for (const field of embed.fields || []) {
+              if (field.name.toLowerCase().includes("moderator") || field.name.toLowerCase().includes("responsible")) {
+                const match = field.value.match(/<@!?(\d+)>/);
+                if (match) moderatorId = match[1];
+                const idMatch = field.value.match(/\((\d+)\)/);
+                if (idMatch) moderatorId = idMatch[1];
+              }
+              if (field.name.toLowerCase().includes("user") || field.name.toLowerCase().includes("member")) {
+                const match = field.value.match(/<@!?(\d+)>/);
+                if (match) targetUserId = match[1];
+                const idMatch = field.value.match(/\((\d+)\)/);
+                if (idMatch) targetUserId = idMatch[1];
+              }
+              if (field.name.toLowerCase().includes("reason")) {
+                reason = field.value || reason;
+              }
+            }
+            
+            const userMention = description.match(/<@!?(\d+)>/);
+            if (userMention && !targetUserId) targetUserId = userMention[1];
+            
+            if (embed.footer?.text) {
+              const footerMatch = embed.footer.text.match(/(\d{17,20})/);
+              if (footerMatch && !moderatorId) moderatorId = footerMatch[1];
+            }
+            
+            if (moderatorId) {
+              await storage.addBanActionEntry(message.guild.id, targetUserId || "unknown", moderatorId, reason);
+              console.log(`[DYNO TRACK] Logged ban by ${moderatorId} in ${message.guild.name}`);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.log("[DYNO TRACK] Error parsing Dyno log:", e);
+    }
+  }
+  
   if (message.author.bot) return;
 
   // Deduplicate messages to prevent double responses
