@@ -65,7 +65,6 @@ export const guildConfigs = pgTable("guild_configs", {
   activityTrackedRoleIds: text("activity_tracked_role_ids").array(),
   moderatorBotId: text("moderator_bot_id"),
   modLogChannelId: text("mod_log_channel_id"), // Channel where TRL | Moderator posts logs
-  dynoLogChannelId: text("dyno_log_channel_id"), // Channel where Dyno posts mod logs
   quizLogChannelId: text("quiz_log_channel_id"), // Channel for quiz progress logging
   snippetRoleIds: text("snippet_role_ids").array(), // Roles allowed to use snippet commands
   activityRoleIds: text("activity_role_ids").array(), // Roles allowed to use activity commands
@@ -166,41 +165,6 @@ export const insertUnbanRequestSchema = createInsertSchema(unbanRequests).omit({
 
 export type InsertUnbanRequest = z.infer<typeof insertUnbanRequestSchema>;
 export type UnbanRequest = typeof unbanRequests.$inferSelect;
-
-export const muteRequests = pgTable("mute_requests", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  guildId: text("guild_id").notNull(),
-  targetUserId: text("target_user_id").notNull(),
-  mutedById: text("muted_by_id").notNull(),
-  reason: text("reason").notNull(),
-  duration: text("duration"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
-
-export const insertMuteRequestSchema = createInsertSchema(muteRequests).omit({
-  id: true,
-  createdAt: true,
-});
-
-export type InsertMuteRequest = z.infer<typeof insertMuteRequestSchema>;
-export type MuteRequest = typeof muteRequests.$inferSelect;
-
-export const banActions = pgTable("ban_actions", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  guildId: text("guild_id").notNull(),
-  targetUserId: text("target_user_id").notNull(),
-  bannedById: text("banned_by_id").notNull(),
-  reason: text("reason").notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
-
-export const insertBanActionSchema = createInsertSchema(banActions).omit({
-  id: true,
-  createdAt: true,
-});
-
-export type InsertBanAction = z.infer<typeof insertBanActionSchema>;
-export type BanAction = typeof banActions.$inferSelect;
 
 export const staffIntroSubmissions = pgTable("staff_intro_submissions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

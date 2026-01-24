@@ -9,10 +9,6 @@ import {
   type InsertBanRequest,
   type UnbanRequest,
   type InsertUnbanRequest,
-  type MuteRequest,
-  type InsertMuteRequest,
-  type BanAction,
-  type InsertBanAction,
   type StaffIntroSubmission,
   type InsertStaffIntroSubmission,
   type InactivityRequest,
@@ -45,8 +41,6 @@ import {
   roleSyncPairs,
   banRequests,
   unbanRequests,
-  muteRequests,
-  banActions,
   staffIntroSubmissions,
   inactivityRequests,
   modmailThreads,
@@ -431,56 +425,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getActivityStats(guildId: string, category: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
-    if (category === "mute") {
-      let requests = await db.select().from(muteRequests).where(eq(muteRequests.guildId, guildId));
-
-      const now = new Date();
-      if (fromDays !== undefined) {
-        const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
-        requests = requests.filter(r => r.createdAt >= fromDate);
-      }
-      if (toDays !== undefined) {
-        const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
-        requests = requests.filter(r => r.createdAt <= toDate);
-      }
-
-      const counts: { [userId: string]: number } = {};
-      for (const r of requests) {
-        if (r.mutedById && r.mutedById !== "manual_entry") {
-          counts[r.mutedById] = (counts[r.mutedById] || 0) + 1;
-        }
-      }
-
-      return Object.entries(counts)
-        .map(([userId, count]) => ({ userId, count }))
-        .sort((a, b) => b.count - a.count);
-    }
-
-    if (category === "bans") {
-      let requests = await db.select().from(banActions).where(eq(banActions.guildId, guildId));
-
-      const now = new Date();
-      if (fromDays !== undefined) {
-        const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
-        requests = requests.filter(r => r.createdAt >= fromDate);
-      }
-      if (toDays !== undefined) {
-        const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
-        requests = requests.filter(r => r.createdAt <= toDate);
-      }
-
-      const counts: { [userId: string]: number } = {};
-      for (const r of requests) {
-        if (r.bannedById && r.bannedById !== "manual_entry") {
-          counts[r.bannedById] = (counts[r.bannedById] || 0) + 1;
-        }
-      }
-
-      return Object.entries(counts)
-        .map(([userId, count]) => ({ userId, count }))
-        .sort((a, b) => b.count - a.count);
-    }
-
     const table = category === "ban" ? banRequests : unbanRequests;
     let requests = await db.select().from(table).where(eq(table.guildId, guildId));
 
@@ -508,13 +452,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   async removeActivityEntries(guildId: string, userId: string, category: string, amount: number): Promise<number> {
-    if (category === "mute") {
-      return this.removeMuteActivityEntries(guildId, userId, amount);
-    }
-    if (category === "bans") {
-      return this.removeBanActionEntries(guildId, userId, amount);
-    }
-
     const table = category === "ban" ? banRequests : unbanRequests;
     const requests = await db.select().from(table)
       .where(and(eq(table.guildId, guildId), eq(table.reviewedById, userId)))
@@ -565,85 +502,6 @@ export class DatabaseStorage implements IStorage {
       batches.push(db.insert(unbanRequests).values(entries));
     }
     await Promise.all(batches);
-  }
-
-  async addMuteActivityEntry(guildId: string, targetUserId: string, mutedById: string, reason: string, duration?: string): Promise<void> {
-    await db.insert(muteRequests).values({
-      guildId,
-      targetUserId,
-      mutedById,
-      reason,
-      duration,
-    });
-  }
-
-  async addMuteActivityEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 50;
-    const batches = [];
-    for (let i = 0; i < amount; i += BATCH_SIZE) {
-      const batchSize = Math.min(BATCH_SIZE, amount - i);
-      const entries = Array.from({ length: batchSize }, () => ({
-        guildId,
-        targetUserId: "manual_entry",
-        mutedById: userId,
-        reason: "Manual activity entry",
-      }));
-      batches.push(db.insert(muteRequests).values(entries));
-    }
-    await Promise.all(batches);
-  }
-
-  async removeMuteActivityEntries(guildId: string, userId: string, amount: number): Promise<number> {
-    const entriesToDelete = await db
-      .select({ id: muteRequests.id })
-      .from(muteRequests)
-      .where(and(eq(muteRequests.guildId, guildId), eq(muteRequests.mutedById, userId)))
-      .orderBy(desc(muteRequests.createdAt))
-      .limit(amount);
-    const idsToDelete = entriesToDelete.map(e => e.id);
-    if (idsToDelete.length > 0) {
-      await db.delete(muteRequests).where(inArray(muteRequests.id, idsToDelete));
-    }
-    return idsToDelete.length;
-  }
-
-  async addBanActionEntry(guildId: string, targetUserId: string, bannedById: string, reason: string): Promise<void> {
-    await db.insert(banActions).values({
-      guildId,
-      targetUserId,
-      bannedById,
-      reason,
-    });
-  }
-
-  async addBanActionEntries(guildId: string, userId: string, amount: number): Promise<void> {
-    const BATCH_SIZE = 50;
-    const batches = [];
-    for (let i = 0; i < amount; i += BATCH_SIZE) {
-      const batchSize = Math.min(BATCH_SIZE, amount - i);
-      const entries = Array.from({ length: batchSize }, () => ({
-        guildId,
-        targetUserId: "manual_entry",
-        bannedById: userId,
-        reason: "Manual activity entry",
-      }));
-      batches.push(db.insert(banActions).values(entries));
-    }
-    await Promise.all(batches);
-  }
-
-  async removeBanActionEntries(guildId: string, userId: string, amount: number): Promise<number> {
-    const entriesToDelete = await db
-      .select({ id: banActions.id })
-      .from(banActions)
-      .where(and(eq(banActions.guildId, guildId), eq(banActions.bannedById, userId)))
-      .orderBy(desc(banActions.createdAt))
-      .limit(amount);
-    const idsToDelete = entriesToDelete.map(e => e.id);
-    if (idsToDelete.length > 0) {
-      await db.delete(banActions).where(inArray(banActions.id, idsToDelete));
-    }
-    return idsToDelete.length;
   }
 
   async createStaffIntroSubmission(submission: InsertStaffIntroSubmission): Promise<StaffIntroSubmission> {
@@ -847,46 +705,6 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getActivityStatsForUser(guildId: string, userId: string, category: string, fromDays?: number, toDays?: number): Promise<number> {
-    if (category === "mute") {
-      let conditions: any[] = [
-        eq(muteRequests.guildId, guildId),
-        eq(muteRequests.mutedById, userId)
-      ];
-
-      const now = new Date();
-      if (fromDays !== undefined) {
-        const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
-        conditions.push(gte(muteRequests.createdAt, fromDate));
-      }
-      if (toDays !== undefined) {
-        const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
-        conditions.push(lte(muteRequests.createdAt, toDate));
-      }
-
-      const result = await db.select({ count: count() }).from(muteRequests).where(and(...conditions));
-      return result[0]?.count || 0;
-    }
-
-    if (category === "bans") {
-      let conditions: any[] = [
-        eq(banActions.guildId, guildId),
-        eq(banActions.bannedById, userId)
-      ];
-
-      const now = new Date();
-      if (fromDays !== undefined) {
-        const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
-        conditions.push(gte(banActions.createdAt, fromDate));
-      }
-      if (toDays !== undefined) {
-        const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
-        conditions.push(lte(banActions.createdAt, toDate));
-      }
-
-      const result = await db.select({ count: count() }).from(banActions).where(and(...conditions));
-      return result[0]?.count || 0;
-    }
-
     const table = category === "ban" ? banRequests : unbanRequests;
 
     let conditions: any[] = [
@@ -911,44 +729,6 @@ export class DatabaseStorage implements IStorage {
 
   // Cross-server activity stats - aggregates from ALL guilds
   async getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number): Promise<number> {
-    if (category === "mute") {
-      let conditions: any[] = [
-        eq(muteRequests.mutedById, userId)
-      ];
-
-      const now = new Date();
-      if (fromDays !== undefined) {
-        const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
-        conditions.push(gte(muteRequests.createdAt, fromDate));
-      }
-      if (toDays !== undefined) {
-        const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
-        conditions.push(lte(muteRequests.createdAt, toDate));
-      }
-
-      const result = await db.select({ count: count() }).from(muteRequests).where(and(...conditions));
-      return result[0]?.count || 0;
-    }
-
-    if (category === "bans") {
-      let conditions: any[] = [
-        eq(banActions.bannedById, userId)
-      ];
-
-      const now = new Date();
-      if (fromDays !== undefined) {
-        const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
-        conditions.push(gte(banActions.createdAt, fromDate));
-      }
-      if (toDays !== undefined) {
-        const toDate = new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000);
-        conditions.push(lte(banActions.createdAt, toDate));
-      }
-
-      const result = await db.select({ count: count() }).from(banActions).where(and(...conditions));
-      return result[0]?.count || 0;
-    }
-
     const table = category === "ban" ? banRequests : unbanRequests;
 
     let conditions: any[] = [

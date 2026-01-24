@@ -73,37 +73,5 @@ export async function registerRoutes(
     }
   });
 
-  // API endpoint for external bots to log moderation actions (mutes, bans)
-  app.post("/api/modaction", async (req, res) => {
-    try {
-      const { type, guildId, targetUserId, moderatorId, reason, duration, apiKey } = req.body;
-
-      // Simple API key validation (set via environment variable)
-      const expectedKey = process.env.MODACTION_API_KEY;
-      if (expectedKey && apiKey !== expectedKey) {
-        return res.status(401).json({ error: "Invalid API key" });
-      }
-
-      if (!type || !guildId || !targetUserId || !moderatorId) {
-        return res.status(400).json({ error: "Missing required fields: type, guildId, targetUserId, moderatorId" });
-      }
-
-      if (type === "mute") {
-        await storage.addMuteActivityEntry(guildId, targetUserId, moderatorId, reason || "Muted", duration);
-        res.json({ success: true, message: "Mute logged successfully" });
-      } else if (type === "ban") {
-        await storage.addBanActionEntry(guildId, targetUserId, moderatorId, reason || "Banned");
-        res.json({ success: true, message: "Ban logged successfully" });
-      } else if (type === "unban") {
-        await storage.addUnbanActivityEntries(guildId, moderatorId, 1);
-        res.json({ success: true, message: "Unban logged successfully" });
-      } else {
-        res.status(400).json({ error: "Invalid type. Use: mute, ban, or unban" });
-      }
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
   return httpServer;
 }
