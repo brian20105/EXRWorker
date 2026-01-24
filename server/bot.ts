@@ -722,9 +722,10 @@ const commands = [
         .setDescription("Filter by request type")
         .setRequired(false)
         .addChoices(
+          { name: "Bans", value: "bans" },
+          { name: "Mutes", value: "mute" },
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
-          { name: "Mutes", value: "mute" },
           { name: "Modmails handled", value: "modmail" },
           { name: "Appeals handled", value: "appeal" },
           { name: "Staff Reports", value: "staffreport" }
@@ -2922,7 +2923,7 @@ client.on("interactionCreate", async (interaction) => {
           const end = start + 10;
           const currentLeaderboard = leaderboard.slice(start, end);
 
-          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
+          const categoryText = category === "bans" ? "Bans" : category === "mute" ? "Mutes" : category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
 
           const embed = new EmbedBuilder()
             .setTitle(`${categoryText} Leaderboard`)
@@ -5997,7 +5998,7 @@ client.on("interactionCreate", async (interaction) => {
             const start = (page - 1) * 10;
             const currentLeaderboard = leaderboard.slice(start, start + 10);
 
-            const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
+            const categoryText = category === "bans" ? "Bans" : category === "mute" ? "Mutes" : category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
 
             const embed = new EmbedBuilder()
               .setTitle(`${categoryText} Leaderboard`)
@@ -11505,8 +11506,8 @@ client.on("guildBanAdd", async (ban) => {
       const moderatorId = banLog.executor.id;
       const reason = banLog.reason || "No reason provided";
       
-      // Log the ban to activity
-      await storage.addBanActivityEntries(ban.guild.id, moderatorId, 1);
+      // Log the ban to the new ban_actions table
+      await storage.addBanActionEntry(ban.guild.id, ban.user.id, moderatorId, reason);
       
       console.log(`[BAN TRACK] Logged ban by ${banLog.executor.tag} for ${ban.user.tag}`);
     }
