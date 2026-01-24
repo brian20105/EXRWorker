@@ -166,6 +166,24 @@ export const insertUnbanRequestSchema = createInsertSchema(unbanRequests).omit({
 export type InsertUnbanRequest = z.infer<typeof insertUnbanRequestSchema>;
 export type UnbanRequest = typeof unbanRequests.$inferSelect;
 
+export const muteRequests = pgTable("mute_requests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  targetUserId: text("target_user_id").notNull(),
+  mutedById: text("muted_by_id").notNull(),
+  reason: text("reason").notNull(),
+  duration: text("duration"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertMuteRequestSchema = createInsertSchema(muteRequests).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertMuteRequest = z.infer<typeof insertMuteRequestSchema>;
+export type MuteRequest = typeof muteRequests.$inferSelect;
+
 export const staffIntroSubmissions = pgTable("staff_intro_submissions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   guildId: text("guild_id").notNull(),
