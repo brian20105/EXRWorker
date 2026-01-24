@@ -723,6 +723,7 @@ const commands = [
         .addChoices(
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
+          { name: "Mutes", value: "mute" },
           { name: "Modmails handled", value: "modmail" },
           { name: "Appeals handled", value: "appeal" },
           { name: "Staff Reports", value: "staffreport" }
