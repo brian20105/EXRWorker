@@ -50,6 +50,17 @@ The server handles both the web API and Discord bot in a single process. The Exp
 - Uses discord.js v14 with Gateway Intents for Guilds, GuildMessages, and DirectMessages
 - DM message caching: Stores last 50 messages per user to enable delete/edit tracking
 
+## Recent Changes (February 2026)
+
+### New Slash Commands
+- `/message` - DM a specific user with an embed message (admin-only)
+- `/message_all` - Mass DM all server members with rate limiting (100ms delay between sends)
+- `/block_list` - View blocked users from modmail and appeals with pagination (10 per page)
+
+### Bug Fixes
+- Fixed auto-unclaim to only trigger when the claimer doesn't respond (not when any staff types)
+- Fixed `/category_ping` command to work with custom categories via new `customCategoryPings` JSON field
+
 ## Recent Changes (January 2026)
 
 ### Web Dashboard
