@@ -1229,6 +1229,27 @@ const commands = [
     .setDescription("Close all open modmail tickets (even if channels are deleted)")
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
+    .setName("message")
+    .setDescription("DM a specific user in the server")
+    .setDefaultMemberPermissions(0)
+    .addUserOption((option) =>
+      option.setName("user").setDescription("The user to message").setRequired(true)
+    )
+    .addStringOption((option) =>
+      option.setName("message").setDescription("The message to send").setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("message_all")
+    .setDescription("DM all users in the server (use with caution)")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option.setName("message").setDescription("The message to send to everyone").setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("block_list")
+    .setDescription("List all blocked users from modmail and appeals")
+    .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
     .setName("modmail-category")
     .setDescription("Manage modmail ticket categories")
     .setDefaultMemberPermissions(0)
@@ -4458,7 +4479,7 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "category_ping") {
         if (!await safeDeferReply(interaction)) return;
 
-        const category = interaction.options.getString("category", true);
+        const category = interaction.options.getString("category", true).toLowerCase();
         const roles: string[] = [];
         for (let i = 1; i <= 5; i++) {
           const role = interaction.options.getRole(`role${i}`);
@@ -4477,7 +4498,8 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {}
         }
 
-        const updateField: { [key: string]: string } = {
+        // Legacy hardcoded categories (for backwards compatibility)
+        const legacyFields: { [key: string]: string } = {
           general: "categoryPingGeneral",
           competitive: "categoryPingCompetitive",
           contentcreator: "categoryPingContentcreator",
@@ -4488,10 +4510,24 @@ client.on("interactionCreate", async (interaction) => {
           vfxeditor: "categoryPingVfxeditor",
         };
 
-        await storage.upsertGuildConfig({ guildId: interaction.guildId!, [updateField[category]]: roles });
+        // Check if this is a legacy category or custom category
+        if (legacyFields[category]) {
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, [legacyFields[category]]: roles });
+        } else {
+          // Custom category - store in customCategoryPings JSON field
+          let customPings: { [key: string]: string[] } = {};
+          if (pingConfig?.customCategoryPings) {
+            try {
+              customPings = JSON.parse(pingConfig.customCategoryPings);
+            } catch (e) {}
+          }
+          customPings[category] = roles;
+          await storage.upsertGuildConfig({ guildId: interaction.guildId!, customCategoryPings: JSON.stringify(customPings) });
+        }
 
+        const categoryLabel = categoryLabels[category] || category;
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "Default staff role";
-        await interaction.editReply({ content: `✅ **${categoryLabels[category]}** ping roles updated!\nRoles: ${roleMentions}` });
+        await interaction.editReply({ content: `✅ **${categoryLabel}** ping roles updated!\nRoles: ${roleMentions}` });
       } else if (commandName === "close_all_tickets") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -4574,6 +4610,127 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ 
           content: `✅ Closed **${closedCount}** ticket(s). Deleted **${deletedChannelCount}** channel(s).` 
         });
+      } else if (commandName === "message") {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const targetUser = interaction.options.getUser("user", true);
+        const messageContent = interaction.options.getString("message", true);
+
+        try {
+          const dmEmbed = new EmbedBuilder()
+            .setDescription(messageContent)
+            .setColor(0x5865f2)
+            .setFooter({ text: `From: ${interaction.guild?.name || "Server"}` })
+            .setTimestamp();
+          await targetUser.send({ embeds: [dmEmbed] });
+          await interaction.editReply({ content: `✅ Message sent to <@${targetUser.id}>.` });
+        } catch (e) {
+          await interaction.editReply({ content: `❌ Could not DM <@${targetUser.id}>. They may have DMs disabled.` });
+        }
+      } else if (commandName === "message_all") {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const messageContent = interaction.options.getString("message", true);
+
+        await interaction.editReply({ content: "📤 Sending messages to all server members... This may take a while." });
+
+        try {
+          await interaction.guild?.members.fetch();
+        } catch (e) {}
+
+        const members = interaction.guild?.members.cache.filter(m => !m.user.bot);
+        if (!members || members.size === 0) {
+          await interaction.editReply({ content: "❌ No members found to message." });
+          return;
+        }
+
+        let sentCount = 0;
+        let failCount = 0;
+
+        const dmEmbed = new EmbedBuilder()
+          .setDescription(messageContent)
+          .setColor(0x5865f2)
+          .setFooter({ text: `From: ${interaction.guild?.name || "Server"}` })
+          .setTimestamp();
+
+        for (const [, member] of members) {
+          try {
+            await member.send({ embeds: [dmEmbed] });
+            sentCount++;
+          } catch (e) {
+            failCount++;
+          }
+          // Small delay to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        await interaction.editReply({ content: `✅ Mass DM complete! Sent: **${sentCount}**, Failed: **${failCount}** (DMs disabled or blocked).` });
+      } else if (commandName === "block_list") {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const guildId = interaction.guildId!;
+        const page = 1;
+        const ITEMS_PER_PAGE = 10;
+
+        // Get all blocked users from modmail and appeals
+        const modmailBlocks = await storage.getAllModmailBlocks(guildId);
+        const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const }));
+        
+        const appealBlocks = await storage.getAllAppealBlocks(guildId);
+        const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const }));
+
+        // Combine and deduplicate
+        const blockedMap = new Map<string, { userId: string; types: string[] }>();
+        for (const b of [...modmailBlocked, ...appealBlocked]) {
+          if (blockedMap.has(b.userId)) {
+            const existing = blockedMap.get(b.userId)!;
+            if (!existing.types.includes(b.type)) {
+              existing.types.push(b.type);
+            }
+          } else {
+            blockedMap.set(b.userId, { userId: b.userId, types: [b.type] });
+          }
+        }
+
+        const blockedList = Array.from(blockedMap.values());
+        const totalPages = Math.max(1, Math.ceil(blockedList.length / ITEMS_PER_PAGE));
+
+        if (blockedList.length === 0) {
+          await interaction.editReply({ content: "📋 No blocked users found." });
+          return;
+        }
+
+        const startIdx = (page - 1) * ITEMS_PER_PAGE;
+        const pageItems = blockedList.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+
+        let listText = "";
+        for (let i = 0; i < pageItems.length; i++) {
+          const item = pageItems[i];
+          const typeLabel = item.types.join(", ");
+          listText += `${startIdx + i + 1}. <@${item.userId}> (${typeLabel})\n`;
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle("Blocked Users")
+          .setDescription(listText)
+          .setColor(0xed4245)
+          .setFooter({ text: `Page ${page}/${totalPages} • Total: ${blockedList.length} blocked users` })
+          .setTimestamp();
+
+        const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`block_list_prev_${page}_${guildId}`)
+            .setLabel("◀")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page <= 1),
+          new ButtonBuilder()
+            .setCustomId(`block_list_next_${page}_${guildId}`)
+            .setLabel("▶")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page >= totalPages)
+        );
+
+        await interaction.editReply({ embeds: [embed], components: totalPages > 1 ? [buttonRow] : [] });
       } else if (commandName === "modmail-category") {
         console.log(`[modmail-category] Command called with subcommand attempt...`);
         const subcommand = interaction.options.getSubcommand();
@@ -5467,7 +5624,15 @@ client.on("interactionCreate", async (interaction) => {
             creativewarrior: config.categoryPingCreativewarrior,
             vfxeditor: config.categoryPingVfxeditor,
           };
-          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          // Check custom category pings if not found in legacy map
+          let pingRoles = categoryPingMap[ticketCategory];
+          if (!pingRoles && config.customCategoryPings) {
+            try {
+              const customPings = JSON.parse(config.customCategoryPings);
+              pingRoles = customPings[ticketCategory];
+            } catch (e) {}
+          }
+          pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
           // Get user's roles from the guild
@@ -5610,7 +5775,15 @@ client.on("interactionCreate", async (interaction) => {
             creativewarrior: config.categoryPingCreativewarrior,
             vfxeditor: config.categoryPingVfxeditor,
           };
-          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          // Check custom category pings if not found in legacy map
+          let pingRoles = categoryPingMap[ticketCategory];
+          if (!pingRoles && config.customCategoryPings) {
+            try {
+              const customPings = JSON.parse(config.customCategoryPings);
+              pingRoles = customPings[ticketCategory];
+            } catch (e) {}
+          }
+          pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
           // Get user's roles from the guild
@@ -5891,6 +6064,75 @@ client.on("interactionCreate", async (interaction) => {
 
           embed.setDescription(rosterText || "No roles configured for this roster.");
           await interaction.reply({ embeds: [embed], ephemeral: true });
+          return;
+        }
+
+        // Handle block_list pagination
+        if (customId.startsWith("block_list_prev_") || customId.startsWith("block_list_next_")) {
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const parts = customId.split("_");
+          const direction = parts[2]; // "prev" or "next"
+          const currentPage = parseInt(parts[3]);
+          const guildId = parts[4];
+          const ITEMS_PER_PAGE = 10;
+
+          const newPage = direction === "prev" ? currentPage - 1 : currentPage + 1;
+
+          // Get all blocked users from modmail and appeals
+          const modmailBlocks = await storage.getAllModmailBlocks(guildId);
+          const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const }));
+          
+          const appealBlocks = await storage.getAllAppealBlocks(guildId);
+          const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const }));
+
+          // Combine and deduplicate
+          const blockedMap = new Map<string, { userId: string; types: string[] }>();
+          for (const b of [...modmailBlocked, ...appealBlocked]) {
+            if (blockedMap.has(b.userId)) {
+              const existing = blockedMap.get(b.userId)!;
+              if (!existing.types.includes(b.type)) {
+                existing.types.push(b.type);
+              }
+            } else {
+              blockedMap.set(b.userId, { userId: b.userId, types: [b.type] });
+            }
+          }
+
+          const blockedList = Array.from(blockedMap.values());
+          const totalPages = Math.max(1, Math.ceil(blockedList.length / ITEMS_PER_PAGE));
+
+          const startIdx = (newPage - 1) * ITEMS_PER_PAGE;
+          const pageItems = blockedList.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+
+          let listText = "";
+          for (let i = 0; i < pageItems.length; i++) {
+            const item = pageItems[i];
+            const typeLabel = item.types.join(", ");
+            listText += `${startIdx + i + 1}. <@${item.userId}> (${typeLabel})\n`;
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle("Blocked Users")
+            .setDescription(listText || "No blocked users on this page.")
+            .setColor(0xed4245)
+            .setFooter({ text: `Page ${newPage}/${totalPages} • Total: ${blockedList.length} blocked users` })
+            .setTimestamp();
+
+          const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`block_list_prev_${newPage}_${guildId}`)
+              .setLabel("◀")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(newPage <= 1),
+            new ButtonBuilder()
+              .setCustomId(`block_list_next_${newPage}_${guildId}`)
+              .setLabel("▶")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(newPage >= totalPages)
+          );
+
+          await interaction.editReply({ embeds: [embed], components: totalPages > 1 ? [buttonRow] : [] });
           return;
         }
         
@@ -7539,13 +7781,24 @@ client.on("interactionCreate", async (interaction) => {
 
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
+            general: config.categoryPingGeneral,
             competitive: config.categoryPingCompetitive,
             contentcreator: config.categoryPingContentcreator,
+            report: config.categoryPingReport,
+            partnerships: config.categoryPingPartnerships,
             gfx: config.categoryPingGfx,
             creativewarrior: config.categoryPingCreativewarrior,
             vfxeditor: config.categoryPingVfxeditor,
           };
-          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          // Check custom category pings if not found in legacy map
+          let pingRoles = categoryPingMap[ticketCategory];
+          if (!pingRoles && config.customCategoryPings) {
+            try {
+              const customPings = JSON.parse(config.customCategoryPings);
+              pingRoles = customPings[ticketCategory];
+            } catch (e) {}
+          }
+          pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
           // Get user's roles from the guild
@@ -7716,13 +7969,24 @@ client.on("interactionCreate", async (interaction) => {
 
           // Get category-specific ping roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
+            general: config.categoryPingGeneral,
             competitive: config.categoryPingCompetitive,
             contentcreator: config.categoryPingContentcreator,
+            report: config.categoryPingReport,
+            partnerships: config.categoryPingPartnerships,
             gfx: config.categoryPingGfx,
             creativewarrior: config.categoryPingCreativewarrior,
             vfxeditor: config.categoryPingVfxeditor,
           };
-          const pingRoles = categoryPingMap[ticketCategory] || config.modmailStaffRoleIds || [];
+          // Check custom category pings if not found in legacy map
+          let pingRoles = categoryPingMap[ticketCategory];
+          if (!pingRoles && config.customCategoryPings) {
+            try {
+              const customPings = JSON.parse(config.customCategoryPings);
+              pingRoles = customPings[ticketCategory];
+            } catch (e) {}
+          }
+          pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
           // Get user's roles from the guild
@@ -11187,12 +11451,12 @@ client.on("messageCreate", async (message) => {
 
   // Staff messages in modmail channels WITHOUT .r prefix are NOT sent to user
   // This allows staff to discuss in the channel privately
-  // BUT we should still clear the claim expiry timer if any staff member sends a message
+  // Clear claim expiry timer only if the CLAIMER sends any message in the channel
   if (message.guild && !message.author.bot) {
     const thread = await storage.getModmailThreadByChannel(message.channel.id);
     if (thread && thread.status === "open") {
       const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
-      if (existingClaimTimer) {
+      if (existingClaimTimer && existingClaimTimer.claimerId === message.author.id) {
         clearTimeout(existingClaimTimer.timeout);
         pendingClaimExpiry.delete(message.channel.id);
       }
