@@ -54,6 +54,7 @@ export const guildConfigs = pgTable("guild_configs", {
   categoryPingCreativewarrior: text("category_ping_creativewarrior").array(),
   categoryPingVfxeditor: text("category_ping_vfxeditor").array(),
   customModmailCategories: text("custom_modmail_categories"), // JSON array of {id, label, description, emoji}
+  customCategoryPings: text("custom_category_pings"), // JSON object mapping category ID to role ID array
   commandPrefix: text("command_prefix").default("."),
   commandLogChannelId: text("command_log_channel_id"),
   // Appeal system config
