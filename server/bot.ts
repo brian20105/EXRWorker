@@ -1246,6 +1246,16 @@ const commands = [
       option.setName("message").setDescription("The message to send to everyone").setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("message_role")
+    .setDescription("DM all users with a specific role")
+    .setDefaultMemberPermissions(0)
+    .addRoleOption((option) =>
+      option.setName("role").setDescription("The role to message").setRequired(true)
+    )
+    .addStringOption((option) =>
+      option.setName("message").setDescription("The message to send").setRequired(true)
+    ),
+  new SlashCommandBuilder()
     .setName("block_list")
     .setDescription("List all blocked users from modmail and appeals")
     .setDefaultMemberPermissions(0),
@@ -4665,6 +4675,56 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         await interaction.editReply({ content: `✅ Mass DM complete! Sent: **${sentCount}**, Failed: **${failCount}** (DMs disabled or blocked).` });
+      } else if (commandName === "message_role") {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const role = interaction.options.getRole("role", true);
+        const messageContent = interaction.options.getString("message", true);
+
+        // Fetch all members with the role
+        const guild = interaction.guild!;
+        try {
+          await guild.members.fetch({ time: 60000 });
+        } catch (e) {
+          console.log("Could not fully fetch all members");
+        }
+
+        const guildRole = guild.roles.cache.get(role.id);
+        if (!guildRole) {
+          await interaction.editReply({ content: "❌ Role not found." });
+          return;
+        }
+
+        const members = guildRole.members.filter(m => !m.user.bot);
+        
+        if (members.size === 0) {
+          await interaction.editReply({ content: "❌ No members found with that role." });
+          return;
+        }
+
+        await interaction.editReply({ content: `📤 Sending DM to **${members.size}** members with role ${role.name}...` });
+
+        const dmEmbed = new EmbedBuilder()
+          .setDescription(messageContent)
+          .setColor(0x5865f2)
+          .setFooter({ text: `From ${guild.name}` })
+          .setTimestamp();
+
+        let sentCount = 0;
+        let failCount = 0;
+
+        for (const [, member] of members) {
+          try {
+            await member.send({ embeds: [dmEmbed] });
+            sentCount++;
+          } catch (e) {
+            failCount++;
+          }
+          // Small delay to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        await interaction.editReply({ content: `✅ Role DM complete! Sent: **${sentCount}**, Failed: **${failCount}** (DMs disabled or blocked).` });
       } else if (commandName === "block_list") {
         if (!await safeDeferReply(interaction, true)) return;
 
