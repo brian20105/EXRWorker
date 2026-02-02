@@ -6376,38 +6376,46 @@ client.on("interactionCreate", async (interaction) => {
 
           await interaction.followUp({ embeds: [claimEmbed] });
 
-          // Start 15-minute claim expiry timer
+          // Only start auto-unclaim timer if user sent the last message (waiting for response)
           if (interaction.channel) {
-            const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
-            const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
-            if (existingClaimTimer) {
-              clearTimeout(existingClaimTimer.timeout);
-            }
-
             const channelId = interaction.channel.id;
             const claimerId = interaction.user.id;
-            const claimExpiryTimeout = setTimeout(async () => {
-              pendingClaimExpiry.delete(channelId);
-
-              try {
-                const currentThread = await storage.getModmailThreadByChannel(channelId);
-                if (!currentThread || currentThread.status !== "open") return;
-                if (currentThread.claimedById !== claimerId) return;
-
-                await storage.updateModmailThread(currentThread.id, { claimedById: null });
-                const channel = await client.channels.fetch(channelId);
-                if (channel && "send" in channel) {
-                  await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
-                }
-              } catch (e) {
-                console.log("Could not process auto-unclaim");
+            
+            // Get the last message in the thread to determine if user is waiting
+            const threadMessages = await storage.getModmailMessages(threadId);
+            const lastMessage = threadMessages.length > 0 ? threadMessages[threadMessages.length - 1] : null;
+            const userIsWaiting = lastMessage && lastMessage.isStaff !== "true";
+            
+            if (userIsWaiting) {
+              const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
+              const existingClaimTimer = pendingClaimExpiry.get(channelId);
+              if (existingClaimTimer) {
+                clearTimeout(existingClaimTimer.timeout);
               }
-            }, CLAIM_EXPIRY_TIME);
 
-            pendingClaimExpiry.set(channelId, {
-              timeout: claimExpiryTimeout,
-              claimerId: claimerId,
-            });
+              const claimExpiryTimeout = setTimeout(async () => {
+                pendingClaimExpiry.delete(channelId);
+
+                try {
+                  const currentThread = await storage.getModmailThreadByChannel(channelId);
+                  if (!currentThread || currentThread.status !== "open") return;
+                  if (currentThread.claimedById !== claimerId) return;
+
+                  await storage.updateModmailThread(currentThread.id, { claimedById: null });
+                  const channel = await client.channels.fetch(channelId);
+                  if (channel && "send" in channel) {
+                    await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
+                  }
+                } catch (e) {
+                  console.log("Could not process auto-unclaim");
+                }
+              }, CLAIM_EXPIRY_TIME);
+
+              pendingClaimExpiry.set(channelId, {
+                timeout: claimExpiryTimeout,
+                claimerId: claimerId,
+              });
+            }
           }
         } catch (error: any) {
           console.log("Error in modmail_claim button:", error.message);
@@ -6713,6 +6721,48 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           await interaction.followUp({ embeds: [claimEmbed] });
+
+          // Only start auto-unclaim timer if user sent the last message (waiting for response)
+          if (interaction.channel) {
+            const channelId = interaction.channel.id;
+            const claimerId = interaction.user.id;
+            
+            // Get the last message in the thread to determine if user is waiting
+            const threadMessages = await storage.getAppealMessages(threadId);
+            const lastMessage = threadMessages.length > 0 ? threadMessages[threadMessages.length - 1] : null;
+            const userIsWaiting = lastMessage && lastMessage.isStaff !== "true";
+            
+            if (userIsWaiting) {
+              const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
+              const existingClaimTimer = pendingClaimExpiry.get(channelId);
+              if (existingClaimTimer) {
+                clearTimeout(existingClaimTimer.timeout);
+              }
+
+              const claimExpiryTimeout = setTimeout(async () => {
+                pendingClaimExpiry.delete(channelId);
+
+                try {
+                  const currentThread = await storage.getAppealThreadByChannel(channelId);
+                  if (!currentThread || currentThread.status !== "open") return;
+                  if (currentThread.claimedById !== claimerId) return;
+
+                  await storage.updateAppealThread(currentThread.id, { claimedById: null });
+                  const channel = await client.channels.fetch(channelId);
+                  if (channel && "send" in channel) {
+                    await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
+                  }
+                } catch (e) {
+                  console.log("Could not process auto-unclaim for appeal");
+                }
+              }, CLAIM_EXPIRY_TIME);
+
+              pendingClaimExpiry.set(channelId, {
+                timeout: claimExpiryTimeout,
+                claimerId: claimerId,
+              });
+            }
+          }
         } catch (error: any) {
           console.log("Error in appeal_claim button:", error.message);
           await interaction.followUp({ content: "Failed to claim appeal.", flags: 64 }).catch(() => {});
@@ -9616,43 +9666,58 @@ client.on("messageCreate", async (message) => {
       console.log("Could not update claim button:", e);
     }
 
-    // Start 15-minute claim expiry timer
-    const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
-    const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
-    if (existingClaimTimer) {
-      clearTimeout(existingClaimTimer.timeout);
-    }
-
+    // Check if the last message in the thread is from the user (not staff)
+    // Only start auto-unclaim timer if user is waiting for a response
     const channelId = message.channel.id;
     const claimIsAppeal = isAppeal;
-    const claimExpiryTimeout = setTimeout(async () => {
-      pendingClaimExpiry.delete(channelId);
-
-      const currentModmail = await storage.getModmailThreadByChannel(channelId);
-      const currentAppeal = await storage.getAppealThreadByChannel(channelId);
-      const currentThread = claimIsAppeal ? currentAppeal : currentModmail;
-      if (!currentThread || currentThread.status !== "open") return;
-      if (currentThread.claimedById !== message.author.id) return;
-
-      if (claimIsAppeal) {
-        await storage.updateAppealThread(currentThread.id, { claimedById: null });
-      } else {
-        await storage.updateModmailThread(currentThread.id, { claimedById: null });
+    const claimerId = message.author.id;
+    
+    // Get the last message in the thread to determine if user is waiting
+    const threadMessages = isAppeal 
+      ? await storage.getAppealMessages(thread.id)
+      : await storage.getModmailMessages(thread.id);
+    
+    const lastMessage = threadMessages.length > 0 ? threadMessages[threadMessages.length - 1] : null;
+    const userIsWaiting = lastMessage && lastMessage.isStaff !== "true";
+    
+    if (userIsWaiting) {
+      // User sent the last message, staff needs to respond - start timer
+      const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
+      const existingClaimTimer = pendingClaimExpiry.get(channelId);
+      if (existingClaimTimer) {
+        clearTimeout(existingClaimTimer.timeout);
       }
-      try {
-        const channel = await client.channels.fetch(channelId);
-        if (channel && "send" in channel) {
-          await channel.send(`Ticket auto-unclaimed. <@${message.author.id}> did not respond within 15 minutes.`);
+
+      const claimExpiryTimeout = setTimeout(async () => {
+        pendingClaimExpiry.delete(channelId);
+
+        const currentModmail = await storage.getModmailThreadByChannel(channelId);
+        const currentAppeal = await storage.getAppealThreadByChannel(channelId);
+        const currentThread = claimIsAppeal ? currentAppeal : currentModmail;
+        if (!currentThread || currentThread.status !== "open") return;
+        if (currentThread.claimedById !== claimerId) return;
+
+        if (claimIsAppeal) {
+          await storage.updateAppealThread(currentThread.id, { claimedById: null });
+        } else {
+          await storage.updateModmailThread(currentThread.id, { claimedById: null });
         }
-      } catch (e) {
-        console.log("Could not send auto-unclaim message");
-      }
-    }, CLAIM_EXPIRY_TIME);
+        try {
+          const channel = await client.channels.fetch(channelId);
+          if (channel && "send" in channel) {
+            await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
+          }
+        } catch (e) {
+          console.log("Could not send auto-unclaim message");
+        }
+      }, CLAIM_EXPIRY_TIME);
 
-    pendingClaimExpiry.set(channelId, {
-      timeout: claimExpiryTimeout,
-      claimerId: message.author.id,
-    });
+      pendingClaimExpiry.set(channelId, {
+        timeout: claimExpiryTimeout,
+        claimerId: claimerId,
+      });
+    }
+    // If staff sent the last message, no timer needed - user will trigger it when they respond
     return;
   }
 
