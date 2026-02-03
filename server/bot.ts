@@ -596,7 +596,7 @@ const commands = [
     .addStringOption((option) =>
       option
         .setName("email")
-        .setDescription("PayPal email")
+        .setDescription("Payment method (e.g. PayPal, Venmo, CashApp)")
         .setRequired(false)
     )
     .addStringOption((option) =>
@@ -1479,7 +1479,7 @@ async function sendDMToUser(userId: string, status: "approved" | "denied", reaso
     const fields: any[] = [
       { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
       { name: "Money Owed", value: `$${moneyOwed}`, inline: true },
-      { name: "PayPal", value: paypal, inline: false },
+      { name: "Payment Method", value: paypal, inline: false },
       { name: "Request Reason", value: reason, inline: false }
     ];
 
@@ -1517,7 +1517,7 @@ async function sendDMToStaff(staffUserId: string, status: "approved" | "denied",
       { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
       { name: "User to be Paid", value: `<@${targetUserId}>`, inline: true },
       { name: "Money Owed", value: `$${moneyOwed}`, inline: true },
-      { name: "PayPal", value: paypal, inline: false }
+      { name: "Payment Method", value: paypal, inline: false }
     ];
 
     if (actionReason) {
@@ -2164,7 +2164,7 @@ client.on("interactionCreate", async (interaction) => {
                     { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
                     { name: "Reason", value: reason, inline: false },
                     { name: "Money Owed", value: `$${amount}`, inline: false },
-                    { name: "Paypal", value: email, inline: false }
+                    { name: "Payment Method", value: email, inline: false }
                   )
                   .setFooter({ text: `Request ID: ${payoutRequest.id}` })
                   .setTimestamp();
@@ -2269,7 +2269,7 @@ client.on("interactionCreate", async (interaction) => {
                       { name: "Status", value: `${statusEmoji} ${statusText}`, inline: true },
                       { name: "Reason", value: updatedPayout.reason || "No reason", inline: false },
                       { name: "Money Owed", value: `$${updatedPayout.moneyOwed}`, inline: false },
-                      { name: "Paypal", value: updatedPayout.email || "Not provided", inline: false }
+                      { name: "Payment Method", value: updatedPayout.email || "Not provided", inline: false }
                     )
                     .setFooter({ text: `Request ID: ${payout.id} (Edited)` })
                     .setTimestamp();
@@ -7098,9 +7098,9 @@ client.on("interactionCreate", async (interaction) => {
 
           const paypalInput = new TextInputBuilder()
             .setCustomId("paypal")
-            .setLabel("Paypal Username/Email")
+            .setLabel("Payment Method (PayPal, Venmo, CashApp, etc.)")
             .setStyle(TextInputStyle.Short)
-            .setPlaceholder("email@example.com")
+            .setPlaceholder("PayPal: email@example.com")
             .setRequired(true);
 
           const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
@@ -8212,7 +8212,7 @@ client.on("interactionCreate", async (interaction) => {
             { name: "Status", value: "⏳ Pending", inline: true },
             { name: "Reason", value: reason, inline: false },
             { name: "Money Owed", value: `$${moneyOwed}`, inline: false },
-            { name: "Paypal", value: paypal, inline: false }
+            { name: "Payment Method", value: paypal, inline: false }
           )
           .setFooter({ text: `Request ID: ${requestId}` })
           .setTimestamp();
@@ -8281,7 +8281,7 @@ client.on("interactionCreate", async (interaction) => {
         const reason = fields.find(f => f.name === "Reason")?.value || "No reason provided";
         const moneyOwedField = fields.find(f => f.name === "Money Owed")?.value || "$0.00";
         const moneyOwed = moneyOwedField.replace('$', '');
-        const paypal = fields.find(f => f.name === "Paypal")?.value || "Not provided";
+        const paypal = fields.find(f => f.name === "Payment Method" || f.name === "Paypal")?.value || "Not provided";
 
         const status = action === "approve" ? "✅ Approved" : "❌ Denied";
         const color = action === "approve" ? 0x23a559 : 0xda373c;
@@ -8294,7 +8294,7 @@ client.on("interactionCreate", async (interaction) => {
           { name: "Status", value: status, inline: true },
           { name: "Reason", value: reason, inline: false },
           { name: "Money Owed", value: moneyOwedField, inline: false },
-          { name: "Paypal", value: paypal, inline: false }
+          { name: "Payment Method", value: paypal, inline: false }
         ];
 
         if (actionReason) {
