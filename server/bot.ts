@@ -10427,7 +10427,7 @@ client.on("messageCreate", async (message) => {
     }
 
     // Handle forwarded messages
-    const isForwarded = message.flags.has("IsForwarded") || !!message.reference;
+    const isForwarded = !!message.reference;
     if (isForwarded) {
       console.log(`[DM] Forwarded message detected from ${message.author.id}`);
       // If it's a forward, we want to treat it as a message to be relayed to an open ticket
@@ -10605,7 +10605,7 @@ client.on("messageCreate", async (message) => {
 
           const userEmbed = new EmbedBuilder()
             .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-            .setDescription(message.content || (message.flags.has("IsForwarded") ? "*Forwarded message*" : "(No text content)"))
+            .setDescription(message.content || (message.reference ? "*Forwarded message*" : "(No text content)"))
             .setColor(isAddedMember ? 0x3498db : 0x57f287)
             .setTimestamp();
 
@@ -10681,7 +10681,7 @@ client.on("messageCreate", async (message) => {
                 const participant = await client.users.fetch(participantId);
                 const forwardEmbed = new EmbedBuilder()
                   .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-                  .setDescription(message.content || (message.flags.has("IsForwarded") ? "*Forwarded message*" : "(No text content)"))
+                  .setDescription(message.content || (message.reference ? "*Forwarded message*" : "(No text content)"))
                   .setColor(0x3498db)
                   .setFooter({ text: participantId === targetThread.userId ? "Ticket Participant" : "Added Member" })
                   .setTimestamp();
