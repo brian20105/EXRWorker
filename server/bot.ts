@@ -1189,7 +1189,9 @@ const commands = [
           { name: "Activity Reset", value: "activity_reset" },
           { name: "Appeal Claim", value: "appeal_claim" },
           { name: "Snippets", value: "snippets" },
-          { name: "Activity", value: "activity" }
+          { name: "Activity", value: "activity" },
+          { name: "Message Commands", value: "message_perms" },
+          { name: "Role Commands", value: "role_perms" }
         )
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
@@ -1461,6 +1463,44 @@ async function hasActivityPermission(
 
   if (!memberRoles) return false;
   return config.activityRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasMessagePermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+
+  if (!config?.messageRoleIds || config.messageRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string' 
+      ? BigInt(memberPermissions) 
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return config.messageRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasRoleCommandPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+
+  if (!config?.roleCommandRoleIds || config.roleCommandRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string' 
+      ? BigInt(memberPermissions) 
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return config.roleCommandRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
 async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, moneyOwed: string, paypal: string, actionReason?: string): Promise<void> {
@@ -10603,9 +10643,13 @@ client.on("messageCreate", async (message) => {
             });
           }
 
+          const snapshot = (message as any).messageSnapshots?.[0];
+          const forwardedContent = snapshot?.message?.content;
+          const description = message.content || (forwardedContent ? `*Forwarded:* ${forwardedContent}` : (message.reference ? "*Forwarded message*" : "(No text content)"));
+
           const userEmbed = new EmbedBuilder()
             .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-            .setDescription(message.content || (message.reference ? "*Forwarded message*" : "(No text content)"))
+            .setDescription(description)
             .setColor(isAddedMember ? 0x3498db : 0x57f287)
             .setTimestamp();
 
@@ -10679,9 +10723,13 @@ client.on("messageCreate", async (message) => {
             for (const participantId of otherParticipants) {
               try {
                 const participant = await client.users.fetch(participantId);
+                const snapshot = (message as any).messageSnapshots?.[0];
+                const forwardedContent = snapshot?.message?.content;
+                const description = message.content || (forwardedContent ? `*Forwarded:* ${forwardedContent}` : (message.reference ? "*Forwarded message*" : "(No text content)"));
+
                 const forwardEmbed = new EmbedBuilder()
                   .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-                  .setDescription(message.content || (message.reference ? "*Forwarded message*" : "(No text content)"))
+                  .setDescription(description)
                   .setColor(0x3498db)
                   .setFooter({ text: participantId === targetThread.userId ? "Ticket Participant" : "Added Member" })
                   .setTimestamp();
