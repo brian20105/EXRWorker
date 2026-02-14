@@ -2,6 +2,8 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+from keep_alive import keep_alive
+keep_alive()
 
 const app = express();
 const httpServer = createServer(app);
