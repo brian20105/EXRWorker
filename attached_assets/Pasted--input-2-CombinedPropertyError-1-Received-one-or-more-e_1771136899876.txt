@@ -1,0 +1,13 @@
+
+  input[2]
+  | CombinedPropertyError (1)
+  |   Received one or more errors
+  | 
+  |   input.value
+  |   | ExpectedConstraintError > s.string().lengthLessThanOrEqual()
+  |   |   Invalid string length
+  |   | 
+  |   |   Expected: expected.length <= 1024
+  |   | 
+  |   |   Received:
+  |   |   | '[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: test\n[Staff] <@948598563359817728>: *Thank You For You’re Interest In Partnering With Us.*\n\n**Your server must have 50 or more members (excluding bots).**\n\n50-250 Members = No Ping.\n250-750 Members = <@&1447489892539174933>.\n750-3000 Members = @here Ping.\n3000-10000 Members = @everyone Ping.\n10000+ Members = Your Own Channel With Your Advertisement Posted In It.\n\n*Please note that you can pay for any pings and/or channels depending on how many server members your server has.*\n**Please send your advertisement after your good with everything & our advertisement is located in <#1447121908595298425>.**\n[Staff] <@948598563359817728>: *Thank You For You’re Interest In Partnering With Us.*\n\n**Your server must have 50 or more members (excluding bots).**\n\n50-250 Members = No Ping.\n250-750 Members = <@&1447489892539174933>.\n750-3000 Members = @here Ping.\n3000-10000 Members = @everyone Ping.\n10000+ Members = Your Own Channel With Your Advertisement Posted In It.\n\n*Please note that you can pay for any pings and/or channels depending on how many server members your server has.*\n**Please send your advertisement after your good with everything & our advertisement is located in <#1447121908595298425>.**'
