@@ -6559,6 +6559,44 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.showModal(modal);
         return;
+      } else if (interaction.customId.startsWith("modmail_transcript_")) {
+        if (!await safeDeferReply(interaction, true)) return;
+        
+        const parts = interaction.customId.split("_");
+        const page = parts[2]; // p1 or p2
+        const threadId = parts[3];
+        
+        try {
+          const messages = await storage.getModmailMessages(threadId);
+          if (messages.length === 0) {
+            await interaction.editReply({ content: "No messages found for this transcript." });
+            return;
+          }
+          
+          const pageSize = 15;
+          const startIndex = page === "p1" ? 0 : pageSize;
+          const pageMessages = messages.slice(startIndex, startIndex + pageSize);
+          
+          if (pageMessages.length === 0) {
+            await interaction.editReply({ content: `No messages found for transcript ${page === "p1" ? "page 1" : "page 2"}.` });
+            return;
+          }
+          
+          let transcript = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+          if (transcript.length > 2000) transcript = transcript.substring(0, 1997) + "...";
+          
+          const embed = new EmbedBuilder()
+            .setTitle(`Modmail Transcript - ${page === "p1" ? "Page 1" : "Page 2"}`)
+            .setColor(0x5865f2)
+            .setDescription(transcript)
+            .setTimestamp();
+            
+          await interaction.editReply({ embeds: [embed] });
+        } catch (error: any) {
+          console.log("Error handling transcript button:", error.message);
+          await interaction.editReply({ content: "Failed to load transcript." });
+        }
+        return;
       } else if (interaction.customId.startsWith("modmail_close_")) {
         if (!await safeDeferReply(interaction)) return;
 
@@ -6632,7 +6670,19 @@ client.on("interactionCreate", async (interaction) => {
               { name: "Transcript Preview", value: transcriptPreview, inline: false }
             )
             .setTimestamp();
-          await logChannel.send({ embeds: [logEmbed], files: [attachment] });
+
+          const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_p1_${threadIdForLog}`)
+              .setLabel("Transcript P1")
+              .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_p2_${threadIdForLog}`)
+              .setLabel("Transcript P2")
+              .setStyle(ButtonStyle.Primary)
+          );
+
+          await logChannel.send({ embeds: [logEmbed], components: [transcriptButtons], files: [attachment] });
           console.log(`[MODMAIL] Log sent for thread ${threadIdForLog}`);
               }
             }
@@ -9583,7 +9633,19 @@ client.on("messageCreate", async (message) => {
                   { name: "Transcript Preview", value: transcriptPreview || "No messages", inline: false }
                 )
                 .setTimestamp();
-              await logChannel.send({ embeds: [logEmbed], files: [attachment] });
+
+              const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`modmail_transcript_p1_${currentThread.id}`)
+                  .setLabel("Transcript P1")
+                  .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_transcript_p2_${currentThread.id}`)
+                  .setLabel("Transcript P2")
+                  .setStyle(ButtonStyle.Primary)
+              );
+
+              await logChannel.send({ embeds: [logEmbed], components: [transcriptButtons], files: [attachment] });
               console.log(`[MODMAIL TIMED] Log sent for thread ${currentThread.id}`);
             }
           }
@@ -9670,7 +9732,19 @@ client.on("messageCreate", async (message) => {
               { name: "Transcript Preview", value: transcriptPreview || "No messages", inline: false }
             )
             .setTimestamp();
-          await (logChannel as any).send({ embeds: [logEmbed], files: [attachment] });
+
+          const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_p1_${threadId}`)
+              .setLabel("Transcript P1")
+              .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_p2_${threadId}`)
+              .setLabel("Transcript P2")
+              .setStyle(ButtonStyle.Primary)
+          );
+
+          await (logChannel as any).send({ embeds: [logEmbed], components: [transcriptButtons], files: [attachment] });
         }
       }
     } catch (e) {
