@@ -1,0 +1,43 @@
+ Received one or more errors
+
+  input[0]
+  | CombinedPropertyError (1)
+  |   Received one or more errors
+  | 
+  |   input.value
+  |   | ExpectedConstraintError > s.string().lengthLessThanOrEqual()
+  |   |   Invalid string length
+  |   | 
+  |   |   Expected: expected.length <= 1024
+  |   | 
+  |   |   Received:
+  |   |   | 'https://cdn.discordapp.com/attachments/1449961914024067082/1473179882090659840/image.png?ex=6995452e&is=6993f3ae&hm=1dfdf8958ad6637e9db93e157de7fd1d9136c5fb93b29568f5853467fd35c62a&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179882572877956/image.png?ex=6995452e&is=6993f3ae&hm=816ae8dd9c45565cb8fbe8ecc750f08041a17ca88e99acf5fe0ee6f4b7e5d741&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179882929389794/image.png?ex=6995452e&is=6993f3ae&hm=24ecc7b30b36c7083fef8905513b159339d37885ad4e0e601a990c54a3cbaff0&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179883302817914/image.png?ex=6995452e&is=6993f3ae&hm=06993879c7a7fa0805f44aff8f7eb26e389f7aa69923c59ba54496aea2fb7ab6&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179883675979816/image.png?ex=6995452e&is=6993f3ae&hm=a3281640700e05490929a44f7f35a6c9381d69bea420921f78c16b4c99274bc1&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179884208525388/image.png?ex=6995452e&is=6993f3ae&hm=b1f4e14492cc5cf6c09f6d7ed555d085cc6162e6a0141f96b38a0ddbee22bd80&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179885068615822/image.png?ex=6995452e&is=6993f3ae&hm=aaf334fae7868fd30bc7c9b89236a2a779fa3e7f28cd227a74e7f074fd5db041&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179885626331318/image.png?ex=6995452f&is=6993f3af&hm=b20f5151dfffd3dea08fd0939065549935d7900f3c6cb9da06fe1e0463eb05eb&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179886062407740/image.png?ex=6995452f&is=6993f3af&hm=7c50c9bedfde368e15111287c09d118f37986c6f8dfeda7b8a5363051f608a81&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179886574374922/image.png?ex=6995452f&is=6993f3af&hm=0ef3bd327b1035d224c12c65a7a406eb0acadaf21d8c71fa8547868f645361b4&'
+
+    at _ArrayValidator.handle (/home/runner/workspace/node_modules/@sapphire/shapeshift/src/validators/ArrayValidator.ts:21:90)
+    at _ArrayValidator.parse (/home/runner/workspace/node_modules/@sapphire/shapeshift/src/validators/BaseValidator.ts:126:2)
+    at EmbedBuilder.addFields (/home/runner/workspace/node_modules/@discordjs/builders/src/messages/embed/Embed.ts:116:29)
+    at Client.<anonymous> (/home/runner/workspace/server/bot.ts:10758:23)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+[MSG CREATE] ID: 1473179898435735623, Author: mrbluefn, Content: ".accept..."
+[SNIPPET ALIAS] Checking alias for: 1473179898435735623 - ".accept"
+[MSG CREATE] ID: 1473179899421528134, Author: EXR | Operation’s#6310, Content: "..."
+[MSG CREATE] ID: 1473179904374870089, Author: EXR | Operation’s#6310, Content: "<@944385000059600896>..."
+[MSG CREATE] ID: 1473179905712848969, Author: EXR | Operation’s#6310, Content: "..."
+[MSG CREATE] ID: 1473179894447079506, Author: billed01, Content: "..."
+[DM] Received DM from 815377771722702858 (billed01): "..."
+[MSG CREATE] ID: 1473179907768189011, Author: EXR | Operation’s#6310, Content: "<@944385000059600896>..."
+Could not relay message: CombinedPropertyError (1)
+  Received one or more errors
+
+  input[0]
+  | CombinedPropertyError (1)
+  |   Received one or more errors
+  | 
+  |   input.value
+  |   | ExpectedConstraintError > s.string().lengthLessThanOrEqual()
+  |   |   Invalid string length
+  |   | 
+  |   |   Expected: expected.length <= 1024
+  |   | 
+  |   |   Received:
+  |   |   | 'https://cdn.discordapp.com/attachments/1449961914024067082/1473179894648410186/image.png?ex=69954531&is=6993f3b1&hm=75939842a7e728d05f2dc87976d3f17e73c6693650b0c814c9bf666822db2c62&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179900872753326/image.png?ex=69954532&is=6993f3b2&hm=43b44288d2458d712695a58808287a4b907d268ebab55c8c3a028716422e43f0&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179901480800276/image.png?ex=69954532&is=6993f3b2&hm=cf4ba4c3279ea35bcd0069fc7ef3bc69c8602cee791d9cc67c26749d44771e41&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179902265262172/image.png?ex=69954533&is=6993f3b3&hm=3ca57843d7a955a5ff79827b1449a59d5a375b6f25f7ae4709b7aae5fa991c46&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179903091544138/image.png?ex=69954533&is=6993f3b3&hm=32951063a576fae55175ffe726e0b0f67aebdd088cdf9ff4a121728ad576491c&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179903561302260/image.png?ex=69954533&is=6993f3b3&hm=ece73da19b2419fad5b110926dd6f5d4f92d3db303cd2b269715aa542b4b1612&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179904144179251/image.png?ex=69954533&is=6993f3b3&hm=0818c5b46cec2a0b860aba6e0b9f659d74aac3261f0f2cdd1559745521a839cc&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179904630587646/image.png?ex=69954533&is=6993f3b3&hm=fd3629478e3e516d8c3e7e1eb5c521e845189c1cec1e8e0c3388cf7a13996f60&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179905209532457/image.png?ex=69954533&is=6993f3b3&hm=6599e7cc3cf942439b320a74ffd366ed3c0a2a25d837583a3e441da5eaf72238&\nhttps://cdn.discordapp.com/attachments/1449961914024067082/1473179905633026246/image.png?ex=69954533&is=6993f3b3&hm=3801f9149341882c12a84f1974ca5b371ef5a4545d61489fa607e718f8b75c0a&'
