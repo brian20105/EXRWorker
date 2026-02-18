@@ -1189,9 +1189,7 @@ const commands = [
           { name: "Activity Reset", value: "activity_reset" },
           { name: "Appeal Claim", value: "appeal_claim" },
           { name: "Snippets", value: "snippets" },
-          { name: "Activity", value: "activity" },
-          { name: "Message Commands", value: "message_perms" },
-          { name: "Role Commands", value: "role_perms" }
+          { name: "Activity", value: "activity" }
         )
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
@@ -1463,44 +1461,6 @@ async function hasActivityPermission(
 
   if (!memberRoles) return false;
   return config.activityRoleIds.some(roleId => memberRoles.includes(roleId));
-}
-
-async function hasMessagePermission(
-  memberRoles: string[] | undefined,
-  memberPermissions: bigint | string | undefined,
-  guildId: string
-): Promise<boolean> {
-  const config = await storage.getGuildConfig(guildId);
-
-  if (!config?.messageRoleIds || config.messageRoleIds.length === 0) {
-    const permBits = typeof memberPermissions === 'string' 
-      ? BigInt(memberPermissions) 
-      : (memberPermissions ?? BigInt(0));
-    const ADMINISTRATOR = BigInt(1) << BigInt(3);
-    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
-  }
-
-  if (!memberRoles) return false;
-  return config.messageRoleIds.some(roleId => memberRoles.includes(roleId));
-}
-
-async function hasRoleCommandPermission(
-  memberRoles: string[] | undefined,
-  memberPermissions: bigint | string | undefined,
-  guildId: string
-): Promise<boolean> {
-  const config = await storage.getGuildConfig(guildId);
-
-  if (!config?.roleCommandRoleIds || config.roleCommandRoleIds.length === 0) {
-    const permBits = typeof memberPermissions === 'string' 
-      ? BigInt(memberPermissions) 
-      : (memberPermissions ?? BigInt(0));
-    const ADMINISTRATOR = BigInt(1) << BigInt(3);
-    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
-  }
-
-  if (!memberRoles) return false;
-  return config.roleCommandRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
 async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, moneyOwed: string, paypal: string, actionReason?: string): Promise<void> {
@@ -3084,16 +3044,6 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "❌ Failed to fetch activity stats. Please try again." }).catch(() => {});
         }
       } else if (commandName === "roster-embed") {
-        const pingConfig = await storage.getGuildConfig(interaction.guildId!);
-        const roleCommandRoles = pingConfig?.roleCommandRoleIds || [];
-        const hasPermission = (interaction.member as any)?.permissions?.has("Administrator") || 
-          (interaction.member as any)?.roles?.cache.some((role: any) => roleCommandRoles.includes(role.id));
-
-        if (!hasPermission) {
-          await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
-          return;
-        }
-
         if (!await safeDeferReply(interaction, false)) return;
 
         const title = interaction.options.getString("title", true);
@@ -4514,8 +4464,6 @@ client.on("interactionCreate", async (interaction) => {
           appeal_claim: "Appeal Claim",
           snippets: "Snippets",
           activity: "Activity",
-          message_perms: "Message Commands",
-          role_perms: "Role Commands",
         };
 
         const fieldMap: Record<string, string> = {
@@ -4528,8 +4476,6 @@ client.on("interactionCreate", async (interaction) => {
           appeal_claim: "appealStaffRoleIds",
           snippets: "snippetRoleIds",
           activity: "activityRoleIds",
-          message_perms: "messageRoleIds",
-          role_perms: "roleCommandRoleIds",
         };
 
         const field = fieldMap[permType];
@@ -4675,16 +4621,6 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Closed **${closedCount}** ticket(s). Deleted **${deletedChannelCount}** channel(s).` 
         });
       } else if (commandName === "message") {
-        const pingConfig = await storage.getGuildConfig(interaction.guildId!);
-        const messageRoles = pingConfig?.messageRoleIds || [];
-        const hasPermission = (interaction.member as any)?.permissions?.has("Administrator") || 
-          (interaction.member as any)?.roles?.cache.some((role: any) => messageRoles.includes(role.id));
-
-        if (!hasPermission) {
-          await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
-          return;
-        }
-
         if (!await safeDeferReply(interaction, true)) return;
 
         const targetUser = interaction.options.getUser("user", true);
@@ -4702,16 +4638,6 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: `❌ Could not DM <@${targetUser.id}>. They may have DMs disabled.` });
         }
       } else if (commandName === "message_all") {
-        const pingConfig = await storage.getGuildConfig(interaction.guildId!);
-        const messageRoles = pingConfig?.messageRoleIds || [];
-        const hasPermission = (interaction.member as any)?.permissions?.has("Administrator") || 
-          (interaction.member as any)?.roles?.cache.some((role: any) => messageRoles.includes(role.id));
-
-        if (!hasPermission) {
-          await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
-          return;
-        }
-
         if (!await safeDeferReply(interaction, true)) return;
 
         const messageContent = interaction.options.getString("message", true);
@@ -4750,16 +4676,6 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({ content: `✅ Mass DM complete! Sent: **${sentCount}**, Failed: **${failCount}** (DMs disabled or blocked).` });
       } else if (commandName === "message_role") {
-        const pingConfig = await storage.getGuildConfig(interaction.guildId!);
-        const messageRoles = pingConfig?.messageRoleIds || [];
-        const hasPermission = (interaction.member as any)?.permissions?.has("Administrator") || 
-          (interaction.member as any)?.roles?.cache.some((role: any) => messageRoles.includes(role.id));
-
-        if (!hasPermission) {
-          await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
-          return;
-        }
-
         if (!await safeDeferReply(interaction, true)) return;
 
         const role = interaction.options.getRole("role", true);
@@ -5034,16 +4950,6 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Command logs will be sent to <#${channel.id}>!`,
         });
       } else if (commandName === "roster") {
-        const pingConfig = await storage.getGuildConfig(interaction.guildId!);
-        const roleCommandRoles = pingConfig?.roleCommandRoleIds || [];
-        const hasPermission = (interaction.member as any)?.permissions?.has("Administrator") || 
-          (interaction.member as any)?.roles?.cache.some((role: any) => roleCommandRoles.includes(role.id));
-
-        if (!hasPermission) {
-          await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
-          return;
-        }
-
         if (!await safeDeferReply(interaction)) return;
 
         const subcommand = interaction.options.getSubcommand();
