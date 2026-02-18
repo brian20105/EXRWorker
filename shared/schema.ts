@@ -69,8 +69,6 @@ export const guildConfigs = pgTable("guild_configs", {
   quizLogChannelId: text("quiz_log_channel_id"), // Channel for quiz progress logging
   snippetRoleIds: text("snippet_role_ids").array(), // Roles allowed to use snippet commands
   activityRoleIds: text("activity_role_ids").array(), // Roles allowed to use activity commands
-  messageRoleIds: text("message_role_ids").array(), // Roles allowed to use message commands
-  roleCommandRoleIds: text("role_command_role_ids").array(), // Roles allowed to use roster/role commands
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
