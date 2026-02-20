@@ -6416,10 +6416,10 @@ client.on("interactionCreate", async (interaction) => {
             components: [
               new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder()
-                  .setCustomId(`modmail_claim_${threadId}`)
+                  .setCustomId(`modmail_unclaim_${threadId}`)
                   .setLabel(`Claimed by ${interaction.user.username}`)
                   .setStyle(ButtonStyle.Secondary)
-                  .setDisabled(true),
+                  .setDisabled(false),
                 new ButtonBuilder()
                   .setCustomId(`modmail_toggle_${threadId}`)
                   .setLabel("Toggle Member")
@@ -6480,6 +6480,68 @@ client.on("interactionCreate", async (interaction) => {
         } catch (error: any) {
           console.log("Error in modmail_claim button:", error.message);
           await interaction.followUp({ content: "Failed to claim ticket. Please try again.", flags: 64 }).catch(() => {});
+        }
+        return;
+      } else if (interaction.customId.startsWith("modmail_unclaim_")) {
+        if (!await safeDeferUpdate(interaction)) return;
+
+        try {
+          const threadId = interaction.customId.replace("modmail_unclaim_", "");
+          const thread = await storage.getModmailThread(threadId);
+
+          if (!thread) {
+            await interaction.followUp({ content: "Thread not found.", flags: 64 });
+            return;
+          }
+
+          if (thread.claimedById !== interaction.user.id && !(interaction.member?.permissions as any)?.has("Administrator")) {
+            await interaction.followUp({ content: "Only the staff member who claimed this ticket (or an Administrator) can unclaim it.", flags: 64 });
+            return;
+          }
+
+          await storage.updateModmailThread(threadId, { claimedById: null });
+
+          const unclaimEmbed = new EmbedBuilder()
+            .setDescription(`Ticket unclaimed by ${interaction.user.username}`)
+            .setColor(0xed4245)
+            .setTimestamp();
+
+          // Reset Claim button
+          await interaction.message.edit({
+            components: [
+              new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`modmail_claim_${threadId}`)
+                  .setLabel("Claim")
+                  .setStyle(ButtonStyle.Primary)
+                  .setEmoji("👋"),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_toggle_${threadId}`)
+                  .setLabel("Toggle Member")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("👥"),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_close_${threadId}`)
+                  .setLabel("Close")
+                  .setStyle(ButtonStyle.Danger)
+                  .setEmoji("🔒")
+              )
+            ]
+          });
+
+          await interaction.followUp({ embeds: [unclaimEmbed] });
+
+          // Clear any auto-unclaim timer
+          if (interaction.channelId) {
+            const timer = pendingClaimExpiry.get(interaction.channelId);
+            if (timer) {
+              clearTimeout(timer.timeout);
+              pendingClaimExpiry.delete(interaction.channelId);
+            }
+          }
+        } catch (error: any) {
+          console.log("Error in modmail_unclaim button:", error.message);
+          await interaction.followUp({ content: "Failed to unclaim ticket. Please try again.", flags: 64 }).catch(() => {});
         }
         return;
       } else if (interaction.customId.startsWith("modmail_toggle_")) {
@@ -9418,7 +9480,38 @@ client.on("messageDelete", async (message) => {
 
 client.on("messageCreate", async (message) => {
   console.log(`[MSG CREATE] ID: ${message.id}, Author: ${message.author?.tag}, Content: "${message.content?.substring(0, 30)}..."`);
-  if (message.author.bot) return;
+  if (message.author?.bot) return;
+
+  // Handle .claim command
+  if (message.content.startsWith(".claim")) {
+    const args = message.content.split(" ").filter(Boolean);
+    const targetUserId = args[1]?.match(/<@!?(\d+)>/)?.[1] || args[1];
+
+    if (!targetUserId) {
+      await message.reply("Usage: `.claim <user_id>` or `.claim <mention>`");
+      return;
+    }
+
+    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    if (!thread) return;
+
+    const config = await storage.getGuildConfig(message.guildId!);
+    const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
+    const member = message.member;
+    const hasClaimPermission = !claimRoleIds || claimRoleIds.length === 0 || 
+      (member && claimRoleIds.some(id => member.roles.cache.has(id))) ||
+      (member?.permissions as any)?.has("Administrator");
+
+    if (!hasClaimPermission) {
+      await message.reply("You don't have permission to claim tickets.");
+      return;
+    }
+
+    await storage.updateModmailThread(thread.id, { claimedById: targetUserId });
+    const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+    await message.reply(`✅ Ticket has been claimed for ${targetUser ? targetUser.username : targetUserId}. Only they (or an Administrator) can unclaim it.`);
+    return;
+  }
 
   // Deduplicate messages to prevent double responses
   if (processedMessages.has(message.id)) {
@@ -11935,7 +12028,9 @@ export async function startBot() {
   }
 
   try {
-    await client.login(process.env.DISCORD_BOT_TOKEN);
+    await client.login(process.env.DISCORD_BOT_TOKEN).catch(err => {
+      console.error("❌ Failed to login to Discord:", err);
+    });
   } catch (error) {
     console.error("❌ Failed to login to Discord:", error);
   }
