@@ -97,6 +97,7 @@ export default function Dashboard() {
   const [applicationId, setApplicationId] = useState<string | null>(null);
   const [themeMounted, setThemeMounted] = useState(false);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [roleSearches, setRoleSearches] = useState<Record<string, string>>({});
   const [customCategoryPingsText, setCustomCategoryPingsText] = useState("{}");
   const [customModmailCategoriesText, setCustomModmailCategoriesText] = useState("[]");
   const { theme, setTheme } = useTheme();
@@ -324,13 +325,31 @@ export default function Dashboard() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent className="max-h-72 w-80">
-            {roles.map((role) => {
+            <div className="px-1 pb-2">
+              <Input
+                value={roleSearches[String(key)] || ""}
+                onChange={(event) =>
+                  setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
+                }
+                placeholder="Search roles..."
+                className="h-8"
+                data-testid={`${testIdPrefix}-search`}
+              />
+            </div>
+            {roles
+              .filter((role) => {
+                const query = (roleSearches[String(key)] || "").trim().toLowerCase();
+                if (!query) return true;
+                return role.name.toLowerCase().includes(query);
+              })
+              .map((role) => {
               const selected = ((config[key] as string[] | undefined) || []).includes(role.id);
               return (
                 <DropdownMenuCheckboxItem
                   key={role.id}
                   checked={selected}
                   onCheckedChange={() => toggleRole(key, role.id)}
+                  onSelect={(event) => event.preventDefault()}
                   data-testid={`${testIdPrefix}-${role.id}`}
                 >
                   {role.name}
