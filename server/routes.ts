@@ -4,7 +4,7 @@ import { storage } from "./storage";
 import { client } from "./bot";
 import { insertGuildConfigSchema } from "@shared/schema";
 import crypto from "crypto";
-import { PermissionFlagsBits } from "discord.js";
+import { ActivityType, PermissionFlagsBits } from "discord.js";
 
 type DashboardSessionUser = {
   id: string;
@@ -234,6 +234,73 @@ async function applyGuildBotNickname(guildId: string, nickname: string | null): 
   if (currentNickname === nickname) return;
 
   await me.setNickname(nickname).catch(() => undefined);
+}
+
+function getBotPresenceSettingsFromCustomCategoryPings(raw: unknown): {
+  status: "online" | "idle" | "dnd" | "invisible";
+  activityType: "playing" | "listening" | "watching" | "competing";
+  activityText: string;
+} {
+  if (typeof raw !== "string") {
+    return { status: "online", activityType: "playing", activityText: "" };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { status: "online", activityType: "playing", activityText: "" };
+    }
+
+    const presenceRaw = (parsed as Record<string, unknown>).__dashboardBotPresence;
+    const presence = presenceRaw && typeof presenceRaw === "object" && !Array.isArray(presenceRaw)
+      ? presenceRaw as Record<string, unknown>
+      : {};
+
+    const status = typeof presence.status === "string" ? presence.status.toLowerCase() : "online";
+    const activityType = typeof presence.activityType === "string" ? presence.activityType.toLowerCase() : "playing";
+    const activityText = typeof presence.activityText === "string" ? presence.activityText : "";
+
+    return {
+      status: (status === "online" || status === "idle" || status === "dnd" || status === "invisible") ? status : "online",
+      activityType: (activityType === "playing" || activityType === "listening" || activityType === "watching" || activityType === "competing")
+        ? activityType
+        : "playing",
+      activityText,
+    };
+  } catch {
+    return { status: "online", activityType: "playing", activityText: "" };
+  }
+}
+
+function applyBotPresenceFromCustomCategoryPings(raw: unknown): void {
+  if (!client.isReady() || !client.user) return;
+
+  const settings = getBotPresenceSettingsFromCustomCategoryPings(raw);
+  const activityTypeMap: Record<string, ActivityType> = {
+    playing: ActivityType.Playing,
+    listening: ActivityType.Listening,
+    watching: ActivityType.Watching,
+    competing: ActivityType.Competing,
+  };
+
+  const activityText = settings.activityText.trim();
+  if (!activityText) {
+    client.user.setPresence({
+      status: settings.status,
+      activities: [],
+    });
+    return;
+  }
+
+  client.user.setPresence({
+    status: settings.status,
+    activities: [
+      {
+        name: activityText,
+        type: activityTypeMap[settings.activityType] ?? ActivityType.Playing,
+      },
+    ],
+  });
 }
 
 export async function registerRoutes(
@@ -512,6 +579,12 @@ export async function registerRoutes(
       if (nicknameInput.hasBotNickname) {
         await applyGuildBotNickname(guildId, nicknameInput.botNickname);
       }
+
+      applyBotPresenceFromCustomCategoryPings(
+        typeof updates.customCategoryPings === "string"
+          ? updates.customCategoryPings
+          : config?.customCategoryPings
+      );
       
       res.json({ success: true, config });
     } catch (e: any) {

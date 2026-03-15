@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -110,6 +111,12 @@ interface DashboardWelcomeEmbedSettings {
   color: string;
 }
 
+interface DashboardBotPresenceSettings {
+  status: "online" | "idle" | "dnd" | "invisible";
+  activityType: "playing" | "listening" | "watching" | "competing";
+  activityText: string;
+}
+
 interface BotFeatureModule {
   id: string;
   name: string;
@@ -169,6 +176,11 @@ export default function Dashboard() {
     footer: "Enjoy your stay",
     footerIcon: "",
     color: "57f287",
+  });
+  const [botPresenceSettings, setBotPresenceSettings] = useState<DashboardBotPresenceSettings>({
+    status: "online",
+    activityType: "playing",
+    activityText: "",
   });
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
@@ -243,6 +255,7 @@ export default function Dashboard() {
         setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setPermissionSettings(getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setWelcomeEmbedSettings(getWelcomeEmbedSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+        setBotPresenceSettings(getBotPresenceSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setActivePrimaryTab("settings");
         setActiveSettingsTab("channels");
         setModuleSearch("");
@@ -446,6 +459,25 @@ export default function Dashboard() {
     };
   };
 
+  const getBotPresenceSettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardBotPresenceSettings => {
+    const parsed = parseJsonObjectSafely(raw);
+    const presenceRaw = parsed.__dashboardBotPresence;
+    const presence = presenceRaw && typeof presenceRaw === "object" && !Array.isArray(presenceRaw)
+      ? presenceRaw as Record<string, unknown>
+      : {};
+
+    const status = typeof presence.status === "string" ? presence.status.toLowerCase() : "online";
+    const activityType = typeof presence.activityType === "string" ? presence.activityType.toLowerCase() : "playing";
+
+    return {
+      status: (status === "online" || status === "idle" || status === "dnd" || status === "invisible") ? status : "online",
+      activityType: (activityType === "playing" || activityType === "listening" || activityType === "watching" || activityType === "competing")
+        ? activityType
+        : "playing",
+      activityText: typeof presence.activityText === "string" ? presence.activityText : "",
+    };
+  };
+
   const syncFeatureFlagsState = (guildConfig: GuildConfig, customCategoryPingsRaw: string | null | undefined) => {
     const defaults = getDefaultFeatureEnabledMap(guildConfig);
     const overrides = getFeatureFlagOverrides(customCategoryPingsRaw);
@@ -551,6 +583,11 @@ export default function Dashboard() {
       footer: welcomeEmbedSettings.footer,
       footerIcon: welcomeEmbedSettings.footerIcon,
       color: parseInt((welcomeEmbedSettings.color || "57f287").replace(/^#/, ""), 16) || 0x57f287,
+    };
+    categoryPingsObject.__dashboardBotPresence = {
+      status: botPresenceSettings.status,
+      activityType: botPresenceSettings.activityType,
+      activityText: botPresenceSettings.activityText,
     };
 
     const parsedCategoryPings = JSON.stringify(categoryPingsObject, null, 2);
@@ -1330,7 +1367,7 @@ export default function Dashboard() {
               <Card className="border-border/80 bg-card/90" data-testid="card-bot-settings-simple">
                 <CardHeader className="space-y-1">
                   <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Settings</CardTitle>
-                  <CardDescription>Configure moderation commands, modmail commands, nickname, and update channel.</CardDescription>
+                  <CardDescription>Configure moderation commands, modmail commands, nickname, update channel, and bot status.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="grid gap-4 md:grid-cols-2">
@@ -1366,6 +1403,58 @@ export default function Dashboard() {
                     </div>
                     <div className="space-y-2">
                       {renderChannelSelect("Updates Channel", "commandLogChannelId", textChannels, "select-updates-channel")}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label>Bot Status</Label>
+                      <Select
+                        value={botPresenceSettings.status}
+                        onValueChange={(value) => setBotPresenceSettings((prev) => ({
+                          ...prev,
+                          status: value as DashboardBotPresenceSettings["status"],
+                        }))}
+                      >
+                        <SelectTrigger data-testid="select-bot-status">
+                          <SelectValue placeholder="Select status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="online">Online</SelectItem>
+                          <SelectItem value="idle">Idle</SelectItem>
+                          <SelectItem value="dnd">Do Not Disturb</SelectItem>
+                          <SelectItem value="invisible">Invisible</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Activity Type</Label>
+                      <Select
+                        value={botPresenceSettings.activityType}
+                        onValueChange={(value) => setBotPresenceSettings((prev) => ({
+                          ...prev,
+                          activityType: value as DashboardBotPresenceSettings["activityType"],
+                        }))}
+                      >
+                        <SelectTrigger data-testid="select-bot-activity-type">
+                          <SelectValue placeholder="Select type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="playing">Playing</SelectItem>
+                          <SelectItem value="listening">Listening</SelectItem>
+                          <SelectItem value="watching">Watching</SelectItem>
+                          <SelectItem value="competing">Competing</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Activity Text</Label>
+                      <Input
+                        value={botPresenceSettings.activityText}
+                        onChange={(event) => setBotPresenceSettings((prev) => ({ ...prev, activityText: event.target.value }))}
+                        placeholder="you"
+                        data-testid="input-bot-activity-text"
+                      />
                     </div>
                   </div>
                 </CardContent>
