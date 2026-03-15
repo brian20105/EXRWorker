@@ -82,6 +82,7 @@ interface AuthUser {
 }
 
 type SettingsTabKey = "channels" | "roles" | "embeds" | "advanced";
+type PrimaryTabKey = "settings" | "features";
 
 interface BotFeatureModule {
   id: string;
@@ -94,6 +95,7 @@ interface BotFeatureModule {
 const NONE_VALUE = "__none";
 const CATEGORY_CHANNEL_TYPE = 4;
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
+const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 
 export default function Dashboard() {
   const [guilds, setGuilds] = useState<Guild[]>([]);
@@ -110,7 +112,9 @@ export default function Dashboard() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [roleSearches, setRoleSearches] = useState<Record<string, string>>({});
   const [moduleSearch, setModuleSearch] = useState("");
+  const [activePrimaryTab, setActivePrimaryTab] = useState<PrimaryTabKey>("settings");
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabKey>("channels");
+  const [moduleEnabledMap, setModuleEnabledMap] = useState<Record<string, boolean>>({});
   const [customCategoryPingsText, setCustomCategoryPingsText] = useState("{}");
   const [customModmailCategoriesText, setCustomModmailCategoriesText] = useState("[]");
   const { theme, setTheme } = useTheme();
@@ -181,6 +185,10 @@ export default function Dashboard() {
         setGuildName(data.guildName || "");
         setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
         setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
+        setActivePrimaryTab("settings");
+        setActiveSettingsTab("channels");
+        setModuleSearch("");
+        syncFeatureFlagsState(nextConfig, nextConfig.customCategoryPings || "{}");
         setLoading(false);
       })
       .catch((error: any) => {
@@ -221,6 +229,89 @@ export default function Dashboard() {
 
   const updateConfig = <K extends keyof GuildConfig>(key: K, value: GuildConfig[K]) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const getDefaultFeatureEnabledMap = (guildConfig: GuildConfig): Record<string, boolean> => ({
+    modmail: !!(guildConfig.modmailCategoryId || guildConfig.modmailLogChannelId),
+    appeals: !!(guildConfig.appealCategoryId || guildConfig.appealLogChannelId),
+    payouts: !!(guildConfig.requestChannelId || guildConfig.logChannelId),
+    moderation: !!guildConfig.modLogChannelId,
+    quiz: !!guildConfig.quizLogChannelId,
+    "staff-intro": !!(guildConfig.staffIntroChannelId || guildConfig.staffIntroSubmissionsChannelId),
+    inactivity: !!(
+      guildConfig.inactivityChannelId
+      || guildConfig.inactivitySubmissionsChannelId
+      || guildConfig.inactivityLogChannelId
+    ),
+    permissions: !!(
+      (guildConfig.modRoleIds?.length || 0)
+      || (guildConfig.modmailStaffRoleIds?.length || 0)
+      || (guildConfig.appealStaffRoleIds?.length || 0)
+    ),
+    embeds: !!(
+      guildConfig.modmailEmbedTitle
+      || guildConfig.modmailEmbedDescription
+      || guildConfig.appealEmbedTitle
+      || guildConfig.appealEmbedDescription
+    ),
+    advanced: !!(
+      ((guildConfig.customCategoryPings || "").trim().length > 0 && (guildConfig.customCategoryPings || "").trim() !== "{}")
+      || ((guildConfig.customModmailCategories || "").trim().length > 0 && (guildConfig.customModmailCategories || "").trim() !== "[]")
+    ),
+  });
+
+  const parseJsonObjectSafely = (raw: string | null | undefined) => {
+    try {
+      const parsed = JSON.parse((raw || "{}").trim() || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+      return {};
+    } catch {
+      return {};
+    }
+  };
+
+  const getFeatureFlagOverrides = (raw: string | null | undefined): Record<string, boolean> => {
+    const parsed = parseJsonObjectSafely(raw);
+    const flagsValue = parsed[FEATURE_FLAGS_KEY];
+    if (!flagsValue || typeof flagsValue !== "object" || Array.isArray(flagsValue)) {
+      return {};
+    }
+
+    const result: Record<string, boolean> = {};
+    Object.entries(flagsValue as Record<string, unknown>).forEach(([key, value]) => {
+      if (typeof value === "boolean") {
+        result[key] = value;
+      }
+    });
+    return result;
+  };
+
+  const syncFeatureFlagsState = (guildConfig: GuildConfig, customCategoryPingsRaw: string | null | undefined) => {
+    const defaults = getDefaultFeatureEnabledMap(guildConfig);
+    const overrides = getFeatureFlagOverrides(customCategoryPingsRaw);
+    setModuleEnabledMap({ ...defaults, ...overrides });
+  };
+
+  const setFeatureEnabled = (moduleId: string, enabled: boolean) => {
+    setModuleEnabledMap((prev) => ({ ...prev, [moduleId]: enabled }));
+
+    setCustomCategoryPingsText((previousText) => {
+      const parsed = parseJsonObjectSafely(previousText || config.customCategoryPings || "{}");
+      const currentFlagsValue = parsed[FEATURE_FLAGS_KEY];
+      const currentFlags =
+        currentFlagsValue && typeof currentFlagsValue === "object" && !Array.isArray(currentFlagsValue)
+          ? ({ ...(currentFlagsValue as Record<string, unknown>) } as Record<string, unknown>)
+          : {};
+
+      currentFlags[moduleId] = enabled;
+      parsed[FEATURE_FLAGS_KEY] = currentFlags;
+
+      const nextText = JSON.stringify(parsed, null, 2);
+      updateConfig("customCategoryPings", nextText);
+      return nextText;
+    });
   };
 
   const toggleRole = (key: keyof GuildConfig, roleId: string) => {
@@ -294,92 +385,74 @@ export default function Dashboard() {
   const categoryChannels = channels.filter((c) => c.type === CATEGORY_CHANNEL_TYPE);
   const textChannels = channels.filter((c) => TEXT_CHANNEL_TYPES.has(c.type));
 
-  const hasJsonPayload = (value: string | null | undefined, emptyValue: string) => {
-    const normalized = (value || "").trim();
-    return normalized.length > 0 && normalized !== emptyValue;
-  };
-
-  const botFeatureModules: BotFeatureModule[] = [
+  const botFeatureDefinitions: Omit<BotFeatureModule, "enabled">[] = [
     {
       id: "modmail",
       name: "Modmail",
       description: "Ticket intake and staff response system.",
       tab: "channels",
-      enabled: !!(config.modmailCategoryId || config.modmailLogChannelId),
     },
     {
       id: "appeals",
       name: "Appeals",
       description: "Appeal workflows with dedicated channels and staff.",
       tab: "channels",
-      enabled: !!(config.appealCategoryId || config.appealLogChannelId),
     },
     {
       id: "payouts",
       name: "Payout Requests",
       description: "Payout intake and logging channels.",
       tab: "channels",
-      enabled: !!(config.requestChannelId || config.logChannelId),
     },
     {
       id: "moderation",
       name: "Moderation Logs",
       description: "Track moderation actions in a configured log channel.",
       tab: "channels",
-      enabled: !!config.modLogChannelId,
     },
     {
       id: "quiz",
       name: "Quiz Tracking",
       description: "Store quiz progress and outcomes in a log channel.",
       tab: "channels",
-      enabled: !!config.quizLogChannelId,
     },
     {
       id: "staff-intro",
       name: "Staff Intro",
       description: "Staff introduction prompts and submission pipeline.",
       tab: "channels",
-      enabled: !!(config.staffIntroChannelId || config.staffIntroSubmissionsChannelId),
     },
     {
       id: "inactivity",
       name: "Inactivity",
       description: "Inactivity requests, routing, and logging.",
       tab: "channels",
-      enabled: !!(config.inactivityChannelId || config.inactivitySubmissionsChannelId || config.inactivityLogChannelId),
     },
     {
       id: "permissions",
       name: "Role Permissions",
       description: "Grant feature access with role-based permissions.",
       tab: "roles",
-      enabled: !!(
-        (config.modRoleIds?.length || 0)
-        || (config.modmailStaffRoleIds?.length || 0)
-        || (config.appealStaffRoleIds?.length || 0)
-      ),
     },
     {
       id: "embeds",
       name: "Embed Templates",
       description: "Customize bot-facing embed messages and titles.",
       tab: "embeds",
-      enabled: !!(
-        config.modmailEmbedTitle
-        || config.modmailEmbedDescription
-        || config.appealEmbedTitle
-        || config.appealEmbedDescription
-      ),
     },
     {
       id: "advanced",
       name: "Advanced Categories",
       description: "Custom category mappings and advanced bot behavior.",
       tab: "advanced",
-      enabled: hasJsonPayload(config.customCategoryPings, "{}") || hasJsonPayload(config.customModmailCategories, "[]"),
     },
   ];
+
+  const featureDefaults = getDefaultFeatureEnabledMap(config);
+  const botFeatureModules: BotFeatureModule[] = botFeatureDefinitions.map((module) => ({
+    ...module,
+    enabled: moduleEnabledMap[module.id] ?? featureDefaults[module.id] ?? false,
+  }));
 
   const filteredModules = botFeatureModules.filter((module) => {
     const query = moduleSearch.trim().toLowerCase();
@@ -615,192 +688,216 @@ export default function Dashboard() {
             <CardContent className="py-10 text-center text-muted-foreground">Loading configuration...</CardContent>
           </Card>
         ) : (
-          <Card className="border-border/80 bg-card/90" data-testid="card-bot-settings">
-            <CardHeader className="space-y-1">
-              <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Settings</CardTitle>
-              <CardDescription>Configure from web and slash commands using the same settings store.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-8">
-              <section className="space-y-4 rounded-lg border border-border/70 bg-muted/20 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-xl font-semibold">Bot Features</h2>
-                </div>
-                <div className="relative">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={moduleSearch}
-                    onChange={(event) => setModuleSearch(event.target.value)}
-                    placeholder="Search features..."
-                    className="pl-9"
-                    data-testid="input-module-search"
-                  />
-                </div>
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {filteredModules.map((module) => (
-                    <div key={module.id} className="rounded-lg border border-border/70 bg-card/40 p-4">
-                      <div className="mb-3 flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-semibold">{module.name}</p>
-                          <p className="mt-1 text-sm text-muted-foreground">{module.description}</p>
-                        </div>
-                        <Switch checked={module.enabled} onCheckedChange={() => setActiveSettingsTab(module.tab)} />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge variant={module.enabled ? "default" : "secondary"}>
-                          {module.enabled ? "Enabled" : "Disabled"}
-                        </Badge>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setActiveSettingsTab(module.tab)}
-                          data-testid={`button-module-settings-${module.id}`}
-                        >
-                          <Settings className="mr-2 h-3.5 w-3.5" />
-                          Settings
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
+          <Tabs value={activePrimaryTab} onValueChange={(value) => setActivePrimaryTab(value as PrimaryTabKey)} className="space-y-4">
+            <TabsList className="grid h-auto w-full grid-cols-2 gap-2 p-1 md:w-[420px]">
+              <TabsTrigger value="settings" data-testid="tab-settings">Dashboard Settings</TabsTrigger>
+              <TabsTrigger value="features" data-testid="tab-bot-features">Bot Features</TabsTrigger>
+            </TabsList>
 
-              <section className="grid gap-6 lg:grid-cols-2">
-                <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                  <div className="space-y-2">
-                    <Label>Command Prefix</Label>
+            <TabsContent value="settings" className="space-y-0">
+              <Card className="border-border/80 bg-card/90" data-testid="card-bot-settings">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Settings</CardTitle>
+                  <CardDescription>Configure from web and slash commands using the same settings store.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-8">
+                  <section className="grid gap-6 lg:grid-cols-2">
+                    <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
+                      <div className="space-y-2">
+                        <Label>Command Prefix</Label>
+                        <Input
+                          value={config.commandPrefix || "."}
+                          maxLength={3}
+                          onChange={(e) => updateConfig("commandPrefix", e.target.value)}
+                          placeholder="?"
+                          data-testid="input-command-prefix"
+                        />
+                      </div>
+                      {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-command-log-channel")}
+                      {renderChannelSelect("Moderation Log Channel", "modLogChannelId", textChannels, "select-mod-log-channel")}
+                      {renderChannelSelect("Quiz Log Channel", "quizLogChannelId", textChannels, "select-quiz-log-channel")}
+                    </div>
+
+                    <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
+                      {renderRoleSection("Manager Roles (Owner/Administrator)", "modRoleIds", "badge-mod-role")}
+                      {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "badge-modmail-staff-role")}
+                      {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "badge-appeal-staff-role")}
+                    </div>
+                  </section>
+
+                  <Tabs value={activeSettingsTab} onValueChange={(value) => setActiveSettingsTab(value as SettingsTabKey)} className="space-y-4">
+                    <TabsList className="grid h-auto w-full grid-cols-2 gap-2 p-1 md:grid-cols-4">
+                      <TabsTrigger value="channels"><Hash className="mr-2 h-4 w-4" />Channels</TabsTrigger>
+                      <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Role Access</TabsTrigger>
+                      <TabsTrigger value="embeds">Embeds</TabsTrigger>
+                      <TabsTrigger value="advanced"><Braces className="mr-2 h-4 w-4" />Advanced</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="channels">
+                      <div className="grid gap-4 rounded-lg border border-border/70 bg-muted/20 p-4 md:grid-cols-2">
+                        {renderChannelSelect("Payout Request Channel", "requestChannelId", textChannels, "select-request-channel")}
+                        {renderChannelSelect("Payout Log Channel", "logChannelId", textChannels, "select-log-channel")}
+                        {renderChannelSelect("Modmail Category", "modmailCategoryId", categoryChannels, "select-modmail-category")}
+                        {renderChannelSelect("Modmail Log Channel", "modmailLogChannelId", textChannels, "select-modmail-log-channel")}
+                        {renderChannelSelect("Appeal Category", "appealCategoryId", categoryChannels, "select-appeal-category")}
+                        {renderChannelSelect("Appeal Log Channel", "appealLogChannelId", textChannels, "select-appeal-log-channel")}
+                        {renderChannelSelect("Staff Intro Channel", "staffIntroChannelId", textChannels, "select-staff-intro-channel")}
+                        {renderChannelSelect("Staff Intro Submission Channel", "staffIntroSubmissionsChannelId", textChannels, "select-staff-intro-submissions-channel")}
+                        {renderChannelSelect("Inactivity Channel", "inactivityChannelId", textChannels, "select-inactivity-channel")}
+                        {renderChannelSelect("Inactivity Submission Channel", "inactivitySubmissionsChannelId", textChannels, "select-inactivity-submissions-channel")}
+                        {renderChannelSelect("Inactivity Log Channel", "inactivityLogChannelId", textChannels, "select-inactivity-log-channel")}
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="roles">
+                      <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
+                        {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "badge-payout-role")}
+                        {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "badge-modmail-block-role")}
+                        {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "badge-modmail-claim-role")}
+                        {renderRoleSection("Snippet Roles", "snippetRoleIds", "badge-snippet-role")}
+                        {renderRoleSection("Activity Command Roles", "activityRoleIds", "badge-activity-role")}
+                        {renderRoleSection("Message Command Roles", "messageCommandRoleIds", "badge-message-role")}
+                        {renderRoleSection("Roster Command Roles", "rosterCommandRoleIds", "badge-roster-role")}
+                        {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "badge-rolecmd-role")}
+                        {renderRoleSection("Tracked Activity Roles", "activityTrackedRoleIds", "badge-tracked-role")}
+                        {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "badge-reset-role")}
+                        {renderRoleSection("Inactivity Ping Roles", "inactivityPingRoleIds", "badge-inactivity-role")}
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="embeds">
+                      <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label>Modmail Embed Title</Label>
+                            <Input value={config.modmailEmbedTitle || ""} onChange={(e) => updateConfig("modmailEmbedTitle", e.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Appeal Embed Title</Label>
+                            <Input value={config.appealEmbedTitle || ""} onChange={(e) => updateConfig("appealEmbedTitle", e.target.value)} />
+                          </div>
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label>Modmail Embed Description</Label>
+                            <Textarea value={config.modmailEmbedDescription || ""} onChange={(e) => updateConfig("modmailEmbedDescription", e.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Appeal Embed Description</Label>
+                            <Textarea value={config.appealEmbedDescription || ""} onChange={(e) => updateConfig("appealEmbedDescription", e.target.value)} />
+                          </div>
+                        </div>
+
+                        <Separator />
+
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label>Staff Intro Embed Title</Label>
+                            <Input value={config.staffIntroEmbedTitle || ""} onChange={(e) => updateConfig("staffIntroEmbedTitle", e.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Inactivity Embed Title</Label>
+                            <Input value={config.inactivityEmbedTitle || ""} onChange={(e) => updateConfig("inactivityEmbedTitle", e.target.value)} />
+                          </div>
+                        </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label>Staff Intro Embed Description</Label>
+                            <Textarea value={config.staffIntroEmbedDescription || ""} onChange={(e) => updateConfig("staffIntroEmbedDescription", e.target.value)} />
+                          </div>
+                          <div className="space-y-2">
+                            <Label>Inactivity Embed Description</Label>
+                            <Textarea value={config.inactivityEmbedDescription || ""} onChange={(e) => updateConfig("inactivityEmbedDescription", e.target.value)} />
+                          </div>
+                        </div>
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="advanced">
+                      <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
+                        <div className="space-y-2">
+                          <Label>customCategoryPings (JSON object)</Label>
+                          <Textarea
+                            value={customCategoryPingsText}
+                            onChange={(e) => {
+                              setCustomCategoryPingsText(e.target.value);
+                              updateConfig("customCategoryPings", e.target.value);
+                            }}
+                            className="min-h-[180px] font-mono text-xs"
+                            data-testid="textarea-custom-category-pings"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>customModmailCategories (JSON array)</Label>
+                          <Textarea
+                            value={customModmailCategoriesText}
+                            onChange={(e) => setCustomModmailCategoriesText(e.target.value)}
+                            className="min-h-[180px] font-mono text-xs"
+                            data-testid="textarea-custom-modmail-categories"
+                          />
+                        </div>
+                      </div>
+                    </TabsContent>
+                  </Tabs>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="features" className="space-y-0">
+              <Card className="border-border/80 bg-card/90" data-testid="card-bot-features">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Features</CardTitle>
+                  <CardDescription>Enable or disable modules, then open module settings to configure details.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                     <Input
-                      value={config.commandPrefix || "."}
-                      maxLength={3}
-                      onChange={(e) => updateConfig("commandPrefix", e.target.value)}
-                      placeholder="?"
-                      data-testid="input-command-prefix"
+                      value={moduleSearch}
+                      onChange={(event) => setModuleSearch(event.target.value)}
+                      placeholder="Search features..."
+                      className="pl-9"
+                      data-testid="input-module-search"
                     />
                   </div>
-                  {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-command-log-channel")}
-                  {renderChannelSelect("Moderation Log Channel", "modLogChannelId", textChannels, "select-mod-log-channel")}
-                  {renderChannelSelect("Quiz Log Channel", "quizLogChannelId", textChannels, "select-quiz-log-channel")}
-                </div>
-
-                <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                  {renderRoleSection("Manager Roles (Owner/Administrator)", "modRoleIds", "badge-mod-role")}
-                  {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "badge-modmail-staff-role")}
-                  {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "badge-appeal-staff-role")}
-                </div>
-              </section>
-
-              <Tabs value={activeSettingsTab} onValueChange={(value) => setActiveSettingsTab(value as SettingsTabKey)} className="space-y-4">
-                <TabsList className="grid h-auto w-full grid-cols-2 gap-2 p-1 md:grid-cols-4">
-                  <TabsTrigger value="channels"><Hash className="mr-2 h-4 w-4" />Channels</TabsTrigger>
-                  <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Role Access</TabsTrigger>
-                  <TabsTrigger value="embeds">Embeds</TabsTrigger>
-                  <TabsTrigger value="advanced"><Braces className="mr-2 h-4 w-4" />Advanced</TabsTrigger>
-                </TabsList>
-
-                <TabsContent value="channels">
-                  <div className="grid gap-4 rounded-lg border border-border/70 bg-muted/20 p-4 md:grid-cols-2">
-                    {renderChannelSelect("Payout Request Channel", "requestChannelId", textChannels, "select-request-channel")}
-                    {renderChannelSelect("Payout Log Channel", "logChannelId", textChannels, "select-log-channel")}
-                    {renderChannelSelect("Modmail Category", "modmailCategoryId", categoryChannels, "select-modmail-category")}
-                    {renderChannelSelect("Modmail Log Channel", "modmailLogChannelId", textChannels, "select-modmail-log-channel")}
-                    {renderChannelSelect("Appeal Category", "appealCategoryId", categoryChannels, "select-appeal-category")}
-                    {renderChannelSelect("Appeal Log Channel", "appealLogChannelId", textChannels, "select-appeal-log-channel")}
-                    {renderChannelSelect("Staff Intro Channel", "staffIntroChannelId", textChannels, "select-staff-intro-channel")}
-                    {renderChannelSelect("Staff Intro Submission Channel", "staffIntroSubmissionsChannelId", textChannels, "select-staff-intro-submissions-channel")}
-                    {renderChannelSelect("Inactivity Channel", "inactivityChannelId", textChannels, "select-inactivity-channel")}
-                    {renderChannelSelect("Inactivity Submission Channel", "inactivitySubmissionsChannelId", textChannels, "select-inactivity-submissions-channel")}
-                    {renderChannelSelect("Inactivity Log Channel", "inactivityLogChannelId", textChannels, "select-inactivity-log-channel")}
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {filteredModules.map((module) => (
+                      <div key={module.id} className="rounded-lg border border-border/70 bg-card/40 p-4">
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-semibold">{module.name}</p>
+                            <p className="mt-1 text-sm text-muted-foreground">{module.description}</p>
+                          </div>
+                          <Switch
+                            checked={module.enabled}
+                            onCheckedChange={(nextChecked) => setFeatureEnabled(module.id, nextChecked)}
+                            data-testid={`switch-module-${module.id}`}
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={module.enabled ? "default" : "secondary"}>
+                            {module.enabled ? "Enabled" : "Disabled"}
+                          </Badge>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setActivePrimaryTab("settings");
+                              setActiveSettingsTab(module.tab);
+                            }}
+                            data-testid={`button-module-settings-${module.id}`}
+                          >
+                            <Settings className="mr-2 h-3.5 w-3.5" />
+                            Settings
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                </TabsContent>
-
-                <TabsContent value="roles">
-                  <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                    {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "badge-payout-role")}
-                    {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "badge-modmail-block-role")}
-                    {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "badge-modmail-claim-role")}
-                    {renderRoleSection("Snippet Roles", "snippetRoleIds", "badge-snippet-role")}
-                    {renderRoleSection("Activity Command Roles", "activityRoleIds", "badge-activity-role")}
-                    {renderRoleSection("Message Command Roles", "messageCommandRoleIds", "badge-message-role")}
-                    {renderRoleSection("Roster Command Roles", "rosterCommandRoleIds", "badge-roster-role")}
-                    {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "badge-rolecmd-role")}
-                    {renderRoleSection("Tracked Activity Roles", "activityTrackedRoleIds", "badge-tracked-role")}
-                    {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "badge-reset-role")}
-                    {renderRoleSection("Inactivity Ping Roles", "inactivityPingRoleIds", "badge-inactivity-role")}
-                  </div>
-                </TabsContent>
-
-                <TabsContent value="embeds">
-                  <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>Modmail Embed Title</Label>
-                        <Input value={config.modmailEmbedTitle || ""} onChange={(e) => updateConfig("modmailEmbedTitle", e.target.value)} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Appeal Embed Title</Label>
-                        <Input value={config.appealEmbedTitle || ""} onChange={(e) => updateConfig("appealEmbedTitle", e.target.value)} />
-                      </div>
-                    </div>
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>Modmail Embed Description</Label>
-                        <Textarea value={config.modmailEmbedDescription || ""} onChange={(e) => updateConfig("modmailEmbedDescription", e.target.value)} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Appeal Embed Description</Label>
-                        <Textarea value={config.appealEmbedDescription || ""} onChange={(e) => updateConfig("appealEmbedDescription", e.target.value)} />
-                      </div>
-                    </div>
-
-                    <Separator />
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>Staff Intro Embed Title</Label>
-                        <Input value={config.staffIntroEmbedTitle || ""} onChange={(e) => updateConfig("staffIntroEmbedTitle", e.target.value)} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Inactivity Embed Title</Label>
-                        <Input value={config.inactivityEmbedTitle || ""} onChange={(e) => updateConfig("inactivityEmbedTitle", e.target.value)} />
-                      </div>
-                    </div>
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label>Staff Intro Embed Description</Label>
-                        <Textarea value={config.staffIntroEmbedDescription || ""} onChange={(e) => updateConfig("staffIntroEmbedDescription", e.target.value)} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Inactivity Embed Description</Label>
-                        <Textarea value={config.inactivityEmbedDescription || ""} onChange={(e) => updateConfig("inactivityEmbedDescription", e.target.value)} />
-                      </div>
-                    </div>
-                  </div>
-                </TabsContent>
-
-                <TabsContent value="advanced">
-                  <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                    <div className="space-y-2">
-                      <Label>customCategoryPings (JSON object)</Label>
-                      <Textarea
-                        value={customCategoryPingsText}
-                        onChange={(e) => setCustomCategoryPingsText(e.target.value)}
-                        className="min-h-[180px] font-mono text-xs"
-                        data-testid="textarea-custom-category-pings"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>customModmailCategories (JSON array)</Label>
-                      <Textarea
-                        value={customModmailCategoriesText}
-                        onChange={(e) => setCustomModmailCategoriesText(e.target.value)}
-                        className="min-h-[180px] font-mono text-xs"
-                        data-testid="textarea-custom-modmail-categories"
-                      />
-                    </div>
-                  </div>
-                </TabsContent>
-              </Tabs>
-            </CardContent>
-          </Card>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         )}
       </div>
     </div>
