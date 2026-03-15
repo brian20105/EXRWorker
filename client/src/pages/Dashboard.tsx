@@ -3,13 +3,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, ExternalLink, Copy, Hash, Braces, Moon, Sun } from "lucide-react";
+import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, ExternalLink, Copy, Hash, Braces, Moon, Sun, ChevronDown } from "lucide-react";
 import { useTheme } from "next-themes";
 
 interface Guild {
@@ -82,13 +83,6 @@ interface AuthUser {
 const NONE_VALUE = "__none";
 const CATEGORY_CHANNEL_TYPE = 4;
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
-
-function roleChipStyle(isSelected: boolean, role: Role): React.CSSProperties {
-  return {
-    backgroundColor: isSelected ? role.color : undefined,
-    borderColor: role.color,
-  };
-}
 
 export default function Dashboard() {
   const [guilds, setGuilds] = useState<Guild[]>([]);
@@ -317,22 +311,48 @@ export default function Dashboard() {
   const renderRoleSection = (label: string, key: keyof GuildConfig, testIdPrefix: string) => (
     <div className="space-y-3">
       <Label>{label}</Label>
-      <div className="flex flex-wrap gap-2">
-        {roles.map((role) => {
-          const selected = ((config[key] as string[] | undefined) || []).includes(role.id);
-          return (
-            <Badge
-              key={role.id}
-              variant={selected ? "default" : "outline"}
-              className="cursor-pointer"
-              style={roleChipStyle(selected, role)}
-              onClick={() => toggleRole(key, role.id)}
-              data-testid={`${testIdPrefix}-${role.id}`}
-            >
-              {role.name}
-            </Badge>
-          );
-        })}
+      <div className="space-y-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
+              <span className="truncate text-left">
+                {(((config[key] as string[] | undefined) || []).length || 0) > 0
+                  ? `${((config[key] as string[] | undefined) || []).length} role(s) selected`
+                  : "Select roles"}
+              </span>
+              <ChevronDown className="h-4 w-4 opacity-70" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="max-h-72 w-80">
+            {roles.map((role) => {
+              const selected = ((config[key] as string[] | undefined) || []).includes(role.id);
+              return (
+                <DropdownMenuCheckboxItem
+                  key={role.id}
+                  checked={selected}
+                  onCheckedChange={() => toggleRole(key, role.id)}
+                  data-testid={`${testIdPrefix}-${role.id}`}
+                >
+                  {role.name}
+                </DropdownMenuCheckboxItem>
+              );
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <div className="flex flex-wrap gap-2">
+          {roles
+            .filter((role) => ((config[key] as string[] | undefined) || []).includes(role.id))
+            .slice(0, 8)
+            .map((role) => (
+              <Badge key={role.id} variant="secondary" className="max-w-[220px] truncate" title={role.name}>
+                {role.name}
+              </Badge>
+            ))}
+          {(((config[key] as string[] | undefined) || []).length || 0) > 8 && (
+            <Badge variant="outline">+{(((config[key] as string[] | undefined) || []).length || 0) - 8} more</Badge>
+          )}
+        </div>
       </div>
     </div>
   );

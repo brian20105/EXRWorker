@@ -91,7 +91,31 @@ function clearSessionCookie(req: Request, res: Response) {
   appendCookie(res, cookie);
 }
 
-function getDiscordRedirectUri(): string {
+function getRequestOrigin(req: Request): string {
+  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http").split(",")[0].trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost:5000").split(",")[0].trim();
+  return `${proto}://${host}`;
+}
+
+function getDiscordRedirectUri(req?: Request): string {
+  if (req) {
+    const requestBased = `${getRequestOrigin(req)}/api/auth/discord/callback`;
+    const configured = (process.env.DISCORD_REDIRECT_URI || "").trim();
+    if (!configured) return requestBased;
+
+    try {
+      const configuredUrl = new URL(configured);
+      const requestUrl = new URL(requestBased);
+      if (configuredUrl.hostname !== requestUrl.hostname) {
+        return requestBased;
+      }
+    } catch {
+      return requestBased;
+    }
+
+    return configured;
+  }
+
   const configured = (process.env.DISCORD_REDIRECT_URI || "").trim();
   if (configured) return configured;
 
@@ -179,7 +203,7 @@ export async function registerRoutes(
     const secure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
     appendCookie(res, `${OAUTH_STATE_COOKIE}=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${secure ? "; Secure" : ""}`);
 
-    const redirectUri = encodeURIComponent(getDiscordRedirectUri());
+    const redirectUri = encodeURIComponent(getDiscordRedirectUri(req));
     const scope = encodeURIComponent("identify");
     const authorizeUrl = `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(clientId)}&response_type=code&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`;
     res.redirect(authorizeUrl);
@@ -208,7 +232,7 @@ export async function registerRoutes(
           client_secret: clientSecret,
           grant_type: "authorization_code",
           code,
-          redirect_uri: getDiscordRedirectUri(),
+          redirect_uri: getDiscordRedirectUri(req),
         }),
       });
 

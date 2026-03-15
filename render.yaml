@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: thrill-payment-worker-bot
+    name: expertworker
     env: node
     plan: free
     buildCommand: npm install; npm run build
@@ -8,11 +8,11 @@ services:
     autoDeploy: true
     envVars:
       - key: DASHBOARD_URL
-        value: https://thrill-payment-worker-bot.onrender.com
+        value: https://expertworker.onrender.com
       - key: DISCORD_CLIENT_ID
         value: "1447870937214222347"
       - key: DISCORD_REDIRECT_URI
-        value: https://thrill-payment-worker-bot.onrender.com/api/auth/discord/callback
+        value: https://expertworker.onrender.com/api/auth/discord/callback
       - key: DISCORD_CLIENT_SECRET
         sync: false
       - key: DASHBOARD_AUTH_SECRET
