@@ -917,11 +917,30 @@ function writeWelcomeSetupToConfig(
 }
 
 function buildWelcomeJoinEmbed(member: any, setup: WelcomeSetupConfig): EmbedBuilder {
-  const renderedMessage = (setup.message || DEFAULT_WELCOME_SETUP.message)
-    .replace(/\{user\}/gi, `<@${member.id}>`)
-    .replace(/\{username\}/gi, member.user.username)
-    .replace(/\{server\}/gi, member.guild.name)
-    .replace(/\{membercount\}/gi, String(member.guild.memberCount || 0));
+  const joinDate = member?.joinedAt instanceof Date ? member.joinedAt : null;
+  const createdDate = member?.user?.createdAt instanceof Date ? member.user.createdAt : null;
+  const joinedAtDisplay = joinDate ? joinDate.toLocaleString() : "Unknown";
+  const createdAtDisplay = createdDate ? createdDate.toLocaleString() : "Unknown";
+
+  const templateValues: Record<string, string> = {
+    user: `<@${member.id}>`,
+    mention: `<@${member.id}>`,
+    username: member?.user?.username || "Unknown User",
+    displayname: member?.displayName || member?.user?.username || "Unknown User",
+    userid: member?.id || "",
+    server: member?.guild?.name || "Unknown Server",
+    serverid: member?.guild?.id || "",
+    membercount: String(member?.guild?.memberCount || 0),
+    member_count: String(member?.guild?.memberCount || 0),
+    joinedat: joinedAtDisplay,
+    joined_at: joinedAtDisplay,
+    createdat: createdAtDisplay,
+    created_at: createdAtDisplay,
+  };
+
+  const renderedMessage = Object.entries(templateValues).reduce((output, [key, value]) => {
+    return output.replace(new RegExp(`\\{${key}\\}`, "gi"), value);
+  }, setup.message || DEFAULT_WELCOME_SETUP.message);
 
   const embed = new EmbedBuilder()
     .setDescription(renderedMessage)

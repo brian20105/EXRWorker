@@ -844,7 +844,18 @@ export default function Dashboard() {
                 <p className="mt-2 text-sm text-muted-foreground">Use these placeholders in embed messages:</p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Badge variant="outline">{"{user}"}</Badge>
+                  <Badge variant="outline">{"{mention}"}</Badge>
+                  <Badge variant="outline">{"{username}"}</Badge>
+                  <Badge variant="outline">{"{displayname}"}</Badge>
+                  <Badge variant="outline">{"{userid}"}</Badge>
                   <Badge variant="outline">{"{server}"}</Badge>
+                  <Badge variant="outline">{"{serverid}"}</Badge>
+                  <Badge variant="outline">{"{membercount}"}</Badge>
+                  <Badge variant="outline">{"{member_count}"}</Badge>
+                  <Badge variant="outline">{"{joinedat}"}</Badge>
+                  <Badge variant="outline">{"{joined_at}"}</Badge>
+                  <Badge variant="outline">{"{createdat}"}</Badge>
+                  <Badge variant="outline">{"{created_at}"}</Badge>
                 </div>
               </div>
             </div>
