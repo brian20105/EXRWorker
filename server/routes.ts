@@ -362,6 +362,24 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/guilds/:guildId/leave", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) {
+        return res.status(404).json({ error: "Server not found." });
+      }
+
+      await guild.leave();
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to leave server." });
+    }
+  });
+
   app.get("/api/guilds/:guildId/config", async (req, res) => {
     try {
       const auth = await requireGuildAccess(req, res);

@@ -133,6 +133,7 @@ export default function Dashboard() {
   const [guildName, setGuildName] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [leavingGuildId, setLeavingGuildId] = useState<string | null>(null);
   const [botStatus, setBotStatus] = useState<"checking" | "online" | "offline">("checking");
   const [applicationId, setApplicationId] = useState<string | null>(null);
   const [themeMounted, setThemeMounted] = useState(false);
@@ -281,6 +282,35 @@ export default function Dashboard() {
     setCurrentUser(null);
     setSelectedGuild(null);
     toast({ title: "Signed out", description: "You have been logged out from dashboard access." });
+  };
+
+  const leaveServer = async (guild: Guild) => {
+    const confirmed = window.confirm(`Make the bot leave ${guild.name}?`);
+    if (!confirmed) return;
+
+    setLeavingGuildId(guild.id);
+    try {
+      const res = await fetch(`/api/guilds/${guild.id}/leave`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({
+          title: "Leave failed",
+          description: data?.error || "Could not make the bot leave this server.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setGuilds((prev) => prev.filter((entry) => entry.id !== guild.id));
+      if (selectedGuild === guild.id) {
+        setSelectedGuild(null);
+        setLocation("/dashboard");
+      }
+      toast({ title: "Bot left server", description: `${guild.name} removed.` });
+    } catch {
+      toast({ title: "Leave failed", description: "Network error while leaving server.", variant: "destructive" });
+    }
+    setLeavingGuildId(null);
   };
 
   const updateConfig = <K extends keyof GuildConfig>(key: K, value: GuildConfig[K]) => {
@@ -1137,12 +1167,6 @@ export default function Dashboard() {
             </CardHeader>
             {inviteUrl && (
               <CardContent className="flex flex-wrap gap-2 pt-0">
-                <Button asChild className="min-w-[220px] flex-1" data-testid="button-invite-bot">
-                  <a href={inviteUrl} target="_blank" rel="noopener noreferrer">
-                    <ExternalLink className="mr-2 h-4 w-4" />
-                    Add Bot to Server
-                  </a>
-                </Button>
                 <Button variant="outline" onClick={() => copyToClipboard(inviteUrl, "Invite link")} data-testid="button-copy-invite">
                   <Copy className="h-4 w-4" />
                 </Button>
@@ -1163,32 +1187,42 @@ export default function Dashboard() {
               ) : (
                 <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
                   {guilds.map((guild) => (
-                    <button
-                      key={guild.id}
-                      type="button"
-                      className="group text-left"
-                      onClick={() => {
-                        setSelectedGuild(guild.id);
-                        setLocation("/dashboard");
-                      }}
-                      data-testid={`card-guild-${guild.id}`}
-                    >
-                      <div className="overflow-hidden rounded-xl border border-border bg-card/60 transition-all duration-200 ease-out group-hover:-translate-y-1 group-hover:border-primary/60">
-                        <div className="aspect-square w-full overflow-hidden">
-                          {guild.icon ? (
-                            <img src={guild.icon} alt={guild.name} className="h-full w-full object-cover" />
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center bg-muted">
-                              <Server className="h-12 w-12 text-muted-foreground" />
-                            </div>
-                          )}
+                    <div key={guild.id} className="group text-left" data-testid={`card-guild-${guild.id}`}>
+                      <button
+                        type="button"
+                        className="w-full"
+                        onClick={() => {
+                          setSelectedGuild(guild.id);
+                          setLocation("/dashboard");
+                        }}
+                      >
+                        <div className="overflow-hidden rounded-xl border border-border bg-card/60 transition-all duration-200 ease-out group-hover:-translate-y-1 group-hover:border-primary/60">
+                          <div className="aspect-square w-full overflow-hidden">
+                            {guild.icon ? (
+                              <img src={guild.icon} alt={guild.name} className="h-full w-full object-cover" />
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center bg-muted">
+                                <Server className="h-12 w-12 text-muted-foreground" />
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <div className="mt-3 space-y-1 text-center">
-                        <p className="line-clamp-2 font-medium leading-tight group-hover:text-primary">{guild.name}</p>
-                        <p className="text-xs text-muted-foreground">{guild.memberCount} members</p>
-                      </div>
-                    </button>
+                        <div className="mt-3 space-y-1 text-center">
+                          <p className="line-clamp-2 font-medium leading-tight group-hover:text-primary">{guild.name}</p>
+                          <p className="text-xs text-muted-foreground">{guild.memberCount} members</p>
+                        </div>
+                      </button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        className="mt-2 w-full"
+                        onClick={() => leaveServer(guild)}
+                        disabled={leavingGuildId === guild.id}
+                        data-testid={`button-leave-guild-${guild.id}`}
+                      >
+                        {leavingGuildId === guild.id ? "Leaving..." : "Leave Server"}
+                      </Button>
+                    </div>
                   ))}
                 </div>
               )}
