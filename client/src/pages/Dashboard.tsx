@@ -101,6 +101,15 @@ interface DashboardPermissionSettings {
   prefixRetimeRoleIds: string[];
 }
 
+interface DashboardWelcomeEmbedSettings {
+  message: string;
+  author: string;
+  authorIcon: string;
+  footer: string;
+  footerIcon: string;
+  color: string;
+}
+
 interface BotFeatureModule {
   id: string;
   name: string;
@@ -150,6 +159,14 @@ export default function Dashboard() {
     prefixModlogsRoleIds: [],
     prefixReasonRoleIds: [],
     prefixRetimeRoleIds: [],
+  });
+  const [welcomeEmbedSettings, setWelcomeEmbedSettings] = useState<DashboardWelcomeEmbedSettings>({
+    message: "Welcome {user} to **{server}**!",
+    author: "Welcome",
+    authorIcon: "",
+    footer: "Enjoy your stay",
+    footerIcon: "",
+    color: "57f287",
   });
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
@@ -223,6 +240,7 @@ export default function Dashboard() {
         setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
         setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setPermissionSettings(getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+        setWelcomeEmbedSettings(getWelcomeEmbedSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setActivePrimaryTab("settings");
         setActiveSettingsTab("channels");
         setModuleSearch("");
@@ -376,6 +394,31 @@ export default function Dashboard() {
     };
   };
 
+  const getWelcomeEmbedSettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardWelcomeEmbedSettings => {
+    const parsed = parseJsonObjectSafely(raw);
+    const welcomeRaw = parsed.__welcomeSetup;
+    const welcomeSetup = welcomeRaw && typeof welcomeRaw === "object" && !Array.isArray(welcomeRaw)
+      ? welcomeRaw as Record<string, unknown>
+      : {};
+
+    const colorValue = typeof welcomeSetup.color === "number"
+      ? welcomeSetup.color.toString(16)
+      : typeof welcomeSetup.color === "string"
+        ? welcomeSetup.color
+        : "57f287";
+
+    return {
+      message: typeof welcomeSetup.message === "string" && welcomeSetup.message.trim().length > 0
+        ? welcomeSetup.message
+        : "Welcome {user} to **{server}**!",
+      author: typeof welcomeSetup.author === "string" ? welcomeSetup.author : "Welcome",
+      authorIcon: typeof welcomeSetup.authorIcon === "string" ? welcomeSetup.authorIcon : "",
+      footer: typeof welcomeSetup.footer === "string" ? welcomeSetup.footer : "Enjoy your stay",
+      footerIcon: typeof welcomeSetup.footerIcon === "string" ? welcomeSetup.footerIcon : "",
+      color: colorValue.replace(/^#/, "") || "57f287",
+    };
+  };
+
   const syncFeatureFlagsState = (guildConfig: GuildConfig, customCategoryPingsRaw: string | null | undefined) => {
     const defaults = getDefaultFeatureEnabledMap(guildConfig);
     const overrides = getFeatureFlagOverrides(customCategoryPingsRaw);
@@ -471,6 +514,17 @@ export default function Dashboard() {
     };
     categoryPingsObject.__stickyRoleIds = permissionSettings.stickyCommandRoleIds;
     categoryPingsObject.__roleRequestRoleIds = permissionSettings.roleRequestCommandRoleIds;
+    categoryPingsObject.__welcomeSetup = {
+      ...(categoryPingsObject.__welcomeSetup && typeof categoryPingsObject.__welcomeSetup === "object" && !Array.isArray(categoryPingsObject.__welcomeSetup)
+        ? categoryPingsObject.__welcomeSetup
+        : {}),
+      message: welcomeEmbedSettings.message,
+      author: welcomeEmbedSettings.author,
+      authorIcon: welcomeEmbedSettings.authorIcon,
+      footer: welcomeEmbedSettings.footer,
+      footerIcon: welcomeEmbedSettings.footerIcon,
+      color: parseInt((welcomeEmbedSettings.color || "57f287").replace(/^#/, ""), 16) || 0x57f287,
+    };
 
     const parsedCategoryPings = JSON.stringify(categoryPingsObject, null, 2);
 
@@ -695,22 +749,103 @@ export default function Dashboard() {
           )}
 
           {moduleId === "embeds" && (
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Modmail Embed Title</Label>
-                <Input value={config.modmailEmbedTitle || ""} onChange={(event) => updateConfig("modmailEmbedTitle", event.target.value)} />
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Modmail Embed Title</Label>
+                  <Input value={config.modmailEmbedTitle || ""} onChange={(event) => updateConfig("modmailEmbedTitle", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Appeal Embed Title</Label>
+                  <Input value={config.appealEmbedTitle || ""} onChange={(event) => updateConfig("appealEmbedTitle", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Modmail Embed Description</Label>
+                  <Textarea value={config.modmailEmbedDescription || ""} onChange={(event) => updateConfig("modmailEmbedDescription", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Appeal Embed Description</Label>
+                  <Textarea value={config.appealEmbedDescription || ""} onChange={(event) => updateConfig("appealEmbedDescription", event.target.value)} />
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label>Appeal Embed Title</Label>
-                <Input value={config.appealEmbedTitle || ""} onChange={(event) => updateConfig("appealEmbedTitle", event.target.value)} />
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Staff Intro Embed Title</Label>
+                  <Input value={config.staffIntroEmbedTitle || ""} onChange={(event) => updateConfig("staffIntroEmbedTitle", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Inactivity Embed Title</Label>
+                  <Input value={config.inactivityEmbedTitle || ""} onChange={(event) => updateConfig("inactivityEmbedTitle", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Staff Intro Embed Description</Label>
+                  <Textarea value={config.staffIntroEmbedDescription || ""} onChange={(event) => updateConfig("staffIntroEmbedDescription", event.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Inactivity Embed Description</Label>
+                  <Textarea value={config.inactivityEmbedDescription || ""} onChange={(event) => updateConfig("inactivityEmbedDescription", event.target.value)} />
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label>Modmail Embed Description</Label>
-                <Textarea value={config.modmailEmbedDescription || ""} onChange={(event) => updateConfig("modmailEmbedDescription", event.target.value)} />
+
+              <Separator />
+
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Welcome Embed</h3>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Welcome Message</Label>
+                    <Textarea
+                      value={welcomeEmbedSettings.message}
+                      onChange={(event) => setWelcomeEmbedSettings((prev) => ({ ...prev, message: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Author</Label>
+                    <Input
+                      value={welcomeEmbedSettings.author}
+                      onChange={(event) => setWelcomeEmbedSettings((prev) => ({ ...prev, author: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Author Icon URL</Label>
+                    <Input
+                      value={welcomeEmbedSettings.authorIcon}
+                      onChange={(event) => setWelcomeEmbedSettings((prev) => ({ ...prev, authorIcon: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Footer</Label>
+                    <Input
+                      value={welcomeEmbedSettings.footer}
+                      onChange={(event) => setWelcomeEmbedSettings((prev) => ({ ...prev, footer: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Footer Icon URL</Label>
+                    <Input
+                      value={welcomeEmbedSettings.footerIcon}
+                      onChange={(event) => setWelcomeEmbedSettings((prev) => ({ ...prev, footerIcon: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Color (hex)</Label>
+                    <Input
+                      value={welcomeEmbedSettings.color}
+                      onChange={(event) => setWelcomeEmbedSettings((prev) => ({ ...prev, color: event.target.value.replace(/[^0-9a-fA-F]/g, "") }))}
+                      placeholder="57f287"
+                    />
+                  </div>
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label>Appeal Embed Description</Label>
-                <Textarea value={config.appealEmbedDescription || ""} onChange={(event) => updateConfig("appealEmbedDescription", event.target.value)} />
+
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Template Variables</h3>
+                <p className="mt-2 text-sm text-muted-foreground">Use these placeholders in embed messages:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">{"{user}"}</Badge>
+                  <Badge variant="outline">{"{server}"}</Badge>
+                </div>
               </div>
             </div>
           )}
