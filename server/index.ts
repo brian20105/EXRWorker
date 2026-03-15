@@ -114,7 +114,12 @@ app.use((req, res, next) => {
     process.exit(1);
   });
 
-  // Start Discord bot
-  const { startBot } = await import("./bot");
-  await startBot();
+  // Start Discord bot (optional via RUN_BOT env)
+  const runBot = (process.env.RUN_BOT || "true").trim().toLowerCase() !== "false";
+  if (runBot) {
+    const { startBot } = await import("./bot");
+    await startBot();
+  } else {
+    log("RUN_BOT=false, skipping Discord bot startup", "server");
+  }
 })();

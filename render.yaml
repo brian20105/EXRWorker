@@ -17,3 +17,5 @@ services:
         sync: false
       - key: DASHBOARD_AUTH_SECRET
         sync: false
+      - key: RUN_BOT
+        value: "false"
