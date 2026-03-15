@@ -189,6 +189,52 @@ function getDashboardUrl(): string {
   return `http://localhost:${port}`;
 }
 
+function getBotNicknameFromCustomCategoryPings(raw: unknown): { hasBotNickname: boolean; botNickname: string | null } {
+  if (typeof raw !== "string") {
+    return { hasBotNickname: false, botNickname: null };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { hasBotNickname: false, botNickname: null };
+    }
+
+    const quickSettings = (parsed as Record<string, unknown>)["__dashboardQuickSettings"];
+    if (!quickSettings || typeof quickSettings !== "object" || Array.isArray(quickSettings)) {
+      return { hasBotNickname: false, botNickname: null };
+    }
+
+    const nicknameRaw = (quickSettings as Record<string, unknown>).botNickname;
+    if (typeof nicknameRaw !== "string") {
+      return { hasBotNickname: false, botNickname: null };
+    }
+
+    const normalized = nicknameRaw.trim();
+    return {
+      hasBotNickname: true,
+      botNickname: normalized.length > 0 ? normalized.slice(0, 32) : null,
+    };
+  } catch {
+    return { hasBotNickname: false, botNickname: null };
+  }
+}
+
+async function applyGuildBotNickname(guildId: string, nickname: string | null): Promise<void> {
+  if (!client.isReady() || !client.user) return;
+
+  const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) return;
+
+  const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!me) return;
+
+  const currentNickname = me.nickname || null;
+  if (currentNickname === nickname) return;
+
+  await me.setNickname(nickname).catch(() => undefined);
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -428,6 +474,15 @@ export async function registerRoutes(
       
       await storage.upsertGuildConfig({ guildId, ...updates });
       const config = await storage.getGuildConfig(guildId);
+
+      const nicknameInput = getBotNicknameFromCustomCategoryPings(
+        typeof updates.customCategoryPings === "string"
+          ? updates.customCategoryPings
+          : config?.customCategoryPings
+      );
+      if (nicknameInput.hasBotNickname) {
+        await applyGuildBotNickname(guildId, nicknameInput.botNickname);
+      }
       
       res.json({ success: true, config });
     } catch (e: any) {
