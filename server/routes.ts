@@ -171,13 +171,10 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
 
 function getDashboardUrl(): string {
   const port = process.env.PORT || "5000";
-
-  if (process.env.NODE_ENV !== "production") {
-    return `http://localhost:${port}`;
-  }
+  const defaultDashboardUrl = "https://expertworker.onrender.com";
 
   const configured = (process.env.DASHBOARD_URL || "").trim();
-  if (configured) return configured;
+  if (configured) return configured.replace(/\/+$/, "");
 
   const configuredDomain = (process.env.DASHBOARD_DOMAIN || "").trim();
   if (configuredDomain) {
@@ -187,7 +184,11 @@ function getDashboardUrl(): string {
   const renderUrl = (process.env.RENDER_EXTERNAL_URL || "").trim();
   if (renderUrl) return renderUrl.replace(/\/+$/, "");
 
-  return `http://localhost:${port}`;
+  if (process.env.NODE_ENV !== "production") {
+    return `http://localhost:${port}`;
+  }
+
+  return defaultDashboardUrl;
 }
 
 function getBotNicknameFromCustomCategoryPings(raw: unknown): { hasBotNickname: boolean; botNickname: string | null } {
