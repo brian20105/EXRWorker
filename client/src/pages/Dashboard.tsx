@@ -9,8 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, ExternalLink, Copy, Hash, Braces, Moon, Sun, ChevronDown } from "lucide-react";
+import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, ExternalLink, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings } from "lucide-react";
 import { useTheme } from "next-themes";
 
 interface Guild {
@@ -80,6 +81,16 @@ interface AuthUser {
   avatar: string | null;
 }
 
+type SettingsTabKey = "channels" | "roles" | "embeds" | "advanced";
+
+interface BotFeatureModule {
+  id: string;
+  name: string;
+  description: string;
+  tab: SettingsTabKey;
+  enabled: boolean;
+}
+
 const NONE_VALUE = "__none";
 const CATEGORY_CHANNEL_TYPE = 4;
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
@@ -98,6 +109,8 @@ export default function Dashboard() {
   const [themeMounted, setThemeMounted] = useState(false);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [roleSearches, setRoleSearches] = useState<Record<string, string>>({});
+  const [moduleSearch, setModuleSearch] = useState("");
+  const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabKey>("channels");
   const [customCategoryPingsText, setCustomCategoryPingsText] = useState("{}");
   const [customModmailCategoriesText, setCustomModmailCategoriesText] = useState("[]");
   const { theme, setTheme } = useTheme();
@@ -280,6 +293,99 @@ export default function Dashboard() {
 
   const categoryChannels = channels.filter((c) => c.type === CATEGORY_CHANNEL_TYPE);
   const textChannels = channels.filter((c) => TEXT_CHANNEL_TYPES.has(c.type));
+
+  const hasJsonPayload = (value: string | null | undefined, emptyValue: string) => {
+    const normalized = (value || "").trim();
+    return normalized.length > 0 && normalized !== emptyValue;
+  };
+
+  const botFeatureModules: BotFeatureModule[] = [
+    {
+      id: "modmail",
+      name: "Modmail",
+      description: "Ticket intake and staff response system.",
+      tab: "channels",
+      enabled: !!(config.modmailCategoryId || config.modmailLogChannelId),
+    },
+    {
+      id: "appeals",
+      name: "Appeals",
+      description: "Appeal workflows with dedicated channels and staff.",
+      tab: "channels",
+      enabled: !!(config.appealCategoryId || config.appealLogChannelId),
+    },
+    {
+      id: "payouts",
+      name: "Payout Requests",
+      description: "Payout intake and logging channels.",
+      tab: "channels",
+      enabled: !!(config.requestChannelId || config.logChannelId),
+    },
+    {
+      id: "moderation",
+      name: "Moderation Logs",
+      description: "Track moderation actions in a configured log channel.",
+      tab: "channels",
+      enabled: !!config.modLogChannelId,
+    },
+    {
+      id: "quiz",
+      name: "Quiz Tracking",
+      description: "Store quiz progress and outcomes in a log channel.",
+      tab: "channels",
+      enabled: !!config.quizLogChannelId,
+    },
+    {
+      id: "staff-intro",
+      name: "Staff Intro",
+      description: "Staff introduction prompts and submission pipeline.",
+      tab: "channels",
+      enabled: !!(config.staffIntroChannelId || config.staffIntroSubmissionsChannelId),
+    },
+    {
+      id: "inactivity",
+      name: "Inactivity",
+      description: "Inactivity requests, routing, and logging.",
+      tab: "channels",
+      enabled: !!(config.inactivityChannelId || config.inactivitySubmissionsChannelId || config.inactivityLogChannelId),
+    },
+    {
+      id: "permissions",
+      name: "Role Permissions",
+      description: "Grant feature access with role-based permissions.",
+      tab: "roles",
+      enabled: !!(
+        (config.modRoleIds?.length || 0)
+        || (config.modmailStaffRoleIds?.length || 0)
+        || (config.appealStaffRoleIds?.length || 0)
+      ),
+    },
+    {
+      id: "embeds",
+      name: "Embed Templates",
+      description: "Customize bot-facing embed messages and titles.",
+      tab: "embeds",
+      enabled: !!(
+        config.modmailEmbedTitle
+        || config.modmailEmbedDescription
+        || config.appealEmbedTitle
+        || config.appealEmbedDescription
+      ),
+    },
+    {
+      id: "advanced",
+      name: "Advanced Categories",
+      description: "Custom category mappings and advanced bot behavior.",
+      tab: "advanced",
+      enabled: hasJsonPayload(config.customCategoryPings, "{}") || hasJsonPayload(config.customModmailCategories, "[]"),
+    },
+  ];
+
+  const filteredModules = botFeatureModules.filter((module) => {
+    const query = moduleSearch.trim().toLowerCase();
+    if (!query) return true;
+    return `${module.name} ${module.description}`.toLowerCase().includes(query);
+  });
 
   const renderChannelSelect = (
     label: string,
@@ -515,6 +621,49 @@ export default function Dashboard() {
               <CardDescription>Configure from web and slash commands using the same settings store.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-8">
+              <section className="space-y-4 rounded-lg border border-border/70 bg-muted/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-xl font-semibold">Bot Features</h2>
+                </div>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={moduleSearch}
+                    onChange={(event) => setModuleSearch(event.target.value)}
+                    placeholder="Search features..."
+                    className="pl-9"
+                    data-testid="input-module-search"
+                  />
+                </div>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {filteredModules.map((module) => (
+                    <div key={module.id} className="rounded-lg border border-border/70 bg-card/40 p-4">
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold">{module.name}</p>
+                          <p className="mt-1 text-sm text-muted-foreground">{module.description}</p>
+                        </div>
+                        <Switch checked={module.enabled} onCheckedChange={() => setActiveSettingsTab(module.tab)} />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={module.enabled ? "default" : "secondary"}>
+                          {module.enabled ? "Enabled" : "Disabled"}
+                        </Badge>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setActiveSettingsTab(module.tab)}
+                          data-testid={`button-module-settings-${module.id}`}
+                        >
+                          <Settings className="mr-2 h-3.5 w-3.5" />
+                          Settings
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
               <section className="grid gap-6 lg:grid-cols-2">
                 <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
                   <div className="space-y-2">
@@ -539,7 +688,7 @@ export default function Dashboard() {
                 </div>
               </section>
 
-              <Tabs defaultValue="channels" className="space-y-4">
+              <Tabs value={activeSettingsTab} onValueChange={(value) => setActiveSettingsTab(value as SettingsTabKey)} className="space-y-4">
                 <TabsList className="grid h-auto w-full grid-cols-2 gap-2 p-1 md:grid-cols-4">
                   <TabsTrigger value="channels"><Hash className="mr-2 h-4 w-4" />Channels</TabsTrigger>
                   <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Role Access</TabsTrigger>
