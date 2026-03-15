@@ -519,9 +519,6 @@ export default function Dashboard() {
       return;
     }
 
-    if (activeModule) {
-      setActivePrimaryTab("settings");
-    }
   }, [moduleRouteMatch, moduleRouteParams?.moduleId, selectedGuild, activeModule]);
 
   const renderActiveModuleSettings = () => {
@@ -918,6 +915,24 @@ export default function Dashboard() {
           <Card>
             <CardContent className="py-10 text-center text-muted-foreground">Loading configuration...</CardContent>
           </Card>
+        ) : activeModule ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setActivePrimaryTab("features");
+                  setLocation("/dashboard");
+                }}
+                data-testid="button-back-to-features"
+              >
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Back to Bot Features
+              </Button>
+            </div>
+            {renderActiveModuleSettings()}
+          </div>
         ) : (
           <Tabs value={activePrimaryTab} onValueChange={(value) => setActivePrimaryTab(value as PrimaryTabKey)} className="space-y-4">
             <TabsList className="grid h-auto w-full grid-cols-2 gap-2 p-1 md:w-[420px]">
@@ -1010,8 +1025,6 @@ export default function Dashboard() {
                   </div>
                 </CardContent>
               </Card>
-
-              {renderActiveModuleSettings()}
             </TabsContent>
 
             <TabsContent value="features" className="space-y-0">
