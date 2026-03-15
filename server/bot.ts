@@ -501,6 +501,7 @@ interface ModerationSetupConfig {
   enabledActions: PrefixModerationAction[];
   protectedRoleIds: string[];
   mutedRoleId: string | null;
+  purgeRoleIds: string[];
   modlogsRoleIds: string[];
   reasonRoleIds: string[];
   retimeRoleIds: string[];
@@ -518,6 +519,7 @@ const DEFAULT_MOD_SETUP: ModerationSetupConfig = {
   enabledActions: [],
   protectedRoleIds: [],
   mutedRoleId: null,
+  purgeRoleIds: [],
   modlogsRoleIds: [],
   reasonRoleIds: [],
   retimeRoleIds: [],
@@ -578,6 +580,7 @@ function getModerationSetupFromConfig(config?: any): ModerationSetupConfig {
     enabledActions: normalizeStringArray(raw.enabledActions).filter((v) => v === "ban" || v === "mute" || v === "kick") as PrefixModerationAction[],
     protectedRoleIds: normalizeStringArray(raw.protectedRoleIds),
     mutedRoleId: typeof raw?.mutedRoleId === "string" && raw.mutedRoleId.trim().length > 0 ? raw.mutedRoleId.trim() : null,
+    purgeRoleIds: normalizeStringArray(raw?.purgeRoleIds),
     modlogsRoleIds: normalizeStringArray(raw?.modlogsRoleIds),
     reasonRoleIds: normalizeStringArray(raw?.reasonRoleIds),
     retimeRoleIds: normalizeStringArray(raw?.retimeRoleIds),
@@ -2781,6 +2784,7 @@ const commands = [
           { name: "Prefix Fakeban Command", value: "prefix_fakeban" },
           { name: "Prefix Mute Command", value: "prefix_mute" },
           { name: "Prefix Kick Command", value: "prefix_kick" },
+          { name: "Prefix Purge Command", value: "prefix_purge" },
           { name: "Prefix Modlogs Command", value: "prefix_modlogs" },
           { name: "Prefix Reason Command", value: "prefix_reason" },
           { name: "Prefix Retime Command", value: "prefix_retime" },
@@ -6935,6 +6939,7 @@ client.on("interactionCreate", async (interaction) => {
           prefix_fakeban: "Prefix Fakeban Command",
           prefix_mute: "Prefix Mute Command",
           prefix_kick: "Prefix Kick Command",
+          prefix_purge: "Prefix Purge Command",
           prefix_modlogs: "Prefix Modlogs Command",
           prefix_reason: "Prefix Reason Command",
           prefix_retime: "Prefix Retime Command",
@@ -6957,7 +6962,7 @@ client.on("interactionCreate", async (interaction) => {
           role_commands: "roleCommandRoleIds",
         };
 
-        if (permType === "prefix_ban" || permType === "prefix_fullban" || permType === "prefix_fakeban" || permType === "prefix_mute" || permType === "prefix_kick" || permType === "prefix_modlogs" || permType === "prefix_reason" || permType === "prefix_retime" || permType === "prefix_clean") {
+        if (permType === "prefix_ban" || permType === "prefix_fullban" || permType === "prefix_fakeban" || permType === "prefix_mute" || permType === "prefix_kick" || permType === "prefix_purge" || permType === "prefix_modlogs" || permType === "prefix_reason" || permType === "prefix_retime" || permType === "prefix_clean") {
           const config = await storage.getGuildConfig(interaction.guildId!);
           const currentSetup = getModerationSetupFromConfig(config);
           const action = permType === "prefix_ban" || permType === "prefix_fullban" || permType === "prefix_fakeban"
@@ -6968,6 +6973,7 @@ client.on("interactionCreate", async (interaction) => {
 
           const updatedSetup: ModerationSetupConfig = {
             ...currentSetup,
+            purgeRoleIds: permType === "prefix_purge" ? roles : currentSetup.purgeRoleIds,
             modlogsRoleIds: permType === "prefix_modlogs" || permType === "prefix_clean" ? roles : currentSetup.modlogsRoleIds,
             reasonRoleIds: permType === "prefix_reason" ? roles : currentSetup.reasonRoleIds,
             retimeRoleIds: permType === "prefix_retime" ? roles : currentSetup.retimeRoleIds,
@@ -14737,7 +14743,7 @@ client.on("messageCreate", async (message) => {
   processedMessages.add(message.id);
   setTimeout(() => processedMessages.delete(message.id), MESSAGE_DEDUP_TIMEOUT);
 
-  // Dyno-style moderation prefix commands: <prefix>ban/<prefix>unban/<prefix>mute/<prefix>unmute/<prefix>kick + <prefix>modlogs/<prefix>reason/<prefix>retime
+  // Dyno-style moderation prefix commands: <prefix>ban/<prefix>unban/<prefix>mute/<prefix>unmute/<prefix>kick/<prefix>purge + <prefix>modlogs/<prefix>reason/<prefix>retime
   if (message.guild && lowerContent.startsWith(lowerPrefix)) {
     const tokens = message.content.trim().split(/\s+/).filter(Boolean);
     const rawCommand = (tokens[0] || "").toLowerCase();
@@ -14745,6 +14751,77 @@ client.on("messageCreate", async (message) => {
 
     const guildConfig = await storage.getGuildConfig(message.guild.id);
     const modSetup = getModerationSetupFromConfig(guildConfig);
+
+    if (command === "purge") {
+      const memberPerms = message.member?.permissions;
+      const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+      const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
+      const allowedRoleIds = uniqueStrings(modSetup.purgeRoleIds);
+      const hasRoleAccess = allowedRoleIds.length > 0 && allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
+
+      if (!isAdmin && !hasRoleAccess) {
+        return;
+      }
+
+      const requestedAmount = Number.parseInt(tokens[1] || "", 10);
+      if (!Number.isInteger(requestedAmount) || requestedAmount <= 0) {
+        return;
+      }
+
+      const channelAny = message.channel as any;
+      if (!channelAny?.messages?.fetch || !channelAny?.bulkDelete) {
+        return;
+      }
+
+      try {
+        await message.delete();
+      } catch {
+        // ignore failures deleting purge invocation
+      }
+
+      let remaining = Math.min(requestedAmount, 1000);
+      let beforeId: string | undefined;
+
+      while (remaining > 0) {
+        const fetchLimit = Math.min(100, remaining + (beforeId ? 0 : 1));
+        const batch = await channelAny.messages
+          .fetch({ limit: fetchLimit, ...(beforeId ? { before: beforeId } : {}) })
+          .catch(() => null);
+
+        if (!batch || batch.size === 0) {
+          break;
+        }
+
+        const toDelete = batch
+          .filter((entry: any) => entry.id !== message.id)
+          .first(remaining) as any[];
+
+        if (!toDelete || toDelete.length === 0) {
+          break;
+        }
+
+        try {
+          await channelAny.bulkDelete(toDelete, true);
+        } catch {
+          for (const entry of toDelete) {
+            try {
+              await entry.delete();
+            } catch {
+              // ignore individual delete failures
+            }
+          }
+        }
+
+        remaining -= toDelete.length;
+        beforeId = batch.last()?.id;
+
+        if (batch.size < fetchLimit) {
+          break;
+        }
+      }
+
+      return;
+    }
 
     if (command === "clean") {
       const memberPerms = message.member?.permissions;
