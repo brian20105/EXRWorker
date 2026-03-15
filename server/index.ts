@@ -1,10 +1,14 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-import keep_alive from "./keep_alive.js";
 
-
+// Import keep_alive side effect (runs on startup)
+// @ts-ignore - keep_alive.js is a plain JS file with no exports
+import("../keep_alive.js").catch(() => {});
 
 const app = express();
 const httpServer = createServer(app);
@@ -88,16 +92,27 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
+  const listenOptions: any = { port, host: "0.0.0.0" };
+  if (process.platform !== "win32") {
+    listenOptions.reusePort = true;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once("error", (err: any) => {
+      log(`http server error: ${err.message}`, "server");
+      reject(err);
+    });
+
+    httpServer.listen(listenOptions, () => {
       log(`serving on port ${port}`);
-    },
-  );
+      resolve();
+    });
+  }).catch((err: any) => {
+    if (err?.code === "EADDRINUSE") {
+      log(`port ${port} already in use; exiting to avoid duplicate bot instances`, "server");
+    }
+    process.exit(1);
+  });
 
   // Start Discord bot
   const { startBot } = await import("./bot");

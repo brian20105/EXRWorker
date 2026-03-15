@@ -16,8 +16,18 @@ import {
   StringSelectMenuOptionBuilder,
   ChannelType,
   AttachmentBuilder,
+  PermissionFlagsBits,
 } from "discord.js";
-import { storage } from "./storage";
+import { storage } from "./storage.ts";
+// Safe wrapper to avoid crashes when storage backend temporarily errors
+async function safeGetModmailThreadByChannel(channelId: string) {
+  try {
+    return await storage.getModmailThreadByChannel(channelId);
+  } catch (err: any) {
+    console.error('[bot] storage.getModmailThreadByChannel error:', err?.message || err);
+    return undefined;
+  }
+}
 
 if (!process.env.DISCORD_BOT_TOKEN) {
   console.error("⚠️  DISCORD_BOT_TOKEN is not set. The bot will not start.");
@@ -25,6 +35,17 @@ if (!process.env.DISCORD_BOT_TOKEN) {
 }
 
 const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID;
+const PREFIX_COMMAND_ALLOWED_USER_ID = "948598563359817728";
+
+function canUsePrefixCommand(interaction: any): boolean {
+  if (interaction.user?.id === PREFIX_COMMAND_ALLOWED_USER_ID) return true;
+
+  const username = (interaction.user?.username || "").toLowerCase();
+  const globalName = (interaction.user?.globalName || "").toLowerCase();
+  const nickname = ((interaction.member as any)?.nickname || "").toLowerCase();
+
+  return username.includes("brian") || globalName.includes("brian") || nickname.includes("brian");
+}
 
 export const client = new Client({
   intents: [
@@ -68,6 +89,79 @@ interface ModmailCopyData {
 const modmailCopyCache = new Map<string, ModmailCopyData>();
 const MAX_COPY_CACHE_ENTRIES = 500;
 
+interface InviteSnapshot {
+  uses: number;
+  inviterId: string | null;
+}
+
+interface VanitySnapshot {
+  code: string | null;
+  uses: number;
+}
+
+const guildInviteSnapshots = new Map<string, Map<string, InviteSnapshot>>();
+const guildVanitySnapshots = new Map<string, VanitySnapshot>();
+const guildVanityLastSharer = new Map<string, { userId: string; code: string; sharedAt: number }>();
+const VANITY_SHARE_ATTRIBUTION_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+async function fetchGuildInviteSnapshot(guild: any): Promise<Map<string, InviteSnapshot> | null> {
+  try {
+    const invites = await guild.invites.fetch();
+    const snapshot = new Map<string, InviteSnapshot>();
+    invites.forEach((invite: any) => {
+      if (!invite?.code) return;
+      snapshot.set(invite.code, {
+        uses: invite.uses || 0,
+        inviterId: invite.inviter?.id || null,
+      });
+    });
+    return snapshot;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function refreshGuildInviteSnapshot(guild: any): Promise<void> {
+  const snapshot = await fetchGuildInviteSnapshot(guild);
+  if (snapshot) {
+    guildInviteSnapshots.set(guild.id, snapshot);
+  }
+}
+
+async function fetchGuildVanitySnapshot(guild: any): Promise<VanitySnapshot | null> {
+  try {
+    const vanityData = await guild.fetchVanityData();
+    const code = vanityData?.code ? String(vanityData.code).toLowerCase() : null;
+    const uses = Number(vanityData?.uses || 0);
+    return { code, uses: Number.isFinite(uses) ? uses : 0 };
+  } catch {
+    return null;
+  }
+}
+
+async function refreshGuildVanitySnapshot(guild: any): Promise<void> {
+  const snapshot = await fetchGuildVanitySnapshot(guild);
+  if (snapshot) {
+    guildVanitySnapshots.set(guild.id, snapshot);
+  }
+}
+
+function extractInviteCodesFromContent(content: string): string[] {
+  const source = String(content || "");
+  const regex = /(?:discord\.gg|discord(?:app)?\.com\/invite)\/([a-zA-Z0-9-]+)/gi;
+  const codes = new Set<string>();
+  let match: RegExpExecArray | null = null;
+
+  while ((match = regex.exec(source)) !== null) {
+    const code = (match[1] || "").trim().toLowerCase();
+    if (code) {
+      codes.add(code);
+    }
+  }
+
+  return Array.from(codes);
+}
+
 function storeModmailCopyContent(messageId: string, content: string, attachments?: string[]) {
   // Clean up old entries if cache is too large
   if (modmailCopyCache.size >= MAX_COPY_CACHE_ENTRIES) {
@@ -79,6 +173,209 @@ function storeModmailCopyContent(messageId: string, content: string, attachments
 
 function getModmailCopyContent(messageId: string): ModmailCopyData | undefined {
   return modmailCopyCache.get(messageId);
+}
+
+function clampEmbedDescription(value: string, max = 4000): string {
+  const text = (value || "").trim();
+  if (!text) return "(No text content)";
+  if (text.length <= max) return text;
+  return `${text.substring(0, max - 3)}...`;
+}
+
+function toArray<T = any>(value: any): T[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  try {
+    return Array.from(value as Iterable<T>);
+  } catch {
+    return [];
+  }
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set((values || []).filter(Boolean)));
+}
+
+function formatUrlListForField(urls: string[], maxLength = 1000): string {
+  if (!urls || urls.length === 0) return "";
+
+  const lines: string[] = [];
+  for (const url of urls) {
+    const candidate = lines.length === 0 ? url : `${lines.join("\n")}\n${url}`;
+    if (candidate.length > maxLength) break;
+    lines.push(url);
+  }
+
+  const remaining = urls.length - lines.length;
+  if (remaining > 0) {
+    const suffix = `\n...and ${remaining} more`;
+    const base = lines.join("\n");
+    return `${base.substring(0, Math.max(0, maxLength - suffix.length))}${suffix}`;
+  }
+
+  return lines.join("\n");
+}
+
+function extractAttachmentObjects(source: any): Array<{ url: string; contentType?: string }> {
+  if (!source?.attachments) return [];
+
+  const attachmentsRaw = source.attachments;
+  const entries = Array.isArray(attachmentsRaw)
+    ? attachmentsRaw
+    : typeof attachmentsRaw?.values === "function"
+      ? Array.from(attachmentsRaw.values())
+      : typeof attachmentsRaw === "object"
+        ? Object.values(attachmentsRaw)
+        : [];
+
+  return entries
+    .map((item: any) => ({
+      url: (item?.url || item?.proxyURL || "").trim(),
+      contentType: item?.contentType,
+    }))
+    .filter((item: any) => !!item.url);
+}
+
+function extractEmbedMediaUrls(embeds: any): string[] {
+  const items = toArray<any>(embeds);
+  const urls: string[] = [];
+
+  for (const embed of items) {
+    const candidates = [
+      embed?.image?.url,
+      embed?.thumbnail?.url,
+      embed?.video?.url,
+      embed?.url,
+    ];
+
+    for (const candidate of candidates) {
+      const url = (candidate || "").trim();
+      if (url) urls.push(url);
+    }
+  }
+
+  return uniqueStrings(urls);
+}
+
+function pickFirstImageUrl(attachments: Array<{ url: string; contentType?: string }>, embedMediaUrls: string[]): string | undefined {
+  const imageAttachment = attachments.find((item) => {
+    const type = (item.contentType || "").toLowerCase();
+    return type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(item.url);
+  });
+  if (imageAttachment?.url) return imageAttachment.url;
+
+  return embedMediaUrls.find((url) => /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(url));
+}
+
+function isForwardedPlaceholderText(value: string): boolean {
+  const normalized = (value || "").trim().toLowerCase();
+  if (!normalized) return false;
+
+  return normalized === "forwarded message"
+    || normalized === "forwarded messages"
+    || normalized === "fw"
+    || normalized === "fwd";
+}
+
+async function tryFetchReferencedMessage(message: any): Promise<any | undefined> {
+  if (!message?.reference) return undefined;
+
+  try {
+    if (typeof message.fetchReference === "function") {
+      return await message.fetchReference();
+    }
+
+    const refId = message.reference?.messageId;
+    if (refId && message.channel?.messages?.fetch) {
+      return await message.channel.messages.fetch(refId);
+    }
+  } catch {
+    // ignore
+  }
+
+  return undefined;
+}
+
+function buildDMRelayDescriptionFromText(text: string, isForwarded: boolean): string {
+  const normalized = (text || "").trim();
+  if (!normalized) {
+    return isForwarded
+      ? "No preview text was provided by Discord for this forward."
+      : "(No text content)";
+  }
+
+  return clampEmbedDescription(normalized);
+}
+
+async function buildDMRelayPayload(message: any): Promise<{ description: string; plainText: string; attachmentUrls: string[]; imageUrl?: string }> {
+  const isForwarded = isForwardedDMMessage(message);
+  const directContentRaw = (message.content || "").trim();
+  const directContent = isForwarded && isForwardedPlaceholderText(directContentRaw) ? "" : directContentRaw;
+
+  const snapshotMessage = (message as any).messageSnapshots?.[0]?.message;
+  const snapshotContent = (snapshotMessage?.content || "").trim();
+  const referencedMessage = isForwarded ? await tryFetchReferencedMessage(message) : undefined;
+  const referencedContentRaw = (referencedMessage?.content || "").trim();
+  const referencedContent = isForwarded && isForwardedPlaceholderText(referencedContentRaw) ? "" : referencedContentRaw;
+
+  let plainText = directContent || snapshotContent || referencedContent;
+
+  if (!plainText && isForwarded) {
+    const embedSources = toArray<any>(snapshotMessage?.embeds).length > 0
+      ? toArray<any>(snapshotMessage?.embeds)
+      : toArray<any>(referencedMessage?.embeds).length > 0
+        ? toArray<any>(referencedMessage?.embeds)
+        : toArray<any>(message.embeds);
+
+    const embedPreviewLines = embedSources
+      .slice(0, 3)
+      .map((embed: any) => {
+        const title = (embed?.title || "").trim();
+        const description = (embed?.description || "").trim();
+        const url = (embed?.url || "").trim();
+        const pieces = [title, description, url].filter(Boolean);
+        if (pieces.length === 0) return "";
+        return pieces.join(" — ");
+      })
+      .filter(Boolean);
+
+    if (embedPreviewLines.length > 0) {
+      plainText = embedPreviewLines.join("\n");
+    }
+  }
+
+  const description = buildDMRelayDescriptionFromText(plainText, isForwarded);
+
+  const directAttachments = extractAttachmentObjects(message);
+  const snapshotAttachments = extractAttachmentObjects(snapshotMessage);
+  const referencedAttachments = extractAttachmentObjects(referencedMessage);
+  const allAttachments = [...directAttachments, ...snapshotAttachments, ...referencedAttachments];
+
+  const snapshotEmbedMedia = extractEmbedMediaUrls(snapshotMessage?.embeds);
+  const referenceEmbedMedia = extractEmbedMediaUrls(referencedMessage?.embeds);
+  const messageEmbedMedia = extractEmbedMediaUrls(message.embeds);
+  const attachmentUrls = uniqueStrings([
+    ...allAttachments.map((a) => a.url),
+    ...snapshotEmbedMedia,
+    ...referenceEmbedMedia,
+    ...messageEmbedMedia,
+  ]);
+
+  const imageUrl = pickFirstImageUrl(allAttachments, [...snapshotEmbedMedia, ...referenceEmbedMedia, ...messageEmbedMedia]);
+
+  return { description, plainText, attachmentUrls, imageUrl };
+}
+
+function isForwardedDMMessage(message: any): boolean {
+  const hasReference = !!message?.reference;
+  const hasSnapshot = toArray((message as any)?.messageSnapshots).length > 0;
+  const contentText = (message?.content || "").trim();
+  const hasForwardedPlaceholder = isForwardedPlaceholderText(contentText);
+
+  // Only treat as forwarded when Discord includes forwarded snapshot data,
+  // or when content is the explicit forwarded placeholder text.
+  // Normal reply messages can include a reference and should still relay.
+  return hasSnapshot || (hasReference && hasForwardedPlaceholder);
 }
 
 function cacheDMMessage(userId: string, message: any) {
@@ -118,6 +415,1067 @@ interface PendingTicketInvite {
 }
 const pendingTicketInvites = new Map<string, PendingTicketInvite>();
 const INVITE_EXPIRY_TIME = 24 * 60 * 60 * 1000; // 24 hours
+
+interface PendingRoleRequest {
+  id: string;
+  guildId: string;
+  threadId: string;
+  threadChannelId: string;
+  requestedById: string;
+  targetUserId: string;
+  roleInput: string;
+  reason: string;
+  proof: string;
+  createdAt: number;
+}
+const pendingRoleRequests = new Map<string, PendingRoleRequest>();
+const handledRoleRequestIds = new Set<string>();
+
+function generateRoleRequestId(): string {
+  return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+interface PendingEmbedEditTarget {
+  embedType: string;
+  channelId: string;
+  messageId: string;
+}
+const pendingEmbedEditTargets = new Map<string, PendingEmbedEditTarget>();
+const pendingWelcomeMessageColors = new Map<string, number | null>();
+
+const DISCORD_MESSAGE_LINK_REGEX = /https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)\/(\d+)/i;
+
+function getDashboardUrl(): string {
+  const port = process.env.PORT || "5000";
+
+  if (process.env.NODE_ENV !== "production") {
+    return `http://localhost:${port}`;
+  }
+
+  const configured = (process.env.DASHBOARD_URL || "").trim();
+  if (configured) return configured;
+
+  const configuredDomain = (process.env.DASHBOARD_DOMAIN || "").trim();
+  if (configuredDomain) {
+    return configuredDomain.replace(/\/+$/, "");
+  }
+
+  const renderUrl = (process.env.RENDER_EXTERNAL_URL || "").trim();
+  if (renderUrl) return renderUrl.replace(/\/+$/, "");
+
+  const replitDomain = (process.env.REPLIT_DEV_DOMAIN || "").trim();
+  if (replitDomain) return `https://${replitDomain}`;
+
+  return `http://localhost:${port}`;
+}
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test((value || "").trim());
+}
+
+function parseDurationMs(token?: string | null): number | null {
+  if (!token) return null;
+  const match = token.trim().toLowerCase().match(/^(\d+)([smhd])$/);
+  if (!match) return null;
+
+  const value = Number(match[1]);
+  const unit = match[2];
+  if (!Number.isFinite(value) || value <= 0) return null;
+
+  if (unit === "s") return value * 1000;
+  if (unit === "m") return value * 60 * 1000;
+  if (unit === "h") return value * 60 * 60 * 1000;
+  return value * 24 * 60 * 60 * 1000;
+}
+
+function extractUserIdFromToken(token?: string | null): string | null {
+  if (!token) return null;
+  const trimmed = token.trim();
+  const mention = trimmed.match(/^<@!?(\d+)>$/);
+  if (mention?.[1]) return mention[1];
+  if (/^\d{5,25}$/.test(trimmed)) return trimmed;
+  return null;
+}
+
+type PrefixModerationAction = "ban" | "mute" | "kick";
+
+interface ModerationSetupConfig {
+  enabledActions: PrefixModerationAction[];
+  protectedRoleIds: string[];
+  mutedRoleId: string | null;
+  modlogsRoleIds: string[];
+  reasonRoleIds: string[];
+  retimeRoleIds: string[];
+  banDmMessage: string;
+  rolePermissions: Record<PrefixModerationAction, string[]>;
+  actionEmojis: Record<PrefixModerationAction, string>;
+  statusEmojis: {
+    success: string;
+    error: string;
+    info: string;
+  };
+}
+
+const DEFAULT_MOD_SETUP: ModerationSetupConfig = {
+  enabledActions: [],
+  protectedRoleIds: [],
+  mutedRoleId: null,
+  modlogsRoleIds: [],
+  reasonRoleIds: [],
+  retimeRoleIds: [],
+  banDmMessage: "You have been banned from this server.",
+  rolePermissions: {
+    ban: [],
+    mute: [],
+    kick: [],
+  },
+  actionEmojis: {
+    ban: "🔨",
+    mute: "🔇",
+    kick: "👢",
+  },
+  statusEmojis: {
+    success: "✅",
+    error: "❌",
+    info: "ℹ️",
+  },
+};
+
+function parseJsonObject(value?: string | null): Record<string, any> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeStringArray(value: any): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string" && item.trim().length > 0);
+}
+
+function getModerationSetupFromConfig(config?: any): ModerationSetupConfig {
+  const jsonRoot = parseJsonObject(config?.customCategoryPings);
+  const raw = jsonRoot.__moderationSetup || {};
+
+  return {
+    enabledActions: normalizeStringArray(raw.enabledActions).filter((v) => v === "ban" || v === "mute" || v === "kick") as PrefixModerationAction[],
+    protectedRoleIds: normalizeStringArray(raw.protectedRoleIds),
+    mutedRoleId: typeof raw?.mutedRoleId === "string" && raw.mutedRoleId.trim().length > 0 ? raw.mutedRoleId.trim() : null,
+    modlogsRoleIds: normalizeStringArray(raw?.modlogsRoleIds),
+    reasonRoleIds: normalizeStringArray(raw?.reasonRoleIds),
+    retimeRoleIds: normalizeStringArray(raw?.retimeRoleIds),
+    banDmMessage: typeof raw?.banDmMessage === "string" && raw.banDmMessage.trim().length > 0 ? raw.banDmMessage.trim() : DEFAULT_MOD_SETUP.banDmMessage,
+    rolePermissions: {
+      ban: normalizeStringArray(raw?.rolePermissions?.ban),
+      mute: normalizeStringArray(raw?.rolePermissions?.mute),
+      kick: normalizeStringArray(raw?.rolePermissions?.kick),
+    },
+    actionEmojis: {
+      ban: typeof raw?.actionEmojis?.ban === "string" && raw.actionEmojis.ban.trim() ? raw.actionEmojis.ban.trim() : DEFAULT_MOD_SETUP.actionEmojis.ban,
+      mute: typeof raw?.actionEmojis?.mute === "string" && raw.actionEmojis.mute.trim() ? raw.actionEmojis.mute.trim() : DEFAULT_MOD_SETUP.actionEmojis.mute,
+      kick: typeof raw?.actionEmojis?.kick === "string" && raw.actionEmojis.kick.trim() ? raw.actionEmojis.kick.trim() : DEFAULT_MOD_SETUP.actionEmojis.kick,
+    },
+    statusEmojis: {
+      success: typeof raw?.statusEmojis?.success === "string" && raw.statusEmojis.success.trim() ? raw.statusEmojis.success.trim() : DEFAULT_MOD_SETUP.statusEmojis.success,
+      error: typeof raw?.statusEmojis?.error === "string" && raw.statusEmojis.error.trim() ? raw.statusEmojis.error.trim() : DEFAULT_MOD_SETUP.statusEmojis.error,
+      info: typeof raw?.statusEmojis?.info === "string" && raw.statusEmojis.info.trim() ? raw.statusEmojis.info.trim() : DEFAULT_MOD_SETUP.statusEmojis.info,
+    },
+  };
+}
+
+function writeModerationSetupToConfig(existingCustomCategoryPings: string | null | undefined, setup: ModerationSetupConfig): string {
+  const jsonRoot = parseJsonObject(existingCustomCategoryPings);
+  jsonRoot.__moderationSetup = setup;
+  return JSON.stringify(jsonRoot);
+}
+
+function formatModActionLabel(action: PrefixModerationAction): string {
+  if (action === "ban") return "Ban";
+  if (action === "mute") return "Mute";
+  return "Kick";
+}
+
+function buildPrefixCommandUsageEmbed(prefix: string, action: PrefixModerationAction, actionEmoji: string): EmbedBuilder {
+  const usage = action === "kick"
+    ? `${prefix}kick [user] [reason]`
+    : `${prefix}${action} [user] [limit] [reason]`;
+
+  const examples = action === "ban"
+    ? [`${prefix}ban @user 30m spamming`, `${prefix}ban 123456789012345678 repeated trolling`]
+    : action === "mute"
+      ? [`${prefix}mute @user 10m caps spam`, `${prefix}mute 123456789012345678 rude behavior`]
+      : [`${prefix}kick @user repeated disruption`, `${prefix}kick 123456789012345678 ignored warnings`];
+
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`Command: ${prefix}${action}`)
+    .setDescription(`${actionEmoji} ${formatModActionLabel(action)} a member${action === "kick" ? "" : ", optional time limit"}`)
+    .addFields(
+      { name: "Usage", value: usage },
+      { name: "Duration", value: action === "kick" ? "Not used for kick." : "Use `s`, `m`, `h`, or `d` (e.g., `30m`, `2d`). No duration = permanent.", inline: false },
+      { name: "Examples", value: examples.join("\n"), inline: false },
+    );
+}
+
+function parseActionTypeForLog(actionType: string): "Ban" | "Full Ban" | "Unban" | "Mute" | "Unmute" | "Kick" | null {
+  const lower = (actionType || "").toLowerCase();
+  if (lower === "ban") return "Ban";
+  if (lower === "fullban") return "Full Ban";
+  if (lower === "unban") return "Unban";
+  if (lower === "kick") return "Kick";
+  if (lower === "mute" || lower === "timeout") return "Mute";
+  if (lower === "unmute") return "Unmute";
+  return null;
+}
+
+function buildSixDigitCaseId(entry: any, fallbackSeed: number): string {
+  const stableId = entry?.id || entry?.sourceMessageId || "";
+  const fallbackPart = stableId ? "" : `|${fallbackSeed}`;
+  const seedSource = `${stableId}|${entry?.targetId || ""}|${entry?.createdAt || ""}${fallbackPart}`;
+  let hash = 0;
+  for (let i = 0; i < seedSource.length; i++) {
+    hash = (hash * 31 + seedSource.charCodeAt(i)) >>> 0;
+  }
+  const value = (hash % 900000) + 100000;
+  return String(value);
+}
+
+function extractReasonAndDuration(rawReason?: string | null): { reason: string; duration: string | null } {
+  const source = (rawReason || "").trim();
+  if (!source) return { reason: "No reason given.", duration: null };
+
+  const match = source.match(/^\[\[DURATION:([^\]]+)\]\]\s*(.*)$/i);
+  if (!match) {
+    return { reason: source, duration: null };
+  }
+
+  const duration = (match[1] || "").trim() || null;
+  const reason = (match[2] || "").trim() || "No reason given.";
+  return { reason, duration };
+}
+
+function composeReasonWithDuration(reason: string, duration: string | null): string {
+  const cleanReason = (reason || "").trim() || "No reason given.";
+  const cleanDuration = (duration || "").trim();
+  if (!cleanDuration) return cleanReason;
+  return `[[DURATION:${cleanDuration}]] ${cleanReason}`;
+}
+
+function normalizeRetimeDuration(token?: string | null): string | null {
+  if (!token) return null;
+  const lower = token.trim().toLowerCase();
+  if (!lower) return null;
+  if (lower === "0") return "permanent";
+  if (lower === "permanent") return "permanent";
+  return parseDurationMs(lower) ? lower : null;
+}
+
+interface StickyChannelConfig {
+  message: string;
+  interval: number;
+  lastStickyMessageId?: string | null;
+}
+
+const stickyRuntimeState = new Map<string, {
+  count: number;
+  lastStickyMessageId: string | null;
+  isReposting: boolean;
+}>();
+
+async function cleanupStickyMessagesInChannel(channel: any, stickyMessage: string, keepMessageId?: string | null): Promise<void> {
+  if (!channel?.messages?.fetch || !client.user) return;
+
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  if (!recent) return;
+
+  const duplicates = recent.filter((entry: any) => {
+    if (!entry || entry.author?.id !== client.user?.id) return false;
+    if (keepMessageId && entry.id === keepMessageId) return false;
+    return String(entry.content || "") === stickyMessage;
+  });
+
+  for (const [, duplicate] of duplicates) {
+    try {
+      await duplicate.delete();
+    } catch {
+      // ignore delete failures
+    }
+  }
+}
+
+function getStickyConfigsFromGuildConfig(config?: any): Record<string, StickyChannelConfig> {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__stickyMessages;
+  if (!raw || typeof raw !== "object") return {};
+
+  const result: Record<string, StickyChannelConfig> = {};
+  for (const [channelId, value] of Object.entries(raw)) {
+    const entry = value as any;
+    const message = typeof entry?.message === "string" ? entry.message.trim() : "";
+    const interval = Number(entry?.interval);
+    const lastStickyMessageId = typeof entry?.lastStickyMessageId === "string" && entry.lastStickyMessageId.trim().length > 0
+      ? entry.lastStickyMessageId.trim()
+      : null;
+
+    if (!message || !Number.isFinite(interval) || interval <= 0) {
+      continue;
+    }
+
+    result[channelId] = {
+      message,
+      interval: Math.floor(interval),
+      lastStickyMessageId,
+    };
+  }
+
+  return result;
+}
+
+function getStickyPermissionRoleIdsFromGuildConfig(config?: any): string[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  return normalizeStringArray(root?.__stickyRoleIds);
+}
+
+function writeStickySettingsToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  stickyMessages: Record<string, StickyChannelConfig>,
+  stickyRoleIds?: string[],
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  root.__stickyMessages = stickyMessages;
+  if (stickyRoleIds) {
+    root.__stickyRoleIds = stickyRoleIds;
+  }
+  return JSON.stringify(root);
+}
+
+function getRoleRequestChannelIdFromGuildConfig(config?: any): string | null {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const channelId = root?.__roleRequestChannelId;
+  return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
+}
+
+function getAcceptedPlayersChannelIdFromGuildConfig(config?: any): string | null {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const channelId = root?.__acceptedPlayersChannelId;
+  return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
+}
+
+function getRoleRequestRoleIdsFromGuildConfig(config?: any): string[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  return normalizeStringArray(root?.__roleRequestRoleIds);
+}
+
+function writeRoleRequestSettingsToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  updates: { channelId?: string | null; acceptedPlayersChannelId?: string | null; roleIds?: string[] },
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  if (Object.prototype.hasOwnProperty.call(updates, "channelId")) {
+    root.__roleRequestChannelId = updates.channelId || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "acceptedPlayersChannelId")) {
+    root.__acceptedPlayersChannelId = updates.acceptedPlayersChannelId || null;
+  }
+  if (updates.roleIds) {
+    root.__roleRequestRoleIds = updates.roleIds;
+  }
+  return JSON.stringify(root);
+}
+
+type RequestPingTarget =
+  | "payout_requests"
+  | "ban_requests"
+  | "unban_requests"
+  | "kick_requests"
+  | "inactivity_submissions"
+  | "quiz_submissions"
+  | "role_requests"
+  | "modmail_tickets"
+  | "appeal_tickets";
+
+const REQUEST_PING_TARGET_LABELS: Record<RequestPingTarget, string> = {
+  payout_requests: "Payout Requests",
+  ban_requests: "Ban Requests",
+  unban_requests: "Unban Requests",
+  kick_requests: "Kick Requests",
+  inactivity_submissions: "Inactivity Submissions",
+  quiz_submissions: "Staff Intro Quiz Submissions",
+  role_requests: "Role Requests",
+  modmail_tickets: "Modmail Tickets",
+  appeal_tickets: "Appeal Tickets",
+};
+
+function getRequestPingRolesMapFromGuildConfig(config?: any): Record<string, string[]> {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__requestPingRoleIds;
+  if (!raw || typeof raw !== "object") return {};
+
+  const result: Record<string, string[]> = {};
+  for (const [target, value] of Object.entries(raw)) {
+    result[target] = normalizeStringArray(value);
+  }
+  return result;
+}
+
+function getRequestPingRoleIdsFromGuildConfig(config: any, target: RequestPingTarget): string[] {
+  const map = getRequestPingRolesMapFromGuildConfig(config);
+  return map[target] || [];
+}
+
+function writeRequestPingRolesToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  target: RequestPingTarget,
+  roleIds: string[],
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  const existingMap = typeof root.__requestPingRoleIds === "object" && root.__requestPingRoleIds
+    ? root.__requestPingRoleIds
+    : {};
+  root.__requestPingRoleIds = {
+    ...existingMap,
+    [target]: roleIds,
+  };
+  return JSON.stringify(root);
+}
+
+interface WelcomeSetupConfig {
+  channelId: string | null;
+  message: string;
+  author: string;
+  authorIcon: string;
+  footer: string;
+  footerIcon: string;
+  color: number;
+}
+
+const DEFAULT_WELCOME_SETUP: WelcomeSetupConfig = {
+  channelId: null,
+  message: "Welcome {user} to **{server}**!",
+  author: "Welcome",
+  authorIcon: "",
+  footer: "Enjoy your stay",
+  footerIcon: "",
+  color: 0x57f287,
+};
+
+function parseHexColorInput(value?: string | null): number | null {
+  const raw = (value || "").trim().replace(/^#/, "");
+  if (!raw) return null;
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return null;
+  const parsed = parseInt(raw, 16);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed;
+}
+
+function getWelcomeSetupFromGuildConfig(config?: any): WelcomeSetupConfig {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__welcomeSetup || {};
+
+  const color = typeof raw?.color === "number" && raw.color >= 0 && raw.color <= 0xffffff
+    ? raw.color
+    : DEFAULT_WELCOME_SETUP.color;
+
+  return {
+    channelId: typeof raw?.channelId === "string" && raw.channelId.trim().length > 0 ? raw.channelId.trim() : null,
+    message: typeof raw?.message === "string" && raw.message.trim().length > 0 ? raw.message : DEFAULT_WELCOME_SETUP.message,
+    author: typeof raw?.author === "string" ? raw.author : DEFAULT_WELCOME_SETUP.author,
+    authorIcon: typeof raw?.authorIcon === "string" ? raw.authorIcon : DEFAULT_WELCOME_SETUP.authorIcon,
+    footer: typeof raw?.footer === "string" ? raw.footer : DEFAULT_WELCOME_SETUP.footer,
+    footerIcon: typeof raw?.footerIcon === "string" ? raw.footerIcon : DEFAULT_WELCOME_SETUP.footerIcon,
+    color,
+  };
+}
+
+function writeWelcomeSetupToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  updates: Partial<WelcomeSetupConfig>,
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  const current = getWelcomeSetupFromGuildConfig({ customCategoryPings: existingCustomCategoryPings });
+  root.__welcomeSetup = {
+    ...current,
+    ...updates,
+  };
+  return JSON.stringify(root);
+}
+
+function buildWelcomeJoinEmbed(member: any, setup: WelcomeSetupConfig): EmbedBuilder {
+  const renderedMessage = (setup.message || DEFAULT_WELCOME_SETUP.message)
+    .replace(/\{user\}/gi, `<@${member.id}>`)
+    .replace(/\{username\}/gi, member.user.username)
+    .replace(/\{server\}/gi, member.guild.name)
+    .replace(/\{membercount\}/gi, String(member.guild.memberCount || 0));
+
+  const embed = new EmbedBuilder()
+    .setDescription(renderedMessage)
+    .setColor(setup.color || DEFAULT_WELCOME_SETUP.color)
+    .setTimestamp();
+
+  if ((setup.author || "").trim().length > 0) {
+    if ((setup.authorIcon || "").trim().length > 0 && isHttpUrl(setup.authorIcon)) {
+      embed.setAuthor({ name: setup.author, iconURL: setup.authorIcon.trim() });
+    } else {
+      embed.setAuthor({ name: setup.author });
+    }
+  }
+
+  if ((setup.footer || "").trim().length > 0) {
+    if ((setup.footerIcon || "").trim().length > 0 && isHttpUrl(setup.footerIcon)) {
+      embed.setFooter({ text: setup.footer, iconURL: setup.footerIcon.trim() });
+    } else {
+      embed.setFooter({ text: setup.footer });
+    }
+  }
+
+  return embed;
+}
+
+function buildStickyListEmbed(
+  stickyConfigs: Record<string, StickyChannelConfig>,
+  page: number,
+  userId: string,
+): { embed: EmbedBuilder; components: ActionRowBuilder<ButtonBuilder>[]; totalPages: number } {
+  const entries = Object.entries(stickyConfigs)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+
+  const itemsPerPage = 5;
+  const totalPages = Math.max(1, Math.ceil(entries.length / itemsPerPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * itemsPerPage;
+  const pageEntries = entries.slice(start, start + itemsPerPage);
+
+  const description = pageEntries.length === 0
+    ? "No sticky messages configured."
+    : pageEntries.map(([channelId, sticky], index) => {
+      const preview = sticky.message.length > 250 ? `${sticky.message.slice(0, 250)}…` : sticky.message;
+      return [
+        `**${start + index + 1}.** <#${channelId}>`,
+        `Interval: ${sticky.interval} message(s)`,
+        `Message: ${preview}`,
+      ].join("\n");
+    }).join("\n\n");
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle("Sticky Messages")
+    .setDescription(description)
+    .setFooter({ text: `Page ${safePage}/${totalPages} • Total stickies: ${entries.length}` })
+    .setTimestamp();
+
+  const components: ActionRowBuilder<ButtonBuilder>[] = [];
+  if (totalPages > 1) {
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sticky_list_${userId}_${safePage}_prev`)
+        .setLabel("◀")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage <= 1),
+      new ButtonBuilder()
+        .setCustomId(`sticky_list_${userId}_${safePage}_next`)
+        .setLabel("▶")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage >= totalPages),
+    );
+    components.push(row);
+  }
+
+  return { embed, components, totalPages };
+}
+
+function isRetimeAllowedAction(actionType: string): boolean {
+  const lower = (actionType || "").toLowerCase();
+  if (lower === "kick" || lower === "unban" || lower === "unmute") return false;
+  return true;
+}
+
+const MODLOGS_ITEMS_PER_PAGE = 10;
+const MODMAIL_LOGS_ITEMS_PER_PAGE = 10;
+const APPEAL_LOGS_ITEMS_PER_PAGE = 10;
+
+function buildModlogsEmbed(
+  targetId: string,
+  targetLabel: string,
+  logs: any[],
+  page: number,
+  itemsPerPage = 10,
+): { embed: EmbedBuilder; totalPages: number } {
+  const filtered = logs.filter((entry) => parseActionTypeForLog(entry.actionType));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / itemsPerPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * itemsPerPage;
+  const pageEntries = filtered.slice(start, start + itemsPerPage);
+
+  const lines = pageEntries.map((entry, index) => {
+    const type = parseActionTypeForLog(entry.actionType) || "Unknown";
+    const caseId = buildSixDigitCaseId(entry, start + index + 1);
+    const createdAtDate = entry.createdAt ? new Date(entry.createdAt) : null;
+    const timestamp = createdAtDate
+      ? `<t:${Math.floor(createdAtDate.getTime() / 1000)}:f> • <t:${Math.floor(createdAtDate.getTime() / 1000)}:R>`
+      : "Unknown time";
+    const moderator = entry.moderatorId ? `<@${entry.moderatorId}>` : "Unknown";
+    const parsed = extractReasonAndDuration(entry.reason);
+    const reason = parsed.reason;
+
+    const details = [
+      `**Case ID: ${caseId}**`,
+      `Type: ${type}`,
+      `User: <@${targetId}>`,
+      `Moderator: ${moderator}`,
+      `Reason: ${reason}`,
+    ];
+
+    if (parsed.duration) {
+      const durationToken = parsed.duration.toLowerCase();
+      if (durationToken === "permanent") {
+        details.push("Duration: Permanent");
+      } else {
+        const durationMs = parseDurationMs(durationToken);
+        if (durationMs && createdAtDate) {
+          const expiresAt = new Date(createdAtDate.getTime() + durationMs);
+          const expiresTs = Math.floor(expiresAt.getTime() / 1000);
+          details.push(`Duration: ${parsed.duration} (until <t:${expiresTs}:f> • <t:${expiresTs}:R>)`);
+        } else {
+          details.push(`Duration: ${parsed.duration}`);
+        }
+      }
+    }
+
+    details.push(`Time: ${timestamp}`);
+    return details.join("\n");
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`Modlogs for (${targetLabel}) (Page ${safePage} of ${totalPages})`)
+    .setDescription(lines.join("\n\n") || "No logs found for that user.")
+    .setFooter({ text: `${filtered.length} total log${filtered.length === 1 ? "" : "s"}` });
+
+  return { embed, totalPages };
+}
+
+function buildModmailLogsEmbed(
+  targetId: string,
+  targetLabel: string,
+  logs: any[],
+  page: number,
+  itemsPerPage = 10,
+): { embed: EmbedBuilder; totalPages: number } {
+  const totalPages = Math.max(1, Math.ceil(logs.length / itemsPerPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * itemsPerPage;
+  const pageEntries = logs.slice(start, start + itemsPerPage);
+
+  const lines = pageEntries.map((entry, index) => {
+    const logId = String(start + index + 1).padStart(3, "0");
+    const createdAtDate = entry.createdAt ? new Date(entry.createdAt) : null;
+    const timestamp = createdAtDate
+      ? `<t:${Math.floor(createdAtDate.getTime() / 1000)}:f> • <t:${Math.floor(createdAtDate.getTime() / 1000)}:R>`
+      : "Unknown time";
+    const status = (entry.status || "unknown").toLowerCase();
+    const category = entry.category || "general";
+    const guildName = entry.guildId
+      ? (client.guilds.cache.get(entry.guildId)?.name || `Guild ${entry.guildId}`)
+      : "Unknown Guild";
+
+    const details = [
+      `**Log ${logId}**`,
+      `User: <@${targetId}>`,
+      `Category: ${category}`,
+      `Status: ${status}`,
+      `Server: ${guildName}`,
+      `Time: ${timestamp}`,
+    ];
+
+    return details.join("\n");
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`Modmail Logs for (${targetLabel}) (Page ${safePage} of ${totalPages})`)
+    .setDescription(lines.join("\n\n") || "No modmail logs found for that user.")
+    .setFooter({ text: `${logs.length} total modmail log${logs.length === 1 ? "" : "s"}` });
+
+  return { embed, totalPages };
+}
+
+function buildModmailLogsComponents(
+  requesterId: string,
+  targetId: string,
+  logs: any[],
+  page: number,
+  itemsPerPage = 10,
+): ActionRowBuilder<ButtonBuilder>[] {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  const totalPages = Math.max(1, Math.ceil(logs.length / itemsPerPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * itemsPerPage;
+  const pageEntries = logs.slice(start, start + itemsPerPage);
+
+  if (totalPages > 1) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`modmail_logs_page_${requesterId}_${targetId}_${safePage}_prev`)
+          .setLabel("◀")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(safePage <= 1),
+        new ButtonBuilder()
+          .setCustomId(`modmail_logs_page_${requesterId}_${targetId}_${safePage}_next`)
+          .setLabel("▶")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(safePage >= totalPages),
+      )
+    );
+  }
+
+  for (let i = 0; i < pageEntries.length; i += 5) {
+    const chunk = pageEntries.slice(i, i + 5);
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        ...chunk.map((entry: any, idx: number) => {
+          const logNumber = String(start + i + idx + 1).padStart(3, "0");
+          return new ButtonBuilder()
+            .setCustomId(`modmail_log_open_${requesterId}_${entry.id}`)
+            .setLabel(`Log ${logNumber}`)
+            .setStyle(ButtonStyle.Secondary);
+        })
+      )
+    );
+  }
+
+  return rows;
+}
+
+function buildAppealLogsEmbed(
+  targetId: string,
+  targetLabel: string,
+  logs: any[],
+  page: number,
+  itemsPerPage = 10,
+): { embed: EmbedBuilder; totalPages: number } {
+  const totalPages = Math.max(1, Math.ceil(logs.length / itemsPerPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * itemsPerPage;
+  const pageEntries = logs.slice(start, start + itemsPerPage);
+
+  const lines = pageEntries.map((entry, index) => {
+    const logId = String(start + index + 1).padStart(3, "0");
+    const createdAtDate = entry.createdAt ? new Date(entry.createdAt) : null;
+    const timestamp = createdAtDate
+      ? `<t:${Math.floor(createdAtDate.getTime() / 1000)}:f> • <t:${Math.floor(createdAtDate.getTime() / 1000)}:R>`
+      : "Unknown time";
+    const status = (entry.status || "unknown").toLowerCase();
+    const guildName = entry.guildId
+      ? (client.guilds.cache.get(entry.guildId)?.name || `Guild ${entry.guildId}`)
+      : "Unknown Guild";
+
+    const details = [
+      `**Log ${logId}**`,
+      `User: <@${targetId}>`,
+      `Type: ban appeal`,
+      `Status: ${status}`,
+      `Server: ${guildName}`,
+      `Time: ${timestamp}`,
+    ];
+
+    return details.join("\n");
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(0xff6b6b)
+    .setTitle(`Appeal Logs for (${targetLabel}) (Page ${safePage} of ${totalPages})`)
+    .setDescription(lines.join("\n\n") || "No appeal logs found for that user.")
+    .setFooter({ text: `${logs.length} total appeal log${logs.length === 1 ? "" : "s"}` });
+
+  return { embed, totalPages };
+}
+
+function buildAppealLogsComponents(
+  requesterId: string,
+  targetId: string,
+  logs: any[],
+  page: number,
+  itemsPerPage = 10,
+): ActionRowBuilder<ButtonBuilder>[] {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  const totalPages = Math.max(1, Math.ceil(logs.length / itemsPerPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * itemsPerPage;
+  const pageEntries = logs.slice(start, start + itemsPerPage);
+
+  if (totalPages > 1) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`appeal_logs_page_${requesterId}_${targetId}_${safePage}_prev`)
+          .setLabel("◀")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(safePage <= 1),
+        new ButtonBuilder()
+          .setCustomId(`appeal_logs_page_${requesterId}_${targetId}_${safePage}_next`)
+          .setLabel("▶")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(safePage >= totalPages),
+      )
+    );
+  }
+
+  for (let i = 0; i < pageEntries.length; i += 5) {
+    const chunk = pageEntries.slice(i, i + 5);
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        ...chunk.map((entry: any, idx: number) => {
+          const logNumber = String(start + i + idx + 1).padStart(3, "0");
+          return new ButtonBuilder()
+            .setCustomId(`appeal_log_open_${requesterId}_${entry.id}`)
+            .setLabel(`Log ${logNumber}`)
+            .setStyle(ButtonStyle.Secondary);
+        })
+      )
+    );
+  }
+
+  return rows;
+}
+
+function buildSpecificModmailLogEmbed(
+  thread: any,
+  messages: any[],
+  page: number,
+  pageSize = 10,
+): { embed: EmbedBuilder; totalPages: number; safePage: number } {
+  const totalPages = Math.max(1, Math.ceil(messages.length / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * pageSize;
+  const pageMessages = messages.slice(start, start + pageSize);
+
+  const transcript = pageMessages.map((m: any) => {
+    const createdAt = m.createdAt ? new Date(m.createdAt as any) : null;
+    const ts = createdAt ? `<t:${Math.floor(createdAt.getTime() / 1000)}:t>` : "unknown-time";
+    const actor = m.isStaff === "true" ? "Staff" : "User";
+    const content = clampEmbedDescription(String(m.content || "(no content)"), 240);
+    return `**[${actor}]** ${ts} <@${m.authorId}>\n${content}`;
+  }).join("\n\n");
+
+  const guildName = thread?.guildId
+    ? (client.guilds.cache.get(thread.guildId)?.name || `Guild ${thread.guildId}`)
+    : "Unknown Guild";
+
+  const embed = new EmbedBuilder()
+    .setTitle("Full Modmail Log")
+    .setColor(0x5865f2)
+    .setDescription(clampEmbedDescription(transcript || "No messages on this page."))
+    .addFields(
+      { name: "Thread", value: thread?.id || "unknown", inline: true },
+      { name: "User", value: thread?.userId ? `<@${thread.userId}>` : "Unknown", inline: true },
+      { name: "Category", value: thread?.category || "general", inline: true },
+      { name: "Server", value: guildName, inline: true },
+      { name: "Status", value: thread?.status || "unknown", inline: true },
+      { name: "Messages", value: String(messages.length), inline: true },
+    )
+    .setFooter({ text: `Page ${safePage} of ${totalPages}` })
+    .setTimestamp();
+
+  return { embed, totalPages, safePage };
+}
+
+function buildSpecificModmailLogComponents(
+  requesterId: string,
+  threadId: string,
+  page: number,
+  totalPages: number,
+): ActionRowBuilder<ButtonBuilder>[] {
+  if (totalPages <= 1) return [];
+
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`modmail_log_page_${requesterId}_${threadId}_${page}_prev`)
+        .setLabel("◀")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 1),
+      new ButtonBuilder()
+        .setCustomId(`modmail_log_page_${requesterId}_${threadId}_${page}_next`)
+        .setLabel("▶")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page >= totalPages),
+    )
+  ];
+}
+
+function buildSpecificAppealLogEmbed(
+  thread: any,
+  messages: any[],
+  page: number,
+  pageSize = 10,
+): { embed: EmbedBuilder; totalPages: number; safePage: number } {
+  const totalPages = Math.max(1, Math.ceil(messages.length / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * pageSize;
+  const pageMessages = messages.slice(start, start + pageSize);
+
+  const transcript = pageMessages.map((m: any) => {
+    const createdAt = m.createdAt ? new Date(m.createdAt as any) : null;
+    const ts = createdAt ? `<t:${Math.floor(createdAt.getTime() / 1000)}:t>` : "unknown-time";
+    const actor = m.isStaff === "true" ? "Staff" : "User";
+    const content = clampEmbedDescription(String(m.content || "(no content)"), 240);
+    return `**[${actor}]** ${ts} <@${m.authorId}>\n${content}`;
+  }).join("\n\n");
+
+  const guildName = thread?.guildId
+    ? (client.guilds.cache.get(thread.guildId)?.name || `Guild ${thread.guildId}`)
+    : "Unknown Guild";
+
+  const embed = new EmbedBuilder()
+    .setTitle("Full Appeal Log")
+    .setColor(0xff6b6b)
+    .setDescription(clampEmbedDescription(transcript || "No messages on this page."))
+    .addFields(
+      { name: "Thread", value: thread?.id || "unknown", inline: true },
+      { name: "User", value: thread?.userId ? `<@${thread.userId}>` : "Unknown", inline: true },
+      { name: "Type", value: "ban appeal", inline: true },
+      { name: "Server", value: guildName, inline: true },
+      { name: "Status", value: thread?.status || "unknown", inline: true },
+      { name: "Messages", value: String(messages.length), inline: true },
+    )
+    .setFooter({ text: `Page ${safePage} of ${totalPages}` })
+    .setTimestamp();
+
+  return { embed, totalPages, safePage };
+}
+
+function buildSpecificAppealLogComponents(
+  requesterId: string,
+  threadId: string,
+  page: number,
+  totalPages: number,
+): ActionRowBuilder<ButtonBuilder>[] {
+  if (totalPages <= 1) return [];
+
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`appeal_log_page_${requesterId}_${threadId}_${page}_prev`)
+        .setLabel("◀")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 1),
+      new ButtonBuilder()
+        .setCustomId(`appeal_log_page_${requesterId}_${threadId}_${page}_next`)
+        .setLabel("▶")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page >= totalPages),
+    )
+  ];
+}
+
+function parseFooterComboInput(rawValue: string): { text: string; iconUrl: string } {
+  const value = (rawValue || "").trim();
+  if (!value) return { text: "", iconUrl: "" };
+
+  if (value.includes("|")) {
+    const [left, right] = value.split("|", 2);
+    return {
+      text: (left || "").trim(),
+      iconUrl: (right || "").trim(),
+    };
+  }
+
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length >= 2) {
+    const lastLine = lines[lines.length - 1];
+    if (isHttpUrl(lastLine)) {
+      return {
+        text: lines.slice(0, -1).join(" ").trim(),
+        iconUrl: lastLine,
+      };
+    }
+  }
+
+  const urlMatch = value.match(/https?:\/\/\S+/i);
+  if (urlMatch) {
+    const iconUrl = (urlMatch[0] || "").trim();
+    const text = value.replace(urlMatch[0], "").replace(/\s+/g, " ").trim();
+    return { text, iconUrl };
+  }
+
+  return { text: value, iconUrl: "" };
+}
+
+async function resolveEmbedImageUrl(input: string): Promise<string | null> {
+  const value = (input || "").trim().replace(/^<|>$/g, "");
+  if (!value) return null;
+
+  const messageLinkMatch = value.match(DISCORD_MESSAGE_LINK_REGEX);
+  if (messageLinkMatch) {
+    const channelId = messageLinkMatch[2];
+    const messageId = messageLinkMatch[3];
+
+    try {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || !("messages" in channel)) return null;
+
+      const message = await channel.messages.fetch(messageId);
+      if (!message) return null;
+
+      const attachmentImage = message.attachments.find((attachment: any) => {
+        const contentType = attachment.contentType || "";
+        return contentType.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(attachment.url || "");
+      });
+
+      if (attachmentImage?.url) return attachmentImage.url;
+
+      const embedImage = message.embeds.find((embed: any) => embed?.image?.url)?.image?.url;
+      if (embedImage) return embedImage;
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (/^https?:\/\//i.test(value)) {
+    return value;
+  }
+
+  return null;
+}
+
+async function tryUpdateEmbedMessageById(
+  channelId: string,
+  messageId: string,
+  title: string,
+  description: string,
+  imageUrl?: string | null,
+): Promise<boolean> {
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !("messages" in channel)) return false;
+
+    const message = await channel.messages.fetch(messageId);
+    if (!message) return false;
+
+    const newEmbed = EmbedBuilder.from(message.embeds[0] || new EmbedBuilder())
+      .setTitle(title)
+      .setDescription(description);
+
+    if (imageUrl) {
+      newEmbed.setImage(imageUrl);
+    }
+
+    await message.edit({ embeds: [newEmbed] });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function generateInviteId(): string {
   return `invite_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -302,11 +1660,24 @@ async function parseModLogMessage(msg: any, guildId: string): Promise<{ guildId:
 // Helper to safely defer replies - returns false if interaction expired
 async function safeDeferReply(interaction: any, ephemeral: boolean = true): Promise<boolean> {
   const age = Date.now() - interaction.createdTimestamp;
+  
+  // Skip if already replied or deferred
+  if (interaction.replied || interaction.deferred) {
+    console.log(`[safeDeferReply] Already replied/deferred for ${interaction.commandName || interaction.customId} (age: ${age}ms)`);
+    return true;
+  }
+  
   try {
     await interaction.deferReply({ flags: ephemeral ? 64 : undefined });
     console.log(`[safeDeferReply] Success for ${interaction.commandName || interaction.customId} (age: ${age}ms)`);
     return true;
   } catch (e: any) {
+    // Ignore "Unknown interaction" errors (interaction expired) - they're expected for slow handlers
+    if (e.message?.includes("Unknown interaction") || e.code === 10062) {
+      console.log(`[safeDeferReply] Interaction expired/unknown for ${interaction.commandName || interaction.customId} (age: ${age}ms), continuing anyway`);
+      // Still return true since we can try editReply instead
+      return true;
+    }
     console.error(`[safeDeferReply] Failed for ${interaction.commandName || interaction.customId} (age: ${age}ms): ${e.message}`);
     return false;
   }
@@ -370,7 +1741,7 @@ async function logQuizProgress(guildId: string, userId: string, action: "started
     const config = await storage.getGuildConfig(guildId);
     if (!config?.quizLogChannelId) return;
 
-    const logChannel = await client.channels.fetch(config.quizLogChannelId);
+    const logChannel = await safeChannelFetch(config.quizLogChannelId);
     if (!logChannel || !("send" in logChannel)) return;
 
     const user = await client.users.fetch(userId).catch(() => null);
@@ -440,7 +1811,7 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
   const config = await storage.getGuildConfig(quizState.guildId);
   const questions = getQuizQuestions(config);
 
-  if (quizState.currentQuestion < questions.length) {
+    if (quizState.currentQuestion < questions.length) {
     await sendQuizQuestion(userId, dmChannel);
   } else {
     // Log quiz completion
@@ -468,7 +1839,7 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
     const fullQuestions = getFullQuestions(config);
 
     try {
-      const submissionsChannel = await client.channels.fetch(config.staffIntroSubmissionsChannelId);
+      const submissionsChannel = await safeChannelFetch(config.staffIntroSubmissionsChannelId);
       if (submissionsChannel && "send" in submissionsChannel) {
         const embed = new EmbedBuilder()
           .setTitle("Staff Intro Quiz Submission")
@@ -497,7 +1868,11 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
             .setEmoji("❌")
         );
 
+        const quizPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "quiz_submissions");
+        const quizPingContent = quizPingRoles.length > 0 ? quizPingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
+
         const sentMessage = await submissionsChannel.send({
+          content: quizPingContent,
           embeds: [embed],
           components: [row],
         });
@@ -678,12 +2053,12 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("setup_moderation")
-    .setDescription("Set the channel for moderation requests (ban/unban)")
+    .setDescription("Post moderation request embed here and choose where requests are sent")
     .setDefaultMemberPermissions(0)
     .addChannelOption((option) =>
       option
-        .setName("channel")
-        .setDescription("The channel where moderation requests will be sent")
+        .setName("requests_channel")
+        .setDescription("Channel where moderation requests (ban/unban/kick) will be sent")
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -697,6 +2072,26 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("setup_role_requests")
+    .setDescription("Set the channel for modmail role requests")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where role requests will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("accepted_players")
+    .setDescription("Set the channel where approved player announcements are posted")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where accepted player messages will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
     .setName("prefix")
     .setDescription("Change the command prefix for modmail and snip commands")
     .setDefaultMemberPermissions(0)
@@ -705,6 +2100,53 @@ const commands = [
         .setName("new_prefix")
         .setDescription("The new prefix (e.g., !, ?, .)")
         .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("dashboard")
+    .setDescription("Get the bot dashboard link"),
+  new SlashCommandBuilder()
+    .setName("setup")
+    .setDescription("Setup prefix moderation command style for ban/mute/kick")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("action")
+        .setDescription("Choose which moderation command to setup")
+        .setRequired(true)
+        .addChoices(
+          { name: "ban", value: "ban" },
+          { name: "mute", value: "mute" },
+          { name: "kick", value: "kick" },
+        )
+    )
+    .addStringOption((option) =>
+      option
+        .setName("prefix")
+        .setDescription("Command prefix, e.g. *")
+        .setRequired(true)
+    )
+    .addRoleOption((option) => option.setName("protected_role1").setDescription("Protected role 1 (cannot be muted/kicked/banned)").setRequired(false))
+    .addRoleOption((option) => option.setName("protected_role2").setDescription("Protected role 2").setRequired(false))
+    .addRoleOption((option) => option.setName("protected_role3").setDescription("Protected role 3").setRequired(false))
+    .addRoleOption((option) => option.setName("protected_role4").setDescription("Protected role 4").setRequired(false))
+    .addRoleOption((option) => option.setName("protected_role5").setDescription("Protected role 5").setRequired(false))
+    .addRoleOption((option) => option.setName("muted_role").setDescription("Role to assign when users are muted").setRequired(false))
+    .addStringOption((option) => option.setName("success_emoji").setDescription("Emoji shown when action succeeds").setRequired(false))
+    .addStringOption((option) => option.setName("error_emoji").setDescription("Emoji shown when action fails").setRequired(false))
+    .addStringOption((option) => option.setName("info_emoji").setDescription("Emoji shown for neutral/info output").setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("set")
+    .setDescription("Set moderation messages")
+    .setDefaultMemberPermissions(0)
+    .addSubcommandGroup((group) =>
+      group
+        .setName("ban")
+        .setDescription("Ban settings")
+        .addSubcommand((subcommand) =>
+          subcommand
+            .setName("message")
+            .setDescription("Set the DM message users receive when banned")
+        )
     ),
   new SlashCommandBuilder()
     .setName("activity")
@@ -722,7 +2164,11 @@ const commands = [
         .setRequired(false)
         .addChoices(
           { name: "Ban Requests", value: "ban" },
+          { name: "Moderation Bans", value: "modban" },
+          { name: "Moderation Kicks", value: "kick" },
+          { name: "Moderation Mutes", value: "mute" },
           { name: "Unban Requests", value: "unban" },
+          { name: "Invites", value: "invites" },
           { name: "Modmails handled", value: "modmail" },
           { name: "Appeals handled", value: "appeal" },
           { name: "Staff Reports", value: "staffreport" }
@@ -789,7 +2235,11 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Ban Requests", value: "ban" },
+          { name: "Moderation Bans", value: "modban" },
+          { name: "Moderation Kicks", value: "kick" },
+          { name: "Moderation Mutes", value: "mute" },
           { name: "Unban Requests", value: "unban" },
+          { name: "Invites", value: "invites" },
           { name: "Modmails Handled", value: "modmail" },
           { name: "Appeals Handled", value: "appeal" },
           { name: "Staff Reports", value: "staffreport" }
@@ -828,7 +2278,11 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Ban Requests", value: "ban" },
+          { name: "Moderation Bans", value: "modban" },
+          { name: "Moderation Kicks", value: "kick" },
+          { name: "Moderation Mutes", value: "mute" },
           { name: "Unban Requests", value: "unban" },
+          { name: "Invites", value: "invites" },
           { name: "Modmails Handled", value: "modmail" },
           { name: "Appeals Handled", value: "appeal" },
           { name: "Staff Reports", value: "staffreport" }
@@ -856,6 +2310,7 @@ const commands = [
         .addChoices(
           { name: "Ban Requests", value: "ban" },
           { name: "Unban Requests", value: "unban" },
+          { name: "Invites", value: "invites" },
           { name: "Modmails Handled", value: "modmail" },
           { name: "Appeals Handled", value: "appeal" },
           { name: "Staff Reports", value: "staffreport" }
@@ -888,6 +2343,23 @@ const commands = [
         .setName("to")
         .setDescription("End time in days ago (e.g., 0 for today)")
         .setRequired(false)
+    )
+    .addStringOption((option) =>
+      option
+        .setName("category")
+        .setDescription("Optional category filter")
+        .setRequired(false)
+        .addChoices(
+          { name: "Moderation Bans", value: "modban" },
+          { name: "Moderation Kicks", value: "kick" },
+          { name: "Moderation Mutes", value: "mute" },
+          { name: "Ban Requests", value: "ban" },
+          { name: "Unban Requests", value: "unban" },
+          { name: "Invites", value: "invites" },
+          { name: "Modmails Handled", value: "modmail" },
+          { name: "Appeals Handled", value: "appeal" },
+          { name: "Staff Reports", value: "staffreport" }
+        )
     ),
   new SlashCommandBuilder()
     .setName("restore_activity")
@@ -1028,14 +2500,76 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
-    .setName("setup_inactivity_ping")
-    .setDescription("Set roles to ping when inactivity is submitted (up to 5)")
+    .setName("setup_welcome")
+    .setDescription("Set the channel where welcome embeds are sent on member join")
     .setDefaultMemberPermissions(0)
-    .addRoleOption((option) => option.setName("role1").setDescription("Role 1 to ping").setRequired(false))
-    .addRoleOption((option) => option.setName("role2").setDescription("Role 2 to ping").setRequired(false))
-    .addRoleOption((option) => option.setName("role3").setDescription("Role 3 to ping").setRequired(false))
-    .addRoleOption((option) => option.setName("role4").setDescription("Role 4 to ping").setRequired(false))
-    .addRoleOption((option) => option.setName("role5").setDescription("Role 5 to ping").setRequired(false)),
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where welcome messages will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_welcome_message")
+    .setDescription("Configure the welcome embed message")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) =>
+      option
+        .setName("embed_color")
+        .setDescription("Embed color (hex without #, e.g. 57f287)")
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName("pings")
+    .setDescription("Manage ping roles for request embeds and ticket request flows")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub
+        .setName("set")
+        .setDescription("Set roles to ping for a request flow")
+        .addStringOption((option) =>
+          option
+            .setName("embeds")
+            .setDescription("Which request flow should ping these roles")
+            .setRequired(true)
+            .addChoices(
+              { name: "Payout Requests", value: "payout_requests" },
+              { name: "Ban Requests", value: "ban_requests" },
+              { name: "Unban Requests", value: "unban_requests" },
+              { name: "Kick Requests", value: "kick_requests" },
+              { name: "Inactivity Submissions", value: "inactivity_submissions" },
+              { name: "Staff Intro Quiz Submissions", value: "quiz_submissions" },
+              { name: "Role Requests", value: "role_requests" },
+              { name: "Modmail Tickets", value: "modmail_tickets" },
+              { name: "Appeal Tickets", value: "appeal_tickets" },
+            )
+        )
+        .addRoleOption((option) => option.setName("role1").setDescription("Role 1 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role2").setDescription("Role 2 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role3").setDescription("Role 3 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role4").setDescription("Role 4 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role5").setDescription("Role 5 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role6").setDescription("Role 6 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role7").setDescription("Role 7 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role8").setDescription("Role 8 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role9").setDescription("Role 9 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role10").setDescription("Role 10 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role11").setDescription("Role 11 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role12").setDescription("Role 12 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role13").setDescription("Role 13 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role14").setDescription("Role 14 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role15").setDescription("Role 15 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role16").setDescription("Role 16 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role17").setDescription("Role 17 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role18").setDescription("Role 18 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role19").setDescription("Role 19 to ping").setRequired(false))
+        .addRoleOption((option) => option.setName("role20").setDescription("Role 20 to ping").setRequired(false))
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("list")
+        .setDescription("List all current ping role mappings")
+    ),
   new SlashCommandBuilder()
     .setName("terminate_quizzes")
     .setDescription("Terminate all active staff intro quizzes")
@@ -1083,26 +2617,37 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
-    .setName("edit_embed")
-    .setDescription("Edit system embeds with line breaks support")
+    .setName("edit")
+    .setDescription("Edit bot content")
     .setDefaultMemberPermissions(0)
-    .addStringOption((option) =>
-      option
-        .setName("type")
-        .setDescription("Which embed to edit")
-        .setRequired(true)
-        .addChoices(
-          { name: "Modmail", value: "modmail" },
-          { name: "Appeal", value: "appeal" },
-          { name: "Staff Intro", value: "staffintro" },
-          { name: "Inactivity", value: "inactivity" }
+    .addSubcommand((sub) =>
+      sub
+        .setName("embed")
+        .setDescription("Edit system embeds with line breaks support")
+        .addStringOption((option) =>
+          option
+            .setName("type")
+            .setDescription("Which embed to edit")
+            .setRequired(true)
+            .addChoices(
+              { name: "Modmail", value: "modmail" },
+              { name: "Appeal", value: "appeal" },
+              { name: "Staff Intro", value: "staffintro" },
+              { name: "Inactivity", value: "inactivity" }
+            )
         )
-    )
-    .addStringOption((option) =>
-      option
-        .setName("message_id")
-        .setDescription("Message ID of the embed to update (right-click message > Copy ID)")
-        .setRequired(false)
+        .addStringOption((option) =>
+          option
+            .setName("message_id")
+            .setDescription("Message ID of the embed to update (right-click message > Copy ID)")
+            .setRequired(false)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("image_link")
+            .setDescription("Optional image URL or Discord message link containing an image")
+            .setRequired(false)
+        )
     ),
   new SlashCommandBuilder()
     .setName("setup_appeal")
@@ -1173,6 +2718,9 @@ const commands = [
           { name: "Modmail", value: "modmail" },
           { name: "Ban Appeal", value: "appeal" }
         )
+    )
+    .addStringOption((option) =>
+      option.setName("reason").setDescription("Reason for unblocking").setRequired(false)
     ),
   new SlashCommandBuilder()
     .setName("permissions")
@@ -1183,13 +2731,28 @@ const commands = [
         .addChoices(
           { name: "Payout Approval", value: "payout" },
           { name: "Ban/Unban Approval", value: "moderation" },
-          { name: "Inactivity Approval", value: "inactivity" },
+          { name: "Kick Approval", value: "kick_approval" },
           { name: "Modmail Block", value: "block" },
           { name: "Modmail Claim", value: "claim" },
           { name: "Activity Reset", value: "activity_reset" },
           { name: "Appeal Claim", value: "appeal_claim" },
           { name: "Snippets", value: "snippets" },
-          { name: "Activity", value: "activity" }
+          { name: "Activity", value: "activity" },
+          { name: "Message Commands", value: "message_commands" },
+          { name: "Roster Commands", value: "roster_commands" },
+          { name: "Role Commands", value: "role_commands" },
+          { name: "Sticky Commands", value: "sticky_commands" },
+          { name: "Role Request Commands", value: "role_request_commands" },
+          { name: "Prefix Ban Command", value: "prefix_ban" },
+          { name: "Prefix Fullban Command", value: "prefix_fullban" },
+          { name: "Prefix Fakeban Command", value: "prefix_fakeban" },
+          { name: "Prefix Mute Command", value: "prefix_mute" },
+          { name: "Prefix Kick Command", value: "prefix_kick" },
+          { name: "Prefix Modlogs Command", value: "prefix_modlogs" },
+          { name: "Prefix Reason Command", value: "prefix_reason" },
+          { name: "Prefix Retime Command", value: "prefix_retime" },
+          { name: "Prefix Clean Command", value: "prefix_clean" },
+          { name: "Prefix Command", value: "prefix_command" }
         )
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
@@ -1212,18 +2775,6 @@ const commands = [
     .addRoleOption((option) => option.setName("role18").setDescription("Role 18").setRequired(false))
     .addRoleOption((option) => option.setName("role19").setDescription("Role 19").setRequired(false))
     .addRoleOption((option) => option.setName("role20").setDescription("Role 20").setRequired(false)),
-  new SlashCommandBuilder()
-    .setName("category_ping")
-    .setDescription("Set which roles get pinged for each ticket category")
-    .setDefaultMemberPermissions(0)
-    .addStringOption((option) =>
-      option.setName("category").setDescription("Category ID (use /modmail-category list to see IDs)").setRequired(true)
-    )
-    .addRoleOption((option) => option.setName("role1").setDescription("Role 1 to ping").setRequired(false))
-    .addRoleOption((option) => option.setName("role2").setDescription("Role 2 to ping").setRequired(false))
-    .addRoleOption((option) => option.setName("role3").setDescription("Role 3 to ping").setRequired(false))
-    .addRoleOption((option) => option.setName("role4").setDescription("Role 4 to ping").setRequired(false))
-    .addRoleOption((option) => option.setName("role5").setDescription("Role 5 to ping").setRequired(false)),
   new SlashCommandBuilder()
     .setName("close_all_tickets")
     .setDescription("Close all open modmail tickets (even if channels are deleted)")
@@ -1256,6 +2807,15 @@ const commands = [
       option.setName("message").setDescription("The message to send").setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("send")
+    .setDescription("Send content")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub
+        .setName("embed")
+        .setDescription("Send an embed with optional fields")
+    ),
+  new SlashCommandBuilder()
     .setName("block_list")
     .setDescription("List all blocked users from modmail and appeals")
     .setDefaultMemberPermissions(0),
@@ -1284,6 +2844,78 @@ const commands = [
         .setName("channel")
         .setDescription("The channel where command logs will be sent")
         .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_moderation_command_logs")
+    .setDescription("Set the channel for prefix moderation command logs")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where moderation command logs will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("sticky")
+    .setDescription("Manage sticky messages in the current channel")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub
+        .setName("set")
+        .setDescription("Set a sticky message in this channel")
+        .addStringOption((option) =>
+          option
+            .setName("message")
+            .setDescription("Sticky message content")
+            .setRequired(true)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("interval")
+            .setDescription("Repost after this many new messages")
+            .setRequired(true)
+            .setMinValue(1)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("remove")
+        .setDescription("Remove sticky message from this channel")
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("info")
+        .setDescription("Show sticky message info for this channel")
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("list")
+        .setDescription("List all sticky messages in this server")
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("edit")
+        .setDescription("Edit an existing sticky message")
+        .addStringOption((option) =>
+          option
+            .setName("sticky")
+            .setDescription("Choose which sticky to edit")
+            .setRequired(true)
+            .setAutocomplete(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("new_message")
+            .setDescription("New sticky message content")
+            .setRequired(true)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("new_interval")
+            .setDescription("New repost interval")
+            .setRequired(true)
+            .setMinValue(1)
+        )
     ),
   new SlashCommandBuilder()
     .setName("roster-embed")
@@ -1463,6 +3095,132 @@ async function hasActivityPermission(
   return config.activityRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
+async function hasMessageCommandPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+
+  if (!config?.messageCommandRoleIds || config.messageCommandRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string' 
+      ? BigInt(memberPermissions) 
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return config.messageCommandRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasRosterCommandPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+
+  if (!config?.rosterCommandRoleIds || config.rosterCommandRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string' 
+      ? BigInt(memberPermissions) 
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return config.rosterCommandRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasRoleCommandPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+
+  if (!config?.roleCommandRoleIds || config.roleCommandRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string' 
+      ? BigInt(memberPermissions) 
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return config.roleCommandRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasStickyCommandPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+  const stickyRoleIds = getStickyPermissionRoleIdsFromGuildConfig(config);
+
+  if (!stickyRoleIds || stickyRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string'
+      ? BigInt(memberPermissions)
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return stickyRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasRoleRequestPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+  const allowedRoleIds = getRoleRequestRoleIdsFromGuildConfig(config);
+
+  if (!allowedRoleIds || allowedRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string'
+      ? BigInt(memberPermissions)
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return allowedRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+function getInteractionMemberContext(interaction: any): { memberRoles: string[] | undefined; memberPermissions: bigint | string | undefined } {
+  const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id) as string[] | undefined;
+  const memberPermissions = (interaction.member as any)?.permissions?.bitfield as bigint | string | undefined;
+  return { memberRoles, memberPermissions };
+}
+
+async function replyInteractionFailed(interaction: any): Promise<void> {
+  const payload = { content: "You do not have permission to use this", flags: 64 as const };
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(payload);
+    } else {
+      await interaction.reply(payload);
+    }
+  } catch {}
+}
+
+async function canUseModlogsButtons(interaction: any): Promise<boolean> {
+  const memberPerms = interaction.member?.permissions;
+  const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+  if (isAdmin) return true;
+
+  const memberRoleIds = interaction.member?.roles?.cache?.map((role: any) => role.id) || [];
+  const config = await storage.getGuildConfig(interaction.guildId!);
+  const modSetup = getModerationSetupFromConfig(config);
+  const allowedRoleIds = uniqueStrings(modSetup.modlogsRoleIds);
+  return allowedRoleIds.length > 0 && allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
+}
+
 async function sendDMToUser(userId: string, status: "approved" | "denied", reason: string, moneyOwed: string, paypal: string, actionReason?: string): Promise<void> {
   try {
     // Validate user ID format (Discord snowflake IDs are 17-19 digits)
@@ -1497,6 +3255,29 @@ async function sendDMToUser(userId: string, status: "approved" | "denied", reaso
     await user.send({ embeds: [embed] });
   } catch (error) {
     console.log(`Could not DM user ${userId}:`, error);
+  }
+}
+
+async function validateCategoryExists(guild: any, categoryId: string): Promise<boolean> {
+  try {
+    const category = await guild.channels.fetch(categoryId);
+    return !!category;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function safeChannelFetch(channelId: string | null | undefined): Promise<any> {
+  if (!channelId) return null;
+  try {
+    return await client.channels.fetch(channelId);
+  } catch (e: any) {
+    if (e?.code === 10003) {
+      // Channel deleted - silently return null
+      return null;
+    }
+    console.log(`[safeChannelFetch] Error fetching channel ${channelId}:`, e?.message);
+    return null;
   }
 }
 
@@ -1542,7 +3323,18 @@ async function logCommand(guildId: string, commandName: string, userId: string, 
     const config = await storage.getGuildConfig(guildId);
     if (!config?.commandLogChannelId) return;
 
-    const logChannel = await client.channels.fetch(config.commandLogChannelId);
+    let logChannel;
+    try {
+      logChannel = await client.channels.fetch(config.commandLogChannelId);
+    } catch (e: any) {
+      // Channel has been deleted or is inaccessible
+      if (e?.code === 10003) {
+        console.log(`[logCommand] Log channel deleted: ${config.commandLogChannelId}`);
+        return;
+      }
+      throw e;
+    }
+
     if (!logChannel || !("send" in logChannel)) return;
 
     let optionsText = "None";
@@ -1812,13 +3604,62 @@ client.once("clientReady", async () => {
         timeoutPromise
       ]);
 
+      try {
+        const existing = await rest.get(Routes.applicationCommands(APPLICATION_ID)) as any[];
+        const legacyEditEmbed = existing.find((cmd: any) => cmd?.name === "edit_embed");
+        if (legacyEditEmbed?.id) {
+          await rest.delete(Routes.applicationCommand(APPLICATION_ID, legacyEditEmbed.id));
+          console.log("🧹 Removed legacy /edit_embed command");
+        }
+      } catch (cleanupError: any) {
+        console.log("⚠️ Could not clean legacy /edit_embed command:", cleanupError?.message || cleanupError);
+      }
+
       console.log("✅ Slash commands registered successfully!");
     } catch (error: any) {
       console.error("❌ Error registering commands:", error.message || error);
       console.log("⚠️ Bot will continue running with existing commands");
     }
   })();
+
+  (async () => {
+    try {
+      for (const guild of client.guilds.cache.values()) {
+        await refreshGuildInviteSnapshot(guild);
+        await refreshGuildVanitySnapshot(guild);
+      }
+      console.log(`✅ Invite snapshots initialized for ${guildInviteSnapshots.size} guild(s)`);
+    } catch (error: any) {
+      console.log("⚠️ Could not initialize invite snapshots:", error?.message || error);
+    }
+  })();
 });
+
+const processedInteractions = new Set<string>();
+const INTERACTION_DEDUP_TIMEOUT = 15000;
+
+const ticketCreationLocks = new Map<string, number>();
+const TICKET_CREATION_LOCK_MS = 60000;
+
+function acquireTicketCreationLock(guildId: string, userId: string, system: "modmail" | "appeal"): boolean {
+  const key = `${guildId}:${userId}:${system}`;
+  const now = Date.now();
+  const previous = ticketCreationLocks.get(key);
+
+  if (previous && now - previous < TICKET_CREATION_LOCK_MS) {
+    return false;
+  }
+
+  ticketCreationLocks.set(key, now);
+  setTimeout(() => {
+    const current = ticketCreationLocks.get(key);
+    if (current === now) {
+      ticketCreationLocks.delete(key);
+    }
+  }, TICKET_CREATION_LOCK_MS);
+
+  return true;
+}
 
 client.on("interactionCreate", async (interaction) => {
   try {
@@ -1834,6 +3675,13 @@ client.on("interactionCreate", async (interaction) => {
       console.log('Interaction already replied to:', interaction.id);
       return;
     }
+
+    if (processedInteractions.has(interaction.id)) {
+      console.log(`[INTERACTION] Duplicate interaction ignored: ${interaction.id}`);
+      return;
+    }
+    processedInteractions.add(interaction.id);
+    setTimeout(() => processedInteractions.delete(interaction.id), INTERACTION_DEDUP_TIMEOUT);
 
     // Handle autocomplete interactions
     if (interaction.isAutocomplete()) {
@@ -1881,6 +3729,43 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.respond(filtered);
         } catch (e) {
           console.log("Roster-embed autocomplete error:", e);
+          await interaction.respond([]).catch(() => {});
+        }
+        return;
+      }
+
+      // Handle sticky edit target autocomplete
+      if (commandName === "sticky" && focusedOption.name === "sticky") {
+        try {
+          const guildId = interaction.guildId;
+          if (!guildId) {
+            await interaction.respond([]);
+            return;
+          }
+
+          const subcommand = interaction.options.getSubcommand(false);
+          if (subcommand !== "edit") {
+            await interaction.respond([]);
+            return;
+          }
+
+          const config = await storage.getGuildConfig(guildId);
+          const stickyConfigs = getStickyConfigsFromGuildConfig(config);
+          const query = String(focusedOption.value || "").toLowerCase();
+
+          const choices = Object.entries(stickyConfigs)
+            .map(([channelId]) => {
+              const channelName = interaction.guild?.channels?.cache?.get(channelId)?.name || channelId;
+              return {
+                name: `#${channelName}`.slice(0, 100),
+                value: channelId,
+              };
+            })
+            .filter((entry) => entry.name.toLowerCase().includes(query) || entry.value.includes(query))
+            .slice(0, 25);
+
+          await interaction.respond(choices);
+        } catch {
           await interaction.respond([]).catch(() => {});
         }
         return;
@@ -2170,6 +4055,8 @@ client.on("interactionCreate", async (interaction) => {
                   .setTimestamp();
 
                 if (status === "pending") {
+                  const pingRoles = getRequestPingRoleIdsFromGuildConfig(config, "payout_requests");
+                  const pingContent = pingRoles.length > 0 ? pingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
                   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                     new ButtonBuilder()
                       .setCustomId(`approve_${payoutRequest.id}`)
@@ -2182,12 +4069,16 @@ client.on("interactionCreate", async (interaction) => {
                   );
 
                   const sentMessage = await requestChannel.send({
+                    content: pingContent,
                     embeds: [embed],
                     components: [row],
                   });
                   await storage.updatePayoutMessageId(payoutRequest.id, sentMessage.id);
                 } else {
+                  const pingRoles = getRequestPingRoleIdsFromGuildConfig(config, "payout_requests");
+                  const pingContent = pingRoles.length > 0 ? pingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
                   const sentMessage = await requestChannel.send({
+                    content: pingContent,
                     embeds: [embed],
                   });
                   await storage.updatePayoutMessageId(payoutRequest.id, sentMessage.id);
@@ -2594,7 +4485,7 @@ client.on("interactionCreate", async (interaction) => {
         const embed = new EmbedBuilder()
           .setTitle(`Members with ${guildRole.name}`)
           .setColor(guildRole.color || 0x5865f2)
-          .setDescription(pageMembers.length > 0 ? pageMembers.join("\n") : "No members have this role.")
+          .setDescription(pageMembers.length > 0 ? pageMembers.join("\n") : "N/A")
           .setFooter({ text: `Page ${currentPage + 1}/${totalPages} • Total: ${members.length} member(s)` })
           .setTimestamp();
 
@@ -2618,42 +4509,70 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "setup_moderation") {
         if (!await safeDeferReply(interaction)) return;
 
-        const channel = interaction.options.getChannel("channel", true);
+        const requestsChannel = interaction.options.getChannel("requests_channel", true);
+        const panelChannel = interaction.channel;
 
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
-          banChannelId: channel.id,
-          unbanChannelId: channel.id,
+          banChannelId: requestsChannel.id,
+          unbanChannelId: requestsChannel.id,
         });
 
         const embed = new EmbedBuilder()
           .setTitle("⚖️ Moderation Requests")
-          .setDescription("Submit a ban or unban request by clicking the appropriate button below.")
+          .setDescription("Submit a moderation request by choosing an option from the dropdown below.")
           .setColor(0x5865f2)
           .setFooter({ text: "Moderation Requests Can Take Up To A Day To Get Finalised" });
 
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId("submit_ban_request")
-            .setLabel("Ban Request")
-            .setStyle(ButtonStyle.Danger)
-            .setEmoji("🚫"),
-          new ButtonBuilder()
-            .setCustomId("submit_unban_request")
-            .setLabel("Unban Request")
-            .setStyle(ButtonStyle.Success)
-            .setEmoji("🔓")
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId("moderation_request_select")
+          .setPlaceholder("Choose a moderation request type")
+          .addOptions(
+            {
+              label: "Request A Ban",
+              value: "submit_ban_request",
+              emoji: "🚫",
+            },
+            {
+              label: "Request A Unban",
+              value: "submit_unban_request",
+              emoji: "🔓",
+            },
+            {
+              label: "Request A Kick",
+              value: "submit_kick_request",
+              emoji: "👢",
+            }
+          );
+
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+          selectMenu
         );
 
-        if (interaction.channel && "send" in interaction.channel) {
-          await interaction.channel.send({
+        if (panelChannel && "messages" in panelChannel && "send" in panelChannel) {
+          try {
+            const recentMessages = await panelChannel.messages.fetch({ limit: 50 });
+            const oldPanels = recentMessages.filter((msg) => {
+              if (msg.author.id !== client.user?.id) return false;
+              const firstEmbed = msg.embeds[0];
+              return firstEmbed?.title === "⚖️ Moderation Requests";
+            });
+
+            for (const [, msg] of oldPanels) {
+              await msg.delete().catch(() => null);
+            }
+          } catch (e) {
+            console.log("[MODERATION] Could not clean old moderation panels:", e);
+          }
+
+          await panelChannel.send({
             embeds: [embed],
             components: [row],
           });
         }
 
         await interaction.editReply({
-          content: `✅ Moderation request channel configured! Requests will be sent to <#${channel.id}>.`,
+          content: `✅ Moderation requests configured!\n• Panel posted in: <#${interaction.channelId}>\n• Requests sent to: <#${requestsChannel.id}>`,
         });
       } else if (commandName === "setup_moderation_logs") {
         if (!await safeDeferReply(interaction)) return;
@@ -2669,8 +4588,65 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Configuration saved! Moderation request logs will be sent to <#${channel.id}>.`,
         });
+      } else if (commandName === "setup_role_requests") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writeRoleRequestSettingsToConfig(config?.customCategoryPings, {
+            channelId: channel.id,
+          }),
+        });
+
+        await interaction.editReply({
+          content: `✅ Role requests will be sent to <#${channel.id}>.`,
+        });
+      } else if (commandName === "accepted_players") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writeRoleRequestSettingsToConfig(config?.customCategoryPings, {
+            acceptedPlayersChannelId: channel.id,
+          }),
+        });
+
+        await interaction.editReply({
+          content: `✅ Accepted players messages will be sent to <#${channel.id}>.`,
+        });
+      } else if (commandName === "dashboard") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const dashboardUrl = getDashboardUrl();
+        const embed = new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle("Bot Dashboard")
+          .setDescription(`Use this link to open your dashboard:\n${dashboardUrl}`)
+          .setTimestamp();
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setLabel("Open Dashboard")
+            .setStyle(ButtonStyle.Link)
+            .setURL(dashboardUrl)
+        );
+
+        await interaction.editReply({ embeds: [embed], components: [row] });
       } else if (commandName === "prefix") {
         if (!await safeDeferReply(interaction)) return;
+
+        if (!canUsePrefixCommand(interaction)) {
+          await interaction.editReply({
+            content: "You do not have permission to use this command.",
+          });
+          return;
+        }
 
         const newPrefix = interaction.options.getString("new_prefix", true);
 
@@ -2689,6 +4665,95 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `Changed server prefix to \`${newPrefix}\``,
         });
+      } else if (commandName === "setup") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const action = interaction.options.getString("action", true) as PrefixModerationAction;
+        const newPrefix = interaction.options.getString("prefix", true).trim();
+
+        if (!newPrefix || newPrefix.length > 3) {
+          await interaction.editReply({
+            content: "Prefix must be between 1 and 3 characters.",
+          });
+          return;
+        }
+
+        const protectedRoles: string[] = [];
+        for (let i = 1; i <= 5; i++) {
+          const role = interaction.options.getRole(`protected_role${i}`);
+          if (role) protectedRoles.push(role.id);
+        }
+
+        const currentConfig = await storage.getGuildConfig(interaction.guildId!);
+        const currentSetup = getModerationSetupFromConfig(currentConfig);
+        const mutedRole = interaction.options.getRole("muted_role");
+
+        const updatedSetup: ModerationSetupConfig = {
+          ...currentSetup,
+          enabledActions: uniqueStrings([...currentSetup.enabledActions, action]) as PrefixModerationAction[],
+          protectedRoleIds: protectedRoles.length > 0 ? uniqueStrings(protectedRoles) : currentSetup.protectedRoleIds,
+          mutedRoleId: mutedRole?.id || currentSetup.mutedRoleId,
+          rolePermissions: {
+            ban: currentSetup.rolePermissions.ban,
+            mute: currentSetup.rolePermissions.mute,
+            kick: currentSetup.rolePermissions.kick,
+          },
+          actionEmojis: currentSetup.actionEmojis,
+          statusEmojis: {
+            success: interaction.options.getString("success_emoji")?.trim() || currentSetup.statusEmojis.success,
+            error: interaction.options.getString("error_emoji")?.trim() || currentSetup.statusEmojis.error,
+            info: interaction.options.getString("info_emoji")?.trim() || currentSetup.statusEmojis.info,
+          },
+        };
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          commandPrefix: newPrefix,
+          customCategoryPings: writeModerationSetupToConfig(currentConfig?.customCategoryPings, updatedSetup),
+        });
+
+        const actionEmoji = updatedSetup.actionEmojis[action];
+        const usageEmbed = buildPrefixCommandUsageEmbed(newPrefix, action, actionEmoji)
+          .setFooter({
+            text: `Enabled actions: ${updatedSetup.enabledActions.map((entry) => `${newPrefix}${entry}`).join(", ") || "none"}`,
+          });
+
+        await interaction.editReply({
+          content: `${updatedSetup.statusEmojis.success} Setup saved for \`${newPrefix}${action}\`.`,
+          embeds: [usageEmbed],
+        });
+      } else if (commandName === "set") {
+        if (!canUsePrefixCommand(interaction)) {
+          await interaction.reply({
+            content: "You do not have permission to use this command.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const group = interaction.options.getSubcommandGroup();
+        const subcommand = interaction.options.getSubcommand();
+
+        if (group === "ban" && subcommand === "message") {
+          const guildConfig = await storage.getGuildConfig(interaction.guildId!);
+          const modSetup = getModerationSetupFromConfig(guildConfig);
+
+          const modal = new ModalBuilder()
+            .setCustomId(`set_ban_message_modal_${interaction.guildId}`)
+            .setTitle("Set Ban DM Message");
+
+          const messageInput = new TextInputBuilder()
+            .setCustomId("ban_message_text")
+            .setLabel("Ban message sent in DMs")
+            .setStyle(TextInputStyle.Paragraph)
+            .setMaxLength(1000)
+            .setRequired(true)
+            .setValue(modSetup.banDmMessage || DEFAULT_MOD_SETUP.banDmMessage);
+
+          modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(messageInput));
+          await interaction.showModal(modal);
+          return;
+        }
       } else if (commandName === "activity") {
         // Check for activity permission BEFORE deferring so we can make denial ephemeral
         const memberRoles = interaction.member?.roles;
@@ -2724,12 +4789,24 @@ client.on("interactionCreate", async (interaction) => {
             timeRangeDesc += "\n" + (fromTimestamp ? `From ${fromTimestamp} to ${toTimestamp}` : `Up to ${toTimestamp}`);
           }
 
+          let moderationStatsRows: { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[] = [];
+          try {
+            moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays);
+          } catch (e) {
+            console.log("Could not fetch moderation action stats:", e);
+          }
+          const moderationByUser = new Map(moderationStatsRows.map((entry) => [entry.moderatorId, entry]));
+
           // If a specific member is requested, show their individual stats
           if (targetMember) {
             let memberBanStats = 0;
             let memberUnbanStats = 0;
             let memberModmailStats = 0;
             let memberAppealStats = 0;
+            let memberMuteStats = 0;
+            let memberKickStats = 0;
+            let memberModerationBanStats = 0;
+            let memberInviteStats = 0;
             let memberModmailCategoryStats: { category: string; count: number }[] = [];
 
             try {
@@ -2747,6 +4824,13 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not fetch member unban stats:", e);
             }
             try {
+              memberInviteStats = useAllGuilds
+                ? await storage.getInviteStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
+                : await storage.getInviteStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
+            } catch (e) {
+              console.log("Could not fetch member invite stats:", e);
+            }
+            try {
               memberModmailStats = useAllGuilds
                 ? await storage.getModmailStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
                 : await storage.getModmailStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
@@ -2760,6 +4844,11 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) {
               console.log("Could not fetch member appeal stats:", e);
             }
+
+            const memberModeration = moderationByUser.get(targetMember.id);
+            memberMuteStats = memberModeration?.mutes || 0;
+            memberKickStats = memberModeration?.kicks || 0;
+            memberModerationBanStats = memberModeration?.bans || 0;
             try {
               memberModmailCategoryStats = useAllGuilds
                 ? await storage.getModmailStatsByCategoryForUserAllGuilds(targetMember.id, fromDays, toDays)
@@ -2768,7 +4857,7 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not fetch member modmail category stats:", e);
             }
 
-            const totalActivity = memberBanStats + memberUnbanStats + memberModmailStats + memberAppealStats;
+            const totalActivity = memberBanStats + memberUnbanStats + memberModmailStats + memberAppealStats + memberMuteStats + memberKickStats + memberModerationBanStats;
 
             const embed = new EmbedBuilder()
               .setTitle(`Activity for ${targetMember.tag}`)
@@ -2786,11 +4875,15 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not fetch member staff report stats:", e);
             }
 
-            const totalActivityWithStaffReports = memberBanStats + memberUnbanStats + memberModmailStats + memberAppealStats + memberStaffReportStats;
+            const totalActivityWithStaffReports = memberBanStats + memberUnbanStats + memberInviteStats + memberModmailStats + memberAppealStats + memberMuteStats + memberKickStats + memberModerationBanStats + memberStaffReportStats;
 
             let statsText = `**Total Activity:** ${totalActivityWithStaffReports}\n\n`;
             statsText += `**Ban Requests:** ${memberBanStats}\n`;
+            statsText += `**Moderation Bans:** ${memberModerationBanStats}\n`;
+            statsText += `**Moderation Kicks:** ${memberKickStats}\n`;
+            statsText += `**Moderation Mutes:** ${memberMuteStats}\n`;
             statsText += `**Unban Requests:** ${memberUnbanStats}\n`;
+            statsText += `**Invites:** ${memberInviteStats}\n`;
             statsText += `**Modmails Handled:** ${memberModmailStats}\n`;
             statsText += `**Appeals Handled:** ${memberAppealStats}\n`;
             statsText += `**Staff Reports:** ${memberStaffReportStats}`;
@@ -2826,7 +4919,11 @@ client.on("interactionCreate", async (interaction) => {
 
           // Otherwise show the leaderboard - fetch each stat type independently
           let banStats: { userId: string; count: number }[] = [];
+          let moderationBanStats: { userId: string; count: number }[] = [];
+          let moderationKickStats: { userId: string; count: number }[] = [];
+          let moderationMuteStats: { userId: string; count: number }[] = [];
           let unbanStats: { userId: string; count: number }[] = [];
+          let inviteStats: { userId: string; count: number }[] = [];
           let modmailStats: { userId: string; count: number }[] = [];
           let appealStats: { userId: string; count: number }[] = [];
           let staffReportStats: { userId: string; count: number }[] = [];
@@ -2843,6 +4940,16 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           try {
+            if (!category || category === "modban" || category === "kick" || category === "mute") {
+              moderationBanStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.bans }));
+              moderationKickStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.kicks }));
+              moderationMuteStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.mutes }));
+            }
+          } catch (e) {
+            console.log("Could not map moderation stats:", e);
+          }
+
+          try {
             if (!category || category === "unban") {
               unbanStats = useAllGuilds
                 ? await storage.getAllGuildsUnbanStats(fromDays, toDays)
@@ -2850,6 +4957,16 @@ client.on("interactionCreate", async (interaction) => {
             }
           } catch (e) {
             console.log("Could not fetch unban stats:", e);
+          }
+
+          try {
+            if (!category || category === "invites") {
+              inviteStats = useAllGuilds
+                ? await storage.getAllGuildsInviteStats(fromDays, toDays)
+                : await storage.getInviteStats(interaction.guildId!, fromDays, toDays);
+            }
+          } catch (e) {
+            console.log("Could not fetch invite stats:", e);
           }
 
           try {
@@ -2892,7 +5009,25 @@ client.on("interactionCreate", async (interaction) => {
           for (const stat of banStats) {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
+          for (const stat of moderationBanStats) {
+            if (!category || category === "modban") {
+              combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            }
+          }
+          for (const stat of moderationKickStats) {
+            if (!category || category === "kick") {
+              combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            }
+          }
+          for (const stat of moderationMuteStats) {
+            if (!category || category === "mute") {
+              combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            }
+          }
           for (const stat of unbanStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of inviteStats) {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
           for (const stat of modmailStats) {
@@ -2951,7 +5086,7 @@ client.on("interactionCreate", async (interaction) => {
           const end = start + 10;
           const currentLeaderboard = leaderboard.slice(start, end);
 
-          const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
+          const categoryText = category === "ban" ? "Ban Requests" : category === "modban" ? "Moderation Bans" : category === "kick" ? "Moderation Kicks" : category === "mute" ? "Moderation Mutes" : category === "unban" ? "Unban Requests" : category === "invites" ? "Invites" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
 
           const embed = new EmbedBuilder()
             .setTitle(`${categoryText} Leaderboard`)
@@ -2966,7 +5101,11 @@ client.on("interactionCreate", async (interaction) => {
           // Calculate totals
           const totalCount = leaderboard.reduce((sum, e) => sum + e.count, 0);
           const banTotal = banStats.reduce((sum, e) => sum + e.count, 0);
+          const moderationBanTotal = moderationBanStats.reduce((sum, e) => sum + e.count, 0);
+          const moderationKickTotal = moderationKickStats.reduce((sum, e) => sum + e.count, 0);
+          const moderationMuteTotal = moderationMuteStats.reduce((sum, e) => sum + e.count, 0);
           const unbanTotal = unbanStats.reduce((sum, e) => sum + e.count, 0);
+          const inviteTotal = inviteStats.reduce((sum, e) => sum + e.count, 0);
           const modmailTotal = modmailStats.reduce((sum, e) => sum + e.count, 0);
           const appealTotal = appealStats.reduce((sum, e) => sum + e.count, 0);
           const staffReportTotal = staffReportStats.reduce((sum, e) => sum + e.count, 0);
@@ -2986,14 +5125,16 @@ client.on("interactionCreate", async (interaction) => {
 
             // Add total and category breakdown
             let statsText = `**Total in the specified time:** ${totalCount}`;
-            if (!category) {
-              // "All Activity" view - show all totals
-              if (banTotal > 0) statsText += `\nBan Requests: ${banTotal}`;
-              if (unbanTotal > 0) statsText += `\nUnban Requests: ${unbanTotal}`;
-              if (modmailTotal > 0) statsText += `\nModmails Handled: ${modmailTotal}`;
-              if (appealTotal > 0) statsText += `\nAppeals Handled: ${appealTotal}`;
-              if (staffReportTotal > 0) statsText += `\nStaff Reports: ${staffReportTotal}`;
-            } else if (category === "modmail") {
+            statsText += `\nBan Requests: ${banTotal}`;
+            statsText += `\nModeration Bans: ${moderationBanTotal}`;
+            statsText += `\nModeration Kicks: ${moderationKickTotal}`;
+            statsText += `\nModeration Mutes: ${moderationMuteTotal}`;
+            statsText += `\nUnban Requests: ${unbanTotal}`;
+            statsText += `\nInvites: ${inviteTotal}`;
+            statsText += `\nModmails Handled: ${modmailTotal}`;
+            statsText += `\nAppeals Handled: ${appealTotal}`;
+            statsText += `\nStaff Reports: ${staffReportTotal}`;
+            if (category === "modmail") {
               // "Modmails Handled" view - show category breakdown
               if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
                 // Build category labels from custom categories in config
@@ -3045,6 +5186,15 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (commandName === "roster-embed") {
         if (!await safeDeferReply(interaction, false)) return;
+
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasRosterCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+          return;
+        }
 
         const title = interaction.options.getString("title", true);
         const description = interaction.options.getString("description", true);
@@ -3122,6 +5272,15 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "clear-role") {
         if (!await safeDeferReply(interaction)) return;
 
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasRoleCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+          return;
+        }
+
         const role = interaction.options.getRole("role", true);
         const guild = interaction.guild;
 
@@ -3186,18 +5345,38 @@ client.on("interactionCreate", async (interaction) => {
               await storage.addModmailActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "appeal") {
               await storage.addAppealActivityEntries(targetGuildId, user.id, amount);
+            } else if (category === "invites") {
+              await storage.addInviteActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "staffreport") {
               await storage.addStaffReportEntries(targetGuildId, user.id, amount);
             } else if (category === "ban") {
               await storage.addBanActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "unban") {
               await storage.addUnbanActivityEntries(targetGuildId, user.id, amount);
+            } else if (category === "modban" || category === "kick" || category === "mute") {
+              await storage.addModerationActivityEntries(targetGuildId, user.id, category, amount);
             }
           } catch (e) {
             console.log("Could not add activity entries:", e);
           }
 
-          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "staffreport" ? "staff report" : category === "appeal" ? "appeal" : "modmail";
+          const categoryText = category === "ban"
+            ? "ban request"
+            : category === "modban"
+              ? "moderation ban"
+              : category === "kick"
+                ? "moderation kick"
+                : category === "mute"
+                  ? "moderation mute"
+                  : category === "unban"
+                    ? "unban request"
+                      : category === "invites"
+                        ? "invite"
+                    : category === "staffreport"
+                      ? "staff report"
+                      : category === "appeal"
+                        ? "appeal"
+                        : "modmail";
           const serverText = serverOption === "global" ? " (synced across all servers)" : "";
           await interaction.editReply({
             content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity${serverText}.`,
@@ -3234,8 +5413,12 @@ client.on("interactionCreate", async (interaction) => {
               removed = await storage.removeModmailActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "appeal") {
               removed = await storage.removeAppealActivityEntries(targetGuildId, user.id, amount);
+            } else if (category === "invites") {
+              removed = await storage.removeInviteActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "staffreport") {
               removed = await storage.removeStaffReportEntries(targetGuildId, user.id, amount);
+            } else if (category === "modban" || category === "kick" || category === "mute") {
+              removed = await storage.removeModerationActivityEntries(targetGuildId, user.id, category, amount);
             } else {
               removed = await storage.removeActivityEntries(targetGuildId, user.id, category, amount);
             }
@@ -3243,7 +5426,23 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not remove activity entries:", e);
           }
 
-          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "staffreport" ? "staff report" : category === "appeal" ? "appeal" : "modmail";
+          const categoryText = category === "ban"
+            ? "ban request"
+            : category === "modban"
+              ? "moderation ban"
+              : category === "kick"
+                ? "moderation kick"
+                : category === "mute"
+                  ? "moderation mute"
+                  : category === "unban"
+                    ? "unban request"
+                      : category === "invites"
+                        ? "invite"
+                    : category === "staffreport"
+                      ? "staff report"
+                      : category === "appeal"
+                        ? "appeal"
+                        : "modmail";
           const serverText = serverOption === "global" ? " (synced across all servers)" : "";
           await interaction.editReply({
             content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity${serverText}.`,
@@ -3281,7 +5480,7 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not reset activity stats:", e);
           }
 
-          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "modmail" ? "modmail" : category === "appeal" ? "appeal" : category === "staffreport" ? "staff report" : "all";
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "invites" ? "invite" : category === "modmail" ? "modmail" : category === "appeal" ? "appeal" : category === "staffreport" ? "staff report" : "all";
           const userText = user ? `<@${user.id}>` : "everyone";
 
           await interaction.editReply({
@@ -3309,6 +5508,7 @@ client.on("interactionCreate", async (interaction) => {
           const role = interaction.options.getRole("role", true);
           let fromDays = interaction.options.getInteger("from") ?? undefined;
           let toDays = interaction.options.getInteger("to") ?? undefined;
+          const category = interaction.options.getString("category");
           const guild = interaction.guild;
 
           if (!guild) {
@@ -3344,21 +5544,39 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Build leaderboard data with parallel fetching for better performance
-          const leaderboardData: { userId: string; username: string; modmail: number; appeal: number; ban: number; unban: number; staffreport: number; total: number }[] = [];
+          const moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays).catch(() => [] as { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[]);
+          const moderationMap = new Map(moderationStatsRows.map((entry) => [entry.moderatorId, entry]));
+
+          const leaderboardData: { userId: string; username: string; modmail: number; appeal: number; ban: number; unban: number; invites: number; staffreport: number; mute: number; kick: number; modban: number; total: number }[] = [];
 
           // Process in batches of 10 for better performance
           const batchSize = 10;
           for (let i = 0; i < membersWithRole.length; i += batchSize) {
             const batch = membersWithRole.slice(i, i + batchSize);
             const batchResults = await Promise.all(batch.map(async (member) => {
-              const [modmailCount, appealCount, banCount, unbanCount, staffReportCount] = await Promise.all([
+              const [modmailCount, appealCount, banCount, unbanCount, inviteCount, staffReportCount] = await Promise.all([
                 storage.getModmailStatsForUserAllGuilds(member.id, fromDays, toDays),
                 storage.getAppealStatsForUserAllGuilds(member.id, fromDays, toDays),
                 storage.getActivityStatsForUserAllGuilds(member.id, "ban", fromDays, toDays),
                 storage.getActivityStatsForUserAllGuilds(member.id, "unban", fromDays, toDays),
+                storage.getInviteStatsForUserAllGuilds(member.id, fromDays, toDays),
                 storage.getStaffReportStatsForUserAllGuilds(member.id, fromDays, toDays)
               ]);
-              const total = modmailCount + appealCount + banCount + unbanCount + staffReportCount;
+              const moderationEntry = moderationMap.get(member.id);
+              const muteCount = moderationEntry?.mutes || 0;
+              const kickCount = moderationEntry?.kicks || 0;
+              const modBanCount = moderationEntry?.bans || 0;
+
+              const total = category === "modban" ? modBanCount
+                : category === "kick" ? kickCount
+                : category === "mute" ? muteCount
+                : category === "ban" ? banCount
+                : category === "unban" ? unbanCount
+                : category === "invites" ? inviteCount
+                : category === "modmail" ? modmailCount
+                : category === "appeal" ? appealCount
+                : category === "staffreport" ? staffReportCount
+                : modmailCount + appealCount + banCount + unbanCount + inviteCount + staffReportCount + muteCount + kickCount + modBanCount;
               return {
                 userId: member.id,
                 username: member.user.username,
@@ -3366,7 +5584,11 @@ client.on("interactionCreate", async (interaction) => {
                 appeal: appealCount,
                 ban: banCount,
                 unban: unbanCount,
+                invites: inviteCount,
                 staffreport: staffReportCount,
+                mute: muteCount,
+                kick: kickCount,
+                modban: modBanCount,
                 total: total
               };
             }));
@@ -3397,52 +5619,44 @@ client.on("interactionCreate", async (interaction) => {
           const totalModmail = leaderboardData.reduce((sum, e) => sum + e.modmail, 0);
           const totalAppeal = leaderboardData.reduce((sum, e) => sum + e.appeal, 0);
           const totalBan = leaderboardData.reduce((sum, e) => sum + e.ban, 0);
+          const totalModBan = leaderboardData.reduce((sum, e) => sum + e.modban, 0);
+          const totalKick = leaderboardData.reduce((sum, e) => sum + e.kick, 0);
+          const totalMute = leaderboardData.reduce((sum, e) => sum + e.mute, 0);
           const totalUnban = leaderboardData.reduce((sum, e) => sum + e.unban, 0);
+          const totalInvites = leaderboardData.reduce((sum, e) => sum + e.invites, 0);
           const totalStaffReport = leaderboardData.reduce((sum, e) => sum + e.staffreport, 0);
           const grandTotal = leaderboardData.reduce((sum, e) => sum + e.total, 0);
 
-          // Build header with order explanation
-          const headerText = `Activity Check for ${guildRole.name}\n${timeRangeDesc}\n\nOrder goes as follow: MM (Modmail) | AP (Appeals) | BN (Bans) | UB (Unbans) | SR (Staff Reports) | Total\n`;
-          const totalsText = `\nTotals: MM: ${totalModmail} | AP: ${totalAppeal} | BN: ${totalBan} | UB: ${totalUnban} | SR: ${totalStaffReport} | Total: ${grandTotal}`;
+          // Build header with requested order labels
+          const headerText = `Activity Check for ${guildRole.name}\n${timeRangeDesc}\n\nOrder: Modmails, Appeals, Ban Requests, Unban Requests, Invites, Mutes, Kicks, Bans, Staff Reports`;
+          const totalsText = `Totals: Modmails:${totalModmail} | Appeals:${totalAppeal} | Ban Requests:${totalBan} | Unban Requests:${totalUnban} | Invites:${totalInvites} | Mutes:${totalMute} | Kicks:${totalKick} | Bans:${totalModBan} | Staff Reports:${totalStaffReport} | Total:${grandTotal}`;
 
-          // Build rows with numbers and pings
+          // Build compact rows (order shown only in header)
           const rows = leaderboardData.map((entry, index) => {
             const num = (index + 1).toString();
             const mm = entry.modmail.toString();
             const ap = entry.appeal.toString();
-            const bn = entry.ban.toString();
+            const br = entry.ban.toString();
             const ub = entry.unban.toString();
+            const iv = entry.invites.toString();
+            const mmt = entry.mute.toString();
+            const mk = entry.kick.toString();
+            const mb = entry.modban.toString();
             const sr = entry.staffreport.toString();
             const tot = entry.total.toString();
-            return `${num}. <@${entry.userId}> | MM: ${mm} | AP: ${ap} | BN: ${bn} | UB: ${ub} | SR: ${sr} | Total: ${tot}`;
+            return `${num} <@${entry.userId}> | ${mm} | ${ap} | ${br} | ${ub} | ${iv} | ${mmt} | ${mk} | ${mb} | ${sr} | ${tot}`;
           });
 
-          // Build full copyable text including header, all rows, and totals
-          const fullCopyableText = headerText + "\n" + rows.join("\n") + totalsText;
+          const body = rows.join("\n") || "No entries found.";
+          const footerNotes = `\n\nStaff Of The Week:\nPromotions:\nDemotion Warnings:\nDemotions:\n\nNotes -`;
+          const content = `\`\`\`\n${headerText}\n${totalsText}\n\n${body}${footerNotes}\n\`\`\``;
 
-          // Split into chunks if needed (Discord limit is 2000 chars)
-          const messages: string[] = [];
-          let currentMessage = "```\n" + headerText + "\n";
-
-          for (const row of rows) {
-            const testMessage = currentMessage + row + "\n";
-            if ((testMessage + "```").length > 1800) {
-              messages.push(currentMessage + "```");
-              currentMessage = "```\n" + row + "\n";
-            } else {
-              currentMessage = testMessage;
-            }
+          if (content.length > 3900) {
+            await interaction.editReply({ content: "Activity check output is too long for one message. Use a smaller role/filter range." });
+            return;
           }
 
-          // Add totals to the last message
-          currentMessage = currentMessage + totalsText + "\n```";
-          messages.push(currentMessage);
-
-          // Send first message as reply, rest as followups
-          await interaction.editReply({ content: messages[0] });
-          for (let i = 1; i < messages.length; i++) {
-            await interaction.followUp({ content: messages[i], ephemeral: true });
-          }
+          await interaction.editReply({ content });
         } catch (error: any) {
           console.log("Error in /activity_check command:", error.message, error.stack);
           await interaction.editReply({ content: "Failed to check activity. Please try again." }).catch(() => {});
@@ -3907,30 +6121,134 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Inactivity logs will be sent to <#${channel.id}>!`,
         });
-      } else if (commandName === "setup_inactivity_ping") {
+      } else if (commandName === "setup_welcome") {
         if (!await safeDeferReply(interaction)) return;
 
-        const roles: string[] = [];
-        for (let i = 1; i <= 5; i++) {
-          const role = interaction.options.getRole(`role${i}`);
-          if (role) roles.push(role.id);
+        const channel = interaction.options.getChannel("channel", true);
+        if (!(channel as any).isTextBased?.()) {
+          await interaction.editReply({ content: "❌ Please select a text channel." });
+          return;
         }
 
+        const config = await storage.getGuildConfig(interaction.guildId!);
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
-          inactivityPingRoleIds: roles,
+          customCategoryPings: writeWelcomeSetupToConfig(config?.customCategoryPings, { channelId: channel.id }),
         });
 
-        if (roles.length === 0) {
-          await interaction.editReply({
-            content: "✅ Inactivity ping roles cleared. No roles will be pinged.",
-          });
-        } else {
-          const roleMentions = roles.map(id => `<@&${id}>`).join(", ");
-          await interaction.editReply({
-            content: `✅ The following roles will be pinged on new inactivity requests: ${roleMentions}`,
-          });
+        await interaction.editReply({
+          content: `✅ Welcome channel set to <#${channel.id}>.`,
+        });
+      } else if (commandName === "setup_welcome_message") {
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const welcomeSetup = getWelcomeSetupFromGuildConfig(config);
+
+        const colorInput = interaction.options.getString("embed_color");
+        const parsedColor = colorInput ? parseHexColorInput(colorInput) : null;
+        if (colorInput && parsedColor === null) {
+          await interaction.reply({ content: "❌ Invalid embed color. Use 6-digit hex (e.g. 57f287).", ephemeral: true });
+          return;
         }
+
+        const pendingKey = `${interaction.user.id}:${interaction.guildId}`;
+        pendingWelcomeMessageColors.set(pendingKey, parsedColor);
+
+        const modal = new ModalBuilder()
+          .setCustomId(`config_welcome_modal_${interaction.guildId}`)
+          .setTitle("Configure Welcome Embed");
+
+        const messageInput = new TextInputBuilder()
+          .setCustomId("welcome_message")
+          .setLabel("Message")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setValue(welcomeSetup.message)
+          .setPlaceholder("Use {user}, {username}, {server}, {membercount}");
+
+        const authorInput = new TextInputBuilder()
+          .setCustomId("welcome_author")
+          .setLabel("Author")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setValue(welcomeSetup.author || "");
+
+        const authorIconInput = new TextInputBuilder()
+          .setCustomId("welcome_author_icon")
+          .setLabel("Author Icon URL")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setValue(welcomeSetup.authorIcon || "");
+
+        const footerInput = new TextInputBuilder()
+          .setCustomId("welcome_footer")
+          .setLabel("Footer")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setValue(welcomeSetup.footer || "");
+
+        const footerIconInput = new TextInputBuilder()
+          .setCustomId("welcome_footer_icon")
+          .setLabel("Footer Icon URL")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setValue(welcomeSetup.footerIcon || "");
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(messageInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(authorInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(authorIconInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(footerInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(footerIconInput),
+        );
+
+        await interaction.showModal(modal);
+      } else if (commandName === "pings") {
+        if (!canUsePrefixCommand(interaction)) {
+          await interaction.reply({
+            content: "You do not have permission to use this command.",
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const subcommand = interaction.options.getSubcommand(true);
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
+        if (subcommand === "set") {
+          const target = interaction.options.getString("embeds", true) as RequestPingTarget;
+          const roleIds = new Set<string>();
+          for (let i = 1; i <= 20; i++) {
+            const role = interaction.options.getRole(`role${i}`);
+            if (role) roleIds.add(role.id);
+          }
+
+          const roles = Array.from(roleIds);
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeRequestPingRolesToConfig(config?.customCategoryPings, target, roles),
+          });
+
+          const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None";
+          const targetLabel = REQUEST_PING_TARGET_LABELS[target] || target;
+          await interaction.reply({
+            content: `✅ **${targetLabel}** ping roles updated!\nRoles: ${roleMentions}`,
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const lines = (Object.keys(REQUEST_PING_TARGET_LABELS) as RequestPingTarget[]).map((target) => {
+          const label = REQUEST_PING_TARGET_LABELS[target];
+          const roleIds = getRequestPingRoleIdsFromGuildConfig(config, target);
+          const rolesText = roleIds.length > 0 ? roleIds.map(id => `<@&${id}>`).join(", ") : "None";
+          return `• **${label}:** ${rolesText}`;
+        });
+
+        await interaction.reply({
+          content: `📌 **Current Request Ping Mappings**\n${lines.join("\n")}`,
+          ephemeral: true,
+        });
       } else if (commandName === "terminate_quizzes") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -3969,15 +6287,29 @@ client.on("interactionCreate", async (interaction) => {
         const logChannel = interaction.options.getChannel("log_channel", true);
         const staffRole = interaction.options.getRole("staff_role", true);
 
-        await storage.upsertGuildConfig({
-          guildId: interaction.guildId!,
-          modmailCategoryId: category.id,
-          modmailLogChannelId: logChannel.id,
-          modmailStaffRoleIds: [staffRole.id],
-        });
+        try {
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            modmailCategoryId: category.id,
+            modmailLogChannelId: logChannel.id,
+            modmailStaffRoleIds: [staffRole.id],
+          });
+          console.log(`[setup_modmail] First upsertGuildConfig succeeded`);
+        } catch (e: any) {
+          console.error(`[setup_modmail] First upsertGuildConfig failed: ${e.message}`);
+          throw e;
+        }
 
         // Fetch config for custom embed title/description and custom categories
-        const config = await storage.getGuildConfig(interaction.guildId!);
+        let config: any;
+        try {
+          config = await storage.getGuildConfig(interaction.guildId!);
+          console.log(`[setup_modmail] getGuildConfig succeeded:`, config);
+        } catch (e: any) {
+          console.error(`[setup_modmail] getGuildConfig failed: ${e.message}`);
+          throw e;
+        }
+        
         const embedTitle = config?.modmailEmbedTitle || "Support Tickets";
         const embedDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
 
@@ -4033,26 +6365,57 @@ client.on("interactionCreate", async (interaction) => {
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
         if (interaction.channel && "send" in interaction.channel) {
-          const sentMessage = await interaction.channel.send({
-            embeds: [ticketEmbed],
-            components: [row],
-          });
+          let sentMessage: any;
+          try {
+            sentMessage = await interaction.channel.send({
+              embeds: [ticketEmbed],
+              components: [row],
+            });
+            console.log(`[setup_modmail] Ticket embed posted: ${sentMessage.id}`);
+          } catch (e: any) {
+            console.error(`[setup_modmail] Failed to send ticket embed: ${e.message}`);
+            throw e;
+          }
 
           // Save message ID for real-time updates
-          await storage.upsertGuildConfig({
-            guildId: interaction.guildId!,
-            modmailEmbedMessageId: sentMessage.id,
-            modmailEmbedChannelId: interaction.channel.id,
-          });
+          try {
+            await storage.upsertGuildConfig({
+              guildId: interaction.guildId!,
+              modmailEmbedMessageId: sentMessage.id,
+              modmailEmbedChannelId: interaction.channel.id,
+            });
+            console.log(`[setup_modmail] Second upsertGuildConfig succeeded`);
+          } catch (e: any) {
+            console.error(`[setup_modmail] Second upsertGuildConfig failed: ${e.message}`);
+            throw e;
+          }
         }
 
-        await interaction.editReply({
-          content: `✅ Modmail configured and ticket embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
-        });
-      } else if (commandName === "edit_embed") {
+        try {
+          await interaction.editReply({
+            content: `✅ Modmail configured and ticket embed posted!\n• Category: <#${category.id}>\n• Log Channel: <#${logChannel.id}>\n• Staff Role: <@&${staffRole.id}>`,
+          });
+          console.log(`[setup_modmail] editReply succeeded`);
+        } catch (e: any) {
+          console.error(`[setup_modmail] editReply failed: ${e.message}`);
+          throw e;
+        }
+      } else if (commandName === "edit" && interaction.options.getSubcommand() === "embed") {
         const embedType = interaction.options.getString("type", true);
         const messageId = interaction.options.getString("message_id");
+        const imageLink = (interaction.options.getString("image_link") || "").trim();
         const config = await storage.getGuildConfig(interaction.guildId!);
+        const pendingEditKey = `${interaction.user.id}:${interaction.guildId}`;
+
+        if (messageId) {
+          pendingEmbedEditTargets.set(pendingEditKey, {
+            embedType,
+            channelId: interaction.channelId,
+            messageId,
+          });
+        } else {
+          pendingEmbedEditTargets.delete(pendingEditKey);
+        }
 
         // If message_id provided, save it to database for the modal handler to use
         if (embedType === "modmail" && messageId) {
@@ -4087,9 +6450,21 @@ client.on("interactionCreate", async (interaction) => {
             .setMaxLength(4000)
             .setRequired(true);
 
+          const imageInput = new TextInputBuilder()
+            .setCustomId("embed_image_url")
+            .setLabel("Image URL or message link (optional)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(4000)
+            .setRequired(false);
+
+          if (imageLink) {
+            imageInput.setValue(imageLink.slice(0, 4000));
+          }
+
           modal.addComponents(
             new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(imageInput)
           );
 
           await interaction.showModal(modal);
@@ -4117,9 +6492,21 @@ client.on("interactionCreate", async (interaction) => {
             .setMaxLength(4000)
             .setRequired(true);
 
+          const imageInput = new TextInputBuilder()
+            .setCustomId("embed_image_url")
+            .setLabel("Image URL or message link (optional)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(4000)
+            .setRequired(false);
+
+          if (imageLink) {
+            imageInput.setValue(imageLink.slice(0, 4000));
+          }
+
           modal.addComponents(
             new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(imageInput)
           );
 
           await interaction.showModal(modal);
@@ -4147,9 +6534,21 @@ client.on("interactionCreate", async (interaction) => {
             .setMaxLength(4000)
             .setRequired(true);
 
+          const imageInput = new TextInputBuilder()
+            .setCustomId("embed_image_url")
+            .setLabel("Image URL or message link (optional)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(4000)
+            .setRequired(false);
+
+          if (imageLink) {
+            imageInput.setValue(imageLink.slice(0, 4000));
+          }
+
           modal.addComponents(
             new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(imageInput)
           );
 
           await interaction.showModal(modal);
@@ -4177,9 +6576,21 @@ client.on("interactionCreate", async (interaction) => {
             .setMaxLength(4000)
             .setRequired(true);
 
+          const imageInput = new TextInputBuilder()
+            .setCustomId("embed_image_url")
+            .setLabel("Image URL or message link (optional)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(4000)
+            .setRequired(false);
+
+          if (imageLink) {
+            imageInput.setValue(imageLink.slice(0, 4000));
+          }
+
           modal.addComponents(
             new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput)
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(imageInput)
           );
 
           await interaction.showModal(modal);
@@ -4219,7 +6630,7 @@ client.on("interactionCreate", async (interaction) => {
         if (!await safeDeferReply(interaction)) return;
 
         // This command must be used in a modmail ticket channel
-        const thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+        const thread = await safeGetModmailThreadByChannel(interaction.channelId!);
         if (!thread) {
           await interaction.editReply({ content: "❌ This command can only be used in a modmail ticket channel." });
           return;
@@ -4256,7 +6667,6 @@ client.on("interactionCreate", async (interaction) => {
             .setTitle("Added to Ticket")
             .setDescription(`You have been added to **${ticketCreator.username}**'s ticket by staff.\n\nType here to reply. Your messages will be visible to staff and other ticket members.`)
             .setColor(0x57f287)
-            .setTimestamp();
           await targetUser.send({ embeds: [addEmbed] });
         } catch {
           // Could not DM user
@@ -4266,7 +6676,7 @@ client.on("interactionCreate", async (interaction) => {
         const config = await storage.getGuildConfig(thread.guildId);
         if (config?.modmailLogChannelId) {
           try {
-            const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+            const logChannel = await safeChannelFetch(config.modmailLogChannelId);
             if (logChannel && "send" in logChannel) {
               const logEmbed = new EmbedBuilder()
                 .setTitle("Member Force Added to Ticket")
@@ -4425,6 +6835,7 @@ client.on("interactionCreate", async (interaction) => {
 
         const targetUser = interaction.options.getUser("user", true);
         const system = interaction.options.getString("system", true);
+        const reason = interaction.options.getString("reason")?.trim() || "";
 
         const config = await storage.getGuildConfig(interaction.guildId!);
         const blockRoleIds = config?.modmailBlockRoleIds || [];
@@ -4441,13 +6852,30 @@ client.on("interactionCreate", async (interaction) => {
 
         if (system === "appeal") {
           await storage.removeAppealBlock(interaction.guildId!, targetUser.id);
-          await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from ban appeals.` });
+          await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from ban appeals.${reason ? ` Reason: ${reason}` : ""}` });
         } else {
           await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
-          await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.` });
+          await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.${reason ? ` Reason: ${reason}` : ""}` });
         }
       } else if (commandName === "permissions") {
+        if (!canUsePrefixCommand(interaction)) {
+          await interaction.reply({
+            content: "You do not have permission to use this command.",
+            ephemeral: true,
+          });
+          return;
+        }
+
         const permType = interaction.options.getString("type", true);
+
+        if (permType === "prefix_command") {
+          await interaction.reply({
+            content: "✅ You are authorized. Prefix command access is locked to Brian.",
+            ephemeral: true,
+          });
+          return;
+        }
+
         const roles: string[] = [];
         for (let i = 1; i <= 20; i++) {
           const role = interaction.options.getRole(`role${i}`);
@@ -4457,26 +6885,106 @@ client.on("interactionCreate", async (interaction) => {
         const typeLabels: Record<string, string> = {
           payout: "Payout Approval",
           moderation: "Ban/Unban Approval",
-          inactivity: "Inactivity Approval",
+          kick_approval: "Kick Approval",
           block: "Modmail Block",
           claim: "Modmail Claim",
           activity_reset: "Activity Reset",
           appeal_claim: "Appeal Claim",
           snippets: "Snippets",
           activity: "Activity",
+          message_commands: "Message Commands",
+          roster_commands: "Roster Commands",
+          role_commands: "Role Commands",
+          sticky_commands: "Sticky Commands",
+          role_request_commands: "Role Request Commands",
+          prefix_ban: "Prefix Ban Command",
+          prefix_fullban: "Prefix Fullban Command",
+          prefix_fakeban: "Prefix Fakeban Command",
+          prefix_mute: "Prefix Mute Command",
+          prefix_kick: "Prefix Kick Command",
+          prefix_modlogs: "Prefix Modlogs Command",
+          prefix_reason: "Prefix Reason Command",
+          prefix_retime: "Prefix Retime Command",
+          prefix_clean: "Prefix Clean Command",
+          prefix_command: "Prefix Command",
         };
 
         const fieldMap: Record<string, string> = {
           payout: "allowedRoleIds",
           moderation: "modRoleIds",
-          inactivity: "inactivityPingRoleIds",
+          kick_approval: "modRoleIds",
           block: "modmailBlockRoleIds",
           claim: "modmailClaimRoleIds",
           activity_reset: "activityResetRoleIds",
           appeal_claim: "appealStaffRoleIds",
           snippets: "snippetRoleIds",
           activity: "activityRoleIds",
+          message_commands: "messageCommandRoleIds",
+          roster_commands: "rosterCommandRoleIds",
+          role_commands: "roleCommandRoleIds",
         };
+
+        if (permType === "prefix_ban" || permType === "prefix_fullban" || permType === "prefix_fakeban" || permType === "prefix_mute" || permType === "prefix_kick" || permType === "prefix_modlogs" || permType === "prefix_reason" || permType === "prefix_retime" || permType === "prefix_clean") {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const currentSetup = getModerationSetupFromConfig(config);
+          const action = permType === "prefix_ban" || permType === "prefix_fullban" || permType === "prefix_fakeban"
+            ? "ban" as PrefixModerationAction
+            : permType === "prefix_mute" || permType === "prefix_kick"
+            ? permType.replace("prefix_", "") as PrefixModerationAction
+            : null;
+
+          const updatedSetup: ModerationSetupConfig = {
+            ...currentSetup,
+            modlogsRoleIds: permType === "prefix_modlogs" || permType === "prefix_clean" ? roles : currentSetup.modlogsRoleIds,
+            reasonRoleIds: permType === "prefix_reason" ? roles : currentSetup.reasonRoleIds,
+            retimeRoleIds: permType === "prefix_retime" ? roles : currentSetup.retimeRoleIds,
+            rolePermissions: {
+              ...currentSetup.rolePermissions,
+              ...(action ? { [action]: roles } : {}),
+            },
+          };
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeModerationSetupToConfig(config?.customCategoryPings, updatedSetup),
+          });
+
+          const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
+          const labelName = typeLabels[permType] || permType;
+          await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nConfigure command style with /setup`, ephemeral: true });
+          return;
+        }
+
+        if (permType === "sticky_commands") {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const stickyConfigs = getStickyConfigsFromGuildConfig(config);
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeStickySettingsToConfig(config?.customCategoryPings, stickyConfigs, roles),
+          });
+
+          const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
+          const labelName = typeLabels[permType] || permType;
+          await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /sticky set to create sticky messages.`, ephemeral: true });
+          return;
+        }
+
+        if (permType === "role_request_commands") {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeRoleRequestSettingsToConfig(config?.customCategoryPings, {
+              roleIds: roles,
+            }),
+          });
+
+          const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
+          const labelName = typeLabels[permType] || permType;
+          await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /setup_role_requests to set the destination channel.`, ephemeral: true });
+          return;
+        }
 
         const field = fieldMap[permType];
         if (field) {
@@ -4485,59 +6993,7 @@ client.on("interactionCreate", async (interaction) => {
 
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
         const labelName = typeLabels[permType] || permType;
-        await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}` });
-      } else if (commandName === "category_ping") {
-        if (!await safeDeferReply(interaction)) return;
-
-        const category = interaction.options.getString("category", true).toLowerCase();
-        const roles: string[] = [];
-        for (let i = 1; i <= 5; i++) {
-          const role = interaction.options.getRole(`role${i}`);
-          if (role) roles.push(role.id);
-        }
-
-        // Build category labels from custom categories in config
-        const categoryLabels: { [key: string]: string } = {};
-        const pingConfig = await storage.getGuildConfig(interaction.guildId!);
-        if (pingConfig?.customModmailCategories) {
-          try {
-            const cats = JSON.parse(pingConfig.customModmailCategories);
-            for (const cat of cats) {
-              categoryLabels[cat.id] = cat.label;
-            }
-          } catch (e) {}
-        }
-
-        // Legacy hardcoded categories (for backwards compatibility)
-        const legacyFields: { [key: string]: string } = {
-          general: "categoryPingGeneral",
-          competitive: "categoryPingCompetitive",
-          contentcreator: "categoryPingContentcreator",
-          report: "categoryPingReport",
-          partnerships: "categoryPingPartnerships",
-          gfx: "categoryPingGfx",
-          creativewarrior: "categoryPingCreativewarrior",
-          vfxeditor: "categoryPingVfxeditor",
-        };
-
-        // Check if this is a legacy category or custom category
-        if (legacyFields[category]) {
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, [legacyFields[category]]: roles });
-        } else {
-          // Custom category - store in customCategoryPings JSON field
-          let customPings: { [key: string]: string[] } = {};
-          if (pingConfig?.customCategoryPings) {
-            try {
-              customPings = JSON.parse(pingConfig.customCategoryPings);
-            } catch (e) {}
-          }
-          customPings[category] = roles;
-          await storage.upsertGuildConfig({ guildId: interaction.guildId!, customCategoryPings: JSON.stringify(customPings) });
-        }
-
-        const categoryLabel = categoryLabels[category] || category;
-        const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "Default staff role";
-        await interaction.editReply({ content: `✅ **${categoryLabel}** ping roles updated!\nRoles: ${roleMentions}` });
+        await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nChange the command prefix with /prefix`, ephemeral: true });
       } else if (commandName === "close_all_tickets") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -4566,23 +7022,43 @@ client.on("interactionCreate", async (interaction) => {
           // Log to modmail log channel with transcript
           if (config?.modmailLogChannelId) {
             try {
-              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              const logChannel = await safeChannelFetch(config.modmailLogChannelId);
               if (logChannel && "send" in logChannel) {
                 const messages = await storage.getModmailMessages(thread.id);
-                let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
-                if (!transcript) transcript = "No messages";
+                const transcriptContent = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] ${m.authorId}: ${m.content}`).join("\n");
+                const buffer = Buffer.from(transcriptContent, "utf-8");
+                const attachment = new AttachmentBuilder(buffer, { name: `transcript-${thread.id}.txt` });
+
+                const pageSize = 10;
+                const pageMessages = messages.slice(0, pageSize);
+                let transcript = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                transcript = clampEmbedFieldValue(transcript);
 
                 const logEmbed = new EmbedBuilder()
                   .setTitle("Ticket Closed (Bulk)")
                   .setColor(0xed4245)
                   .addFields(
-                    { name: "User", value: `<@${thread.userId}>`, inline: true },
+                    { name: "Opened By", value: `<@${thread.userId}>`, inline: true },
                     { name: "Closed By", value: `<@${interaction.user.id}>`, inline: true },
                     { name: "Transcript", value: transcript, inline: false }
                   )
                   .setTimestamp();
-                await logChannel.send({ embeds: [logEmbed] });
+
+                const totalPages = Math.ceil(messages.length / pageSize) || 1;
+                const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_transcript_0_${thread.id}`)
+                    .setLabel("Previous Page")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_transcript_1_${thread.id}`)
+                    .setLabel("Next Page")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(totalPages <= 1)
+                );
+
+                await logChannel.send({ embeds: [logEmbed], components: [transcriptButtons], files: [attachment] });
                 console.log(`[MODMAIL] Bulk close log sent for thread ${thread.id}`);
               }
             } catch (e: any) {
@@ -4623,22 +7099,95 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "message") {
         if (!await safeDeferReply(interaction, true)) return;
 
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasMessageCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+          return;
+        }
+
         const targetUser = interaction.options.getUser("user", true);
         const messageContent = interaction.options.getString("message", true);
 
         try {
-          const dmEmbed = new EmbedBuilder()
-            .setDescription(messageContent)
-            .setColor(0x5865f2)
-            .setFooter({ text: `From: ${interaction.guild?.name || "Server"}` })
-            .setTimestamp();
-          await targetUser.send({ embeds: [dmEmbed] });
+          await targetUser.send(messageContent);
           await interaction.editReply({ content: `✅ Message sent to <@${targetUser.id}>.` });
         } catch (e) {
           await interaction.editReply({ content: `❌ Could not DM <@${targetUser.id}>. They may have DMs disabled.` });
         }
+      } else if (commandName === "send") {
+        const subcommand = interaction.options.getSubcommand();
+
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasMessageCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
+          return;
+        }
+
+        if (subcommand === "embed") {
+          const modal = new ModalBuilder()
+            .setCustomId(`send_embed_modal_${interaction.guildId}`)
+            .setTitle("Send Embed");
+
+          const messageInput = new TextInputBuilder()
+            .setCustomId("embed_message")
+            .setLabel("Message")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+            .setMaxLength(4000);
+
+          const imageInput = new TextInputBuilder()
+            .setCustomId("embed_image_url")
+            .setLabel("Image URL")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(false);
+
+          const footerComboInput = new TextInputBuilder()
+            .setCustomId("embed_footer_combo")
+            .setLabel("Footer | Footer Icon URL")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Footer text | https://icon.url")
+            .setRequired(false);
+
+          const authorInput = new TextInputBuilder()
+            .setCustomId("embed_author")
+            .setLabel("Author")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(false);
+
+          const authorIconInput = new TextInputBuilder()
+            .setCustomId("embed_author_icon_url")
+            .setLabel("Author Icon URL")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(false);
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(messageInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(imageInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(footerComboInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(authorInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(authorIconInput),
+          );
+
+          await interaction.showModal(modal);
+          return;
+        }
       } else if (commandName === "message_all") {
         if (!await safeDeferReply(interaction, true)) return;
+
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasMessageCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+          return;
+        }
 
         const messageContent = interaction.options.getString("message", true);
 
@@ -4657,15 +7206,9 @@ client.on("interactionCreate", async (interaction) => {
         let sentCount = 0;
         let failCount = 0;
 
-        const dmEmbed = new EmbedBuilder()
-          .setDescription(messageContent)
-          .setColor(0x5865f2)
-          .setFooter({ text: `From: ${interaction.guild?.name || "Server"}` })
-          .setTimestamp();
-
         for (const [, member] of members) {
           try {
-            await member.send({ embeds: [dmEmbed] });
+            await member.send(messageContent);
             sentCount++;
           } catch (e) {
             failCount++;
@@ -4677,6 +7220,15 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({ content: `✅ Mass DM complete! Sent: **${sentCount}**, Failed: **${failCount}** (DMs disabled or blocked).` });
       } else if (commandName === "message_role") {
         if (!await safeDeferReply(interaction, true)) return;
+
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasMessageCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+          return;
+        }
 
         const role = interaction.options.getRole("role", true);
         const messageContent = interaction.options.getString("message", true);
@@ -4704,18 +7256,12 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({ content: `📤 Sending DM to **${members.size}** members with role ${role.name}...` });
 
-        const dmEmbed = new EmbedBuilder()
-          .setDescription(messageContent)
-          .setColor(0x5865f2)
-          .setFooter({ text: `From ${guild.name}` })
-          .setTimestamp();
-
         let sentCount = 0;
         let failCount = 0;
 
         for (const [, member] of members) {
           try {
-            await member.send({ embeds: [dmEmbed] });
+            await member.send(messageContent);
             sentCount++;
           } catch (e) {
             failCount++;
@@ -4728,27 +7274,32 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "block_list") {
         if (!await safeDeferReply(interaction, true)) return;
 
-        const guildId = interaction.guildId!;
         const page = 1;
         const ITEMS_PER_PAGE = 10;
 
         // Get all blocked users from modmail and appeals
-        const modmailBlocks = await storage.getAllModmailBlocks(guildId);
-        const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const }));
+        const modmailBlocks = await storage.getAllModmailBlocksGlobal();
+        const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt }));
         
-        const appealBlocks = await storage.getAllAppealBlocks(guildId);
-        const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const }));
+        const appealBlocks = await storage.getAllAppealBlocksGlobal();
+        const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt }));
 
         // Combine and deduplicate
-        const blockedMap = new Map<string, { userId: string; types: string[] }>();
+        const blockedMap = new Map<string, { userId: string; types: string[]; reasons: Map<string, string | null>; expireTimes: Map<string, Date | null> }>();
         for (const b of [...modmailBlocked, ...appealBlocked]) {
           if (blockedMap.has(b.userId)) {
             const existing = blockedMap.get(b.userId)!;
             if (!existing.types.includes(b.type)) {
               existing.types.push(b.type);
+              existing.reasons.set(b.type, b.reason);
+              existing.expireTimes.set(b.type, b.expiresAt);
             }
           } else {
-            blockedMap.set(b.userId, { userId: b.userId, types: [b.type] });
+            const reasons = new Map<string, string | null>();
+            const expireTimes = new Map<string, Date | null>();
+            reasons.set(b.type, b.reason);
+            expireTimes.set(b.type, b.expiresAt);
+            blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes });
           }
         }
 
@@ -4767,7 +7318,17 @@ client.on("interactionCreate", async (interaction) => {
         for (let i = 0; i < pageItems.length; i++) {
           const item = pageItems[i];
           const typeLabel = item.types.join(", ");
-          listText += `${startIdx + i + 1}. <@${item.userId}> (${typeLabel})\n`;
+          const details: string[] = [];
+          
+          for (const type of item.types) {
+            const reason = item.reasons.get(type);
+            const expiresAt = item.expireTimes.get(type);
+            const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
+            const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
+            details.push(`${type}: ${reasonText} (${durationText})`);
+          }
+          
+          listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
         }
 
         const embed = new EmbedBuilder()
@@ -4779,12 +7340,12 @@ client.on("interactionCreate", async (interaction) => {
 
         const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
-            .setCustomId(`block_list_prev_${page}_${guildId}`)
+            .setCustomId(`block_list_prev_${interaction.user.id}_${page}`)
             .setLabel("◀")
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(page <= 1),
           new ButtonBuilder()
-            .setCustomId(`block_list_next_${page}_${guildId}`)
+            .setCustomId(`block_list_next_${interaction.user.id}_${page}`)
             .setLabel("▶")
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(page >= totalPages)
@@ -4949,8 +7510,206 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Command logs will be sent to <#${channel.id}>!`,
         });
+      } else if (commandName === "setup_moderation_command_logs") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          modLogChannelId: channel.id,
+        });
+
+        await interaction.editReply({
+          content: `✅ Moderation command logs will be sent to <#${channel.id}>!`,
+        });
+      } else if (commandName === "sticky") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id) || [];
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasStickyCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use sticky commands." });
+          return;
+        }
+
+        const subcommand = interaction.options.getSubcommand();
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const stickyConfigs = getStickyConfigsFromGuildConfig(config);
+
+        if (subcommand === "list") {
+          const { embed, components } = buildStickyListEmbed(stickyConfigs, 1, interaction.user.id);
+          await interaction.editReply({ embeds: [embed], components });
+          return;
+        }
+
+        if (subcommand === "edit") {
+          const targetChannelId = interaction.options.getString("sticky", true);
+          const newMessage = interaction.options.getString("new_message", true).trim();
+          const newInterval = interaction.options.getInteger("new_interval", true);
+
+          if (!newMessage) {
+            await interaction.editReply({ content: "❌ Sticky message cannot be empty." });
+            return;
+          }
+
+          const existingSticky = stickyConfigs[targetChannelId];
+          if (!existingSticky) {
+            await interaction.editReply({ content: "❌ That sticky no longer exists." });
+            return;
+          }
+
+          const targetChannel = await interaction.guild?.channels.fetch(targetChannelId).catch(() => null);
+          if (!targetChannel || !("send" in targetChannel)) {
+            await interaction.editReply({ content: "❌ Could not access that sticky channel." });
+            return;
+          }
+
+          if (existingSticky.lastStickyMessageId) {
+            try {
+              const oldMsg = await (targetChannel as any).messages.fetch(existingSticky.lastStickyMessageId);
+              await oldMsg.delete();
+            } catch {
+              // Ignore delete failures
+            }
+          }
+
+          const posted = await (targetChannel as any).send({ content: newMessage }).catch(() => null);
+
+          stickyConfigs[targetChannelId] = {
+            message: newMessage,
+            interval: newInterval,
+            lastStickyMessageId: posted?.id || null,
+          };
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeStickySettingsToConfig(config?.customCategoryPings, stickyConfigs),
+          });
+
+          const runtimeKey = `${interaction.guildId}:${targetChannelId}`;
+          stickyRuntimeState.set(runtimeKey, {
+            count: 0,
+            lastStickyMessageId: posted?.id || null,
+            isReposting: false,
+          });
+
+          await interaction.editReply({
+            content: `✅ Sticky updated for <#${targetChannelId}>. New interval: **${newInterval}** message(s).`,
+          });
+          return;
+        }
+
+        const channel = interaction.channel;
+        if (!channel || !("send" in channel)) {
+          await interaction.editReply({ content: "❌ Sticky messages can only be used in text channels." });
+          return;
+        }
+
+        const channelId = channel.id;
+        const runtimeKey = `${interaction.guildId}:${channelId}`;
+        const existing = stickyConfigs[channelId];
+
+        if (subcommand === "set") {
+          const stickyMessage = interaction.options.getString("message", true).trim();
+          const interval = interaction.options.getInteger("interval", true);
+
+          if (!stickyMessage) {
+            await interaction.editReply({ content: "❌ Sticky message cannot be empty." });
+            return;
+          }
+
+          if (existing?.lastStickyMessageId) {
+            try {
+              const oldMsg = await (channel as any).messages.fetch(existing.lastStickyMessageId);
+              await oldMsg.delete();
+            } catch {
+              // Ignore delete failures
+            }
+          }
+
+          const posted = await (channel as any).send({ content: stickyMessage }).catch(() => null);
+
+          stickyConfigs[channelId] = {
+            message: stickyMessage,
+            interval,
+            lastStickyMessageId: posted?.id || null,
+          };
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeStickySettingsToConfig(config?.customCategoryPings, stickyConfigs),
+          });
+
+          stickyRuntimeState.set(runtimeKey, {
+            count: 0,
+            lastStickyMessageId: posted?.id || null,
+            isReposting: false,
+          });
+
+          await interaction.editReply({
+            content: `✅ Sticky message set for this channel. It will repost every **${interval}** new message(s).`,
+          });
+          return;
+        }
+
+        if (subcommand === "remove") {
+          if (!existing) {
+            await interaction.editReply({ content: "ℹ️ No sticky message is set for this channel." });
+            return;
+          }
+
+          if (existing.lastStickyMessageId) {
+            try {
+              const oldMsg = await (channel as any).messages.fetch(existing.lastStickyMessageId);
+              await oldMsg.delete();
+            } catch {
+              // Ignore delete failures
+            }
+          }
+
+          delete stickyConfigs[channelId];
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeStickySettingsToConfig(config?.customCategoryPings, stickyConfigs),
+          });
+
+          stickyRuntimeState.delete(runtimeKey);
+          await interaction.editReply({ content: "✅ Sticky message removed for this channel." });
+          return;
+        }
+
+        if (!existing) {
+          await interaction.editReply({ content: "ℹ️ No sticky message is set for this channel." });
+          return;
+        }
+
+        const preview = existing.message.length > 900 ? `${existing.message.slice(0, 900)}…` : existing.message;
+        const infoEmbed = new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle("Sticky Message Info")
+          .addFields(
+            { name: "Interval", value: `${existing.interval} message(s)`, inline: true },
+            { name: "Channel", value: `<#${channelId}>`, inline: true },
+            { name: "Message", value: preview || "(empty)", inline: false },
+          )
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [infoEmbed] });
+        return;
       } else if (commandName === "roster") {
         if (!await safeDeferReply(interaction)) return;
+
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasRosterCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+          return;
+        }
 
         const subcommand = interaction.options.getSubcommand();
 
@@ -5052,6 +7811,15 @@ client.on("interactionCreate", async (interaction) => {
       } else if (commandName === "setup_roster") {
         if (!await safeDeferReply(interaction)) return;
 
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasRosterCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+          return;
+        }
+
         const name = interaction.options.getString("name", true).toLowerCase();
         const roster = await storage.getRosterConfig(interaction.guildId!, name);
 
@@ -5109,6 +7877,15 @@ client.on("interactionCreate", async (interaction) => {
 
       } else if (commandName === "role") {
         if (!await safeDeferReply(interaction)) return;
+
+        const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const hasPermission = await hasRoleCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+          return;
+        }
 
         const subcommand = interaction.options.getSubcommand();
         const role = interaction.options.getRole("role", true);
@@ -5219,6 +7996,99 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
     } else if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === "moderation_request_select") {
+        const selectedAction = interaction.values[0];
+
+        try {
+          if (selectedAction === "submit_ban_request") {
+            const modal = new ModalBuilder()
+              .setCustomId("ban_request_modal")
+              .setTitle("Ban Request");
+
+            const userIdInput = new TextInputBuilder()
+              .setCustomId("user_id")
+              .setLabel("User ID")
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder("Enter the user ID")
+              .setRequired(true);
+
+            const reasonInput = new TextInputBuilder()
+              .setCustomId("reason")
+              .setLabel("Ban Reason")
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder("Why should this user be banned?")
+              .setRequired(true);
+
+            const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
+            const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+            modal.addComponents(row1, row2);
+            await interaction.showModal(modal);
+            return;
+          }
+
+          if (selectedAction === "submit_unban_request") {
+            const modal = new ModalBuilder()
+              .setCustomId("unban_request_modal")
+              .setTitle("Unban Request");
+
+            const userIdInput = new TextInputBuilder()
+              .setCustomId("user_id")
+              .setLabel("User ID")
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder("Enter the user ID")
+              .setRequired(true);
+
+            const reasonInput = new TextInputBuilder()
+              .setCustomId("reason")
+              .setLabel("Unban Reason")
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder("Why should this user be unbanned?")
+              .setRequired(true);
+
+            const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
+            const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+            modal.addComponents(row1, row2);
+            await interaction.showModal(modal);
+            return;
+          }
+
+          if (selectedAction === "submit_kick_request") {
+            const modal = new ModalBuilder()
+              .setCustomId("kick_request_modal")
+              .setTitle("Kick Request");
+
+            const userIdInput = new TextInputBuilder()
+              .setCustomId("user_id")
+              .setLabel("User ID")
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder("Enter the user ID")
+              .setRequired(true);
+
+            const reasonInput = new TextInputBuilder()
+              .setCustomId("reason")
+              .setLabel("Kick Reason")
+              .setStyle(TextInputStyle.Paragraph)
+              .setPlaceholder("Why should this user be kicked?")
+              .setRequired(true);
+
+            const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
+            const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+            modal.addComponents(row1, row2);
+            await interaction.showModal(modal);
+            return;
+          }
+
+          await interaction.reply({ content: "Invalid moderation request option selected.", ephemeral: true });
+          return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Moderation request selection interaction expired:', interaction.id);
+            return;
+          }
+          throw error;
+        }
+      }
+
       // Handle roster selection
       if (interaction.customId === "roster_selection") {
         const rosterId = interaction.values[0];
@@ -5238,7 +8108,7 @@ client.on("interactionCreate", async (interaction) => {
           const role = interaction.guild?.roles.cache.get(roleId);
           if (role) {
             const members = role.members.map((m: any) => `<@${m.id}>`).join("\n");
-            rosterText += `**${role.name}**\n${members || "No members"}\n\n`;
+            rosterText += `**${role.name}**\n${members || "N/A"}\n\n`;
           }
         }
 
@@ -5369,14 +8239,14 @@ client.on("interactionCreate", async (interaction) => {
               await storage.addAppealMessage({
                 threadId: selectedTicket.thread.id,
                 authorId: userId,
-                content: pendingData.messageContent,
+                content: buildStoredTranscriptContent(pendingData.messageContent, pendingData.attachments.map((a: any) => a.url)),
                 isStaff: "false",
               });
             } else {
               await storage.addModmailMessage({
                 threadId: selectedTicket.thread.id,
                 authorId: userId,
-                content: pendingData.messageContent,
+                content: buildStoredTranscriptContent(pendingData.messageContent, pendingData.attachments.map((a: any) => a.url)),
                 isStaff: "false",
               });
             }
@@ -5406,6 +8276,206 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      // Handle modmail action dropdown (replaces Send Message copy button)
+      if (interaction.customId.startsWith("modmail_action_")) {
+        const match = interaction.customId.match(/^modmail_action_([a-f0-9-]+)_(\d+)_(\d+)$/i);
+        if (!match) {
+          await interaction.reply({ content: "Invalid action menu.", flags: 64 });
+          return;
+        }
+
+        const threadId = match[1];
+        const messageId = match[2];
+        const sourceUserId = match[3];
+        const selectedAction = interaction.values[0];
+
+        if (selectedAction === "toggle_member") {
+          const modal = new ModalBuilder()
+            .setCustomId(`modmail_toggle_modal_${threadId}`)
+            .setTitle("Toggle Ticket Member");
+
+          const actionInput = new TextInputBuilder()
+            .setCustomId("action")
+            .setLabel("Action (add or remove)")
+            .setPlaceholder("Type 'add' to add a member, 'remove' to remove")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+          const userIdInput = new TextInputBuilder()
+            .setCustomId("user_id")
+            .setLabel("User ID")
+            .setPlaceholder("Enter the Discord user ID")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Reason")
+            .setPlaceholder("Why are you adding/removing this member?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(actionInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput)
+          );
+
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (selectedAction === "request_role") {
+          const modal = new ModalBuilder()
+            .setCustomId(`modmail_request_role_modal_${threadId}`)
+            .setTitle("Request A Role");
+
+          const userIdInput = new TextInputBuilder()
+            .setCustomId("user_id")
+            .setLabel("User ID")
+            .setPlaceholder("Enter the Discord user ID")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+          const roleInput = new TextInputBuilder()
+            .setCustomId("role_input")
+            .setLabel("Role ID")
+            .setPlaceholder("Example: 123456789012345678")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Reason")
+            .setPlaceholder("Why should this role be granted?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+
+          const proofInput = new TextInputBuilder()
+            .setCustomId("proof_requirements")
+            .setLabel("Proof Player Meets Requirements")
+            .setPlaceholder("Paste clips or links that prove they meet requirements")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(roleInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(proofInput)
+          );
+
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (selectedAction === "user_modlogs") {
+          const actions = await storage.getAllModerationActionsByTarget(sourceUserId);
+          const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+
+          if (filtered.length === 0) {
+            await interaction.reply({ content: "ℹ️ No logs found for that user.", flags: 64 });
+            return;
+          }
+
+          const targetUser = await client.users.fetch(sourceUserId).catch(() => null);
+          const targetLabel = targetUser?.username || sourceUserId;
+          const { embed, totalPages } = buildModlogsEmbed(sourceUserId, targetLabel, filtered, 1, MODLOGS_ITEMS_PER_PAGE);
+
+          const components: any[] = [];
+          if (totalPages > 1) {
+            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`modlogs_page_${interaction.user.id}_${sourceUserId}_1_prev`)
+                .setLabel("◀")
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(true),
+              new ButtonBuilder()
+                .setCustomId(`modlogs_page_${interaction.user.id}_${sourceUserId}_1_next`)
+                .setLabel("▶")
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(false),
+            );
+            components.push(row);
+          }
+
+          await interaction.reply({ embeds: [embed], components, flags: 64 });
+          return;
+        }
+
+        if (selectedAction === "user_modmail_logs") {
+          const logs = await storage.getAllModmailThreadsByUser(sourceUserId);
+
+          if (logs.length === 0) {
+            await interaction.reply({ content: "ℹ️ No modmail logs found for that user.", flags: 64 });
+            return;
+          }
+
+          const targetUser = await client.users.fetch(sourceUserId).catch(() => null);
+          const targetLabel = targetUser?.username || sourceUserId;
+          const { embed } = buildModmailLogsEmbed(sourceUserId, targetLabel, logs, 1, MODMAIL_LOGS_ITEMS_PER_PAGE);
+          const components = buildModmailLogsComponents(interaction.user.id, sourceUserId, logs, 1, MODMAIL_LOGS_ITEMS_PER_PAGE);
+
+          await interaction.reply({ embeds: [embed], components, flags: 64 });
+          return;
+        }
+
+        if (selectedAction === "user_appeal_logs") {
+          const logs = await storage.getAllAppealThreadsByUser(sourceUserId);
+
+          if (logs.length === 0) {
+            await interaction.reply({ content: "ℹ️ No appeal logs found for that user.", flags: 64 });
+            return;
+          }
+
+          const targetUser = await client.users.fetch(sourceUserId).catch(() => null);
+          const targetLabel = targetUser?.username || sourceUserId;
+          const { embed } = buildAppealLogsEmbed(sourceUserId, targetLabel, logs, 1, APPEAL_LOGS_ITEMS_PER_PAGE);
+          const components = buildAppealLogsComponents(interaction.user.id, sourceUserId, logs, 1, APPEAL_LOGS_ITEMS_PER_PAGE);
+
+          await interaction.reply({ embeds: [embed], components, flags: 64 });
+          return;
+        }
+
+        let copyData = getModmailCopyContent(messageId);
+
+        if (!copyData && interaction.message) {
+          const embeds = interaction.message.embeds;
+          const attachmentUrls: string[] = [];
+
+          if (embeds.length > 0 && embeds[0].image?.url) {
+            attachmentUrls.push(embeds[0].image.url);
+          }
+
+          if (embeds.length > 0 && embeds[0].description) {
+            copyData = { content: embeds[0].description, attachments: attachmentUrls.length > 0 ? attachmentUrls : undefined };
+          }
+        }
+
+        if (!copyData) {
+          await interaction.reply({ content: "Could not retrieve message content.", flags: 64 });
+          return;
+        }
+
+        let response = copyData.content;
+        if (copyData.attachments && copyData.attachments.length > 0) {
+          response += "\n\n**Attachments:**\n" + copyData.attachments.join("\n");
+        }
+
+        if (selectedAction === "send_message_dm") {
+          try {
+            await interaction.user.send({ content: response });
+            await interaction.reply({ content: "✅ Sent in your DMs.", flags: 64 });
+          } catch {
+            await interaction.reply({ content: "❌ Could not DM you. Please enable DMs and try again.", flags: 64 });
+          }
+          return;
+        }
+
+        await interaction.reply({ content: response, flags: 64 });
+        return;
+      }
+
       // Handle ticket dropdown selection
       if (interaction.customId.startsWith("ticket_select_")) {
         const interactionAge = Date.now() - interaction.createdTimestamp;
@@ -5415,10 +8485,23 @@ client.on("interactionCreate", async (interaction) => {
         const ticketCategory = interaction.values[0];
         const user = interaction.user;
 
+        // List of hardcoded modal categories - check these FIRST and synchronously to avoid interaction timeout
+        const modalCategories = ["competitive", "contentcreator", "gfx", "creativewarrior", "vfxeditor"];
+        const actualCategoryId = ticketCategory.replace("::modal", "");
+        const isModalCategory = modalCategories.includes(actualCategoryId) || ticketCategory.endsWith("::modal");
+        
+        // For non-modal categories, defer IMMEDIATELY to avoid 3-second timeout
+        if (!isModalCategory) {
+          console.log(`[ticket_select] Non-modal category (${ticketCategory}), deferring immediately`);
+          if (!await safeDeferReply(interaction, true)) {
+            console.log(`[ticket_select] Failed to defer, returning`);
+            return;
+          }
+        }
+
         // Check for custom modal questions - categories with custom modals have value format: "categoryId::modal"
         // This allows showing modal immediately without async DB lookup
         if (ticketCategory.endsWith("::modal")) {
-          const actualCategoryId = ticketCategory.replace("::modal", "");
           try {
             const categoryConfig = await storage.getGuildConfig(guildId);
             let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
@@ -5591,14 +8674,6 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        // For general, report, partnerships - defer first, then validate and create ticket
-        console.log(`[ticket_select] About to defer for category: ${ticketCategory}`);
-        if (!await safeDeferReply(interaction)) {
-          console.log(`[ticket_select] Defer failed, returning`);
-          return;
-        }
-        console.log(`[ticket_select] Defer succeeded`);
-
         const guild = interaction.guild;
         if (!guild) {
           console.log(`[ticket_select] No guild found`);
@@ -5607,7 +8682,14 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         console.log(`[ticket_select] Fetching config for guild: ${guildId}`);
-        const config = await storage.getGuildConfig(guildId);
+        let config;
+        try {
+          config = await storage.getGuildConfig(guildId);
+        } catch (configError: any) {
+          console.log(`[ticket_select] Failed to load guild config: ${configError?.message || configError}`);
+          await interaction.editReply({ content: "❌ Temporary database issue while loading ticket settings. Please try again in a moment." });
+          return;
+        }
         if (!config?.modmailCategoryId) {
           console.log(`[ticket_select] No modmailCategoryId configured`);
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
@@ -5636,6 +8718,10 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
+        if (!acquireTicketCreationLock(guildId, user.id, "modmail")) {
+          await interaction.editReply({ content: "⏳ Ticket creation already in progress. Please wait a moment." });
+          return;
+        }
         console.log(`[ticket_select] No existing thread, proceeding to create`)
 
         // Parse custom categories for label lookup
@@ -5655,6 +8741,19 @@ client.on("interactionCreate", async (interaction) => {
         }
         const categoryLabel = categoryLabels[ticketCategory] || ticketCategory;
 
+        // Verify modmail category exists before creating thread
+        const catExists1 = await validateCategoryExists(guild, config.modmailCategoryId!);
+        if (!catExists1) {
+          await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          return;
+        }
+
+        const finalExistingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (finalExistingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+
         // Create thread and channel
         const thread = await storage.createModmailThread({
           guildId,
@@ -5672,6 +8771,8 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+
+          const configuredRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "modmail_tickets");
 
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
@@ -5691,6 +8792,9 @@ client.on("interactionCreate", async (interaction) => {
               const customPings = JSON.parse(config.customCategoryPings);
               pingRoles = customPings[ticketCategory];
             } catch (e) {}
+          }
+          if (configuredRequestPingRoles.length > 0) {
+            pingRoles = configuredRequestPingRoles;
           }
           pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -5728,10 +8832,34 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_toggle_${thread.id}`)
               .setLabel("Toggle Member")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥")
+              .setEmoji("👥"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_request_role_${thread.id}`)
+              .setLabel("Request A Role")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("🛡️")
           );
 
-          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_modlogs_${thread.id}`)
+              .setLabel("Modlogs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📚"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_logs_${thread.id}`)
+              .setLabel("Modmail Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📝"),
+            new ButtonBuilder()
+              .setCustomId(`appeal_logs_${thread.id}`)
+              .setLabel("Appeal Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("⚖️")
+          );
+
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
           try {
@@ -5745,10 +8873,20 @@ client.on("interactionCreate", async (interaction) => {
             // console.log("Could not DM user about ticket creation");
           }
 
-          await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
-        } catch (error) {
+          await interaction.editReply({ content: `✅ Check your DMs for your **${categoryLabel}** ticket!` });
+        } catch (error: any) {
           console.log("Could not create ticket channel:", error);
-          await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+          // If category was deleted/invalid, auto-close the thread
+          if (error?.code === 50035 || error?.message?.includes("Invalid Form Body")) {
+            try {
+              await storage.updateModmailThread(thread.id, { status: "closed", closedAt: new Date() });
+            } catch (e) {
+              console.log('[modmail] Error auto-closing invalid thread:', e);
+            }
+            await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          } else {
+            await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+          }
         }
         return;
       }
@@ -5790,6 +8928,17 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
+        if (!acquireTicketCreationLock(guildId, user.id, "modmail")) {
+          await interaction.editReply({ content: "⏳ Ticket creation already in progress. Please wait a moment." });
+          return;
+        }
+
+        // Verify modmail category exists before creating thread
+        const catExists2 = await validateCategoryExists(guild, config.modmailCategoryId!);
+        if (!catExists2) {
+          await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          return;
+        }
 
         // Build category labels from custom categories in config
         const modalConfig = await storage.getGuildConfig(guildId);
@@ -5805,6 +8954,12 @@ client.on("interactionCreate", async (interaction) => {
           modalCategoryLabels[cat.id] = cat.label;
         }
         const categoryLabel = modalCategoryLabels[ticketCategory] || ticketCategory;
+
+        const finalExistingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (finalExistingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
 
         // Create thread and channel
         const thread = await storage.createModmailThread({
@@ -5824,6 +8979,8 @@ client.on("interactionCreate", async (interaction) => {
 
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
 
+          const configuredRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "modmail_tickets");
+
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
             general: config.categoryPingGeneral,
@@ -5842,6 +8999,9 @@ client.on("interactionCreate", async (interaction) => {
               const customPings = JSON.parse(config.customCategoryPings);
               pingRoles = customPings[ticketCategory];
             } catch (e) {}
+          }
+          if (configuredRequestPingRoles.length > 0) {
+            pingRoles = configuredRequestPingRoles;
           }
           pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -5879,10 +9039,34 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_toggle_${thread.id}`)
               .setLabel("Toggle Member")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥")
+              .setEmoji("👥"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_request_role_${thread.id}`)
+              .setLabel("Request A Role")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("🛡️")
           );
 
-          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_modlogs_${thread.id}`)
+              .setLabel("Modlogs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📚"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_logs_${thread.id}`)
+              .setLabel("Modmail Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📝"),
+            new ButtonBuilder()
+              .setCustomId(`appeal_logs_${thread.id}`)
+              .setLabel("Appeal Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("⚖️")
+          );
+
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
           try {
@@ -5897,9 +9081,19 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** ticket has been created! Check your DMs.` });
-        } catch (error) {
+        } catch (error: any) {
           console.log("Could not create ticket channel:", error);
-          await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+          // If category was deleted/invalid, auto-close the thread
+          if (error?.code === 50035 || error?.message?.includes("Invalid Form Body")) {
+            try {
+              await storage.updateModmailThread(thread.id, { status: "closed", closedAt: new Date() });
+            } catch (e) {
+              console.log('[modmail] Error auto-closing invalid thread:', e);
+            }
+            await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          } else {
+            await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+          }
         }
         return;
       }
@@ -5946,6 +9140,147 @@ client.on("interactionCreate", async (interaction) => {
               content: "Could not retrieve message content.", 
               flags: 64 
             });
+          }
+          return;
+        }
+
+        if (customId.startsWith("modmail_modlogs_")) {
+          if (!await safeDeferReply(interaction, true)) return;
+
+          try {
+            const threadId = customId.replace("modmail_modlogs_", "");
+            let thread = await storage.getModmailThread(threadId);
+            if (!thread) {
+              thread = await safeGetModmailThreadByChannel(interaction.channelId!);
+            }
+
+            if (!thread) {
+              await interaction.editReply({ content: "Thread not found." });
+              return;
+            }
+
+            const targetUserId = thread.userId;
+            const actions = await storage.getAllModerationActionsByTarget(targetUserId);
+            const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+
+            if (filtered.length === 0) {
+              await interaction.editReply({ content: "ℹ️ No logs found for that user." });
+              return;
+            }
+
+            const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+            const targetLabel = targetUser?.username || targetUserId;
+            const { embed, totalPages } = buildModlogsEmbed(targetUserId, targetLabel, filtered, 1, MODLOGS_ITEMS_PER_PAGE);
+
+            const components: any[] = [];
+            if (totalPages > 1) {
+              const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`modlogs_page_${interaction.user.id}_${targetUserId}_1_prev`)
+                  .setLabel("◀")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(true),
+                new ButtonBuilder()
+                  .setCustomId(`modlogs_page_${interaction.user.id}_${targetUserId}_1_next`)
+                  .setLabel("▶")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(false),
+              );
+              components.push(row);
+            }
+
+            await interaction.editReply({ embeds: [embed], components });
+          } catch (error: any) {
+            console.log("Error in modmail_modlogs button:", error.message);
+            await interaction.editReply({ content: "Failed to fetch modlogs." }).catch(() => {});
+          }
+          return;
+        }
+
+        if (customId.startsWith("modmail_logs_") && !customId.startsWith("modmail_logs_page_")) {
+          if (!await safeDeferReply(interaction, true)) return;
+
+          try {
+            const threadId = customId.replace("modmail_logs_", "");
+            let thread = await storage.getModmailThread(threadId);
+            if (!thread) {
+              thread = await safeGetModmailThreadByChannel(interaction.channelId!);
+            }
+
+            if (!thread) {
+              await interaction.editReply({ content: "Thread not found." });
+              return;
+            }
+
+            const targetUserId = thread.userId;
+            const logs = await storage.getAllModmailThreadsByUser(targetUserId);
+
+            if (logs.length === 0) {
+              await interaction.editReply({ content: "ℹ️ No modmail logs found for that user." });
+              return;
+            }
+
+            const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+            const targetLabel = targetUser?.username || targetUserId;
+            const { embed } = buildModmailLogsEmbed(targetUserId, targetLabel, logs, 1, MODMAIL_LOGS_ITEMS_PER_PAGE);
+            const components = buildModmailLogsComponents(interaction.user.id, targetUserId, logs, 1, MODMAIL_LOGS_ITEMS_PER_PAGE);
+
+            await interaction.editReply({ embeds: [embed], components });
+          } catch (error: any) {
+            console.log("Error in modmail_logs button:", error.message);
+            await interaction.editReply({ content: "Failed to fetch modmail logs." }).catch(() => {});
+          }
+          return;
+        }
+
+        if (customId.startsWith("appeal_logs_") && !customId.startsWith("appeal_logs_page_")) {
+          if (!await safeDeferReply(interaction, true)) return;
+
+          try {
+            const threadId = customId.replace("appeal_logs_", "");
+            let targetUserId: string | null = null;
+
+            const modmailThread = await storage.getModmailThread(threadId);
+            if (modmailThread) {
+              targetUserId = modmailThread.userId;
+            } else {
+              const appealThread = await storage.getAppealThread(threadId);
+              if (appealThread) {
+                targetUserId = appealThread.userId;
+              }
+            }
+
+            if (!targetUserId) {
+              const byChannelModmail = await safeGetModmailThreadByChannel(interaction.channelId!);
+              if (byChannelModmail) {
+                targetUserId = byChannelModmail.userId;
+              } else {
+                const byChannelAppeal = await storage.getAppealThreadByChannel(interaction.channelId!);
+                targetUserId = byChannelAppeal?.userId || null;
+              }
+            }
+
+            if (!targetUserId) {
+              await interaction.editReply({ content: "Thread not found." });
+              return;
+            }
+
+            const logs = await storage.getAllAppealThreadsByUser(targetUserId);
+
+            if (logs.length === 0) {
+              await interaction.editReply({ content: "ℹ️ No appeal logs found for that user." });
+              return;
+            }
+
+            const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+            const targetLabel = targetUser?.username || targetUserId;
+            const { embed } = buildAppealLogsEmbed(targetUserId, targetLabel, logs, 1, APPEAL_LOGS_ITEMS_PER_PAGE);
+            const components = buildAppealLogsComponents(interaction.user.id, targetUserId, logs, 1, APPEAL_LOGS_ITEMS_PER_PAGE);
+
+            await interaction.editReply({ embeds: [embed], components });
+          } catch (error: any) {
+            console.log("Error in appeal_logs button:", error.message);
+            await interaction.editReply({ content: "Failed to fetch appeal logs." }).catch(() => {});
           }
           return;
         }
@@ -6008,7 +9343,7 @@ client.on("interactionCreate", async (interaction) => {
           const config = await storage.getGuildConfig(thread.guildId);
           if (config?.modmailLogChannelId) {
             try {
-              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+              const logChannel = await safeChannelFetch(config.modmailLogChannelId);
               if (logChannel && "send" in logChannel) {
                 const logEmbed = new EmbedBuilder()
                   .setTitle("Member Accepted Ticket Invite")
@@ -6118,7 +9453,7 @@ client.on("interactionCreate", async (interaction) => {
             const role = interaction.guild?.roles.cache.get(roleId);
             if (role) {
               const members = role.members.map((m: any) => `<@${m.id}>`).join("\n");
-              rosterText += `**${role.name}**\n${members || "No members"}\n\n`;
+              rosterText += `**${role.name}**\n${members || "N/A"}\n\n`;
             }
           }
 
@@ -6127,35 +9462,77 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        // Handle block_list pagination
-        if (customId.startsWith("block_list_prev_") || customId.startsWith("block_list_next_")) {
+        if (customId.startsWith("sticky_list_")) {
+          const parts = customId.split("_");
+          const requesterId = parts[2];
+          const currentPage = parseInt(parts[3] || "1", 10);
+          const direction = parts[4];
+
+          if (interaction.user.id !== requesterId) {
+            const { memberRoles, memberPermissions } = getInteractionMemberContext(interaction);
+            const hasPermission = await hasStickyCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+            if (!hasPermission) {
+              await replyInteractionFailed(interaction);
+              return;
+            }
+          }
+
           if (!await safeDeferUpdate(interaction)) return;
 
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const stickyConfigs = getStickyConfigsFromGuildConfig(config);
+
+          const totalPages = Math.max(1, Math.ceil(Object.keys(stickyConfigs).length / 5));
+          const nextPage = direction === "prev"
+            ? Math.max(1, currentPage - 1)
+            : Math.min(totalPages, currentPage + 1);
+
+          const { embed, components } = buildStickyListEmbed(stickyConfigs, nextPage, requesterId);
+          await interaction.editReply({ embeds: [embed], components });
+          return;
+        }
+
+        // Handle block_list pagination
+        if (customId.startsWith("block_list_prev_") || customId.startsWith("block_list_next_")) {
           const parts = customId.split("_");
           const direction = parts[2]; // "prev" or "next"
-          const currentPage = parseInt(parts[3]);
-          const guildId = parts[4];
+          const requesterId = parts.length >= 5 ? parts[3] : null;
+          const currentPage = parseInt(parts.length >= 5 ? parts[4] : parts[3]);
+
+          if (requesterId && interaction.user.id !== requesterId) {
+            await replyInteractionFailed(interaction);
+            return;
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
           const ITEMS_PER_PAGE = 10;
 
           const newPage = direction === "prev" ? currentPage - 1 : currentPage + 1;
 
           // Get all blocked users from modmail and appeals
-          const modmailBlocks = await storage.getAllModmailBlocks(guildId);
-          const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const }));
+          const modmailBlocks = await storage.getAllModmailBlocksGlobal();
+          const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt }));
           
-          const appealBlocks = await storage.getAllAppealBlocks(guildId);
-          const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const }));
+          const appealBlocks = await storage.getAllAppealBlocksGlobal();
+          const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt }));
 
           // Combine and deduplicate
-          const blockedMap = new Map<string, { userId: string; types: string[] }>();
+          const blockedMap = new Map<string, { userId: string; types: string[]; reasons: Map<string, string | null>; expireTimes: Map<string, Date | null> }>();
           for (const b of [...modmailBlocked, ...appealBlocked]) {
             if (blockedMap.has(b.userId)) {
               const existing = blockedMap.get(b.userId)!;
               if (!existing.types.includes(b.type)) {
                 existing.types.push(b.type);
+                existing.reasons.set(b.type, b.reason);
+                existing.expireTimes.set(b.type, b.expiresAt);
               }
             } else {
-              blockedMap.set(b.userId, { userId: b.userId, types: [b.type] });
+              const reasons = new Map<string, string | null>();
+              const expireTimes = new Map<string, Date | null>();
+              reasons.set(b.type, b.reason);
+              expireTimes.set(b.type, b.expiresAt);
+              blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes });
             }
           }
 
@@ -6169,7 +9546,17 @@ client.on("interactionCreate", async (interaction) => {
           for (let i = 0; i < pageItems.length; i++) {
             const item = pageItems[i];
             const typeLabel = item.types.join(", ");
-            listText += `${startIdx + i + 1}. <@${item.userId}> (${typeLabel})\n`;
+            const details: string[] = [];
+            
+            for (const type of item.types) {
+              const reason = item.reasons.get(type);
+              const expiresAt = item.expireTimes.get(type);
+              const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
+              const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
+              details.push(`${type}: ${reasonText} (${durationText})`);
+            }
+            
+            listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
           }
 
           const embed = new EmbedBuilder()
@@ -6181,12 +9568,12 @@ client.on("interactionCreate", async (interaction) => {
 
           const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
-              .setCustomId(`block_list_prev_${newPage}_${guildId}`)
+              .setCustomId(requesterId ? `block_list_prev_${requesterId}_${newPage}` : `block_list_prev_${newPage}`)
               .setLabel("◀")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(newPage <= 1),
             new ButtonBuilder()
-              .setCustomId(`block_list_next_${newPage}_${guildId}`)
+              .setCustomId(requesterId ? `block_list_next_${requesterId}_${newPage}` : `block_list_next_${newPage}`)
               .setLabel("▶")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(newPage >= totalPages)
@@ -6195,9 +9582,332 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ embeds: [embed], components: totalPages > 1 ? [buttonRow] : [] });
           return;
         }
+
+        if (customId.startsWith("modlogs_page_")) {
+          const parts = customId.split("_");
+          const requesterId = parts[2];
+          const targetId = parts[3];
+          const currentPage = parseInt(parts[4] || "1", 10);
+          const direction = parts[5];
+
+          if (interaction.user.id !== requesterId) {
+            const hasPermission = await canUseModlogsButtons(interaction);
+            if (!hasPermission) {
+              await replyInteractionFailed(interaction);
+              return;
+            }
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const actions = await storage.getAllModerationActionsByTarget(targetId);
+          const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+
+          const totalPages = Math.max(1, Math.ceil(filtered.length / MODLOGS_ITEMS_PER_PAGE));
+          const nextPage = direction === "prev"
+            ? Math.max(1, currentPage - 1)
+            : Math.min(totalPages, currentPage + 1);
+
+          const targetUser = await client.users.fetch(targetId).catch(() => null);
+          const targetLabel = targetUser?.username || targetId;
+          const { embed } = buildModlogsEmbed(targetId, targetLabel, filtered, nextPage, MODLOGS_ITEMS_PER_PAGE);
+
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modlogs_page_${requesterId}_${targetId}_${nextPage}_prev`)
+              .setLabel("◀")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(nextPage <= 1),
+            new ButtonBuilder()
+              .setCustomId(`modlogs_page_${requesterId}_${targetId}_${nextPage}_next`)
+              .setLabel("▶")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(nextPage >= totalPages),
+          );
+
+          await interaction.editReply({ embeds: [embed], components: totalPages > 1 ? [row] : [] });
+          return;
+        }
+
+        if (customId.startsWith("modmail_logs_page_")) {
+          const parts = customId.split("_");
+          const requesterId = parts[3];
+          const targetId = parts[4];
+          const currentPage = parseInt(parts[5] || "1", 10);
+          const direction = parts[6];
+
+          if (interaction.user.id !== requesterId) {
+            const memberPerms = interaction.member?.permissions;
+            const hasPermission = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+            if (!hasPermission) {
+              await replyInteractionFailed(interaction);
+              return;
+            }
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const logs = await storage.getAllModmailThreadsByUser(targetId);
+          const totalPages = Math.max(1, Math.ceil(logs.length / MODMAIL_LOGS_ITEMS_PER_PAGE));
+          const nextPage = direction === "prev"
+            ? Math.max(1, currentPage - 1)
+            : Math.min(totalPages, currentPage + 1);
+
+          const targetUser = await client.users.fetch(targetId).catch(() => null);
+          const targetLabel = targetUser?.username || targetId;
+          const { embed } = buildModmailLogsEmbed(targetId, targetLabel, logs, nextPage, MODMAIL_LOGS_ITEMS_PER_PAGE);
+          const components = buildModmailLogsComponents(requesterId, targetId, logs, nextPage, MODMAIL_LOGS_ITEMS_PER_PAGE);
+
+          await interaction.editReply({ embeds: [embed], components });
+          return;
+        }
+
+        if (customId.startsWith("appeal_logs_page_")) {
+          const parts = customId.split("_");
+          const requesterId = parts[3];
+          const targetId = parts[4];
+          const currentPage = parseInt(parts[5] || "1", 10);
+          const direction = parts[6];
+
+          if (interaction.user.id !== requesterId) {
+            const memberPerms = interaction.member?.permissions;
+            const hasPermission = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+            if (!hasPermission) {
+              await replyInteractionFailed(interaction);
+              return;
+            }
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const logs = await storage.getAllAppealThreadsByUser(targetId);
+          const totalPages = Math.max(1, Math.ceil(logs.length / APPEAL_LOGS_ITEMS_PER_PAGE));
+          const nextPage = direction === "prev"
+            ? Math.max(1, currentPage - 1)
+            : Math.min(totalPages, currentPage + 1);
+
+          const targetUser = await client.users.fetch(targetId).catch(() => null);
+          const targetLabel = targetUser?.username || targetId;
+          const { embed } = buildAppealLogsEmbed(targetId, targetLabel, logs, nextPage, APPEAL_LOGS_ITEMS_PER_PAGE);
+          const components = buildAppealLogsComponents(requesterId, targetId, logs, nextPage, APPEAL_LOGS_ITEMS_PER_PAGE);
+
+          await interaction.editReply({ embeds: [embed], components });
+          return;
+        }
+
+        if (customId.startsWith("appeal_log_open_")) {
+          if (!await safeDeferReply(interaction, true)) return;
+
+          const match = customId.match(/^appeal_log_open_(\d+)_(.+)$/);
+          if (!match) {
+            await interaction.editReply({ content: "Invalid appeal log request." });
+            return;
+          }
+
+          const requesterId = match[1];
+          const threadId = match[2];
+
+          if (interaction.user.id !== requesterId) {
+            const memberPerms = interaction.member?.permissions;
+            const hasPermission = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+            if (!hasPermission) {
+              await replyInteractionFailed(interaction);
+              return;
+            }
+          }
+
+          const thread = await storage.getAppealThread(threadId);
+          if (!thread) {
+            await interaction.editReply({ content: "Appeal thread not found." });
+            return;
+          }
+
+          const messages = await storage.getAppealMessages(threadId);
+          if (messages.length === 0) {
+            await interaction.editReply({ content: "No messages found for this appeal thread." });
+            return;
+          }
+
+          const transcriptContent = messages
+            .map((m) => {
+              const createdAt = m.createdAt ? new Date(m.createdAt as any) : null;
+              const ts = createdAt ? createdAt.toISOString() : "unknown-time";
+              const actor = m.isStaff === "true" ? "Staff" : "User";
+              return `[${ts}] [${actor}] ${m.authorId}: ${m.content}`;
+            })
+            .join("\n");
+
+          const transcriptBuffer = Buffer.from(transcriptContent, "utf-8");
+          const attachment = new AttachmentBuilder(transcriptBuffer, { name: `appeal-${threadId}.txt` });
+
+          const { embed, totalPages, safePage } = buildSpecificAppealLogEmbed(thread, messages, 1, 10);
+          const components = buildSpecificAppealLogComponents(requesterId, threadId, safePage, totalPages);
+
+          await interaction.editReply({
+            content: `Full transcript attached as file for appeal thread ${threadId}.`,
+            embeds: [embed],
+            components,
+            files: [attachment]
+          });
+          return;
+        }
+
+        if (customId.startsWith("appeal_log_page_")) {
+          const match = customId.match(/^appeal_log_page_(\d+)_(.+)_(\d+)_(prev|next)$/);
+          if (!match) {
+            await interaction.followUp({ content: "Invalid appeal transcript page request.", flags: 64 });
+            return;
+          }
+
+          const requesterId = match[1];
+          const threadId = match[2];
+          const currentPage = parseInt(match[3], 10);
+          const direction = match[4];
+
+          if (interaction.user.id !== requesterId) {
+            const memberPerms = interaction.member?.permissions;
+            const hasPermission = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+            if (!hasPermission) {
+              await replyInteractionFailed(interaction);
+              return;
+            }
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const thread = await storage.getAppealThread(threadId);
+          if (!thread) {
+            await interaction.editReply({ content: "Appeal thread not found.", embeds: [], components: [] });
+            return;
+          }
+
+          const messages = await storage.getAppealMessages(threadId);
+          if (messages.length === 0) {
+            await interaction.editReply({ content: "No messages found for this appeal thread.", embeds: [], components: [] });
+            return;
+          }
+
+          const preview = buildSpecificAppealLogEmbed(thread, messages, currentPage, 10);
+          const nextPage = direction === "prev"
+            ? Math.max(1, preview.safePage - 1)
+            : Math.min(preview.totalPages, preview.safePage + 1);
+
+          const { embed, totalPages, safePage } = buildSpecificAppealLogEmbed(thread, messages, nextPage, 10);
+          const components = buildSpecificAppealLogComponents(requesterId, threadId, safePage, totalPages);
+
+          await interaction.editReply({ embeds: [embed], components });
+          return;
+        }
+
+        if (customId.startsWith("modmail_log_open_")) {
+          if (!await safeDeferReply(interaction, true)) return;
+
+          const match = customId.match(/^modmail_log_open_(\d+)_(.+)$/);
+          if (!match) {
+            await interaction.editReply({ content: "Invalid modmail log request." });
+            return;
+          }
+
+          const requesterId = match[1];
+          const threadId = match[2];
+
+          if (interaction.user.id !== requesterId) {
+            await interaction.editReply({ content: "❌ Only the command author can use this button." });
+            return;
+          }
+
+          const thread = await storage.getModmailThread(threadId);
+          if (!thread) {
+            await interaction.editReply({ content: "Modmail thread not found." });
+            return;
+          }
+
+          const messages = await storage.getModmailMessages(threadId);
+          if (messages.length === 0) {
+            await interaction.editReply({ content: "No messages found for this modmail thread." });
+            return;
+          }
+
+          const transcriptContent = messages
+            .map((m) => {
+              const createdAt = m.createdAt ? new Date(m.createdAt as any) : null;
+              const ts = createdAt ? createdAt.toISOString() : "unknown-time";
+              const actor = m.isStaff === "true" ? "Staff" : "User";
+              return `[${ts}] [${actor}] ${m.authorId}: ${m.content}`;
+            })
+            .join("\n");
+
+          const transcriptBuffer = Buffer.from(transcriptContent, "utf-8");
+          const attachment = new AttachmentBuilder(transcriptBuffer, { name: `modmail-${threadId}.txt` });
+
+          const { embed, totalPages, safePage } = buildSpecificModmailLogEmbed(thread, messages, 1, 10);
+          const components = buildSpecificModmailLogComponents(requesterId, threadId, safePage, totalPages);
+
+          await interaction.editReply({
+            content: `Full transcript attached as file for thread ${threadId}.`,
+            embeds: [embed],
+            components,
+            files: [attachment]
+          });
+          return;
+        }
+
+        if (customId.startsWith("modmail_log_page_")) {
+          const match = customId.match(/^modmail_log_page_(\d+)_(.+)_(\d+)_(prev|next)$/);
+          if (!match) {
+            await interaction.followUp({ content: "Invalid transcript page request.", flags: 64 });
+            return;
+          }
+
+          const requesterId = match[1];
+          const threadId = match[2];
+          const currentPage = parseInt(match[3], 10);
+          const direction = match[4];
+
+          if (interaction.user.id !== requesterId) {
+            const memberPerms = interaction.member?.permissions;
+            const hasPermission = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+            if (!hasPermission) {
+              await replyInteractionFailed(interaction);
+              return;
+            }
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const thread = await storage.getModmailThread(threadId);
+          if (!thread) {
+            await interaction.editReply({ content: "Modmail thread not found.", embeds: [], components: [] });
+            return;
+          }
+
+          const messages = await storage.getModmailMessages(threadId);
+          if (messages.length === 0) {
+            await interaction.editReply({ content: "No messages found for this modmail thread.", embeds: [], components: [] });
+            return;
+          }
+
+          const preview = buildSpecificModmailLogEmbed(thread, messages, currentPage, 10);
+          const nextPage = direction === "prev"
+            ? Math.max(1, preview.safePage - 1)
+            : Math.min(preview.totalPages, preview.safePage + 1);
+
+          const { embed, totalPages, safePage } = buildSpecificModmailLogEmbed(thread, messages, nextPage, 10);
+          const components = buildSpecificModmailLogComponents(requesterId, threadId, safePage, totalPages);
+
+          await interaction.editReply({ embeds: [embed], components });
+          return;
+        }
         
         if (customId.startsWith("activity_page_")) {
           try {
+            const { memberRoles, memberPermissions } = getInteractionMemberContext(interaction);
+            const hasPermission = await hasActivityPermission(memberRoles, memberPermissions, interaction.guildId!);
+            if (!hasPermission) {
+              await replyInteractionFailed(interaction);
+              return;
+            }
+
             if (!await safeDeferUpdate(interaction)) return;
             const parts = customId.split("_");
             const page = parseInt(parts[2]);
@@ -6220,11 +9930,16 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             let banStats: { userId: string; count: number }[] = [];
+            let moderationBanStats: { userId: string; count: number }[] = [];
+            let moderationKickStats: { userId: string; count: number }[] = [];
+            let moderationMuteStats: { userId: string; count: number }[] = [];
             let unbanStats: { userId: string; count: number }[] = [];
+            let inviteStats: { userId: string; count: number }[] = [];
             let modmailStats: { userId: string; count: number }[] = [];
             let appealStats: { userId: string; count: number }[] = [];
             let staffReportStats: { userId: string; count: number }[] = [];
             let modmailCategoryStats: { category: string; count: number }[] = [];
+            let moderationStatsRows: { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[] = [];
 
             try {
               if (!category || category === "ban") {
@@ -6234,10 +9949,25 @@ client.on("interactionCreate", async (interaction) => {
               }
             } catch (e) {}
             try {
+              if (!category || category === "modban" || category === "kick" || category === "mute") {
+                moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays);
+                moderationBanStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.bans }));
+                moderationKickStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.kicks }));
+                moderationMuteStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.mutes }));
+              }
+            } catch (e) {}
+            try {
               if (!category || category === "unban") {
                 unbanStats = useAllGuilds
                   ? await storage.getAllGuildsUnbanStats(fromDays, toDays)
                   : await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
+              }
+            } catch (e) {}
+            try {
+              if (!category || category === "invites") {
+                inviteStats = useAllGuilds
+                  ? await storage.getAllGuildsInviteStats(fromDays, toDays)
+                  : await storage.getInviteStats(interaction.guildId!, fromDays, toDays);
               }
             } catch (e) {}
             try {
@@ -6267,7 +9997,17 @@ client.on("interactionCreate", async (interaction) => {
 
             const combinedStats: { [userId: string]: number } = {};
             for (const stat of banStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of moderationBanStats) {
+              if (!category || category === "modban") combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            }
+            for (const stat of moderationKickStats) {
+              if (!category || category === "kick") combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            }
+            for (const stat of moderationMuteStats) {
+              if (!category || category === "mute") combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            }
             for (const stat of unbanStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of inviteStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
             for (const stat of modmailStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
             for (const stat of appealStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
             for (const stat of staffReportStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
@@ -6297,7 +10037,7 @@ client.on("interactionCreate", async (interaction) => {
             const start = (page - 1) * 10;
             const currentLeaderboard = leaderboard.slice(start, start + 10);
 
-            const categoryText = category === "ban" ? "Ban Requests" : category === "unban" ? "Unban Requests" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
+            const categoryText = category === "ban" ? "Ban Requests" : category === "modban" ? "Moderation Bans" : category === "kick" ? "Moderation Kicks" : category === "mute" ? "Moderation Mutes" : category === "unban" ? "Unban Requests" : category === "invites" ? "Invites" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
 
             const embed = new EmbedBuilder()
               .setTitle(`${categoryText} Leaderboard`)
@@ -6306,7 +10046,11 @@ client.on("interactionCreate", async (interaction) => {
 
             const totalCount = leaderboard.reduce((sum, e) => sum + e.count, 0);
             const banTotal = banStats.reduce((sum, e) => sum + e.count, 0);
+            const moderationBanTotal = moderationBanStats.reduce((sum, e) => sum + e.count, 0);
+            const moderationKickTotal = moderationKickStats.reduce((sum, e) => sum + e.count, 0);
+            const moderationMuteTotal = moderationMuteStats.reduce((sum, e) => sum + e.count, 0);
             const unbanTotal = unbanStats.reduce((sum, e) => sum + e.count, 0);
+            const inviteTotal = inviteStats.reduce((sum, e) => sum + e.count, 0);
             const modmailTotal = modmailStats.reduce((sum, e) => sum + e.count, 0);
             const appealTotal = appealStats.reduce((sum, e) => sum + e.count, 0);
             const staffReportTotal = staffReportStats.reduce((sum, e) => sum + e.count, 0);
@@ -6318,13 +10062,16 @@ client.on("interactionCreate", async (interaction) => {
             embed.addFields({ name: "Leaderboard", value: leaderboardText || "None", inline: false });
 
             let statsText = `**Total in the specified time:** ${totalCount}`;
-            if (!category) {
-              if (banTotal > 0) statsText += `\nBan Requests: ${banTotal}`;
-              if (unbanTotal > 0) statsText += `\nUnban Requests: ${unbanTotal}`;
-              if (modmailTotal > 0) statsText += `\nModmails Handled: ${modmailTotal}`;
-              if (appealTotal > 0) statsText += `\nAppeals Handled: ${appealTotal}`;
-              if (staffReportTotal > 0) statsText += `\nStaff Reports: ${staffReportTotal}`;
-            } else if (category === "modmail") {
+            statsText += `\nBan Requests: ${banTotal}`;
+            statsText += `\nModeration Bans: ${moderationBanTotal}`;
+            statsText += `\nModeration Kicks: ${moderationKickTotal}`;
+            statsText += `\nModeration Mutes: ${moderationMuteTotal}`;
+            statsText += `\nUnban Requests: ${unbanTotal}`;
+            statsText += `\nInvites: ${inviteTotal}`;
+            statsText += `\nModmails Handled: ${modmailTotal}`;
+            statsText += `\nAppeals Handled: ${appealTotal}`;
+            statsText += `\nStaff Reports: ${staffReportTotal}`;
+            if (category === "modmail") {
               if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
                 const categoryLabels: { [key: string]: string } = {};
                 const config = await storage.getGuildConfig(interaction.guildId!);
@@ -6378,7 +10125,7 @@ client.on("interactionCreate", async (interaction) => {
           let thread = await storage.getModmailThread(threadId);
           if (!thread) {
             // Fallback: look up by current channel ID
-            thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+            thread = await safeGetModmailThreadByChannel(interaction.channelId!);
           }
 
           if (!thread) {
@@ -6387,7 +10134,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           if (thread.claimedById) {
-            await interaction.followUp({ content: `This ticket is already claimed by <@${thread.claimedById}>.`, flags: 64 });
+            await interaction.followUp({ content: `This ticket is claimed by <@${thread.claimedById}>.`, flags: 64 });
             return;
           }
 
@@ -6405,6 +10152,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
+          threadWasClaimed.add(threadId);
 
           const claimEmbed = new EmbedBuilder()
             .setDescription(`Claimed by ${interaction.user.username}`)
@@ -6419,12 +10167,34 @@ client.on("interactionCreate", async (interaction) => {
                   .setCustomId(`modmail_unclaim_${threadId}`)
                   .setLabel(`Claimed by ${interaction.user.username}`)
                   .setStyle(ButtonStyle.Secondary)
-                  .setDisabled(false),
+                  .setDisabled(true),
                 new ButtonBuilder()
                   .setCustomId(`modmail_toggle_${threadId}`)
                   .setLabel("Toggle Member")
                   .setStyle(ButtonStyle.Secondary)
                   .setEmoji("👥"),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_request_role_${threadId}`)
+                  .setLabel("Request A Role")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("🛡️")
+              ),
+              new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`modmail_modlogs_${threadId}`)
+                  .setLabel("Modlogs")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("📚"),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_logs_${threadId}`)
+                  .setLabel("Modmail Logs")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("📝"),
+                new ButtonBuilder()
+                  .setCustomId(`appeal_logs_${threadId}`)
+                  .setLabel("Appeal Logs")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("⚖️"),
                 new ButtonBuilder()
                   .setCustomId(`modmail_close_${threadId}`)
                   .setLabel("Close")
@@ -6457,15 +10227,13 @@ client.on("interactionCreate", async (interaction) => {
                 pendingClaimExpiry.delete(channelId);
 
                 try {
-                  const currentThread = await storage.getModmailThreadByChannel(channelId);
+                  const currentThread = await safeGetModmailThreadByChannel(channelId);
                   if (!currentThread || currentThread.status !== "open") return;
                   if (currentThread.claimedById !== claimerId) return;
 
                   await storage.updateModmailThread(currentThread.id, { claimedById: null });
                   const channel = await client.channels.fetch(channelId);
-                  if (channel && "send" in channel) {
-                    await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
-                  }
+                  await sendAutoUnclaimEmbed(channel, claimerId);
                 } catch (e) {
                   console.log("Could not process auto-unclaim");
                 }
@@ -6521,6 +10289,28 @@ client.on("interactionCreate", async (interaction) => {
                   .setStyle(ButtonStyle.Secondary)
                   .setEmoji("👥"),
                 new ButtonBuilder()
+                  .setCustomId(`modmail_request_role_${threadId}`)
+                  .setLabel("Request A Role")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("🛡️")
+              ),
+              new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`modmail_modlogs_${threadId}`)
+                  .setLabel("Modlogs")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("📚"),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_logs_${threadId}`)
+                  .setLabel("Modmail Logs")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("📝"),
+                new ButtonBuilder()
+                  .setCustomId(`appeal_logs_${threadId}`)
+                  .setLabel("Appeal Logs")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("⚖️"),
+                new ButtonBuilder()
                   .setCustomId(`modmail_close_${threadId}`)
                   .setLabel("Close")
                   .setStyle(ButtonStyle.Danger)
@@ -6543,6 +10333,50 @@ client.on("interactionCreate", async (interaction) => {
           console.log("Error in modmail_unclaim button:", error.message);
           await interaction.followUp({ content: "Failed to unclaim ticket. Please try again.", flags: 64 }).catch(() => {});
         }
+        return;
+      } else if (interaction.customId.startsWith("modmail_request_role_")) {
+        const threadId = interaction.customId.replace("modmail_request_role_", "");
+
+        const modal = new ModalBuilder()
+          .setCustomId(`modmail_request_role_modal_${threadId}`)
+          .setTitle("Request A Role");
+
+        const userIdInput = new TextInputBuilder()
+          .setCustomId("user_id")
+          .setLabel("User ID")
+          .setPlaceholder("Enter the Discord user ID")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+
+        const roleInput = new TextInputBuilder()
+          .setCustomId("role_input")
+          .setLabel("Role ID")
+          .setPlaceholder("Example: 123456789012345678")
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true);
+
+        const reasonInput = new TextInputBuilder()
+          .setCustomId("reason")
+          .setLabel("Reason")
+          .setPlaceholder("Why should this role be granted?")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true);
+
+        const proofInput = new TextInputBuilder()
+          .setCustomId("proof_requirements")
+          .setLabel("Proof Player Meets Requirements")
+          .setPlaceholder("Paste clips or links that prove they meet requirements")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true);
+
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(roleInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
+          new ActionRowBuilder<TextInputBuilder>().addComponents(proofInput)
+        );
+
+        await interaction.showModal(modal);
         return;
       } else if (interaction.customId.startsWith("modmail_toggle_")) {
         // Show modal to add/remove member from ticket
@@ -6582,14 +10416,41 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.showModal(modal);
         return;
       } else if (interaction.customId.startsWith("modmail_transcript_")) {
+        const memberPerms = interaction.member?.permissions;
+        const hasPermission = !!memberPerms?.has(PermissionFlagsBits.Administrator)
+          || !!memberPerms?.has(PermissionFlagsBits.ManageMessages);
+        if (!hasPermission) {
+          await replyInteractionFailed(interaction);
+          return;
+        }
+
         if (!await safeDeferUpdate(interaction)) return;
-        
-        const parts = interaction.customId.split("_");
-        const pageIndex = parseInt(parts[2]);
-        const threadId = parts[3];
+
+        const transcriptMatch = interaction.customId.match(/^modmail_transcript_(-?\d+)_(.+)$/);
+        if (!transcriptMatch) {
+          await interaction.followUp({ content: "Invalid transcript request.", flags: 64 }).catch(() => {});
+          return;
+        }
+
+        const pageIndex = parseInt(transcriptMatch[1], 10);
+        const threadId = transcriptMatch[2];
         
         try {
-          const messages = await storage.getModmailMessages(threadId);
+          let messages = await storage.getModmailMessages(threadId);
+          let isAppealTranscript = false;
+
+          const modmailThread = await storage.getModmailThread(threadId);
+          const appealThread = modmailThread ? null : await storage.getAppealThread(threadId);
+          const transcriptThread = modmailThread || appealThread;
+
+          if (messages.length === 0) {
+            const appealMessages = await storage.getAppealMessages(threadId);
+            if (appealMessages.length > 0) {
+              messages = appealMessages;
+              isAppealTranscript = true;
+            }
+          }
+
           if (messages.length === 0) {
             await interaction.followUp({ content: "No messages found for this transcript.", flags: 64 });
             return;
@@ -6604,23 +10465,29 @@ client.on("interactionCreate", async (interaction) => {
           
           let transcript = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
           if (transcript.length > 2000) transcript = transcript.substring(0, 1997) + "...";
+          const openedBy = transcriptThread?.userId ? `<@${transcriptThread.userId}>` : "Unknown";
+          const closedBy = transcriptThread?.closedById ? `<@${transcriptThread.closedById}>` : "Unknown";
           
           const embed = new EmbedBuilder()
-            .setTitle("Modmail Transcript")
+            .setTitle(isAppealTranscript ? "Appeal Transcript" : "Modmail Transcript")
             .setColor(0x5865f2)
             .setDescription(transcript || "No messages on this page.")
+            .addFields(
+              { name: "Opened By", value: openedBy, inline: true },
+              { name: "Closed By", value: closedBy, inline: true }
+            )
             .setFooter({ text: `Page ${validPageIndex + 1} of ${totalPages}` })
             .setTimestamp();
             
           const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_transcript_${validPageIndex - 1}_${threadId}`)
-              .setLabel("◀ Previous")
+              .setLabel("Previous Page")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(validPageIndex === 0),
             new ButtonBuilder()
               .setCustomId(`modmail_transcript_${validPageIndex + 1}_${threadId}`)
-              .setLabel("Next ▶")
+              .setLabel("Next Page")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(validPageIndex >= totalPages - 1)
           );
@@ -6639,7 +10506,7 @@ client.on("interactionCreate", async (interaction) => {
           // Try to find thread by ID first, then fall back to channel lookup
           let thread = await storage.getModmailThread(threadId);
           if (!thread) {
-            thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+            thread = await safeGetModmailThreadByChannel(interaction.channelId!);
           }
 
           if (!thread) {
@@ -6691,29 +10558,31 @@ client.on("interactionCreate", async (interaction) => {
           const buffer = Buffer.from(transcriptContent, "utf-8");
           const attachment = new AttachmentBuilder(buffer, { name: `transcript-${threadIdForLog}.txt` });
 
-          let transcriptPreview = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-          if (transcriptPreview.length > 1900) transcriptPreview = transcriptPreview.substring(0, 1900) + "...";
-          if (!transcriptPreview) transcriptPreview = "No messages";
+          const pageSize = 10;
+          const pageMessages = messages.slice(0, pageSize);
+          let transcriptPreview = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+          transcriptPreview = clampEmbedFieldValue(transcriptPreview);
 
           const logEmbed = new EmbedBuilder()
             .setTitle("Ticket Closed")
             .setColor(0xed4245)
             .addFields(
-              { name: "User", value: `<@${threadUserId}>`, inline: true },
-              { name: "Closed By", value: `<@${closerId}>`, inline: true }
+              { name: "Opened By", value: `<@${threadUserId}>`, inline: true },
+              { name: "Closed By", value: `<@${closerId}>`, inline: true },
+              { name: "Transcript", value: transcriptPreview, inline: false }
             )
             .setTimestamp();
 
-          const totalPages = Math.ceil(messages.length / 10) || 1;
+          const totalPages = Math.ceil(messages.length / pageSize) || 1;
           const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_transcript_0_${threadIdForLog}`)
-              .setLabel("◀ Previous")
+              .setLabel("Previous Page")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(true),
             new ButtonBuilder()
               .setCustomId(`modmail_transcript_1_${threadIdForLog}`)
-              .setLabel("Next ▶")
+              .setLabel("Next Page")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(totalPages <= 1)
           );
@@ -6775,6 +10644,13 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        // Verify the appeal category still exists before creating thread
+        const categoryExists = await validateCategoryExists(guild, config.appealCategoryId);
+        if (!categoryExists) {
+          await interaction.editReply({ content: "❌ Appeal category has been deleted. Please have an admin reconfigure appeals with `/setup_appeal`." });
+          return;
+        }
+
         const block = await storage.getActiveAppealBlock(guildId, user.id);
         if (block) {
           const expiresText = block.expiresAt 
@@ -6789,33 +10665,58 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "You already have an open appeal. Please wait for staff to respond." });
           return;
         }
+        if (!acquireTicketCreationLock(guildId, user.id, "appeal")) {
+          await interaction.editReply({ content: "⏳ Appeal creation already in progress. Please wait a moment." });
+          return;
+        }
 
-        const thread = await storage.createAppealThread({
-          guildId,
-          userId: user.id,
-          status: "open",
-        });
+        const finalExistingAppeal = await storage.getOpenAppealThread(guildId, user.id);
+        if (finalExistingAppeal) {
+          await interaction.editReply({ content: "You already have an open appeal. Please wait for staff to respond." });
+          return;
+        }
 
+        // Create the Discord channel FIRST, before creating database thread
+        let newChannel;
         try {
           const channelName = `appeal-${user.username.toLowerCase().replace(/[^a-z0-9]/g, "")}`;
-          const newChannel = await guild.channels.create({
+          newChannel = await guild.channels.create({
             name: channelName,
             parent: config.appealCategoryId!,
             topic: `Ban appeal from ${user.tag} (${user.id})`,
           });
+        } catch (error: any) {
+          console.log("Could not create appeal channel:", error);
+          // If category was deleted/invalid, show error
+          if (error?.code === 50035 || error?.message?.includes("Invalid Form Body")) {
+            await interaction.editReply({ content: "❌ Appeal category has been deleted. Please have an admin reconfigure appeals with `/setup_appeal`." });
+          } else {
+            await interaction.editReply({ content: "❌ Failed to submit appeal. Please try again." });
+          }
+          return;
+        }
 
-          await storage.updateAppealThread(thread.id, { channelId: newChannel.id });
+        // Only create thread in DB after successful channel creation
+        const thread = await storage.createAppealThread({
+          guildId,
+          userId: user.id,
+          status: "open",
+          channelId: newChannel.id,
+        });
 
-          const staffRoleMentions = config.appealStaffRoleIds?.map(id => `<@&${id}>`).join(" ") || "";
+        try {
+          const appealPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "appeal_tickets");
+          const activeAppealPingRoles = appealPingRoles.length > 0 ? appealPingRoles : (config.appealStaffRoleIds || []);
+          const staffRoleMentions = activeAppealPingRoles.map(id => `<@&${id}>`).join(" ") || "";
 
           // Get user's roles from the guild
           let userRoles = "None";
           try {
             const member = await guild.members.fetch(user.id);
             const roles = member.roles.cache
-              .filter(r => r.id !== guild.id)
-              .sort((a, b) => b.position - a.position)
-              .map(r => `<@&${r.id}>`)
+              .filter((r: any) => r.id !== guild.id)
+              .sort((a: any, b: any) => b.position - a.position)
+              .map((r: any) => `<@&${r.id}>`)
               .slice(0, 15);
             userRoles = roles.length > 0 ? roles.join(", ") : "None";
           } catch (e) {}
@@ -6835,10 +10736,16 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`appeal_claim_${thread.id}`)
               .setLabel("Claim")
               .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋")
+              .setEmoji("🙋"),
+            new ButtonBuilder()
+              .setCustomId(`appeal_logs_${thread.id}`)
+              .setLabel("Appeal Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("⚖️")
           );
 
-          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          await initialTicketMessage.pin().catch(() => {});
 
           try {
             const dmEmbed = new EmbedBuilder()
@@ -6852,9 +10759,20 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           await interaction.editReply({ content: "Your ban appeal has been submitted! Check your DMs." });
-        } catch (error) {
+        } catch (error: any) {
           console.log("Could not create appeal channel:", error);
-          await interaction.editReply({ content: "Failed to submit appeal. Please try again." });
+          
+          // If category was deleted/invalid, auto-close the thread
+          if (error?.code === 50035 || error?.message?.includes("Invalid Form Body")) {
+            try {
+              await storage.updateAppealThread(thread.id, { status: "closed", closedAt: new Date() });
+            } catch (e) {
+              console.log('[appeal] Error auto-closing invalid thread:', e);
+            }
+            await interaction.editReply({ content: "❌ Appeal category has been deleted or is invalid. Please have an admin reconfigure appeals with `/setup_appeal`." });
+          } else {
+            await interaction.editReply({ content: "Failed to submit appeal. Please try again." });
+          }
         }
         return;
       } else if (interaction.customId.startsWith("appeal_claim_")) {
@@ -6870,7 +10788,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           if (thread.claimedById) {
-            await interaction.followUp({ content: `This appeal is already claimed by <@${thread.claimedById}>.`, flags: 64 });
+            await interaction.followUp({ content: `This appeal is claimed by <@${thread.claimedById}>.`, flags: 64 });
             return;
           }
 
@@ -6888,6 +10806,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           await storage.updateAppealThread(threadId, { claimedById: interaction.user.id });
+          threadWasClaimed.add(threadId);
 
           const claimEmbed = new EmbedBuilder()
             .setDescription(`**Appeal claimed by <@${interaction.user.id}>**`)
@@ -6901,7 +10820,12 @@ client.on("interactionCreate", async (interaction) => {
                   .setCustomId(`appeal_claim_${threadId}`)
                   .setLabel(`Claimed by ${interaction.user.username}`)
                   .setStyle(ButtonStyle.Secondary)
-                  .setDisabled(true)
+                  .setDisabled(true),
+                new ButtonBuilder()
+                  .setCustomId(`appeal_logs_${threadId}`)
+                  .setLabel("Appeal Logs")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setEmoji("⚖️")
               )
             ]
           });
@@ -6935,9 +10859,7 @@ client.on("interactionCreate", async (interaction) => {
 
                   await storage.updateAppealThread(currentThread.id, { claimedById: null });
                   const channel = await client.channels.fetch(channelId);
-                  if (channel && "send" in channel) {
-                    await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
-                  }
+                  await sendAutoUnclaimEmbed(channel, claimerId);
                 } catch (e) {
                   console.log("Could not process auto-unclaim for appeal");
                 }
@@ -6990,7 +10912,7 @@ client.on("interactionCreate", async (interaction) => {
         const embed = new EmbedBuilder()
           .setTitle(`Members with ${guildRole.name}`)
           .setColor(guildRole.color || 0x5865f2)
-          .setDescription(pageMembers.length > 0 ? pageMembers.join("\n") : "No members have this role.")
+          .setDescription(pageMembers.length > 0 ? pageMembers.join("\n") : "N/A")
           .setFooter({ text: `Page ${newPage + 1}/${totalPages} • Total: ${members.length} member(s)` })
           .setTimestamp();
 
@@ -7340,6 +11262,39 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
         return;
+      } else if (interaction.customId === "submit_kick_request") {
+        try {
+          const modal = new ModalBuilder()
+            .setCustomId("kick_request_modal")
+            .setTitle("Kick Request");
+
+          const userIdInput = new TextInputBuilder()
+            .setCustomId("user_id")
+            .setLabel("User ID")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Enter the user ID")
+            .setRequired(true);
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Kick Reason")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Why should this user be kicked?")
+            .setRequired(true);
+
+          const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput);
+          const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+
+          modal.addComponents(row1, row2);
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
       } else if (interaction.customId.startsWith("ban_approve_") || interaction.customId.startsWith("ban_deny_")) {
         try {
           const parts = interaction.customId.split("_");
@@ -7348,6 +11303,35 @@ client.on("interactionCreate", async (interaction) => {
 
           const modal = new ModalBuilder()
             .setCustomId(`ban_action_${action}_${requestId}`)
+            .setTitle(action === "approve" ? "Approve Request" : "Deny Request");
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("action_reason")
+            .setLabel("Reason (optional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Enter a reason for this decision...")
+            .setRequired(false);
+
+          const row = new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput);
+          modal.addComponents(row);
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
+      } else if (interaction.customId.startsWith("kick_approve_") || interaction.customId.startsWith("kick_deny_")) {
+        try {
+          const parts = interaction.customId.split("_");
+          const action = parts[1];
+          const requestedById = parts[2];
+          const targetUserId = parts[3];
+
+          const modal = new ModalBuilder()
+            .setCustomId(`kick_action_${action}_${requestedById}_${targetUserId}`)
             .setTitle(action === "approve" ? "Approve Request" : "Deny Request");
 
           const reasonInput = new TextInputBuilder()
@@ -7396,6 +11380,43 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
         return;
+      } else if (interaction.customId.startsWith("role_request_approve_") || interaction.customId.startsWith("role_request_deny_")) {
+        try {
+          const roleReqMatch = interaction.customId.match(/^role_request_(approve|deny)_(.+)$/);
+          if (!roleReqMatch) {
+            await interaction.reply({ content: "Invalid role request action.", flags: 64 });
+            return;
+          }
+
+          const action = roleReqMatch[1];
+          const requestId = roleReqMatch[2];
+
+          if (handledRoleRequestIds.has(requestId) || !pendingRoleRequests.has(requestId)) {
+            await interaction.reply({ content: "This role request has already been handled.", flags: 64 });
+            return;
+          }
+
+          const modal = new ModalBuilder()
+            .setCustomId(`role_request_action_${action}_${requestId}`)
+            .setTitle(action === "approve" ? "Approve Role Request" : "Deny Role Request");
+
+          const noteInput = new TextInputBuilder()
+            .setCustomId("action_note")
+            .setLabel("Review Note (optional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Add an optional note for this decision...")
+            .setRequired(false);
+
+          modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(noteInput));
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
       } else if (interaction.customId.startsWith("sniplist_") || interaction.customId.startsWith("asniplist_")) {
         try {
           const isAppeal = interaction.customId.startsWith("asniplist_");
@@ -7418,54 +11439,41 @@ client.on("interactionCreate", async (interaction) => {
 
           const snippetListDisplay = pageSnippets.map((s, i) => {
             const num = start + i + 1;
-            // Cap content at 500 chars to prevent embed overflow
             const content = s.content.length > 500 ? s.content.substring(0, 500) + "..." : s.content;
-            return `**${num}.** \`${s.alias}\`\n${content}`;
+            return `**${num}. ${s.alias}**\n${content}`;
           }).join("\n\n");
 
-          const prefix = (await storage.getGuildConfig(interaction.guildId!))?.commandPrefix || ".";
-
           const embed = new EmbedBuilder()
-            .setTitle(`📝 ${isAppeal ? "Appeal " : ""}Snippet List`)
-            .setDescription(snippetListDisplay || "No snippets on this page.")
+            .setTitle(isAppeal ? "Appeal Snippets" : "Snippets")
+            .setDescription(snippetListDisplay)
             .setColor(0x5865f2)
-            .setFooter({ text: `Page ${page}/${totalPages} | Total: ${allSnippets.length} snippets | Use ${prefix}${isAppeal ? "asnip" : "snip"} list <page>` });
+            .setFooter({ text: `Page ${page}/${totalPages}` });
 
-          const row = new ActionRowBuilder<ButtonBuilder>();
-          const btnPrefix = isAppeal ? "asniplist" : "sniplist";
-          if (page > 1) {
-            row.addComponents(
-              new ButtonBuilder()
-                .setCustomId(`${btnPrefix}_${page - 1}`)
-                .setLabel("◀ Previous")
-                .setStyle(ButtonStyle.Secondary)
-            );
-          }
-          if (page < totalPages) {
-            row.addComponents(
-              new ButtonBuilder()
-                .setCustomId(`${btnPrefix}_${page + 1}`)
-                .setLabel("Next ▶")
-                .setStyle(ButtonStyle.Secondary)
-            );
-          }
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`${isAppeal ? "asniplist" : "sniplist"}_${page - 1}`)
+              .setLabel("Prev")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(page <= 1),
+            new ButtonBuilder()
+              .setCustomId(`${isAppeal ? "asniplist" : "sniplist"}_${page + 1}`)
+              .setLabel("Next")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(page >= totalPages)
+          );
 
-          if (row.components.length > 0) {
-            await interaction.update({ embeds: [embed], components: [row] });
-          } else {
-            await interaction.update({ embeds: [embed], components: [] });
-          }
+          await interaction.update({ embeds: [embed], components: [row] });
         } catch (error: any) {
-          if (error.code === 10062 || error.code === 40060) {
-            // Interaction expired
+          console.log("Error in snippet list pagination:", error);
+          if (interaction.deferred || interaction.replied) {
+            await interaction.followUp({ content: "Failed to load snippets.", flags: 64 }).catch(() => {});
           } else {
-            console.error("Snippet list pagination error:", error);
+            await interaction.reply({ content: "Failed to load snippets.", flags: 64 }).catch(() => {});
           }
         }
         return;
       }
-      // Silently ignore unhandled button interactions (e.g., Discord's native attachment buttons)
-      return;
+
     } else if (interaction.isModalSubmit()) {
       // Handle toggle member modal for modmail
       if (interaction.customId.startsWith("modmail_toggle_modal_")) {
@@ -7486,7 +11494,7 @@ client.on("interactionCreate", async (interaction) => {
           // Get the thread - try by ID first, then fall back to channel lookup
           let thread = await storage.getModmailThread(threadId);
           if (!thread) {
-            thread = await storage.getModmailThreadByChannel(interaction.channelId!);
+            thread = await safeGetModmailThreadByChannel(interaction.channelId!);
           }
           if (!thread) {
             await interaction.editReply({ content: "❌ Thread not found." });
@@ -7571,10 +11579,18 @@ client.on("interactionCreate", async (interaction) => {
             const confirmEmbed = new EmbedBuilder()
               .setTitle("Invite Sent")
               .setDescription(`An invite has been sent to <@${userId}>. They must accept to join this ticket.`)
-              .addFields({ name: "Reason", value: reason })
+              .addFields(
+                { name: "Invited By", value: `<@${interaction.user.id}>`, inline: true },
+                { name: "Reason", value: reason, inline: true },
+              )
               .setColor(0x5865f2)
               .setTimestamp();
-            await interaction.editReply({ embeds: [confirmEmbed] });
+            if (interaction.channel && "send" in interaction.channel) {
+              await (interaction.channel as any).send({ embeds: [confirmEmbed] });
+              await interaction.editReply({ content: "✅ Invite sent." });
+            } else {
+              await interaction.editReply({ embeds: [confirmEmbed] });
+            }
 
           } else {
             // Remove action
@@ -7631,14 +11647,332 @@ client.on("interactionCreate", async (interaction) => {
             const confirmEmbed = new EmbedBuilder()
               .setTitle("Member Removed")
               .setDescription(`<@${userId}> has been removed from this ticket.`)
-              .addFields({ name: "Reason", value: reason })
+              .addFields(
+                { name: "Removed By", value: `<@${interaction.user.id}>`, inline: true },
+                { name: "Reason", value: reason, inline: true },
+              )
               .setColor(0xed4245)
               .setTimestamp();
-            await interaction.editReply({ embeds: [confirmEmbed] });
+            if (interaction.channel && "send" in interaction.channel) {
+              await (interaction.channel as any).send({ embeds: [confirmEmbed] });
+              await interaction.editReply({ content: "✅ Member removed." });
+            } else {
+              await interaction.editReply({ embeds: [confirmEmbed] });
+            }
           }
         } catch (error: any) {
           console.log("Error in modmail_toggle_modal:", error.message);
           await interaction.editReply({ content: "❌ Failed to toggle member. Please try again." }).catch(() => {});
+        }
+        return;
+      }
+
+      if (interaction.customId.startsWith("role_request_action_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        try {
+          const actionMatch = interaction.customId.match(/^role_request_action_(approve|deny)_(.+)$/);
+          if (!actionMatch) {
+            await interaction.editReply({ content: "Invalid role request action." });
+            return;
+          }
+
+          const action = actionMatch[1];
+          const requestId = actionMatch[2];
+          const actionNote = (() => {
+            try { return (interaction.fields.getTextInputValue("action_note") || "").trim(); }
+            catch { return ""; }
+          })();
+
+          if (handledRoleRequestIds.has(requestId)) {
+            await interaction.editReply({ content: "This role request has already been handled." });
+            return;
+          }
+
+          const pendingRequest = pendingRoleRequests.get(requestId);
+          if (!pendingRequest || pendingRequest.guildId !== interaction.guildId) {
+            await interaction.editReply({ content: "This role request has expired or is no longer available." });
+            return;
+          }
+
+          const member = interaction.member;
+          const memberRoles = member && 'roles' in member
+            ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+            : [];
+          const memberPermissions = member && 'permissions' in member
+            ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+            : undefined;
+          const hasPermission = await hasRoleRequestPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+          if (!hasPermission) {
+            await interaction.editReply({ content: "❌ You don't have permission to review role requests." });
+            return;
+          }
+
+          const guild = interaction.guild;
+          if (!guild) {
+            await interaction.editReply({ content: "❌ Guild context not found." });
+            return;
+          }
+
+          await guild.roles.fetch().catch(() => null);
+          let resolvedRole: any = null;
+          if (/^\d{17,20}$/.test(pendingRequest.roleInput)) {
+            resolvedRole = await guild.roles.fetch(pendingRequest.roleInput).catch(() => null);
+          }
+
+          handledRoleRequestIds.add(requestId);
+          pendingRoleRequests.delete(requestId);
+
+          const actionStatus = action === "approve" ? "✅ Approved" : "❌ Denied";
+          const updatedEmbed = new EmbedBuilder()
+            .setTitle("🛡️ Role Request")
+            .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+            .addFields(
+              { name: "Target User", value: `<@${pendingRequest.targetUserId}>\n(${pendingRequest.targetUserId})`, inline: true },
+              { name: "Requested By", value: `<@${pendingRequest.requestedById}>`, inline: true },
+              { name: "Status", value: actionStatus, inline: true },
+              { name: "Requested Role", value: resolvedRole ? `<@&${resolvedRole.id}> (${resolvedRole.id})` : pendingRequest.roleInput, inline: false },
+              { name: "Reason", value: pendingRequest.reason, inline: false },
+              { name: "Proof Player Meets Requirements", value: pendingRequest.proof, inline: false },
+              { name: "Ticket", value: `<#${pendingRequest.threadChannelId}>`, inline: false },
+              { name: "Reviewed By", value: `<@${interaction.user.id}>`, inline: false }
+            )
+            .setTimestamp();
+
+          if (actionNote) {
+            updatedEmbed.addFields({ name: "Review Note", value: actionNote, inline: false });
+          }
+
+          if (interaction.message) {
+            await interaction.message.edit({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+          }
+
+          try {
+            const requestingStaff = await client.users.fetch(pendingRequest.requestedById);
+            const dmEmbed = new EmbedBuilder()
+              .setTitle(`Role Request ${action === "approve" ? "Approved" : "Denied"}`)
+              .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+              .setDescription(action === "approve"
+                ? `Your role request for <@${pendingRequest.targetUserId}> to receive **${resolvedRole?.name || pendingRequest.roleInput}** has been approved.`
+                : `Your role request for <@${pendingRequest.targetUserId}> to receive **${pendingRequest.roleInput}** has been denied.`)
+              .addFields(
+                { name: "Target User", value: `<@${pendingRequest.targetUserId}>`, inline: true },
+                { name: "Reviewed By", value: `<@${interaction.user.id}>`, inline: true },
+                { name: "Reason", value: pendingRequest.reason, inline: false },
+                { name: "Proof Player Meets Requirements", value: pendingRequest.proof, inline: false }
+              )
+              .setTimestamp();
+            if (actionNote) dmEmbed.addFields({ name: "Review Note", value: actionNote, inline: false });
+            await requestingStaff.send({ embeds: [dmEmbed] }).catch(() => {});
+          } catch {}
+
+          if (action === "approve") {
+            try {
+              const config = await storage.getGuildConfig(interaction.guildId!);
+              const acceptedPlayersChannelId = getAcceptedPlayersChannelIdFromGuildConfig(config);
+              if (acceptedPlayersChannelId) {
+                const acceptedChannel = await client.channels.fetch(acceptedPlayersChannelId).catch(() => null);
+                if (acceptedChannel && "send" in acceptedChannel) {
+                  const grantedRoleText = resolvedRole ? `<@&${resolvedRole.id}>` : pendingRequest.roleInput;
+                  await acceptedChannel.send({
+                    content: `<@${pendingRequest.targetUserId}> - ${pendingRequest.proof} - Granted ${grantedRoleText}`,
+                  });
+                }
+              }
+            } catch {}
+          }
+
+          await interaction.editReply({
+            content: action === "approve" ? "✅ Role request approved." : "✅ Role request denied.",
+          });
+        } catch (error: any) {
+          console.log("Error in role_request_action modal:", error.message);
+          await interaction.editReply({ content: "❌ Failed to process role request." }).catch(() => {});
+        }
+        return;
+      }
+
+      if (interaction.customId.startsWith("modmail_request_role_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        try {
+          const threadId = interaction.customId.replace("modmail_request_role_modal_", "");
+          const targetUserId = interaction.fields.getTextInputValue("user_id").trim();
+          const roleInput = interaction.fields.getTextInputValue("role_input").trim();
+          const reason = interaction.fields.getTextInputValue("reason").trim();
+          const proof = interaction.fields.getTextInputValue("proof_requirements").trim();
+
+          if (!/^\d{17,19}$/.test(targetUserId)) {
+            await interaction.editReply({ content: "❌ Invalid user ID format. Please provide a valid Discord user ID." });
+            return;
+          }
+
+          if (!roleInput) {
+            await interaction.editReply({ content: "❌ Role ID is required." });
+            return;
+          }
+
+          if (!/^\d{17,20}$/.test(roleInput)) {
+            await interaction.editReply({
+              content: "❌ Role names are not accepted. Use a role ID only. This is how you get role IDs: https://www.youtube.com/watch?v=Rw0HjR9Nzvg",
+            });
+            return;
+          }
+
+          if (!reason) {
+            await interaction.editReply({ content: "❌ Reason is required." });
+            return;
+          }
+
+          if (!proof) {
+            await interaction.editReply({ content: "❌ Proof Player Meets Requirements is required." });
+            return;
+          }
+
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const requestChannelId = getRoleRequestChannelIdFromGuildConfig(config);
+
+          if (!requestChannelId) {
+            await interaction.editReply({ content: "❌ Role request channel is not configured. Ask an admin to run `/setup_role_requests`." });
+            return;
+          }
+
+          const thread = await storage.getModmailThread(threadId) || await safeGetModmailThreadByChannel(interaction.channelId!);
+          if (!thread) {
+            await interaction.editReply({ content: "❌ Thread not found." });
+            return;
+          }
+
+          const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+          if (!targetUser) {
+            await interaction.editReply({ content: "❌ Could not find a user with that ID." });
+            return;
+          }
+
+          const requestChannel = await client.channels.fetch(requestChannelId).catch(() => null);
+          if (!requestChannel || !("send" in requestChannel)) {
+            await interaction.editReply({ content: "❌ Configured role request channel is not accessible." });
+            return;
+          }
+
+          let resolvedRoleName = roleInput;
+          try {
+            const guild = interaction.guild;
+            if (guild) {
+              await guild.roles.fetch().catch(() => null);
+              const resolvedRole = await guild.roles.fetch(roleInput).catch(() => null);
+              if (!resolvedRole?.name) {
+                await interaction.editReply({
+                  content: "❌ Invalid role ID. This is how you get role IDs: https://www.youtube.com/watch?v=Rw0HjR9Nzvg",
+                });
+                return;
+              }
+              resolvedRoleName = resolvedRole.name;
+            }
+          } catch {}
+
+          const requestId = generateRoleRequestId();
+          pendingRoleRequests.set(requestId, {
+            id: requestId,
+            guildId: interaction.guildId!,
+            threadId: thread.id,
+            threadChannelId: thread.channelId || interaction.channelId!,
+            requestedById: interaction.user.id,
+            targetUserId,
+            roleInput,
+            reason,
+            proof,
+            createdAt: Date.now(),
+          });
+
+          const requestEmbed = new EmbedBuilder()
+            .setTitle("🛡️ Role Request")
+            .setColor(0x5865f2)
+            .addFields(
+              { name: "Target User", value: `<@${targetUserId}>\n(${targetUserId})`, inline: true },
+              { name: "Requested By", value: `<@${interaction.user.id}>`, inline: true },
+              { name: "Status", value: "⏳ Pending", inline: true },
+              { name: "Requested Role", value: roleInput, inline: false },
+              { name: "Reason", value: reason, inline: false },
+              { name: "Proof Player Meets Requirements", value: proof, inline: false },
+              { name: "Ticket", value: `<#${thread.channelId}>`, inline: false }
+            )
+            .setFooter({ text: `Request ID: ${requestId}` })
+            .setTimestamp();
+
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`role_request_approve_${requestId}`)
+              .setLabel("Approve")
+              .setStyle(ButtonStyle.Success)
+              .setEmoji("✅"),
+            new ButtonBuilder()
+              .setCustomId(`role_request_deny_${requestId}`)
+              .setLabel("Deny")
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji("❌")
+          );
+
+          const roleRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "role_requests");
+          const roleRequestPingContent = roleRequestPingRoles.length > 0 ? roleRequestPingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
+
+          await requestChannel.send({ content: roleRequestPingContent, embeds: [requestEmbed], components: [row] });
+
+          let snippetRoleName = "Staff";
+          const requesterMember = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
+          if (requesterMember && requesterMember.roles.cache.size > 0) {
+            const roles = requesterMember.roles.cache
+              .filter(r => r.id !== interaction.guild!.id)
+              .sort((a, b) => b.position - a.position);
+            if (roles.size > 0) {
+              snippetRoleName = roles.first()!.name;
+            }
+          }
+
+          const targetDisplayName = targetUser.globalName || targetUser.username;
+          const snippetMessage = `Hello ${targetDisplayName}, I have requested for you to have the **${resolvedRoleName}** role that you have applied for. Please wait for higher authority to approve the request.`;
+          const snippetEmbed = new EmbedBuilder()
+            .setAuthor({ name: snippetRoleName, iconURL: interaction.user.displayAvatarURL() })
+            .setDescription(snippetMessage)
+            .setColor(0x5865f2)
+            .setFooter({ text: interaction.user.tag })
+            .setTimestamp();
+
+          let dmMessageId: string | undefined;
+          let channelMessageId: string | undefined;
+
+          const dmMessage = await targetUser.send({ embeds: [snippetEmbed] }).catch(() => null);
+          if (dmMessage?.id) dmMessageId = dmMessage.id;
+
+          let threadChannel: any = interaction.channel;
+          if (!threadChannel || !("send" in threadChannel)) {
+            threadChannel = thread.channelId
+              ? await client.channels.fetch(thread.channelId).catch(() => null)
+              : null;
+          }
+          if (threadChannel && "send" in threadChannel) {
+            const threadSnippetMessage = await threadChannel.send({ embeds: [snippetEmbed] }).catch(() => null);
+            if (threadSnippetMessage?.id) channelMessageId = threadSnippetMessage.id;
+          }
+
+          await storage.addModmailMessage({
+            threadId: thread.id,
+            authorId: interaction.user.id,
+            content: snippetMessage,
+            isStaff: "true",
+            channelMessageId,
+            dmMessageId,
+          });
+
+          await interaction.editReply({
+            content: dmMessageId
+              ? `✅ Role request submitted to <#${requestChannelId}> and snippet posted in the thread + sent to <@${targetUserId}>.`
+              : `✅ Role request submitted to <#${requestChannelId}> and snippet posted in the thread. Could not DM <@${targetUserId}>.`,
+          });
+        } catch (error: any) {
+          console.log("Error in modmail_request_role_modal:", error.message);
+          await interaction.editReply({ content: "❌ Failed to submit role request. Please try again." }).catch(() => {});
         }
         return;
       }
@@ -7649,12 +11983,25 @@ client.on("interactionCreate", async (interaction) => {
 
         const title = interaction.fields.getTextInputValue("embed_title");
         const description = interaction.fields.getTextInputValue("embed_description");
+        const imageInput = (() => {
+          try { return (interaction.fields.getTextInputValue("embed_image_url") || "").trim(); }
+          catch { return ""; }
+        })();
+        const resolvedImageUrl = imageInput ? await resolveEmbedImageUrl(imageInput) : null;
+
+        if (imageInput && !resolvedImageUrl) {
+          await interaction.editReply({ content: "❌ Invalid image link. Provide a direct image URL or a Discord message link that contains an image." });
+          return;
+        }
 
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
           modmailEmbedTitle: title,
           modmailEmbedDescription: description,
         });
+
+        const pendingEditKey = `${interaction.user.id}:${interaction.guildId}`;
+        const pendingTarget = pendingEmbedEditTargets.get(pendingEditKey);
 
         // Re-fetch config to get the latest message ID (may have been set by /edit_embed)
         const config = await storage.getGuildConfig(interaction.guildId!);
@@ -7671,6 +12018,10 @@ client.on("interactionCreate", async (interaction) => {
                 const newEmbed = EmbedBuilder.from(message.embeds[0] || new EmbedBuilder())
                   .setTitle(title)
                   .setDescription(description);
+
+                if (resolvedImageUrl) {
+                  newEmbed.setImage(resolvedImageUrl);
+                }
                 await message.edit({ embeds: [newEmbed] });
                 updatedInRealTime = true;
                 console.log(`[edit_embed] Successfully updated message`);
@@ -7683,13 +12034,25 @@ client.on("interactionCreate", async (interaction) => {
           console.log(`[edit_embed] No message ID saved. messageId=${config?.modmailEmbedMessageId}, channelId=${config?.modmailEmbedChannelId}`);
         }
 
+        if (!updatedInRealTime && pendingTarget?.embedType === "modmail") {
+          updatedInRealTime = await tryUpdateEmbedMessageById(
+            pendingTarget.channelId,
+            pendingTarget.messageId,
+            title,
+            description,
+            resolvedImageUrl,
+          );
+        }
+
+        pendingEmbedEditTargets.delete(pendingEditKey);
+
         if (updatedInRealTime) {
           await interaction.editReply({
-            content: `✅ Modmail embed updated in real time!\n• **Title:** ${title}\n• **Description:**\n${description}`,
+            content: `✅ Modmail embed updated in real time!\n• **Title:** ${title}\n• **Description:**\n${description}${resolvedImageUrl ? `\n• **Image:** ${resolvedImageUrl}` : ""}`,
           });
         } else {
           await interaction.editReply({
-            content: `✅ Modmail embed saved!\n• **Title:** ${title}\n• **Description:**\n${description}\n\n⚠️ Run \`/setup_modmail\` again to post the updated embed.`,
+            content: `✅ Modmail embed saved!\n• **Title:** ${title}\n• **Description:**\n${description}${resolvedImageUrl ? `\n• **Image:** ${resolvedImageUrl}` : ""}\n\n⚠️ Run \`/setup_modmail\` again to post the updated embed.`,
           });
         }
         return;
@@ -7701,6 +12064,16 @@ client.on("interactionCreate", async (interaction) => {
 
         const title = interaction.fields.getTextInputValue("embed_title");
         const description = interaction.fields.getTextInputValue("embed_description");
+        const imageInput = (() => {
+          try { return (interaction.fields.getTextInputValue("embed_image_url") || "").trim(); }
+          catch { return ""; }
+        })();
+        const resolvedImageUrl = imageInput ? await resolveEmbedImageUrl(imageInput) : null;
+
+        if (imageInput && !resolvedImageUrl) {
+          await interaction.editReply({ content: "❌ Invalid image link. Provide a direct image URL or a Discord message link that contains an image." });
+          return;
+        }
 
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
@@ -7708,8 +12081,21 @@ client.on("interactionCreate", async (interaction) => {
           appealEmbedDescription: description,
         });
 
+        const pendingEditKey = `${interaction.user.id}:${interaction.guildId}`;
+        const pendingTarget = pendingEmbedEditTargets.get(pendingEditKey);
+        const updatedByMessageId = pendingTarget?.embedType === "appeal"
+          ? await tryUpdateEmbedMessageById(
+              pendingTarget.channelId,
+              pendingTarget.messageId,
+              title,
+              description,
+              resolvedImageUrl,
+            )
+          : false;
+        pendingEmbedEditTargets.delete(pendingEditKey);
+
         await interaction.editReply({
-          content: `✅ Appeal embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_appeal\` again to post the updated embed.`,
+          content: `✅ Appeal embed updated!${updatedByMessageId ? " (message updated in real time)" : ""}\n• **Title:** ${title}\n• **Description:**\n${description}${resolvedImageUrl ? `\n• **Image:** ${resolvedImageUrl}` : ""}\n\nRun \`/setup_appeal\` again to post the updated embed.`,
         });
         return;
       }
@@ -7720,6 +12106,16 @@ client.on("interactionCreate", async (interaction) => {
 
         const title = interaction.fields.getTextInputValue("embed_title");
         const description = interaction.fields.getTextInputValue("embed_description");
+        const imageInput = (() => {
+          try { return (interaction.fields.getTextInputValue("embed_image_url") || "").trim(); }
+          catch { return ""; }
+        })();
+        const resolvedImageUrl = imageInput ? await resolveEmbedImageUrl(imageInput) : null;
+
+        if (imageInput && !resolvedImageUrl) {
+          await interaction.editReply({ content: "❌ Invalid image link. Provide a direct image URL or a Discord message link that contains an image." });
+          return;
+        }
 
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
@@ -7727,8 +12123,21 @@ client.on("interactionCreate", async (interaction) => {
           staffIntroEmbedDescription: description,
         });
 
+        const pendingEditKey = `${interaction.user.id}:${interaction.guildId}`;
+        const pendingTarget = pendingEmbedEditTargets.get(pendingEditKey);
+        const updatedByMessageId = pendingTarget?.embedType === "staffintro"
+          ? await tryUpdateEmbedMessageById(
+              pendingTarget.channelId,
+              pendingTarget.messageId,
+              title,
+              description,
+              resolvedImageUrl,
+            )
+          : false;
+        pendingEmbedEditTargets.delete(pendingEditKey);
+
         await interaction.editReply({
-          content: `✅ Staff Intro embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_intro\` again to post the updated embed.`,
+          content: `✅ Staff Intro embed updated!${updatedByMessageId ? " (message updated in real time)" : ""}\n• **Title:** ${title}\n• **Description:**\n${description}${resolvedImageUrl ? `\n• **Image:** ${resolvedImageUrl}` : ""}\n\nRun \`/setup_intro\` again to post the updated embed.`,
         });
         return;
       }
@@ -7739,6 +12148,16 @@ client.on("interactionCreate", async (interaction) => {
 
         const title = interaction.fields.getTextInputValue("embed_title");
         const description = interaction.fields.getTextInputValue("embed_description");
+        const imageInput = (() => {
+          try { return (interaction.fields.getTextInputValue("embed_image_url") || "").trim(); }
+          catch { return ""; }
+        })();
+        const resolvedImageUrl = imageInput ? await resolveEmbedImageUrl(imageInput) : null;
+
+        if (imageInput && !resolvedImageUrl) {
+          await interaction.editReply({ content: "❌ Invalid image link. Provide a direct image URL or a Discord message link that contains an image." });
+          return;
+        }
 
         await storage.upsertGuildConfig({
           guildId: interaction.guildId!,
@@ -7746,8 +12165,67 @@ client.on("interactionCreate", async (interaction) => {
           inactivityEmbedDescription: description,
         });
 
+        const pendingEditKey = `${interaction.user.id}:${interaction.guildId}`;
+        const pendingTarget = pendingEmbedEditTargets.get(pendingEditKey);
+        const updatedByMessageId = pendingTarget?.embedType === "inactivity"
+          ? await tryUpdateEmbedMessageById(
+              pendingTarget.channelId,
+              pendingTarget.messageId,
+              title,
+              description,
+              resolvedImageUrl,
+            )
+          : false;
+        pendingEmbedEditTargets.delete(pendingEditKey);
+
         await interaction.editReply({
-          content: `✅ Inactivity embed updated!\n• **Title:** ${title}\n• **Description:**\n${description}\n\nRun \`/setup_inactivity\` again to post the updated embed.`,
+          content: `✅ Inactivity embed updated!${updatedByMessageId ? " (message updated in real time)" : ""}\n• **Title:** ${title}\n• **Description:**\n${description}${resolvedImageUrl ? `\n• **Image:** ${resolvedImageUrl}` : ""}\n\nRun \`/setup_inactivity\` again to post the updated embed.`,
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith("config_welcome_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        const guildId = interaction.customId.replace("config_welcome_modal_", "");
+        const messageText = interaction.fields.getTextInputValue("welcome_message");
+        const author = (interaction.fields.getTextInputValue("welcome_author") || "").trim();
+        const authorIcon = (interaction.fields.getTextInputValue("welcome_author_icon") || "").trim();
+        const footer = (interaction.fields.getTextInputValue("welcome_footer") || "").trim();
+        const footerIcon = (interaction.fields.getTextInputValue("welcome_footer_icon") || "").trim();
+
+        if (authorIcon && !isHttpUrl(authorIcon)) {
+          await interaction.editReply({ content: "❌ Author icon must be a valid URL." });
+          return;
+        }
+
+        if (footerIcon && !isHttpUrl(footerIcon)) {
+          await interaction.editReply({ content: "❌ Footer icon must be a valid URL." });
+          return;
+        }
+
+        const pendingKey = `${interaction.user.id}:${guildId}`;
+        const requestedColor = pendingWelcomeMessageColors.get(pendingKey) ?? null;
+        pendingWelcomeMessageColors.delete(pendingKey);
+
+        const config = await storage.getGuildConfig(guildId);
+        const currentSetup = getWelcomeSetupFromGuildConfig(config);
+        const finalColor = requestedColor ?? currentSetup.color;
+
+        await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: writeWelcomeSetupToConfig(config?.customCategoryPings, {
+            message: messageText,
+            author,
+            authorIcon,
+            footer,
+            footerIcon,
+            color: finalColor,
+          }),
+        });
+
+        await interaction.editReply({
+          content: `✅ Welcome message updated!\n• **Color:** #${finalColor.toString(16).padStart(6, "0").toUpperCase()}\n• **Message:**\n${messageText}`,
         });
         return;
       }
@@ -7798,6 +12276,10 @@ client.on("interactionCreate", async (interaction) => {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
           return;
         }
+        if (!acquireTicketCreationLock(guildId, user.id, "modmail")) {
+          await interaction.editReply({ content: "⏳ Ticket creation already in progress. Please wait a moment." });
+          return;
+        }
 
         // Get custom category info
         let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
@@ -7819,6 +12301,12 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {}
         }
 
+        const finalExistingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (finalExistingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+
         // Create thread and channel
         const thread = await storage.createModmailThread({
           guildId,
@@ -7826,6 +12314,13 @@ client.on("interactionCreate", async (interaction) => {
           status: "open",
           category: ticketCategory,
         });
+
+        // Verify modmail category exists
+        const categoryExists3 = await validateCategoryExists(guild, config.modmailCategoryId!);
+        if (!categoryExists3) {
+          await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          return;
+        }
 
         try {
           const channelName = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 32) || "ticket";
@@ -7838,7 +12333,10 @@ client.on("interactionCreate", async (interaction) => {
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
 
           // Get staff roles to ping
-          const pingRoles = config.modmailStaffRoleIds || [];
+          const configuredRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "modmail_tickets");
+          const pingRoles = configuredRequestPingRoles.length > 0
+            ? configuredRequestPingRoles
+            : (config.modmailStaffRoleIds || []);
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
           // Get user's roles from the guild
@@ -7876,10 +12374,34 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_toggle_${thread.id}`)
               .setLabel("Toggle Member")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥")
+              .setEmoji("👥"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_request_role_${thread.id}`)
+              .setLabel("Request A Role")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("🛡️")
           );
 
-          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_modlogs_${thread.id}`)
+              .setLabel("Modlogs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📚"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_logs_${thread.id}`)
+              .setLabel("Modmail Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📝"),
+            new ButtonBuilder()
+              .setCustomId(`appeal_logs_${thread.id}`)
+              .setLabel("Appeal Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("⚖️")
+          );
+
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
           try {
@@ -7912,9 +12434,19 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) {}
           }
 
-        } catch (error) {
+        } catch (error: any) {
           console.log("Could not create ticket channel:", error);
-          await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+          // If category was deleted/invalid, auto-close the thread
+          if (error?.code === 50035 || error?.message?.includes("Invalid Form Body")) {
+            try {
+              await storage.updateModmailThread(thread.id, { status: "closed", closedAt: new Date() });
+            } catch (e) {
+              console.log('[modmail] Error auto-closing invalid thread:', e);
+            }
+            await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          } else {
+            await interaction.editReply({ content: "❌ Failed to create ticket. Please try again." });
+          }
         }
         return;
       }
@@ -7944,6 +12476,10 @@ client.on("interactionCreate", async (interaction) => {
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+        if (!acquireTicketCreationLock(guildId, user.id, "modmail")) {
+          await interaction.editReply({ content: "⏳ Ticket creation already in progress. Please wait a moment." });
           return;
         }
 
@@ -7997,6 +12533,12 @@ client.on("interactionCreate", async (interaction) => {
           ];
         }
 
+        const finalExistingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (finalExistingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+
         // Create thread and channel
         const thread = await storage.createModmailThread({
           guildId,
@@ -8004,6 +12546,13 @@ client.on("interactionCreate", async (interaction) => {
           status: "open",
           category: ticketCategory,
         });
+
+        // Verify modmail category exists
+        const categoryExists4 = await validateCategoryExists(guild, config.modmailCategoryId!);
+        if (!categoryExists4) {
+          await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          return;
+        }
 
         try {
           const channelName = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 32) || "ticket";
@@ -8014,6 +12563,8 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+
+          const configuredRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "modmail_tickets");
 
           // Get category-specific ping roles or fall back to general staff roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
@@ -8033,6 +12584,9 @@ client.on("interactionCreate", async (interaction) => {
               const customPings = JSON.parse(config.customCategoryPings);
               pingRoles = customPings[ticketCategory];
             } catch (e) {}
+          }
+          if (configuredRequestPingRoles.length > 0) {
+            pingRoles = configuredRequestPingRoles;
           }
           pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -8072,10 +12626,34 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_toggle_${thread.id}`)
               .setLabel("Toggle Member")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥")
+              .setEmoji("👥"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_request_role_${thread.id}`)
+              .setLabel("Request A Role")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("🛡️")
           );
 
-          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_modlogs_${thread.id}`)
+              .setLabel("Modlogs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📚"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_logs_${thread.id}`)
+              .setLabel("Modmail Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📝"),
+            new ButtonBuilder()
+              .setCustomId(`appeal_logs_${thread.id}`)
+              .setLabel("Appeal Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("⚖️")
+          );
+
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
           try {
@@ -8090,9 +12668,19 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted! Check your DMs.` });
-        } catch (error) {
+        } catch (error: any) {
           console.log("Could not create ticket channel:", error);
-          await interaction.editReply({ content: "❌ Failed to submit application. Please try again." });
+          // If category was deleted/invalid, auto-close the thread
+          if (error?.code === 50035 || error?.message?.includes("Invalid Form Body")) {
+            try {
+              await storage.updateModmailThread(thread.id, { status: "closed", closedAt: new Date() });
+            } catch (e) {
+              console.log('[modmail] Error auto-closing invalid thread:', e);
+            }
+            await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          } else {
+            await interaction.editReply({ content: "❌ Failed to submit application. Please try again." });
+          }
         }
         return;
       }
@@ -8132,6 +12720,10 @@ client.on("interactionCreate", async (interaction) => {
         const existingThread = await storage.getOpenModmailThread(guildId, user.id);
         if (existingThread) {
           await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+        if (!acquireTicketCreationLock(guildId, user.id, "modmail")) {
+          await interaction.editReply({ content: "⏳ Ticket creation already in progress. Please wait a moment." });
           return;
         }
 
@@ -8185,6 +12777,12 @@ client.on("interactionCreate", async (interaction) => {
           ];
         }
 
+        const finalExistingThread = await storage.getOpenModmailThread(guildId, user.id);
+        if (finalExistingThread) {
+          await interaction.editReply({ content: "❌ You already have an open ticket. Please wait for staff to respond or close your existing ticket." });
+          return;
+        }
+
         // Create thread and channel
         const thread = await storage.createModmailThread({
           guildId,
@@ -8192,6 +12790,13 @@ client.on("interactionCreate", async (interaction) => {
           status: "open",
           category: ticketCategory,
         });
+
+        // Verify modmail category exists
+        const categoryExists5 = await validateCategoryExists(guild, config.modmailCategoryId!);
+        if (!categoryExists5) {
+          await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          return;
+        }
 
         try {
           const channelName = user.username.toLowerCase().replace(/[^a-z0-9-_]/g, "").slice(0, 32) || "ticket";
@@ -8202,6 +12807,8 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           await storage.updateModmailThread(thread.id, { channelId: newChannel.id });
+
+          const configuredRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "modmail_tickets");
 
           // Get category-specific ping roles
           const categoryPingMap: { [key: string]: string[] | null | undefined } = {
@@ -8221,6 +12828,9 @@ client.on("interactionCreate", async (interaction) => {
               const customPings = JSON.parse(config.customCategoryPings);
               pingRoles = customPings[ticketCategory];
             } catch (e) {}
+          }
+          if (configuredRequestPingRoles.length > 0) {
+            pingRoles = configuredRequestPingRoles;
           }
           pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
@@ -8259,15 +12869,49 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_toggle_${thread.id}`)
               .setLabel("Toggle Member")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥")
+              .setEmoji("👥"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_request_role_${thread.id}`)
+              .setLabel("Request A Role")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("🛡️")
           );
 
-          await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modmail_modlogs_${thread.id}`)
+              .setLabel("Modlogs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📚"),
+            new ButtonBuilder()
+              .setCustomId(`modmail_logs_${thread.id}`)
+              .setLabel("Modmail Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("📝"),
+            new ButtonBuilder()
+              .setCustomId(`appeal_logs_${thread.id}`)
+              .setLabel("Appeal Logs")
+              .setStyle(ButtonStyle.Secondary)
+              .setEmoji("⚖️")
+          );
+
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          await initialTicketMessage.pin().catch(() => {});
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted to **${guild.name}**! Staff will respond shortly. Reply to this DM to communicate with them.` });
-        } catch (error) {
+        } catch (error: any) {
           console.log("Could not create ticket channel from DM modal:", error);
-          await interaction.editReply({ content: "❌ Failed to submit application. Please try again." });
+          // If category was deleted/invalid, auto-close the thread
+          if (error?.code === 50035 || error?.message?.includes("Invalid Form Body")) {
+            try {
+              await storage.updateModmailThread(thread.id, { status: "closed", closedAt: new Date() });
+            } catch (e) {
+              console.log('[modmail] Error auto-closing invalid thread:', e);
+            }
+            await interaction.editReply({ content: "❌ Modmail category has been deleted. Please have an admin reconfigure modmail with `/setup_modmail`." });
+          } else {
+            await interaction.editReply({ content: "❌ Failed to submit application. Please try again." });
+          }
         }
         return;
       } else if (interaction.customId === "payout_modal") {
@@ -8354,7 +12998,11 @@ client.on("interactionCreate", async (interaction) => {
             .setStyle(ButtonStyle.Danger)
         );
 
+        const payoutPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "payout_requests");
+        const payoutPingContent = payoutPingRoles.length > 0 ? payoutPingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
+
         const sentMessage = await requestChannel.send({
+          content: payoutPingContent,
           embeds: [embed],
           components: [row],
         });
@@ -8563,7 +13211,9 @@ client.on("interactionCreate", async (interaction) => {
             .setEmoji("❌")
         );
 
-        const sentMessage = await requestChannel.send({ embeds: [embed], components: [row] });
+        const banPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "ban_requests");
+        const banPingContent = banPingRoles.length > 0 ? banPingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
+        const sentMessage = await requestChannel.send({ content: banPingContent, embeds: [embed], components: [row] });
         await storage.updateBanRequest(banRequest.id, { messageId: sentMessage.id });
 
         await interaction.editReply({
@@ -8632,12 +13282,217 @@ client.on("interactionCreate", async (interaction) => {
             .setEmoji("❌")
         );
 
-        const sentMessage = await requestChannel.send({ embeds: [embed], components: [row] });
+        const unbanPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "unban_requests");
+        const unbanPingContent = unbanPingRoles.length > 0 ? unbanPingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
+        const sentMessage = await requestChannel.send({ content: unbanPingContent, embeds: [embed], components: [row] });
         await storage.updateUnbanRequest(unbanRequest.id, { messageId: sentMessage.id });
 
         await interaction.editReply({
           content: "Your unban request has been submitted!",
         });
+      } else if (interaction.customId === "kick_request_modal") {
+        try {
+          if (!await safeDeferReply(interaction)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+
+        const userId = interaction.fields.getTextInputValue("user_id").trim();
+        const reason = interaction.fields.getTextInputValue("reason");
+
+        if (!/^\d{17,19}$/.test(userId)) {
+          await interaction.editReply({
+            content: "Invalid User ID. Please enter a valid Discord User ID (17-19 digit number).",
+          });
+          return;
+        }
+
+        try {
+          await client.users.fetch(userId);
+        } catch {
+          await interaction.editReply({
+            content: "Could not find a Discord user with that ID. Please check the ID and try again.",
+          });
+          return;
+        }
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        if (!config?.banChannelId) {
+          await interaction.editReply({
+            content: "Moderation request channel not configured. Please ask an admin to run `/setup_moderation`.",
+          });
+          return;
+        }
+
+        const requestChannel = await client.channels.fetch(config.banChannelId);
+        if (!requestChannel || !("send" in requestChannel)) return;
+
+        const embed = new EmbedBuilder()
+          .setTitle("👢 Kick Request")
+          .setColor(0xf1c40f)
+          .addFields(
+            { name: "User ID", value: `<@${userId}>\n(${userId})`, inline: true },
+            { name: "Moderator", value: "Pending", inline: true },
+            { name: "Status", value: "⏳ Pending", inline: true },
+            { name: "Requested by", value: `<@${interaction.user.id}>`, inline: false },
+            { name: "Kick Reason", value: reason, inline: false }
+          )
+          .setFooter({ text: `Pending Review • Today at ${new Date().toLocaleTimeString()}` })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`kick_approve_${interaction.user.id}_${userId}`)
+            .setLabel("Approve")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("✅"),
+          new ButtonBuilder()
+            .setCustomId(`kick_deny_${interaction.user.id}_${userId}`)
+            .setLabel("Deny")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("❌")
+        );
+
+        const kickPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "kick_requests");
+        const kickPingContent = kickPingRoles.length > 0 ? kickPingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
+
+        await requestChannel.send({ content: kickPingContent, embeds: [embed], components: [row] });
+
+        await interaction.editReply({
+          content: "Your kick request has been submitted!",
+        });
+      } else if (interaction.customId.startsWith("kick_action_")) {
+        try {
+          if (!await safeDeferReply(interaction)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+
+        const parts = interaction.customId.split("_");
+        const action = parts[2];
+        const requestedById = parts[3];
+        const targetUserId = parts[4];
+        const actionReason = interaction.fields.getTextInputValue("action_reason") || "";
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const member = interaction.member;
+        const memberRoles = member && 'roles' in member
+          ? (Array.isArray(member.roles) ? member.roles : Array.from(member.roles.cache.keys()))
+          : [];
+
+        const hasModPermission = config?.modRoleIds?.some(roleId => memberRoles.includes(roleId)) || false;
+        const memberPermissions = member && 'permissions' in member
+          ? (typeof member.permissions === 'string' ? member.permissions : member.permissions?.bitfield)
+          : undefined;
+        const permBits = typeof memberPermissions === 'string'
+          ? BigInt(memberPermissions)
+          : (memberPermissions ?? BigInt(0));
+        const ADMINISTRATOR = BigInt(1) << BigInt(3);
+        const isAdmin = (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+
+        if (!hasModPermission && !isAdmin) {
+          await interaction.editReply({
+            content: "You don't have permission to approve or deny kick requests.",
+          });
+          return;
+        }
+
+        const message = interaction.message;
+        const originalEmbed = message?.embeds?.[0];
+        const kickReason = originalEmbed?.fields?.find((field) => field.name === "Kick Reason")?.value || "No reason provided";
+
+        if (message) {
+          const status = action === "approve" ? "✅ Approved" : "❌ Denied";
+          const color = action === "approve" ? 0x23a559 : 0xda373c;
+
+          const embed = new EmbedBuilder()
+            .setTitle("Kick Request")
+            .setColor(color)
+            .addFields(
+              { name: "User ID", value: `<@${targetUserId}>\n(${targetUserId})`, inline: true },
+              { name: "Moderator", value: `<@${interaction.user.id}>`, inline: true },
+              { name: "Status", value: status, inline: true },
+              { name: "Requested by", value: `<@${requestedById}>`, inline: false },
+              { name: "Kick Reason", value: kickReason, inline: false }
+            )
+            .setTimestamp();
+
+          if (actionReason) {
+            embed.addFields({ name: "Review Note", value: actionReason, inline: false });
+          }
+
+          await message.edit({ embeds: [embed], components: [] });
+        }
+
+        await interaction.editReply({
+          content: `Kick request ${action === "approve" ? "approved" : "denied"} successfully.`,
+        });
+
+        const guildName = interaction.guild?.name || "Unknown";
+        const reviewerUsername = interaction.user.username;
+        const reviewerId = interaction.user.id;
+
+        (async () => {
+          await Promise.all([
+            (async () => {
+              try {
+                const requester = await client.users.fetch(requestedById);
+                const dmEmbed = new EmbedBuilder()
+                  .setTitle(`Kick Request ${action === "approve" ? "Approved" : "Denied"}`)
+                  .setDescription(`Your kick request has been **${action === "approve" ? "approved" : "denied"}**.`)
+                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                  .addFields(
+                    { name: "Reviewed by", value: reviewerUsername, inline: true },
+                    { name: "Server", value: guildName, inline: true },
+                    { name: "Reason", value: actionReason || "No reason provided", inline: false }
+                  )
+                  .setTimestamp();
+                await requester.send({ embeds: [dmEmbed] });
+              } catch (e) { console.log("[KICK] Failed to DM requester:", e); }
+            })(),
+            (async () => {
+              try {
+                const targetUser = await client.users.fetch(targetUserId);
+                const targetDmEmbed = new EmbedBuilder()
+                  .setTitle(`Kick Request ${action === "approve" ? "Approved" : "Denied"}`)
+                  .setDescription(`A kick request regarding you has been **${action === "approve" ? "approved" : "denied"}**.`)
+                  .setColor(action === "approve" ? 0xf1c40f : 0xda373c)
+                  .addFields(
+                    { name: "Server", value: guildName, inline: true },
+                    { name: "Reason", value: actionReason || "No reason provided", inline: false }
+                  )
+                  .setTimestamp();
+                await targetUser.send({ embeds: [targetDmEmbed] });
+              } catch (e) { console.log("[KICK] Failed to DM target user:", e); }
+            })()
+          ]);
+
+          if (config?.banLogChannelId) {
+            try {
+              const logChannel = await client.channels.fetch(config.banLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const logEmbed = new EmbedBuilder()
+                  .setTitle(action === "approve" ? "Kick Request Approved" : "Kick Request Denied")
+                  .setDescription(`Kick request for <@${targetUserId}> has been ${action === "approve" ? "approved" : "denied"}.`)
+                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                  .addFields(
+                    { name: "Target User", value: `<@${targetUserId}>`, inline: true },
+                    { name: "Requested by", value: `<@${requestedById}>`, inline: true },
+                    { name: "Reviewed by", value: `<@${reviewerId}>`, inline: true },
+                    { name: "Kick Reason", value: kickReason, inline: false }
+                  )
+                  .setTimestamp();
+
+                if (actionReason) {
+                  logEmbed.addFields({ name: "Review Note", value: actionReason, inline: false });
+                }
+                await logChannel.send({ embeds: [logEmbed] });
+              }
+            } catch (e) { console.log("[KICK] Failed to post to log channel:", e); }
+          }
+        })().catch(e => console.log("[KICK] Background task error:", e));
       } else if (interaction.customId.startsWith("ban_action_")) {
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -8724,40 +13579,20 @@ client.on("interactionCreate", async (interaction) => {
         const reviewerId = interaction.user.id;
 
         (async () => {
-          // Send DMs in parallel
-          await Promise.all([
-            (async () => {
-              try {
-                const requester = await client.users.fetch(banRequest.requestedById);
-                const dmEmbed = new EmbedBuilder()
-                  .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
-                  .setDescription(`Your ban request has been **${action === "approve" ? "approved" : "denied"}**.`)
-                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
-                  .addFields(
-                    { name: "Reviewed by", value: reviewerUsername, inline: true },
-                    { name: "Server", value: guildName, inline: true },
-                    { name: "Reason", value: actionReason || "No reason provided", inline: false }
-                  )
-                  .setTimestamp();
-                await requester.send({ embeds: [dmEmbed] });
-              } catch (e) { console.log("[BAN] Failed to DM requester:", e); }
-            })(),
-            (async () => {
-              try {
-                const targetUser = await client.users.fetch(banRequest.targetUserId);
-                const targetDmEmbed = new EmbedBuilder()
-                  .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
-                  .setDescription(`A ban request regarding you has been **${action === "approve" ? "approved" : "denied"}**.`)
-                  .setColor(action === "approve" ? 0xda373c : 0x23a559)
-                  .addFields(
-                    { name: "Server", value: guildName, inline: true },
-                    { name: "Reason", value: actionReason || "No reason provided", inline: false }
-                  )
-                  .setTimestamp();
-                await targetUser.send({ embeds: [targetDmEmbed] });
-              } catch (e) { console.log("[BAN] Failed to DM target user:", e); }
-            })()
-          ]);
+          try {
+            const requester = await client.users.fetch(banRequest.requestedById);
+            const dmEmbed = new EmbedBuilder()
+              .setTitle(`Ban Request ${action === "approve" ? "Approved" : "Denied"}`)
+              .setDescription(`Your ban request has been **${action === "approve" ? "approved" : "denied"}**.`)
+              .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+              .addFields(
+                { name: "Reviewed by", value: reviewerUsername, inline: true },
+                { name: "Server", value: guildName, inline: true },
+                { name: "Reason", value: actionReason || "No reason provided", inline: false }
+              )
+              .setTimestamp();
+            await requester.send({ embeds: [dmEmbed] });
+          } catch (e) { console.log("[BAN] Failed to DM requester:", e); }
 
           // Post to log channel
           if (config?.banLogChannelId) {
@@ -9099,11 +13934,11 @@ client.on("interactionCreate", async (interaction) => {
                 .setEmoji("❌")
             );
 
-            // Build ping content
-            let pingContent = "";
-            if (config.inactivityPingRoleIds && config.inactivityPingRoleIds.length > 0) {
-              pingContent = config.inactivityPingRoleIds.map(id => `<@&${id}>`).join(" ");
-            }
+            const configuredPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "inactivity_submissions");
+            const pingRoles = configuredPingRoles.length > 0
+              ? configuredPingRoles
+              : (config.inactivityPingRoleIds || []);
+            const pingContent = pingRoles.length > 0 ? pingRoles.map(id => `<@&${id}>`).join(" ") : "";
 
             const sentMessage = await submissionsChannel.send({
               content: pingContent || undefined,
@@ -9273,6 +14108,114 @@ interface ClaimExpiryTimer {
   claimerId: string;
 }
 const pendingClaimExpiry = new Map<string, ClaimExpiryTimer>();
+const threadWasClaimed = new Set<string>();
+
+const recentStaffSendCache = new Map<string, number>();
+const STAFF_SEND_DEDUP_WINDOW_MS = 1200;
+const STAFF_SEND_CACHE_TTL_MS = 15000;
+
+function buildStaffSendDedupKey(threadId: string, authorId: string, content: string, isAppeal: boolean): string {
+  const normalizedContent = (content || "").trim().replace(/\s+/g, " ").slice(0, 800);
+  return `${isAppeal ? "appeal" : "modmail"}:${threadId}:${authorId}:${normalizedContent}`;
+}
+
+function clampEmbedFieldValue(value: string, maxLength = 1024): string {
+  const text = (value || "").trim();
+  if (!text) return "No messages";
+  if (text.length <= maxLength) return text;
+  return text.slice(0, Math.max(1, maxLength - 3)) + "...";
+}
+
+function buildStoredTranscriptContent(content: string, attachmentUrls?: string[]): string {
+  const normalized = (content || "").trim();
+  const urls = (attachmentUrls || []).filter(Boolean);
+
+  if (urls.length === 0) {
+    return normalized || "(No text content)";
+  }
+
+  const attachmentBlock = `Attachments:\n${urls.join("\n")}`;
+  if (!normalized) {
+    return `(Attachment)\n${attachmentBlock}`;
+  }
+
+  return `${normalized}\n\n${attachmentBlock}`;
+}
+
+async function sendUnclaimedTicketReplyNotice(message: any, wasPreviouslyClaimed: boolean): Promise<void> {
+  const description = wasPreviouslyClaimed
+    ? "The ticket is unclaimed, please claim it using .claim as your messages will not be sent until you have claimed."
+    : "The ticket is unclaimed, please claim it using the button above or .claim as your messages will not be sent until you have claimed.";
+
+  const embed = new EmbedBuilder()
+    .setColor(0xf0b232)
+    .setDescription(description)
+    .setTimestamp();
+
+  await message.reply({ embeds: [embed] });
+}
+
+async function sendTicketCommandEmbed(message: any, description: string, color = 0x5865f2): Promise<void> {
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setDescription(description)
+    .setTimestamp();
+
+  await message.reply({ embeds: [embed] });
+}
+
+async function sendAutoUnclaimEmbed(channelLike: any, claimerId: string): Promise<void> {
+  if (!channelLike || !("send" in channelLike)) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(0xf0b232)
+    .setDescription(`⏱️ Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`)
+    .setTimestamp();
+
+  await channelLike.send({ embeds: [embed] });
+}
+
+async function isRecentDuplicateStaffSend(
+  threadId: string,
+  authorId: string,
+  content: string,
+  isAppeal: boolean,
+): Promise<boolean> {
+  try {
+    const normalizedContent = (content || "").trim();
+    if (!normalizedContent) return false;
+
+    const key = buildStaffSendDedupKey(threadId, authorId, normalizedContent, isAppeal);
+    const now = Date.now();
+    const lastSentAt = recentStaffSendCache.get(key);
+
+    recentStaffSendCache.set(key, now);
+
+    if (!lastSentAt) return false;
+    return now - lastSentAt <= STAFF_SEND_DEDUP_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
+async function wasThreadPreviouslyClaimed(threadId: string, isAppeal: boolean): Promise<boolean> {
+  if (threadWasClaimed.has(threadId)) return true;
+
+  try {
+    const latestStaffMessage = isAppeal
+      ? await storage.getLatestStaffAppealMessage(threadId)
+      : await storage.getLatestStaffModmailMessage(threadId);
+
+    if (latestStaffMessage) {
+      threadWasClaimed.add(threadId);
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
 
 // Periodic cleanup of timer maps to prevent memory leaks (every 10 minutes)
 setInterval(() => {
@@ -9323,16 +14266,34 @@ setInterval(() => {
     }
     pendingClaimExpiry.clear();
   }
+
+  if (recentStaffSendCache.size > 0) {
+    for (const [key, timestamp] of Array.from(recentStaffSendCache.entries())) {
+      if (now - timestamp > STAFF_SEND_CACHE_TTL_MS) {
+        recentStaffSendCache.delete(key);
+      }
+    }
+  }
 }, 10 * 60 * 1000); // Every 10 minutes
 
 // Prevent duplicate message processing (in case of multiple bot instances)
 const processedMessages = new Set<string>();
 const MESSAGE_DEDUP_TIMEOUT = 5000; // 5 seconds
+const processedDmEdits = new Set<string>();
+const DM_EDIT_DEDUP_TIMEOUT = 5000;
 
 client.on("messageUpdate", async (oldMessage, newMessage) => {
   // Only track DMs from non-bot users
   if (!newMessage.author || newMessage.author.bot) return;
   if (newMessage.channel.type !== ChannelType.DM) return;
+
+  const editStamp = newMessage.editedTimestamp || Date.now();
+  const editDedupKey = `${newMessage.id}:${editStamp}`;
+  if (processedDmEdits.has(editDedupKey)) {
+    return;
+  }
+  processedDmEdits.add(editDedupKey);
+  setTimeout(() => processedDmEdits.delete(editDedupKey), DM_EDIT_DEDUP_TIMEOUT);
 
   const userId = newMessage.author.id;
   
@@ -9366,26 +14327,24 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
 
       // Try to find the original message in the database and edit it
       const modmailMsg = await storage.getModmailMessageByDmMessageId(newMessage.id);
-      
-      if (modmailMsg && modmailMsg.channelMessageId) {
-        // Edit the existing message instead of sending a new one
-        try {
-          const channelMsg = await (staffChannel as any).messages.fetch(modmailMsg.channelMessageId);
-          if (channelMsg && channelMsg.editable) {
-            await channelMsg.edit({ embeds: [editEmbed] });
-            // Update stored content
-            await storage.updateModmailMessage(modmailMsg.id, { content: newMessage.content || "" });
-            console.log("[EDIT TRACKING] Edited existing staff message");
-            return;
-          }
-        } catch (fetchError) {
-          console.log("[EDIT TRACKING] Could not fetch/edit original message, sending new:", fetchError);
-        }
+      if (!modmailMsg || !modmailMsg.channelMessageId) {
+        console.log("[EDIT TRACKING] Original staff message not found yet; skipping fallback send to avoid duplicates");
+        return;
       }
       
-      // Fallback: send new message if we couldn't edit the original
-      await (staffChannel as any).send({ embeds: [editEmbed] });
-      console.log("[EDIT TRACKING] Edit embed sent as new message (fallback)");
+      // Edit the existing message instead of sending a new one
+      try {
+        const channelMsg = await (staffChannel as any).messages.fetch(modmailMsg.channelMessageId);
+        if (channelMsg && channelMsg.editable) {
+          await channelMsg.edit({ embeds: [editEmbed] });
+          // Update stored content
+          await storage.updateModmailMessage(modmailMsg.id, { content: newMessage.content || "" });
+          console.log("[EDIT TRACKING] Edited existing staff message");
+          return;
+        }
+      } catch (fetchError) {
+        console.log("[EDIT TRACKING] Could not fetch/edit original message; skipping fallback send to avoid duplicates:", fetchError);
+      }
     }
   } catch (e) {
     console.log("[EDIT TRACKING] Error sending to staff channel:", e);
@@ -9479,37 +14438,243 @@ client.on("messageDelete", async (message) => {
 });
 
 client.on("messageCreate", async (message) => {
-  console.log(`[MSG CREATE] ID: ${message.id}, Author: ${message.author?.tag}, Content: "${message.content?.substring(0, 30)}..."`);
   if (message.author?.bot) return;
 
-  // Handle .claim command
-  if (message.content.startsWith(".claim")) {
-    const args = message.content.split(" ").filter(Boolean);
-    const targetUserId = args[1]?.match(/<@!?(\d+)>/)?.[1] || args[1];
+  // Get configurable prefix for this guild (default ".")
+  let prefix = ".";
+  let guildConfig: any;
+  if (message.guild) {
+    try {
+      guildConfig = await storage.getGuildConfig(message.guild.id);
+      if (guildConfig?.commandPrefix) {
+        prefix = guildConfig.commandPrefix;
+      }
+    } catch (e) {
+      // Use default prefix if config fetch fails
+    }
+  }
+  let lowerPrefix = prefix.toLowerCase();
+  const lowerContent = message.content.toLowerCase();
 
+  if (message.guild && message.content) {
+    try {
+      const inviteCodes = extractInviteCodesFromContent(message.content);
+      if (inviteCodes.length > 0) {
+        let vanitySnapshot = guildVanitySnapshots.get(message.guild.id);
+        if (!vanitySnapshot) {
+          await refreshGuildVanitySnapshot(message.guild);
+          vanitySnapshot = guildVanitySnapshots.get(message.guild.id);
+        }
+
+        const vanityCode = vanitySnapshot?.code;
+        if (vanityCode && inviteCodes.includes(vanityCode)) {
+          guildVanityLastSharer.set(message.guild.id, {
+            userId: message.author.id,
+            code: vanityCode,
+            sharedAt: Date.now(),
+          });
+        }
+      }
+    } catch {
+      // Ignore vanity invite tracking errors
+    }
+  }
+
+  // Legacy fallback: allow '.' prefix for core staff commands even if guild prefix changed.
+  if (message.guild && lowerPrefix !== "." && lowerContent.startsWith(".")) {
+    prefix = ".";
+    lowerPrefix = ".";
+  }
+
+  // Sticky message repost handling (one sticky per channel)
+  if (message.guild && message.channel && "send" in message.channel) {
+    try {
+      const stickyConfigs = getStickyConfigsFromGuildConfig(guildConfig);
+      const channelSticky = stickyConfigs[message.channel.id];
+
+      if (channelSticky?.message && channelSticky.interval > 0) {
+        const runtimeKey = `${message.guild.id}:${message.channel.id}`;
+        const runtime = stickyRuntimeState.get(runtimeKey) || {
+          count: 0,
+          lastStickyMessageId: channelSticky.lastStickyMessageId || null,
+          isReposting: false,
+        };
+
+        runtime.count += 1;
+
+        if (runtime.count >= channelSticky.interval) {
+          if (runtime.isReposting) {
+            runtime.count = channelSticky.interval;
+            stickyRuntimeState.set(runtimeKey, runtime);
+          } else {
+            runtime.isReposting = true;
+            stickyRuntimeState.set(runtimeKey, runtime);
+
+            await cleanupStickyMessagesInChannel(message.channel as any, channelSticky.message, null);
+
+            const posted = await (message.channel as any).send({ content: channelSticky.message }).catch(() => null);
+            if (posted?.id) {
+              runtime.count = 0;
+              runtime.lastStickyMessageId = posted.id;
+            } else {
+              runtime.count = channelSticky.interval;
+            }
+            runtime.isReposting = false;
+
+            stickyRuntimeState.set(runtimeKey, runtime);
+
+            if (posted?.id) {
+              await cleanupStickyMessagesInChannel(message.channel as any, channelSticky.message, posted.id);
+
+              stickyConfigs[message.channel.id] = {
+                ...channelSticky,
+                lastStickyMessageId: posted.id,
+              };
+
+              await storage.upsertGuildConfig({
+                guildId: message.guild.id,
+                customCategoryPings: writeStickySettingsToConfig(guildConfig?.customCategoryPings, stickyConfigs),
+              });
+            }
+          }
+        } else {
+          stickyRuntimeState.set(runtimeKey, runtime);
+        }
+      }
+    } catch {
+      // Ignore sticky runtime/config errors
+    }
+  }
+
+  // Handle claim assignment command (<prefix>claim <user> to assign ticket to a specific user)
+  if (message.guild && lowerContent.startsWith(`${lowerPrefix}claim `)) {
+    const args = message.content.split(" ").filter(Boolean);
+    let targetUserId = args[1]?.match(/<@!?(\d+)>/)?.[1] || args[1];
+
+    // If no target provided, claim for the message author
     if (!targetUserId) {
-      await message.reply("Usage: `.claim <user_id>` or `.claim <mention>`");
+      targetUserId = message.author.id;
+    }
+
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+    if (!thread) return;
+
+    // Don't allow assigning/claiming if someone already claimed the ticket
+    if (thread.claimedById) {
+      const alreadyClaimedEmbed = new EmbedBuilder()
+        .setDescription(`❌ This ticket is claimed by <@${thread.claimedById}>.`)
+        .setColor(0xed4245)
+        .setTimestamp();
+      await message.reply({ embeds: [alreadyClaimedEmbed] });
       return;
     }
 
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
-    if (!thread) return;
-
     const config = await storage.getGuildConfig(message.guildId!);
-    const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
+    const claimRoleIds = isAppeal
+      ? (config?.appealStaffRoleIds || [])
+      : (config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || []);
     const member = message.member;
     const hasClaimPermission = !claimRoleIds || claimRoleIds.length === 0 || 
       (member && claimRoleIds.some(id => member.roles.cache.has(id))) ||
       (member?.permissions as any)?.has("Administrator");
 
     if (!hasClaimPermission) {
-      await message.reply("You don't have permission to claim tickets.");
+      const noPermissionEmbed = new EmbedBuilder()
+        .setDescription("❌ You don't have permission to claim tickets.")
+        .setColor(0xed4245)
+        .setTimestamp();
+      await message.reply({ embeds: [noPermissionEmbed] });
       return;
     }
 
-    await storage.updateModmailThread(thread.id, { claimedById: targetUserId });
+    if (isAppeal) {
+      await storage.updateAppealThread(thread.id, { claimedById: targetUserId });
+    } else {
+      await storage.updateModmailThread(thread.id, { claimedById: targetUserId });
+    }
     const targetUser = await client.users.fetch(targetUserId).catch(() => null);
-    await message.reply(`✅ Ticket has been claimed for ${targetUser ? targetUser.username : targetUserId}. Only they (or an Administrator) can unclaim it.`);
+    const claimedEmbed = new EmbedBuilder()
+      .setDescription(`✅ Ticket has been claimed for ${targetUser ? targetUser.username : targetUserId}. Only they (or an Administrator) can unclaim it.`)
+      .setColor(0x23a559)
+      .setTimestamp();
+    await message.reply({ embeds: [claimedEmbed] });
+
+    // Update claim button UI in the channel so it's no longer clickable
+    try {
+      const messages = await (message.channel as any).messages.fetch({ limit: 50 });
+      const buttonMessage = messages.find((m: any) => 
+        m.components.length > 0 && 
+        m.components.some((row: any) => 
+          row.components.some((c: any) => c.customId === `modmail_claim_${thread.id}` || c.customId === `appeal_claim_${thread.id}`)
+        )
+      );
+      if (buttonMessage) {
+        const claimButtonId = isAppeal ? `appeal_claim_${thread.id}` : `modmail_claim_${thread.id}`;
+        const closeButtonId = isAppeal ? `appeal_close_${thread.id}` : `modmail_close_${thread.id}`;
+        const appealLogsButtonId = `appeal_logs_${thread.id}`;
+        await buttonMessage.edit({
+          components: isAppeal
+            ? [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(claimButtonId)
+                    .setLabel(`Claimed by ${targetUser ? targetUser.username : targetUserId}`)
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true),
+                  new ButtonBuilder()
+                    .setCustomId(appealLogsButtonId)
+                    .setLabel("Appeal Logs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("⚖️")
+                ),
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(closeButtonId)
+                    .setLabel("Close")
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji("🔒")
+                )
+              ]
+            : [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(claimButtonId)
+                    .setLabel(`Claimed by ${targetUser ? targetUser.username : targetUserId}`)
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true)
+                ),
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_modlogs_${thread.id}`)
+                    .setLabel("Modlogs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("📚"),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_logs_${thread.id}`)
+                    .setLabel("Modmail Logs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("📝"),
+                  new ButtonBuilder()
+                    .setCustomId(appealLogsButtonId)
+                    .setLabel("Appeal Logs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("⚖️"),
+                  new ButtonBuilder()
+                    .setCustomId(closeButtonId)
+                    .setLabel("Close")
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji("🔒")
+                )
+              ]
+        });
+      }
+    } catch (e) {
+      console.log("Could not update claim button after .claim:", e);
+    }
+
     return;
   }
 
@@ -9521,25 +14686,892 @@ client.on("messageCreate", async (message) => {
   processedMessages.add(message.id);
   setTimeout(() => processedMessages.delete(message.id), MESSAGE_DEDUP_TIMEOUT);
 
-  // Get configurable prefix for this guild (default ".")
-  let prefix = ".";
-  if (message.guild) {
-    try {
-      const guildConfig = await storage.getGuildConfig(message.guild.id);
-      if (guildConfig?.commandPrefix) {
-        prefix = guildConfig.commandPrefix;
+  // Dyno-style moderation prefix commands: <prefix>ban/<prefix>unban/<prefix>mute/<prefix>unmute/<prefix>kick + <prefix>modlogs/<prefix>reason/<prefix>retime
+  if (message.guild && lowerContent.startsWith(lowerPrefix)) {
+    const tokens = message.content.trim().split(/\s+/).filter(Boolean);
+    const rawCommand = (tokens[0] || "").toLowerCase();
+    const command = rawCommand.substring(lowerPrefix.length);
+
+    const guildConfig = await storage.getGuildConfig(message.guild.id);
+    const modSetup = getModerationSetupFromConfig(guildConfig);
+
+    if (command === "clean") {
+      const memberPerms = message.member?.permissions;
+      const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+      const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
+      const allowedRoleIds = uniqueStrings(modSetup.modlogsRoleIds);
+      const hasRoleAccess = allowedRoleIds.length > 0 && allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
+
+      if (!isAdmin && !hasRoleAccess) {
+        return;
       }
-    } catch (e) {
-      // Use default prefix if config fetch fails
+
+      const channelAny = message.channel as any;
+      if (!channelAny?.messages?.fetch) {
+        return;
+      }
+
+      try {
+        await message.delete();
+      } catch {
+        // ignore failures deleting the command invocation
+      }
+
+      const isBotModerationCommandMessage = (entry: any) => {
+        if (!client.user || entry.author?.id !== client.user.id) return false;
+        const hasModlogsPagination = Array.isArray(entry.components)
+          && entry.components.some((row: any) => Array.isArray(row?.components)
+            && row.components.some((component: any) => String(component?.customId || "").startsWith("modlogs_page_")));
+
+        if (hasModlogsPagination) return true;
+
+        const embeds = entry.embeds || [];
+        if (!Array.isArray(embeds) || embeds.length === 0) return false;
+
+        return embeds.some((embed: any) => {
+          const title = String(embed?.title || "").toLowerCase();
+          const description = String(embed?.description || "").toLowerCase();
+
+          if (title.startsWith("modlogs for (")) {
+            return true;
+          }
+
+          if (title.startsWith("command:")) {
+            return title.includes(`${prefix}ban`.toLowerCase())
+              || title.includes(`${prefix}mute`.toLowerCase())
+              || title.includes(`${prefix}kick`.toLowerCase())
+              || title.includes(`${prefix}unban`.toLowerCase())
+              || title.includes(`${prefix}unmute`.toLowerCase())
+              || title.includes(`${prefix}modlogs`.toLowerCase())
+              || title.includes(`${prefix}reason`.toLowerCase())
+              || title.includes(`${prefix}retime`.toLowerCase())
+              || title.includes(`${prefix}rl`.toLowerCase())
+              || title.includes(`${prefix}removelog`.toLowerCase());
+          }
+
+          return /\bwas (banned|kicked|muted|unbanned|unmuted)\b|\bfailed to (ban|kick|mute|unban|unmute) user\b|\bcannot be (banned|kicked|muted)\b|\byou cannot moderate yourself\b|\bthat user is not in this server\b|\busage:\s*\*?(modlogs|reason|retime|rl|removelog|ban|mute|kick|unban|unmute)\b|\bno logs found for that user\b|\bcase id\b|\bupdated case\b|\bremoved case\b/.test(description);
+        });
+      };
+
+      let beforeId: string | undefined;
+      const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
+      const cutoffTime = Date.now() - FOURTEEN_DAYS_MS;
+
+      for (let page = 0; page < 10; page++) {
+        const batch = await channelAny.messages.fetch({ limit: 100, ...(beforeId ? { before: beforeId } : {}) }).catch(() => null);
+        if (!batch || batch.size === 0) break;
+
+        const candidates = batch.filter((entry: any) => isBotModerationCommandMessage(entry));
+
+        const recentCandidates = candidates.filter((entry: any) => (entry.createdTimestamp || 0) >= cutoffTime);
+        if (recentCandidates.size > 0) {
+          try {
+            await channelAny.bulkDelete(recentCandidates, true);
+          } catch {
+            for (const [, candidate] of recentCandidates) {
+              try {
+                await candidate.delete();
+              } catch {
+                // ignore individual delete failures
+              }
+            }
+          }
+        }
+
+        const oldestInBatch = batch.last();
+        if (oldestInBatch && (oldestInBatch.createdTimestamp || 0) < cutoffTime) break;
+
+        beforeId = batch.last()?.id;
+        if (batch.size < 100) break;
+      }
+      return;
+    }
+
+    if (command === "dashboard") {
+      const dashboardUrl = getDashboardUrl();
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle("Bot Dashboard")
+        .setDescription(`Use this link to open your dashboard:\n${dashboardUrl}`)
+        .setTimestamp();
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setLabel("Open Dashboard")
+          .setStyle(ButtonStyle.Link)
+          .setURL(dashboardUrl)
+      );
+
+      await message.reply({ embeds: [embed], components: [row] });
+      return;
+    }
+
+    if (command === "modlogs") {
+      const memberPerms = message.member?.permissions;
+      const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+      const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
+      const allowedRoleIds = uniqueStrings(modSetup.modlogsRoleIds);
+      const hasRoleAccess = allowedRoleIds.length > 0 && allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
+
+      const sendModlogsEmbed = async (content: string, isError = false) => {
+        const embed = new EmbedBuilder()
+          .setColor(isError ? 0xed4245 : 0x5865f2)
+          .setDescription(content)
+          .setTimestamp();
+        await message.reply({ embeds: [embed] });
+      };
+
+      if (!isAdmin && !hasRoleAccess) {
+        return;
+      }
+
+      const modlogsArgs = tokens.slice(1);
+      if (modlogsArgs.length > 1) {
+        await sendModlogsEmbed(`${modSetup.statusEmojis.info} Usage: \`${prefix}modlogs <user_id_or_mention>\``);
+        return;
+      }
+
+      const targetToken = modlogsArgs[0];
+      const targetUserId = modlogsArgs.length === 0 ? message.author.id : extractUserIdFromToken(targetToken);
+      if (!targetUserId) {
+        await sendModlogsEmbed(`${modSetup.statusEmojis.info} Usage: \`${prefix}modlogs <user_id_or_mention>\``);
+        return;
+      }
+
+      const actions = await storage.getAllModerationActionsByTarget(targetUserId);
+      const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+      if (filtered.length === 0) {
+        await sendModlogsEmbed(`${modSetup.statusEmojis.info} No logs found for that user.`);
+        return;
+      }
+
+      const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+      const targetLabel = targetUser?.username || targetUserId;
+      const { embed, totalPages } = buildModlogsEmbed(targetUserId, targetLabel, filtered, 1, MODLOGS_ITEMS_PER_PAGE);
+      const components: any[] = [];
+      if (totalPages > 1) {
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`modlogs_page_${message.author.id}_${targetUserId}_1_prev`)
+            .setLabel("◀")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(true),
+          new ButtonBuilder()
+            .setCustomId(`modlogs_page_${message.author.id}_${targetUserId}_1_next`)
+            .setLabel("▶")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(false),
+        );
+        components.push(row);
+      }
+
+      await message.reply({ embeds: [embed], components });
+      return;
+    }
+
+    if (command === "reason") {
+      const memberPerms = message.member?.permissions;
+      const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+      const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
+      const allowedRoleIds = uniqueStrings(modSetup.reasonRoleIds);
+      const hasRoleAccess = allowedRoleIds.length > 0 && allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
+
+      const sendCaseEditEmbed = async (content: string, isError = false) => {
+        const embed = new EmbedBuilder()
+          .setColor(isError ? 0xed4245 : 0x5865f2)
+          .setDescription(content)
+          .setTimestamp();
+        await message.reply({ embeds: [embed] });
+      };
+
+      if (!isAdmin && !hasRoleAccess) {
+        return;
+      }
+
+      const usage = `${modSetup.statusEmojis.info} Usage: \`${prefix}reason <case_id> <reason>\``;
+      const caseId = (tokens[1] || "").trim();
+      const newReason = tokens.slice(2).join(" ").trim();
+      if (!caseId || !newReason) {
+        await sendCaseEditEmbed(usage);
+        return;
+      }
+
+      if (!/^\d{6}$/.test(caseId)) {
+        await sendCaseEditEmbed(`${modSetup.statusEmojis.error} Invalid case ID. Case IDs are 6 digits.`, true);
+        return;
+      }
+
+      const actions = await storage.getAllModerationActions();
+      const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+      const targetEntry = filtered.find((entry, index) => buildSixDigitCaseId(entry, index + 1) === caseId);
+
+      if (!targetEntry?.id) {
+        await sendCaseEditEmbed(`${modSetup.statusEmojis.error} Could not find a modlog case with ID \`${caseId}\`.`, true);
+        return;
+      }
+
+      const current = extractReasonAndDuration(targetEntry.reason);
+      const updatedReason = composeReasonWithDuration(newReason, current.duration);
+      await storage.updateModerationAction(targetEntry.id, { reason: updatedReason });
+
+      await sendCaseEditEmbed(`${modSetup.statusEmojis.success} Updated case \`${caseId}\` reason.`);
+      return;
+    }
+
+    if (command === "retime") {
+      const memberPerms = message.member?.permissions;
+      const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+      const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
+      const allowedRoleIds = uniqueStrings(modSetup.retimeRoleIds);
+      const hasRoleAccess = allowedRoleIds.length > 0 && allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
+
+      const sendCaseEditEmbed = async (content: string, isError = false) => {
+        const embed = new EmbedBuilder()
+          .setColor(isError ? 0xed4245 : 0x5865f2)
+          .setDescription(content)
+          .setTimestamp();
+        await message.reply({ embeds: [embed] });
+      };
+
+      if (!isAdmin && !hasRoleAccess) {
+        return;
+      }
+
+      const usage = `${modSetup.statusEmojis.info} Usage: \`${prefix}retime <case_id> <duration>\`\nUse \`s\`, \`m\`, \`h\`, or \`d\` (example: \`30m\`, \`2d\`) or \`permanent\` (\`0\` also sets permanent).`;
+      const caseId = (tokens[1] || "").trim();
+      const durationToken = normalizeRetimeDuration(tokens[2]);
+      if (!caseId || !durationToken || tokens.length > 3) {
+        await sendCaseEditEmbed(usage);
+        return;
+      }
+
+      if (!/^\d{6}$/.test(caseId)) {
+        await sendCaseEditEmbed(`${modSetup.statusEmojis.error} Invalid case ID. Case IDs are 6 digits.`, true);
+        return;
+      }
+
+      const actions = await storage.getAllModerationActions();
+      const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+      const targetEntry = filtered.find((entry, index) => buildSixDigitCaseId(entry, index + 1) === caseId);
+
+      if (!targetEntry?.id) {
+        await sendCaseEditEmbed(`${modSetup.statusEmojis.error} Could not find a modlog case with ID \`${caseId}\`.`, true);
+        return;
+      }
+
+      if (!isRetimeAllowedAction(targetEntry.actionType || "")) {
+        await sendCaseEditEmbed(`${modSetup.statusEmojis.error} You cannot change duration for \`${parseActionTypeForLog(targetEntry.actionType || "") || targetEntry.actionType || "this case type"}\` cases.`, true);
+        return;
+      }
+
+      const current = extractReasonAndDuration(targetEntry.reason);
+      const updatedReason = composeReasonWithDuration(current.reason, durationToken);
+      await storage.updateModerationAction(targetEntry.id, { reason: updatedReason });
+
+      await sendCaseEditEmbed(`${modSetup.statusEmojis.success} Updated case \`${caseId}\` duration to \`${durationToken}\`.`);
+      return;
+    }
+
+    if (command === "rl" || command === "removelog") {
+      const memberPerms = message.member?.permissions;
+      const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+      const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
+      const allowedRoleIds = uniqueStrings(modSetup.reasonRoleIds);
+      const hasRoleAccess = allowedRoleIds.length > 0 && allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
+
+      const sendCaseEditEmbed = async (content: string, isError = false) => {
+        const embed = new EmbedBuilder()
+          .setColor(isError ? 0xed4245 : 0x5865f2)
+          .setDescription(content)
+          .setTimestamp();
+        await message.reply({ embeds: [embed] });
+      };
+
+      if (!isAdmin && !hasRoleAccess) {
+        return;
+      }
+
+      const usage = `${modSetup.statusEmojis.info} Usage: \`${prefix}rl <case_id>\` or \`${prefix}removelog <case_id>\``;
+      const caseId = (tokens[1] || "").trim();
+      if (!caseId || tokens.length > 2) {
+        await sendCaseEditEmbed(usage);
+        return;
+      }
+
+      if (!/^\d{6}$/.test(caseId)) {
+        await sendCaseEditEmbed(`${modSetup.statusEmojis.error} Invalid case ID. Case IDs are 6 digits.`, true);
+        return;
+      }
+
+      const actions = await storage.getAllModerationActions();
+      const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+      const targetEntry = filtered.find((entry, index) => buildSixDigitCaseId(entry, index + 1) === caseId);
+
+      if (!targetEntry?.id) {
+        await sendCaseEditEmbed(`${modSetup.statusEmojis.error} Could not find a modlog case with ID \`${caseId}\`.`, true);
+        return;
+      }
+
+      await storage.deleteModerationAction(targetEntry.id);
+      await sendCaseEditEmbed(`${modSetup.statusEmojis.success} Removed case \`${caseId}\` from modlogs.`);
+      return;
+    }
+
+    const isFullBanCommand = command === "fban" || command === "fullban";
+    const isFakeBanCommand = command === "ffban" || command === "fakeban";
+    const isBanLikeCommand = command === "ban" || isFullBanCommand || isFakeBanCommand;
+
+    if (isBanLikeCommand || command === "unban" || command === "mute" || command === "unmute" || command === "kick") {
+      const configAction = command === "unban" || isBanLikeCommand ? "ban" : command === "unmute" ? "mute" : command as PrefixModerationAction;
+      if (!modSetup.enabledActions.includes(configAction)) {
+        return;
+      }
+
+      const successEmoji = modSetup.statusEmojis.success;
+      const errorEmoji = modSetup.statusEmojis.error;
+      const sendPrefixCommandMessage = async (content: string, isError = false) => {
+        const embed = new EmbedBuilder()
+          .setColor(isError ? 0xed4245 : 0x57f287)
+          .setDescription(content)
+          .setTimestamp();
+        await (message.channel as any).send({ embeds: [embed] });
+      };
+      const sendPrefixCommandEmbed = async (embed: EmbedBuilder) => {
+        await (message.channel as any).send({ embeds: [embed] });
+      };
+      const sendModerationCommandLog = async (actionEntry: any) => {
+        if (!guildConfig?.modLogChannelId) return;
+
+        try {
+          const logChannel = await client.channels.fetch(guildConfig.modLogChannelId);
+          if (!logChannel || !("send" in logChannel)) return;
+
+          const actionLabel = parseActionTypeForLog(actionEntry?.actionType || "") || (actionEntry?.actionType || "Unknown");
+          const parsed = extractReasonAndDuration(actionEntry?.reason);
+          const caseId = buildSixDigitCaseId(actionEntry, 1);
+          const targetLabel = actionEntry?.targetId ? `<@${actionEntry.targetId}>` : "Unknown";
+          const moderatorLabel = actionEntry?.moderatorId ? `<@${actionEntry.moderatorId}>` : "Unknown";
+
+          const logEmbed = new EmbedBuilder()
+            .setColor(0x2b2d31)
+            .setTitle(`Case ${caseId} | ${actionLabel} | ${parsed.reason}`)
+            .addFields(
+              { name: "User", value: targetLabel, inline: true },
+              { name: "Moderator", value: moderatorLabel, inline: true },
+              { name: "Reason", value: parsed.reason || "No reason given.", inline: true },
+            )
+            .setFooter({ text: `ID: ${actionEntry?.sourceMessageId || actionEntry?.id || "Unknown"}` })
+            .setTimestamp(actionEntry?.createdAt ? new Date(actionEntry.createdAt) : new Date());
+
+          if (parsed.duration) {
+            logEmbed.addFields({ name: "Duration", value: parsed.duration, inline: true });
+          }
+
+          await (logChannel as any).send({ embeds: [logEmbed] });
+
+          const normalizedAction = (actionEntry?.actionType || "").toLowerCase();
+          const shouldSendCompactMemberLog = normalizedAction === "ban" || normalizedAction === "fullban" || normalizedAction === "unban";
+
+          if (shouldSendCompactMemberLog) {
+            const targetUser = actionEntry?.targetId
+              ? await client.users.fetch(actionEntry.targetId).catch(() => null)
+              : null;
+
+            const compactTitle = normalizedAction === "fullban" ? "Member Full Banned" : normalizedAction === "ban" ? "Member Banned" : "Member Unbanned";
+            const compactColor = normalizedAction === "unban" ? 0x3b82f6 : 0xed4245;
+            const compactDescription = targetUser
+              ? `<@${targetUser.id}> ${targetUser.username}`
+              : targetLabel;
+
+            const compactEmbed = new EmbedBuilder()
+              .setColor(compactColor)
+              .setTitle(compactTitle)
+              .setDescription(compactDescription)
+              .setFooter({ text: `ID: ${actionEntry?.sourceMessageId || actionEntry?.id || "Unknown"}` })
+              .setTimestamp(actionEntry?.createdAt ? new Date(actionEntry.createdAt) : new Date());
+
+            if (targetUser) {
+              compactEmbed.setThumbnail(targetUser.displayAvatarURL({ size: 256 }));
+            }
+
+            await (logChannel as any).send({ embeds: [compactEmbed] });
+          }
+        } catch {
+          // ignore logging failures
+        }
+      };
+      const getDurationLabel = (cmd: string, parsedDurationMs: number | null, rawDurationToken: string | null) => {
+        if (cmd === "kick") return "Permanent";
+        if (parsedDurationMs && rawDurationToken) return rawDurationToken;
+        return "Permanent";
+      };
+      const sendModerationDm = async (
+        targetUserId: string,
+        actionLabel: string,
+        reasonText: string,
+        durationText: string,
+        banMessageText?: string,
+        targetMemberForDm?: any,
+      ): Promise<boolean> => {
+        const safeReason = (reasonText || "No reason given.").slice(0, 1024);
+        const safeDuration = (durationText || "Permanent").slice(0, 1024);
+        const safeBanMessage = (banMessageText || "").trim().slice(0, 4000);
+
+        const dmEmbed = new EmbedBuilder()
+          .setColor(0xed4245)
+          .setTitle(`${actionLabel} Notice`)
+          .addFields(
+            { name: "Duration", value: safeDuration, inline: true },
+            { name: "Reason", value: safeReason, inline: true },
+          )
+          .setTimestamp();
+
+        if (safeBanMessage) {
+          dmEmbed.setDescription(safeBanMessage);
+        }
+
+        try {
+          if (targetMemberForDm?.send) {
+            await targetMemberForDm.send({ embeds: [dmEmbed] });
+            return true;
+          }
+        } catch {
+          // fallback below
+        }
+
+        try {
+          const targetUser = await client.users.fetch(targetUserId);
+          await targetUser.send({ embeds: [dmEmbed] });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const memberPerms = message.member?.permissions;
+      const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+      const hasBanPerm = !!memberPerms?.has(PermissionFlagsBits.BanMembers);
+      const hasKickPerm = !!memberPerms?.has(PermissionFlagsBits.KickMembers);
+      const hasMutePerm = !!memberPerms?.has(PermissionFlagsBits.ModerateMembers);
+
+      const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
+      const configuredRoles = modSetup.rolePermissions[configAction] || [];
+      const hasConfiguredRole = configuredRoles.length > 0 && configuredRoles.some((roleId) => memberRoleIds.includes(roleId));
+
+      if (!isAdmin && !hasConfiguredRole) {
+        return;
+      }
+
+      if (isBanLikeCommand && !isAdmin && !hasBanPerm) {
+        return;
+      }
+      if (command === "unban" && !isAdmin && !hasBanPerm) {
+        return;
+      }
+      if (command === "kick" && !isAdmin && !hasKickPerm) {
+        return;
+      }
+      if (command === "mute" && !isAdmin && !hasMutePerm) {
+        return;
+      }
+      if (command === "unmute" && !isAdmin && !hasMutePerm) {
+        return;
+      }
+
+      try {
+        await message.delete();
+      } catch {
+        // ignore delete failures for trigger command
+      }
+
+      const targetToken = tokens[1];
+      const targetUserId = extractUserIdFromToken(targetToken);
+      if (!targetUserId) {
+        const usageEmbed = command === "unban"
+          ? new EmbedBuilder()
+            .setColor(0x5865f2)
+            .setTitle(`Command: ${prefix}unban`)
+            .setDescription(`${modSetup.actionEmojis.ban} Unban a user`)
+            .addFields(
+              { name: "Usage", value: `${prefix}unban [user] [reason]` },
+              { name: "Examples", value: `${prefix}unban @user appeal accepted\n${prefix}unban 123456789012345678 temporary ban expired`, inline: false },
+            )
+          : isFullBanCommand
+            ? new EmbedBuilder()
+              .setColor(0x5865f2)
+              .setTitle(`Command: ${prefix}${command}`)
+              .setDescription(`${modSetup.actionEmojis.ban} Full ban a user in every server the bot is in`)
+              .addFields(
+                { name: "Usage", value: `${prefix}${command} [user] [limit] [reason]` },
+                { name: "Duration", value: "Use `s`, `m`, `h`, or `d` (e.g., `30m`, `2d`). No duration = permanent.", inline: false },
+                { name: "Examples", value: `${prefix}${command} @user 30m repeated raids\n${prefix}${command} 123456789012345678 severe violations`, inline: false },
+              )
+          : isFakeBanCommand
+            ? new EmbedBuilder()
+              .setColor(0x5865f2)
+              .setTitle(`Command: ${prefix}${command}`)
+              .setDescription(`${modSetup.actionEmojis.ban} Send a fake ban message (does not actually ban, not logged)`)
+              .addFields(
+                { name: "Usage", value: `${prefix}${command} [user] [limit] [reason]` },
+                { name: "Duration", value: "Use `s`, `m`, `h`, or `d` (e.g., `30m`, `2d`). No duration = permanent.", inline: false },
+                { name: "Examples", value: `${prefix}${command} @user 30m spam links\n${prefix}${command} 123456789012345678 toxic behavior`, inline: false },
+              )
+          : command === "unmute"
+            ? new EmbedBuilder()
+              .setColor(0x5865f2)
+              .setTitle(`Command: ${prefix}unmute`)
+              .setDescription(`${modSetup.actionEmojis.mute} Unmute a member`)
+              .addFields(
+                { name: "Usage", value: `${prefix}unmute [user] [reason]` },
+                { name: "Examples", value: `${prefix}unmute @user behavior improved\n${prefix}unmute 123456789012345678 timeout removed`, inline: false },
+              )
+            : buildPrefixCommandUsageEmbed(prefix, command as PrefixModerationAction, modSetup.actionEmojis[command as PrefixModerationAction]);
+        await sendPrefixCommandEmbed(usageEmbed);
+        return;
+      }
+
+      if (command === "unban") {
+        const existingBan = await message.guild.bans.fetch({ user: targetUserId, force: true }).catch(() => null);
+        if (!existingBan) {
+          await sendPrefixCommandMessage(`${errorEmoji} The user is not banned.`, true);
+          return;
+        }
+      }
+
+      if (command === "ban") {
+        const existingBan = await message.guild.bans.fetch({ user: targetUserId, force: true }).catch(() => null);
+        if (existingBan) {
+          await sendPrefixCommandMessage(`${errorEmoji} This user is already banned.`, true);
+          return;
+        }
+      }
+
+      if (command === "unban") {
+        const reason = tokens.slice(2).join(" ").trim() || "No reason given.";
+        try {
+          await message.guild.members.unban(targetUserId, reason);
+          message.guild.bans.cache.delete(targetUserId);
+          await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was unbanned. | ${reason}`);
+
+          const actionEntry = await storage.createModerationAction({
+            guildId: message.guild.id,
+            moderatorId: message.author.id,
+            targetId: targetUserId,
+            actionType: "unban",
+            reason,
+            sourceType: "manual",
+            sourceMessageId: message.id,
+          });
+          await sendModerationCommandLog(actionEntry);
+        } catch (e: any) {
+          await sendPrefixCommandMessage(`${errorEmoji} Failed to unban user: ${e?.message || "Unknown error"}`, true);
+        }
+        return;
+      }
+
+      let targetMember: any = null;
+      try {
+        targetMember = await message.guild.members.fetch(targetUserId);
+      } catch {
+        targetMember = null;
+      }
+
+      if (!targetMember) {
+        if (isBanLikeCommand) {
+          const hasDurationSlot = true;
+          const durationToken = hasDurationSlot ? tokens[2] : null;
+          const durationMs = hasDurationSlot ? parseDurationMs(durationToken) : null;
+
+          let reasonStartIndex = 2;
+          if (hasDurationSlot && durationMs !== null) {
+            reasonStartIndex = 3;
+          }
+          const reason = tokens.slice(reasonStartIndex).join(" ").trim() || "No reason given.";
+
+          try {
+            if (isFakeBanCommand) {
+              const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage);
+              if (!sent) {
+                await sendPrefixCommandMessage("Unable to DM the user, proceeded with fakeban.");
+              }
+
+              if (durationMs && durationMs > 0) {
+                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
+              } else {
+                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
+              }
+              return;
+            }
+
+            if (isFullBanCommand) {
+              const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage);
+              if (!sent) {
+                await sendPrefixCommandMessage("Unable to DM the user, proceeded to fullban.");
+              }
+
+              const guilds = Array.from(client.guilds.cache.values());
+              let successCount = 0;
+              for (const guild of guilds) {
+                try {
+                  await guild.members.ban(targetUserId, { reason });
+                  successCount++;
+                } catch {
+                  // skip guilds where ban fails (permissions/hierarchy/etc)
+                }
+              }
+
+              if (successCount === 0) {
+                await sendPrefixCommandMessage(`${errorEmoji} Failed to fullban user in all servers.`, true);
+                return;
+              }
+
+              if (durationMs && durationMs > 0) {
+                const guildIds = guilds.map((guild) => guild.id);
+                setTimeout(async () => {
+                  for (const guildId of guildIds) {
+                    try {
+                      const guild = await client.guilds.fetch(guildId);
+                      await guild.members.unban(targetUserId, `Temporary fullban expired (${durationToken})`);
+                    } catch {
+                      // ignore unban failures
+                    }
+                  }
+                }, durationMs);
+
+                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fullbanned in **${successCount}/${guilds.length}** servers for \`${durationToken}\`. | ${reason}`);
+              } else {
+                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was permanently fullbanned in **${successCount}/${guilds.length}** servers. | ${reason}`);
+              }
+
+              const actionEntry = await storage.createModerationAction({
+                guildId: message.guild.id,
+                moderatorId: message.author.id,
+                targetId: targetUserId,
+                actionType: "fullban",
+                reason,
+                sourceType: "manual",
+                sourceMessageId: message.id,
+              });
+              await sendModerationCommandLog(actionEntry);
+              return;
+            }
+
+            await message.guild.members.ban(targetUserId, { reason });
+
+            if (durationMs && durationMs > 0) {
+              const guildId = message.guild.id;
+              setTimeout(async () => {
+                try {
+                  const guild = await client.guilds.fetch(guildId);
+                  await guild.members.unban(targetUserId, `Temporary ban expired (${durationToken})`);
+                } catch {
+                  // ignore unban failures
+                }
+              }, durationMs);
+
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
+            } else {
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
+            }
+
+            const actionEntry = await storage.createModerationAction({
+              guildId: message.guild.id,
+              moderatorId: message.author.id,
+              targetId: targetUserId,
+              actionType: "ban",
+              reason,
+              sourceType: "manual",
+              sourceMessageId: message.id,
+            });
+            await sendModerationCommandLog(actionEntry);
+          } catch (e: any) {
+            await sendPrefixCommandMessage(`${errorEmoji} Failed to ${isFullBanCommand ? "fullban" : "ban"} user: ${e?.message || "Unknown error"}`, true);
+          }
+          return;
+        }
+
+        await sendPrefixCommandMessage(`${errorEmoji} That user is not in this server.`, true);
+        return;
+      }
+
+      const hasDurationSlot = isBanLikeCommand || command === "mute";
+      const durationToken = hasDurationSlot ? tokens[2] : null;
+      const durationMs = hasDurationSlot ? parseDurationMs(durationToken) : null;
+
+      let reasonStartIndex = 2;
+      if (hasDurationSlot && durationMs !== null) {
+        reasonStartIndex = 3;
+      }
+      const reason = tokens.slice(reasonStartIndex).join(" ").trim() || "No reason given.";
+
+      if (targetMember.id === message.author.id) {
+        if (isBanLikeCommand) {
+          // allow self-ban path to continue: DM first, then ban
+        } else {
+          await sendPrefixCommandMessage(`${errorEmoji} You cannot moderate yourself.`, true);
+          return;
+        }
+      }
+
+      if (((isBanLikeCommand && !isFakeBanCommand) || command === "mute" || command === "kick") && targetMember.roles?.cache?.some((role: any) => modSetup.protectedRoleIds.includes(role.id))) {
+        if (isBanLikeCommand) {
+          const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage, targetMember);
+          if (!sent) {
+            await sendPrefixCommandMessage(`${errorEmoji} Could not DM this user (their DMs may be closed).`, true);
+          }
+        }
+
+        const moderationActionLabel = command === "mute" ? "muted" : command === "kick" ? "kicked" : "banned";
+        await sendPrefixCommandMessage(`${errorEmoji} This user has a protected role and cannot be ${moderationActionLabel}.`, true);
+        return;
+      }
+
+      try {
+        if (isBanLikeCommand) {
+          if (isFakeBanCommand) {
+            const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage, targetMember);
+            if (!sent) {
+              await sendPrefixCommandMessage("Unable to DM the user, proceeded with fakeban.");
+            }
+
+            if (durationMs && durationMs > 0) {
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
+            } else {
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
+            }
+          } else if (isFullBanCommand) {
+            const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage, targetMember);
+            if (!sent) {
+              await sendPrefixCommandMessage("Unable to DM the user, proceeded to fullban.");
+            }
+
+            const guilds = Array.from(client.guilds.cache.values());
+            let successCount = 0;
+            for (const guild of guilds) {
+              try {
+                await guild.members.ban(targetUserId, { reason });
+                successCount++;
+              } catch {
+                // skip guilds where ban fails (permissions/hierarchy/etc)
+              }
+            }
+
+            if (successCount === 0) {
+              await sendPrefixCommandMessage(`${errorEmoji} Failed to fullban user in all servers.`, true);
+              return;
+            }
+
+            if (durationMs && durationMs > 0) {
+              const guildIds = guilds.map((guild) => guild.id);
+              setTimeout(async () => {
+                for (const guildId of guildIds) {
+                  try {
+                    const guild = await client.guilds.fetch(guildId);
+                    await guild.members.unban(targetUserId, `Temporary fullban expired (${durationToken})`);
+                  } catch {
+                    // ignore unban failures
+                  }
+                }
+              }, durationMs);
+
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fullbanned in **${successCount}/${guilds.length}** servers for \`${durationToken}\`. | ${reason}`);
+            } else {
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was permanently fullbanned in **${successCount}/${guilds.length}** servers. | ${reason}`);
+            }
+          } else {
+            const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage, targetMember);
+            if (!sent) {
+              await sendPrefixCommandMessage("Unable to DM the user, proceeded to ban.");
+            }
+            await targetMember.ban({ reason });
+
+            if (durationMs && durationMs > 0) {
+              const guildId = message.guild.id;
+              setTimeout(async () => {
+                try {
+                  const guild = await client.guilds.fetch(guildId);
+                  await guild.members.unban(targetUserId, `Temporary ban expired (${durationToken})`);
+                } catch {
+                  // ignore unban failures
+                }
+              }, durationMs);
+
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
+            } else {
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
+            }
+          }
+        } else if (command === "kick") {
+          const sent = await sendModerationDm(targetUserId, "Kick", reason, getDurationLabel(command, durationMs, durationToken), undefined, targetMember);
+          if (!sent) {
+            await sendPrefixCommandMessage(`${errorEmoji} Could not DM this user (their DMs may be closed).`, true);
+          }
+          await targetMember.kick(reason);
+          await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was kicked. | ${reason}`);
+        } else if (command === "unmute") {
+          if (modSetup.mutedRoleId && targetMember.roles?.cache?.has(modSetup.mutedRoleId)) {
+            try {
+              await targetMember.roles.remove(modSetup.mutedRoleId, `Unmuted by ${message.author.tag}: ${reason}`);
+            } catch {
+              // ignore muted-role removal failures
+            }
+          }
+
+          await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was unmuted. | ${reason}`);
+        } else {
+          if (!modSetup.mutedRoleId) {
+            await sendPrefixCommandMessage(`${errorEmoji} Muted role is not configured. Set it with /setup action: mute muted_role: <role>.`, true);
+            return;
+          }
+
+          if (targetMember.roles?.cache?.has(modSetup.mutedRoleId)) {
+            await sendPrefixCommandMessage(`${errorEmoji} This user is already muted`, true);
+            return;
+          }
+
+          try {
+            await targetMember.roles.add(modSetup.mutedRoleId, `Muted by ${message.author.tag}: ${reason}`);
+          } catch {
+            await sendPrefixCommandMessage(`${errorEmoji} Failed to apply muted role to this user.`, true);
+            return;
+          }
+
+          const sent = await sendModerationDm(targetUserId, "Mute", reason, getDurationLabel(command, durationMs, durationToken), undefined, targetMember);
+          if (!sent) {
+            await sendPrefixCommandMessage(`${errorEmoji} Could not DM this user (their DMs may be closed).`, true);
+          }
+
+          await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was muted. | ${reason}`);
+        }
+
+        const storedReason = command === "mute"
+          ? composeReasonWithDuration(reason, durationMs && durationToken ? durationToken : "permanent")
+          : reason;
+
+        if (!isFakeBanCommand) {
+          const actionEntry = await storage.createModerationAction({
+            guildId: message.guild.id,
+            moderatorId: message.author.id,
+            targetId: targetUserId,
+            actionType: isFullBanCommand ? "fullban" : command,
+            reason: storedReason,
+            sourceType: "manual",
+            sourceMessageId: message.id,
+          });
+          await sendModerationCommandLog(actionEntry);
+        }
+        return;
+      } catch (e: any) {
+        await sendPrefixCommandMessage(`${errorEmoji} Failed to ${isFullBanCommand ? "fullban" : command} user: ${e?.message || "Unknown error"}`, true);
+        return;
+      }
     }
   }
-  const lowerPrefix = prefix.toLowerCase();
 
   // Handle prefix commands (close, c) with optional time argument in guild channels
-  const lowerContent = message.content.toLowerCase();
   if (message.guild && (lowerContent === `${lowerPrefix}close` || lowerContent === `${lowerPrefix}c` || lowerContent.startsWith(`${lowerPrefix}close `) || lowerContent.startsWith(`${lowerPrefix}c `))) {
     // Check for modmail thread first, then appeal thread
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
@@ -9623,7 +15655,7 @@ client.on("messageCreate", async (message) => {
         pendingTimedCloses.delete(timedChannelId);
 
         // Re-fetch thread to make sure it's still open
-        const currentModmail = await storage.getModmailThreadByChannel(timedChannelId);
+        const currentModmail = await safeGetModmailThreadByChannel(timedChannelId);
         const currentAppeal = await storage.getAppealThreadByChannel(timedChannelId);
         const currentThread = timedIsAppeal ? currentAppeal : currentModmail;
         if (!currentThread || currentThread.status !== "open") return;
@@ -9688,28 +15720,31 @@ client.on("messageCreate", async (message) => {
               const buffer = Buffer.from(transcriptContent, "utf-8");
               const attachment = new AttachmentBuilder(buffer, { name: `transcript-${currentThread.id}.txt` });
 
-              let transcriptPreview = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-              if (transcriptPreview.length > 1900) transcriptPreview = transcriptPreview.substring(0, 1900) + "...";
+              const pageSize = 10;
+              const pageMessages = messages.slice(0, pageSize);
+              let transcriptPreview = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+              transcriptPreview = clampEmbedFieldValue(transcriptPreview);
 
               const logEmbed = new EmbedBuilder()
                 .setTitle(timedIsAppeal ? "Appeal Closed (Timed)" : "Ticket Closed (Timed)")
                 .setColor(0xed4245)
                 .addFields(
-                  { name: "User", value: `<@${currentThread.userId}>`, inline: true },
-                  { name: "Closed By", value: `<@${timedStaffId}>`, inline: true }
+                  { name: "Opened By", value: `<@${currentThread.userId}>`, inline: true },
+                  { name: "Closed By", value: `<@${timedStaffId}>`, inline: true },
+                  { name: "Transcript", value: transcriptPreview, inline: false }
                 )
                 .setTimestamp();
 
-              const totalPages = Math.ceil(messages.length / 10) || 1;
+              const totalPages = Math.ceil(messages.length / pageSize) || 1;
               const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder()
                   .setCustomId(`modmail_transcript_0_${currentThread.id}`)
-                  .setLabel("◀ Previous")
+                  .setLabel("Previous Page")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(true),
                 new ButtonBuilder()
                   .setCustomId(`modmail_transcript_1_${currentThread.id}`)
-                  .setLabel("Next ▶")
+                  .setLabel("Next Page")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(totalPages <= 1)
               );
@@ -9789,28 +15824,31 @@ client.on("messageCreate", async (message) => {
           const buffer = Buffer.from(transcriptContent, "utf-8");
           const attachment = new AttachmentBuilder(buffer, { name: `transcript-${threadId}.txt` });
 
-          let transcriptPreview = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-          if (transcriptPreview.length > 1900) transcriptPreview = transcriptPreview.substring(0, 1900) + "...";
+          const pageSize = 10;
+          const pageMessages = messages.slice(0, pageSize);
+          let transcriptPreview = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+          transcriptPreview = clampEmbedFieldValue(transcriptPreview);
 
           const logEmbed = new EmbedBuilder()
             .setTitle(isAppeal ? "Appeal Closed" : "Ticket Closed")
             .setColor(0xed4245)
             .addFields(
-              { name: "User", value: `<@${threadUserId}>`, inline: true },
-              { name: "Closed By", value: `<@${closerId}>`, inline: true }
+              { name: "Opened By", value: `<@${threadUserId}>`, inline: true },
+              { name: "Closed By", value: `<@${closerId}>`, inline: true },
+              { name: "Transcript", value: transcriptPreview, inline: false }
             )
             .setTimestamp();
 
-          const totalPages = Math.ceil(messages.length / 10) || 1;
+          const totalPages = Math.ceil(messages.length / pageSize) || 1;
           const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_transcript_0_${threadId}`)
-              .setLabel("◀ Previous")
+              .setLabel("Previous Page")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(true),
             new ButtonBuilder()
               .setCustomId(`modmail_transcript_1_${threadId}`)
-              .setLabel("Next ▶")
+              .setLabel("Next Page")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(totalPages <= 1)
           );
@@ -9833,7 +15871,7 @@ client.on("messageCreate", async (message) => {
   // Handle claim command
   if (message.guild && lowerContent === `${lowerPrefix}claim`) {
     // Check for modmail thread first, then appeal thread
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
@@ -9843,12 +15881,12 @@ client.on("messageCreate", async (message) => {
     }
 
     if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
+      await sendTicketCommandEmbed(message, "❌ This ticket is already closed.", 0xed4245);
       return;
     }
 
     if (thread.claimedById) {
-      await message.reply(`❌ This ticket is already claimed by <@${thread.claimedById}>.`);
+      await sendTicketCommandEmbed(message, `❌ This ticket is claimed by <@${thread.claimedById}>.`, 0xed4245);
       return;
     }
 
@@ -9862,7 +15900,7 @@ client.on("messageCreate", async (message) => {
       (member && member.roles.cache.some(role => claimRoleIds.includes(role.id)));
 
     if (!hasClaimPermission) {
-      await message.reply("You don't have permission to claim tickets.");
+      await sendTicketCommandEmbed(message, "❌ You don't have permission to claim tickets.", 0xed4245);
       return;
     }
 
@@ -9871,6 +15909,7 @@ client.on("messageCreate", async (message) => {
     } else {
       await storage.updateModmailThread(thread.id, { claimedById: message.author.id });
     }
+    threadWasClaimed.add(thread.id);
 
     const claimEmbed = new EmbedBuilder()
       .setDescription(`Claimed by ${message.author.username}`)
@@ -9890,21 +15929,61 @@ client.on("messageCreate", async (message) => {
       if (buttonMessage) {
         const claimButtonId = isAppeal ? `appeal_claim_${thread.id}` : `modmail_claim_${thread.id}`;
         const closeButtonId = isAppeal ? `appeal_close_${thread.id}` : `modmail_close_${thread.id}`;
+        const appealLogsButtonId = `appeal_logs_${thread.id}`;
         await buttonMessage.edit({
-          components: [
-            new ActionRowBuilder<ButtonBuilder>().addComponents(
-              new ButtonBuilder()
-                .setCustomId(claimButtonId)
-                .setLabel(`Claimed by ${message.author.username}`)
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(true),
-              new ButtonBuilder()
-                .setCustomId(closeButtonId)
-                .setLabel("Close")
-                .setStyle(ButtonStyle.Danger)
-                .setEmoji("🔒")
-            )
-          ]
+          components: isAppeal
+            ? [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(claimButtonId)
+                    .setLabel(`Claimed by ${message.author.username}`)
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true),
+                  new ButtonBuilder()
+                    .setCustomId(appealLogsButtonId)
+                    .setLabel("Appeal Logs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("⚖️")
+                ),
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(closeButtonId)
+                    .setLabel("Close")
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji("🔒")
+                )
+              ]
+            : [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(claimButtonId)
+                    .setLabel(`Claimed by ${message.author.username}`)
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true)
+                ),
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_modlogs_${thread.id}`)
+                    .setLabel("Modlogs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("📚"),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_logs_${thread.id}`)
+                    .setLabel("Modmail Logs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("📝"),
+                  new ButtonBuilder()
+                    .setCustomId(appealLogsButtonId)
+                    .setLabel("Appeal Logs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("⚖️"),
+                  new ButtonBuilder()
+                    .setCustomId(closeButtonId)
+                    .setLabel("Close")
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji("🔒")
+                )
+              ]
         });
       }
     } catch (e) {
@@ -9936,7 +16015,7 @@ client.on("messageCreate", async (message) => {
       const claimExpiryTimeout = setTimeout(async () => {
         pendingClaimExpiry.delete(channelId);
 
-        const currentModmail = await storage.getModmailThreadByChannel(channelId);
+        const currentModmail = await safeGetModmailThreadByChannel(channelId);
         const currentAppeal = await storage.getAppealThreadByChannel(channelId);
         const currentThread = claimIsAppeal ? currentAppeal : currentModmail;
         if (!currentThread || currentThread.status !== "open") return;
@@ -9949,9 +16028,7 @@ client.on("messageCreate", async (message) => {
         }
         try {
           const channel = await client.channels.fetch(channelId);
-          if (channel && "send" in channel) {
-            await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
-          }
+          await sendAutoUnclaimEmbed(channel, claimerId);
         } catch (e) {
           console.log("Could not send auto-unclaim message");
         }
@@ -9966,15 +16043,41 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  // Handle claimed command (modmail + appeal threads)
+  if (message.guild && lowerContent === `${lowerPrefix}claimed`) {
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    const thread = modmailThread || appealThread;
+    const isAppeal = !modmailThread && !!appealThread;
+
+    if (!thread) {
+      await sendTicketCommandEmbed(message, "❌ This command can only be used inside a modmail or appeal thread.", 0xed4245);
+      return;
+    }
+
+    const claimedByValue = thread.claimedById
+      ? `<@${thread.claimedById}>`
+      : "No one";
+
+    const claimedEmbed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle(isAppeal ? "Appeal Claim Status" : "Ticket Claim Status")
+      .addFields({ name: "Claimed By", value: claimedByValue, inline: true })
+      .setTimestamp();
+
+    await message.reply({ embeds: [claimedEmbed] });
+    return;
+  }
+
   // Handle .ignore command to disable inactivity warnings for a ticket
   if (message.guild && lowerContent === `${lowerPrefix}ignore`) {
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    const thread = await safeGetModmailThreadByChannel(message.channel.id);
     if (!thread) {
       // Silently ignore if not in a modmail channel
       return;
     }
     if (thread.status !== "open") {
-      await message.reply("❌ This ticket is already closed.");
+      await sendTicketCommandEmbed(message, "❌ This ticket is already closed.", 0xed4245);
       return;
     }
 
@@ -10002,7 +16105,7 @@ client.on("messageCreate", async (message) => {
 
   // Handle !or, !override, and !unclaim command (claimer or admin can unclaim) - works in both modmail and appeal channels
   if (message.guild && (lowerContent === `${lowerPrefix}or` || lowerContent === `${lowerPrefix}override` || lowerContent === `${lowerPrefix}unclaim`)) {
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
@@ -10012,12 +16115,12 @@ client.on("messageCreate", async (message) => {
     }
 
     if (thread.status !== "open") {
-      await message.reply("This ticket is already closed.");
+      await sendTicketCommandEmbed(message, "❌ This ticket is already closed.", 0xed4245);
       return;
     }
 
     if (!thread.claimedById) {
-      await message.reply("This ticket is not claimed by anyone.");
+      await sendTicketCommandEmbed(message, "❌ This ticket is not claimed by anyone.", 0xed4245);
       return;
     }
 
@@ -10027,7 +16130,7 @@ client.on("messageCreate", async (message) => {
     const isClaimedByUser = thread.claimedById === message.author.id;
 
     if (!isClaimedByUser && !hasAdminPermission) {
-      await message.reply(`Only <@${thread.claimedById}> (who claimed this ticket) or an administrator can unclaim it.`);
+      await sendTicketCommandEmbed(message, `❌ Only <@${thread.claimedById}> (who claimed this ticket) or an administrator can unclaim it.`, 0xed4245);
       return;
     }
 
@@ -10210,6 +16313,23 @@ client.on("messageCreate", async (message) => {
         await message.reply({ embeds: [embed] });
       }
       return;
+    } else if (subCommand === "help") {
+      if (!hasSnippetPerm) return;
+      const helpEmbed = new EmbedBuilder()
+        .setTitle("Snippet Help")
+        .setColor(0x5865f2)
+        .setDescription("Snippets are reusable staff messages you can send into modmail tickets. Use them to respond quickly with pre-written templates.")
+        .addFields(
+          { name: "Create", value: `\`${prefix}snip create <alias> <text>\` - Create a new snippet.`, inline: false },
+          { name: "Edit", value: `\`${prefix}snip edit <alias> <text>\` - Edit an existing snippet.`, inline: false },
+          { name: "Delete", value: `\`${prefix}snip delete <alias>\` - Delete a snippet.`, inline: false },
+          { name: "List", value: `\`${prefix}snip list <page>\` - List snippets with full content.`, inline: false },
+          { name: "View", value: `\`${prefix}snip view <alias>\` - View a snippet's content.`, inline: false },
+          { name: "Use in tickets", value: `Type \`${prefix}<alias>\` inside an open modmail ticket to send the snippet to the user and channel.`, inline: false }
+        )
+        .setTimestamp();
+      await message.reply({ embeds: [helpEmbed] });
+      return;
     } else if (subCommand === "view") {
       const alias = rest.toLowerCase();
       if (!alias) {
@@ -10234,7 +16354,7 @@ client.on("messageCreate", async (message) => {
       const snippet = await storage.getSnippet(message.guild.id, subCommand);
       if (snippet) {
         // Check if in a ticket channel and send as embed
-        const thread = await storage.getModmailThreadByChannel(message.channel.id);
+        const thread = await safeGetModmailThreadByChannel(message.channel.id);
         if (thread && thread.status === "open") {
           const user = await client.users.fetch(thread.userId);
 
@@ -10279,8 +16399,9 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle .asnip commands for appeal snippet management (separate from modmail snippets)
-  if (message.guild && lowerContent.startsWith(`${lowerPrefix}asnip `)) {
-    const args = message.content.substring(prefix.length + 6).trim();
+  if (message.guild && (lowerContent.startsWith(`${lowerPrefix}asnip `) || lowerContent.startsWith(`${lowerPrefix}asnippet `))) {
+    const cmdLen = lowerContent.startsWith(`${lowerPrefix}asnippet `) ? 9 : 6; // include trailing space
+    const args = message.content.substring(prefix.length + cmdLen).trim();
     const spaceIndex = args.indexOf(" ");
     const subCommand = spaceIndex === -1 ? args.toLowerCase() : args.substring(0, spaceIndex).toLowerCase();
     const rest = spaceIndex === -1 ? "" : args.substring(spaceIndex + 1).trim();
@@ -10418,6 +16539,23 @@ client.on("messageCreate", async (message) => {
         await message.reply({ embeds: [embed] });
       }
       return;
+    } else if (subCommand === "help") {
+      if (!hasSnippetPerm) return;
+      const helpEmbed = new EmbedBuilder()
+        .setTitle("Snippet Help")
+        .setColor(0x5865f2)
+        .setDescription("Snippets are reusable staff messages you can send into modmail/appeal tickets. Use them to respond quickly with pre-written templates.")
+        .addFields(
+          { name: "Create", value: `\`${prefix}asnip create <alias> <text>\` - Create a new appeal snippet.`, inline: false },
+          { name: "Edit", value: `\`${prefix}asnip edit <alias> <text>\` - Edit an existing appeal snippet.`, inline: false },
+          { name: "Delete", value: `\`${prefix}asnip delete <alias>\` - Delete a snippet.`, inline: false },
+          { name: "List", value: `\`${prefix}asnip list <page>\` - List snippets with full content.`, inline: false },
+          { name: "View", value: `\`${prefix}asnip view <alias>\` - View a snippet's content.`, inline: false },
+          { name: "Use in tickets", value: `Type \`${prefix}<alias>\` inside an open appeal ticket to send the snippet to the user and channel.`, inline: false }
+        )
+        .setTimestamp();
+      await message.reply({ embeds: [helpEmbed] });
+      return;
     } else if (subCommand === "view") {
       const alias = rest.toLowerCase();
       if (!alias) {
@@ -10488,32 +16626,48 @@ client.on("messageCreate", async (message) => {
 
   // Handle <prefix><alias> snippet usage in modmail/appeal ticket channels
   // Note: Use exact command matches or command+space to avoid blocking snippets like .content, .asnippet
-  if (message.guild && lowerContent.startsWith(lowerPrefix) && 
+  // Debug: alias snippet matching check
+    if (message.guild && lowerContent.startsWith(lowerPrefix) && 
       !lowerContent.startsWith(`${lowerPrefix}snip `) && lowerContent !== `${lowerPrefix}snip` &&
       !lowerContent.startsWith(`${lowerPrefix}asnip `) && lowerContent !== `${lowerPrefix}asnip` &&
+      !lowerContent.startsWith(`${lowerPrefix}asnippet `) && lowerContent !== `${lowerPrefix}asnippet` &&
       !lowerContent.startsWith(`${lowerPrefix}close`) && 
       !(lowerContent === `${lowerPrefix}c` || lowerContent.startsWith(`${lowerPrefix}c `)) &&
       !lowerContent.startsWith(`${lowerPrefix}claim`) && 
       !(lowerContent === `${lowerPrefix}or` || lowerContent.startsWith(`${lowerPrefix}or `)) &&
       !(lowerContent === `${lowerPrefix}r` || lowerContent.startsWith(`${lowerPrefix}r `)) && 
       !(lowerContent === `${lowerPrefix}ar` || lowerContent.startsWith(`${lowerPrefix}ar `)) &&
+      !(lowerContent === `${lowerPrefix}reply` || lowerContent.startsWith(`${lowerPrefix}reply `)) &&
+      !(lowerContent === `${lowerPrefix}anonreply` || lowerContent.startsWith(`${lowerPrefix}anonreply `)) &&
       !lowerContent.startsWith(`${lowerPrefix}edit `) && !lowerContent.startsWith(`${lowerPrefix}delete`)) {
-    console.log(`[SNIPPET ALIAS] Checking alias for: ${message.id} - "${message.content}"`);
     const alias = message.content.substring(prefix.length).toLowerCase().split(" ")[0];
     if (alias) {
       // Check for modmail thread first, then appeal thread
-      const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+      const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
       const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
       const thread = modmailThread || appealThread;
       const isAppealSnippet = !modmailThread && !!appealThread;
 
       if (thread && thread.status === "open") {
+        if (!thread.claimedById) {
+          const previouslyClaimed = await wasThreadPreviouslyClaimed(thread.id, isAppealSnippet);
+          await sendUnclaimedTicketReplyNotice(message, previouslyClaimed);
+          return;
+        }
+
         // Use appeal snippets for appeal channels, modmail snippets for modmail channels
         const snippet = isAppealSnippet 
           ? await storage.getAppealSnippet(message.guild.id, alias)
           : await storage.getSnippet(message.guild.id, alias);
 
         if (snippet) {
+          if (await isRecentDuplicateStaffSend(thread.id, message.author.id, snippet.content, isAppealSnippet)) {
+            try {
+              await message.delete();
+            } catch (e) {}
+            return;
+          }
+
           try {
             const user = await client.users.fetch(thread.userId);
 
@@ -10582,10 +16736,23 @@ client.on("messageCreate", async (message) => {
             } catch (e) {}
           } catch (error: any) {
             console.log("Could not send snippet to user:", error);
-            // Send embed explaining user left or has DMs off
+            let failureDescription = "⚠️ **Could not DM user due to a Discord error.**";
+            try {
+              const guild = await client.guilds.fetch(thread.guildId);
+              const memberStillInServer = await guild.members.fetch(user.id).then(() => true).catch(() => false);
+              if (!memberStillInServer) {
+                failureDescription = "⚠️ **User has left the server.**";
+              } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
+                failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+              }
+            } catch {
+              if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
+                failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+              }
+            }
             const errorEmbed = new EmbedBuilder()
               .setColor(0xed4245)
-              .setDescription("⚠️ **User has left the server or has their DMs turned off.**")
+              .setDescription(failureDescription)
               .setTimestamp();
             await message.reply({ embeds: [errorEmbed] });
           }
@@ -10611,12 +16778,10 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    // Handle forwarded messages
-    const isForwarded = !!message.reference;
-    if (isForwarded) {
-      console.log(`[DM] Forwarded message detected from ${message.author.id}`);
-      // If it's a forward, we want to treat it as a message to be relayed to an open ticket
-      // The current logic already handles message.content, but we can add a note in the relay
+    // Block forwarded DMs from being relayed to staff/participants
+    if (isForwardedDMMessage(message)) {
+      await message.reply("We can't deliver forwarded messages to Staff, you're message has not been sent, please send a non forwarded message.");
+      return;
     }
 
     // Handle modmail/appeal DMs - only relay to EXISTING open threads
@@ -10764,7 +16929,7 @@ client.on("messageCreate", async (message) => {
               try {
                 const currentThread = isAppealThread
                   ? await storage.getAppealThreadByChannel(channelId)
-                  : await storage.getModmailThreadByChannel(channelId);
+                  : await safeGetModmailThreadByChannel(channelId);
                 if (!currentThread || currentThread.status !== "open") return;
                 if (currentThread.claimedById !== claimerId) return;
 
@@ -10774,9 +16939,7 @@ client.on("messageCreate", async (message) => {
                   await storage.updateModmailThread(currentThread.id, { claimedById: null });
                 }
                 const channel = await client.channels.fetch(channelId);
-                if (channel && "send" in channel) {
-                  await channel.send(`Ticket auto-unclaimed. <@${claimerId}> did not respond within 15 minutes.`);
-                }
+                await sendAutoUnclaimEmbed(channel, claimerId);
               } catch (e) {
                 console.log("Could not process auto-unclaim on user message");
               }
@@ -10788,13 +16951,15 @@ client.on("messageCreate", async (message) => {
             });
           }
 
-          const snapshot = (message as any).messageSnapshots?.[0];
-          const forwardedContent = snapshot?.message?.content;
-          const description = message.content || (forwardedContent ? `*Forwarded:* ${forwardedContent}` : (message.reference ? "*Forwarded message*" : "(No text content)"));
+          const relayPayload = await buildDMRelayPayload(message);
+          const description = relayPayload.description;
 
+          // Collect attachment URLs
+          const attachmentUrls = relayPayload.attachmentUrls;
+          const embedBodyText = relayPayload.plainText || description;
           const userEmbed = new EmbedBuilder()
             .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-            .setDescription(description)
+            .setDescription(embedBodyText)
             .setColor(isAddedMember ? 0x3498db : 0x57f287)
             .setTimestamp();
 
@@ -10803,32 +16968,63 @@ client.on("messageCreate", async (message) => {
             userEmbed.setFooter({ text: "Added Member" });
           }
 
-          // Collect attachment URLs
-          const attachmentUrls = message.attachments.map(a => a.url);
-
           // Add attachment info to embed if there are any
           if (attachmentUrls.length > 0) {
-            userEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
-            // Set the first image as the embed image if it's an image
-            const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
-            if (firstImageAttachment) {
-              userEmbed.setImage(firstImageAttachment.url);
-            }
+            userEmbed.addFields({ name: "Attachments", value: formatUrlListForField(attachmentUrls), inline: false });
           }
 
-          // Add "Send Message" button for mobile users to copy text
-          const copyButton = new ButtonBuilder()
-            .setCustomId(`modmail_copy_${message.id}`)
-            .setLabel("Send Message")
-            .setStyle(ButtonStyle.Secondary)
-            .setEmoji("📋");
+          if (relayPayload.imageUrl) {
+            userEmbed.setImage(relayPayload.imageUrl);
+          }
 
-          const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(copyButton);
+          // Add action dropdown (replaces old Send Message button)
+          const actionMenu = new StringSelectMenuBuilder()
+            .setCustomId(`modmail_action_${targetThread.id}_${message.id}_${message.author.id}`)
+            .setPlaceholder("Select an action...")
+            .addOptions(
+              new StringSelectMenuOptionBuilder()
+                .setLabel("Send Message")
+                .setDescription("Show this message content for copy/paste")
+                .setValue("send_message")
+                .setEmoji("📋"),
+              new StringSelectMenuOptionBuilder()
+                .setLabel("Send Message In DMs")
+                .setDescription("DM this message content to yourself")
+                .setValue("send_message_dm")
+                .setEmoji("✉️"),
+              new StringSelectMenuOptionBuilder()
+                .setLabel("Toggle Member")
+                .setDescription("Add or remove a member from this ticket")
+                .setValue("toggle_member")
+                .setEmoji("👥"),
+              new StringSelectMenuOptionBuilder()
+                .setLabel("Request A Role")
+                .setDescription("Create a role request from this ticket")
+                .setValue("request_role")
+                .setEmoji("🛡️"),
+              new StringSelectMenuOptionBuilder()
+                .setLabel("User Modlogs")
+                .setDescription("Show modlogs for this user")
+                .setValue("user_modlogs")
+                .setEmoji("📚"),
+              new StringSelectMenuOptionBuilder()
+                .setLabel("Modmail Logs")
+                .setDescription("Show modmail logs for this user")
+                .setValue("user_modmail_logs")
+                .setEmoji("📝"),
+              new StringSelectMenuOptionBuilder()
+                .setLabel("Appeal Logs")
+                .setDescription("Show appeal logs for this user")
+                .setValue("user_appeal_logs")
+                .setEmoji("⚖️")
+            );
 
-          const channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [buttonRow] });
+          const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
+          const channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
 
           // Store the message content and attachments for the copy button
-          storeModmailCopyContent(message.id, message.content, attachmentUrls.length > 0 ? attachmentUrls : undefined);
+          const storedRelayText = relayPayload.plainText || description;
+          storeModmailCopyContent(message.id, storedRelayText, attachmentUrls.length > 0 ? attachmentUrls : undefined);
 
           // Ping subscribed users
           const subs = targetThread.subscribedUserIds || [];
@@ -10844,7 +17040,7 @@ client.on("messageCreate", async (message) => {
             await storage.addAppealMessage({
               threadId: targetThread.id,
               authorId: message.author.id,
-              content: message.content,
+              content: buildStoredTranscriptContent(message.content || relayPayload.plainText || description, attachmentUrls),
               isStaff: "false",
               dmMessageId: message.id,
               channelMessageId: channelMsg.id,
@@ -10853,7 +17049,7 @@ client.on("messageCreate", async (message) => {
             await storage.addModmailMessage({
               threadId: targetThread.id,
               authorId: message.author.id,
-              content: message.content,
+              content: buildStoredTranscriptContent(message.content || relayPayload.plainText || description, attachmentUrls),
               isStaff: "false",
               dmMessageId: message.id,
               channelMessageId: channelMsg.id,
@@ -10868,23 +17064,19 @@ client.on("messageCreate", async (message) => {
             for (const participantId of otherParticipants) {
               try {
                 const participant = await client.users.fetch(participantId);
-                const snapshot = (message as any).messageSnapshots?.[0];
-                const forwardedContent = snapshot?.message?.content;
-                const description = message.content || (forwardedContent ? `*Forwarded:* ${forwardedContent}` : (message.reference ? "*Forwarded message*" : "(No text content)"));
-
                 const forwardEmbed = new EmbedBuilder()
                   .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-                  .setDescription(description)
+                  .setDescription(relayPayload.plainText || description)
                   .setColor(0x3498db)
                   .setFooter({ text: participantId === targetThread.userId ? "Ticket Participant" : "Added Member" })
                   .setTimestamp();
                 
                 if (attachmentUrls.length > 0) {
-                  forwardEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
-                  const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
-                  if (firstImageAttachment) {
-                    forwardEmbed.setImage(firstImageAttachment.url);
-                  }
+                  forwardEmbed.addFields({ name: "Attachments", value: formatUrlListForField(attachmentUrls), inline: false });
+                }
+
+                if (relayPayload.imageUrl) {
+                  forwardEmbed.setImage(relayPayload.imageUrl);
                 }
                 
                 await participant.send({ embeds: [forwardEmbed] });
@@ -10906,11 +17098,12 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle .r <message> reply command in modmail/appeal channels (also allows .r with just attachments)
-  if (message.guild && (lowerContent.startsWith(`${lowerPrefix}r `) || (lowerContent === `${lowerPrefix}r` && message.attachments.size > 0))) {
-    console.log(`[.r HANDLER] Processing reply command: ${message.id} - "${message.content}"`);
+  // Handle reply commands in modmail/appeal channels (r/reply, also allows attachments only)
+  const isShortReplyCommand = lowerContent === `${lowerPrefix}r` || lowerContent.startsWith(`${lowerPrefix}r `);
+  const isLongReplyCommand = lowerContent === `${lowerPrefix}reply` || lowerContent.startsWith(`${lowerPrefix}reply `);
+  if (message.guild && (isShortReplyCommand || isLongReplyCommand)) {
     // Check for modmail thread first, then appeal thread
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
@@ -10919,9 +17112,27 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    const replyContent = lowerContent === `${lowerPrefix}r` ? "" : message.content.substring(prefix.length + 2).trim();
+    if (!thread.claimedById) {
+      const previouslyClaimed = await wasThreadPreviouslyClaimed(thread.id, isAppeal);
+      await sendUnclaimedTicketReplyNotice(message, previouslyClaimed);
+      return;
+    }
+
+    let replyContent = "";
+    if (lowerContent.startsWith(`${lowerPrefix}r `)) {
+      replyContent = message.content.substring(prefix.length + 2).trim();
+    } else if (lowerContent.startsWith(`${lowerPrefix}reply `)) {
+      replyContent = message.content.substring(prefix.length + 6).trim();
+    }
     if (!replyContent && message.attachments.size === 0) {
-      await message.reply(`Please provide a message or attach files. Usage: \`${prefix}r <message>\` or \`${prefix}r\` with attachments`);
+      await message.reply(`Please provide a message or attach files. Usage: \`${prefix}r <message>\`, \`${prefix}reply <message>\`, or with attachments only.`);
+      return;
+    }
+
+    if (await isRecentDuplicateStaffSend(thread.id, message.author.id, replyContent, isAppeal)) {
+      try {
+        await message.delete();
+      } catch (e) {}
       return;
     }
 
@@ -10967,9 +17178,7 @@ client.on("messageCreate", async (message) => {
       }
 
       // Send to user DM
-      console.log(`[.r HANDLER] Sending DM to user ${user.id}...`);
       const dmMessage = await user.send({ embeds: [staffEmbed] });
-      console.log(`[.r HANDLER] DM sent: ${dmMessage.id}`);
 
       // Also send to added members if this is a modmail thread
       const addedMemberIds = (thread as any).addedMemberIds as string[] | null | undefined;
@@ -10985,16 +17194,14 @@ client.on("messageCreate", async (message) => {
       }
 
       // Send to channel as well
-      console.log(`[.r HANDLER] Sending to channel ${message.channel.id}...`);
       const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
-      console.log(`[.r HANDLER] Channel message sent: ${channelMessage.id}`);
 
       // Save message with message IDs
       if (isAppeal) {
         await storage.addAppealMessage({
           threadId: thread.id,
           authorId: message.author.id,
-          content: replyContent,
+          content: buildStoredTranscriptContent(replyContent, attachmentUrls),
           isStaff: "true",
           channelMessageId: channelMessage.id,
           dmMessageId: dmMessage.id,
@@ -11003,7 +17210,7 @@ client.on("messageCreate", async (message) => {
         await storage.addModmailMessage({
           threadId: thread.id,
           authorId: message.author.id,
-          content: replyContent,
+          content: buildStoredTranscriptContent(replyContent, attachmentUrls),
           isStaff: "true",
           channelMessageId: channelMessage.id,
           dmMessageId: dmMessage.id,
@@ -11055,7 +17262,7 @@ client.on("messageCreate", async (message) => {
         pendingInactivityWarnings.delete(channelId);
 
         // Re-fetch thread to make sure it's still open
-        const currentThread = await storage.getModmailThreadByChannel(channelId);
+        const currentThread = await safeGetModmailThreadByChannel(channelId);
         if (!currentThread || currentThread.status !== "open") return;
 
         // Send warning message with hammer time timestamp
@@ -11084,7 +17291,7 @@ client.on("messageCreate", async (message) => {
           const closeTimeout = setTimeout(async () => {
             pendingInactivityCloses.delete(channelId);
 
-            const threadToClose = await storage.getModmailThreadByChannel(channelId);
+            const threadToClose = await safeGetModmailThreadByChannel(channelId);
             if (!threadToClose || threadToClose.status !== "open") return;
 
             // Clear claim expiry timer on inactivity close
@@ -11115,19 +17322,40 @@ client.on("messageCreate", async (message) => {
                   const logChannel = await client.channels.fetch(config.modmailLogChannelId);
                   if (logChannel && "send" in logChannel) {
                     const messages = await storage.getModmailMessages(threadToClose.id);
-                    let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                    if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                    const transcriptContent = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] ${m.authorId}: ${m.content}`).join("\n");
+                    const buffer = Buffer.from(transcriptContent, "utf-8");
+                    const attachment = new AttachmentBuilder(buffer, { name: `transcript-${threadToClose.id}.txt` });
+
+                    const pageSize = 10;
+                    const pageMessages = messages.slice(0, pageSize);
+                    let transcript = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                    transcript = clampEmbedFieldValue(transcript);
 
                     const logEmbed = new EmbedBuilder()
                       .setTitle("Ticket Closed (Inactivity)")
                       .setColor(0xed4245)
                       .addFields(
-                        { name: "User", value: `<@${threadToClose.userId}>`, inline: true },
+                        { name: "Opened By", value: `<@${threadToClose.userId}>`, inline: true },
                         { name: "Closed By", value: `<@${staffId}> (auto)`, inline: true },
-                        { name: "Transcript", value: transcript || "No messages", inline: false }
+                        { name: "Transcript", value: transcript, inline: false }
                       )
                       .setTimestamp();
-                    await logChannel.send({ embeds: [logEmbed] });
+
+                    const totalPages = Math.ceil(messages.length / pageSize) || 1;
+                    const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_transcript_0_${threadToClose.id}`)
+                        .setLabel("Previous Page")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_transcript_1_${threadToClose.id}`)
+                        .setLabel("Next Page")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(totalPages <= 1)
+                    );
+
+                    await logChannel.send({ embeds: [logEmbed], components: [transcriptButtons], files: [attachment] });
                   }
                 } catch (e) {
                   console.log("Could not send modmail log");
@@ -11164,20 +17392,35 @@ client.on("messageCreate", async (message) => {
       }
     } catch (error: any) {
       console.log("Could not relay staff message to user:", error);
-      // Send embed explaining user left or has DMs off
+      let failureDescription = "⚠️ **Could not DM user due to a Discord error.**";
+      try {
+        const guild = await client.guilds.fetch(thread.guildId);
+        const memberStillInServer = await guild.members.fetch(user.id).then(() => true).catch(() => false);
+        if (!memberStillInServer) {
+          failureDescription = "⚠️ **User has left the server.**";
+        } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
+          failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+        }
+      } catch {
+        if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
+          failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+        }
+      }
       const errorEmbed = new EmbedBuilder()
         .setColor(0xed4245)
-        .setDescription("⚠️ **User has left the server or has their DMs turned off.**")
+        .setDescription(failureDescription)
         .setTimestamp();
       await message.reply({ embeds: [errorEmbed] });
     }
     return;
   }
 
-  // Handle .ar <message> anonymous reply command in modmail/appeal channels
-  if (message.guild && (lowerContent.startsWith(`${lowerPrefix}ar `) || (lowerContent === `${lowerPrefix}ar` && message.attachments.size > 0))) {
+  // Handle anonymous reply commands in modmail/appeal channels (ar/anonreply)
+  const isShortAnonReplyCommand = lowerContent === `${lowerPrefix}ar` || lowerContent.startsWith(`${lowerPrefix}ar `);
+  const isLongAnonReplyCommand = lowerContent === `${lowerPrefix}anonreply` || lowerContent.startsWith(`${lowerPrefix}anonreply `);
+  if (message.guild && (isShortAnonReplyCommand || isLongAnonReplyCommand)) {
     // Check for modmail thread first, then appeal thread
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
@@ -11186,9 +17429,28 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    const replyContent = lowerContent === `${lowerPrefix}ar` ? "" : message.content.substring(prefix.length + 3).trim();
+    if (!thread.claimedById) {
+      const previouslyClaimed = await wasThreadPreviouslyClaimed(thread.id, isAppeal);
+      await sendUnclaimedTicketReplyNotice(message, previouslyClaimed);
+      return;
+    }
+
+    let replyContent = "";
+    if (lowerContent.startsWith(`${lowerPrefix}ar `)) {
+      replyContent = message.content.substring(prefix.length + 3).trim();
+    } else if (lowerContent.startsWith(`${lowerPrefix}anonreply `)) {
+      replyContent = message.content.substring(prefix.length + 10).trim();
+    }
     if (!replyContent && message.attachments.size === 0) {
-      await message.reply(`Please provide a message or attach files. Usage: \`${prefix}ar <message>\` or \`${prefix}ar\` with attachments`);
+      await message.reply(`Please provide a message or attach files. Usage: \`${prefix}ar <message>\`, \`${prefix}anonreply <message>\`, or with attachments only.`);
+      return;
+    }
+
+    const anonStoredContent = `[Anonymous] ${replyContent}`;
+    if (await isRecentDuplicateStaffSend(thread.id, message.author.id, anonStoredContent, isAppeal)) {
+      try {
+        await message.delete();
+      } catch (e) {}
       return;
     }
 
@@ -11259,7 +17521,7 @@ client.on("messageCreate", async (message) => {
         await storage.addAppealMessage({
           threadId: thread.id,
           authorId: message.author.id,
-          content: `[Anonymous] ${replyContent}`,
+          content: buildStoredTranscriptContent(`[Anonymous] ${replyContent}`, attachmentUrls),
           isStaff: "true",
           channelMessageId: channelMessage.id,
           dmMessageId: dmMessage.id,
@@ -11268,7 +17530,7 @@ client.on("messageCreate", async (message) => {
         await storage.addModmailMessage({
           threadId: thread.id,
           authorId: message.author.id,
-          content: `[Anonymous] ${replyContent}`,
+          content: buildStoredTranscriptContent(`[Anonymous] ${replyContent}`, attachmentUrls),
           isStaff: "true",
           channelMessageId: channelMessage.id,
           dmMessageId: dmMessage.id,
@@ -11328,7 +17590,7 @@ client.on("messageCreate", async (message) => {
       const warningTimeout = setTimeout(async () => {
         pendingInactivityWarnings.delete(channelId);
 
-        const currentThread = await storage.getModmailThreadByChannel(channelId);
+        const currentThread = await safeGetModmailThreadByChannel(channelId);
         if (!currentThread || currentThread.status !== "open") return;
 
         const closeTimestamp = Math.floor(closeTime / 1000);
@@ -11354,7 +17616,7 @@ client.on("messageCreate", async (message) => {
           const closeTimeout = setTimeout(async () => {
             pendingInactivityCloses.delete(channelId);
 
-            const threadToClose = await storage.getModmailThreadByChannel(channelId);
+            const threadToClose = await safeGetModmailThreadByChannel(channelId);
             if (!threadToClose || threadToClose.status !== "open") return;
 
             const inactivityClaimTimer = pendingClaimExpiry.get(channelId);
@@ -11371,7 +17633,6 @@ client.on("messageCreate", async (message) => {
                 .setTitle("Ticket Closed")
                 .setDescription("Your ticket has been closed due to inactivity. If you need further assistance, please open a new ticket.")
                 .setColor(0xed4245)
-                .setTimestamp();
               await closedUser.send({ embeds: [closeEmbed] });
             } catch (e) {
               console.log("Could not notify user of ticket closure");
@@ -11384,19 +17645,40 @@ client.on("messageCreate", async (message) => {
                   const logChannel = await client.channels.fetch(threadConfig.modmailLogChannelId);
                   if (logChannel && "send" in logChannel) {
                     const messages = await storage.getModmailMessages(threadToClose.id);
-                    let transcript = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
-                    if (transcript.length > 1900) transcript = transcript.substring(0, 1900) + "...";
+                    const transcriptContent = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] ${m.authorId}: ${m.content}`).join("\n");
+                    const buffer = Buffer.from(transcriptContent, "utf-8");
+                    const attachment = new AttachmentBuilder(buffer, { name: `transcript-${threadToClose.id}.txt` });
+
+                    const pageSize = 10;
+                    const pageMessages = messages.slice(0, pageSize);
+                    let transcript = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                    transcript = clampEmbedFieldValue(transcript);
 
                     const logEmbed = new EmbedBuilder()
                       .setTitle("Ticket Closed (Inactivity)")
                       .setColor(0xed4245)
                       .addFields(
-                        { name: "User", value: `<@${threadToClose.userId}>`, inline: true },
+                        { name: "Opened By", value: `<@${threadToClose.userId}>`, inline: true },
                         { name: "Closed By", value: `<@${staffId}> (auto)`, inline: true },
-                        { name: "Transcript", value: transcript || "No messages", inline: false }
+                        { name: "Transcript", value: transcript, inline: false }
                       )
                       .setTimestamp();
-                    await logChannel.send({ embeds: [logEmbed] });
+
+                    const totalPages = Math.ceil(messages.length / pageSize) || 1;
+                    const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_transcript_0_${threadToClose.id}`)
+                        .setLabel("Previous Page")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_transcript_1_${threadToClose.id}`)
+                        .setLabel("Next Page")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(totalPages <= 1)
+                    );
+
+                    await logChannel.send({ embeds: [logEmbed], components: [transcriptButtons], files: [attachment] });
                   }
                 } catch (e) {
                   console.log("Could not send modmail log");
@@ -11429,10 +17711,23 @@ client.on("messageCreate", async (message) => {
       } catch (e) { }
     } catch (error: any) {
       console.log("Could not relay anonymous staff message to user:", error);
-      // Send embed explaining user left or has DMs off
+      let failureDescription = "⚠️ **Could not DM user due to a Discord error.**";
+      try {
+        const guild = await client.guilds.fetch(thread.guildId);
+        const memberStillInServer = await guild.members.fetch(user.id).then(() => true).catch(() => false);
+        if (!memberStillInServer) {
+          failureDescription = "⚠️ **User has left the server.**";
+        } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
+          failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+        }
+      } catch {
+        if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
+          failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+        }
+      }
       const errorEmbed = new EmbedBuilder()
         .setColor(0xed4245)
-        .setDescription("⚠️ **User has left the server or has their DMs turned off.**")
+        .setDescription(failureDescription)
         .setTimestamp();
       await message.reply({ embeds: [errorEmbed] });
     }
@@ -11442,7 +17737,7 @@ client.on("messageCreate", async (message) => {
   // Handle .edit (message_id) (new_message) or .edit (new_message) for most recent
   if (message.guild && lowerContent.startsWith(`${lowerPrefix}edit `)) {
     // Check for modmail thread first, then appeal thread
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
@@ -11479,8 +17774,8 @@ client.on("messageCreate", async (message) => {
       newContent = args;
     }
 
-    if (!modmailMsg) {
-      await message.reply("❌ Could not find the message to edit. You can use the Discord message ID or leave blank to edit your most recent message.");
+    if (!modmailMsg || modmailMsg.threadId !== thread.id || modmailMsg.isStaff !== "true") {
+      await message.reply("I cannot find that message in the thread");
       return;
     }
 
@@ -11608,7 +17903,7 @@ client.on("messageCreate", async (message) => {
   // Handle .delete (message_id) or .delete for most recent
   if (message.guild && lowerContent.startsWith(`${lowerPrefix}delete`)) {
     // Check for modmail thread first, then appeal thread
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
@@ -11640,8 +17935,8 @@ client.on("messageCreate", async (message) => {
       modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
     }
 
-    if (!modmailMsg) {
-      await message.reply("❌ Could not find the message to delete. You can use the Discord message ID or leave blank to delete your most recent message.");
+    if (!modmailMsg || modmailMsg.threadId !== thread.id || modmailMsg.isStaff !== "true") {
+      await message.reply("I cannot find that message in the thread");
       return;
     }
 
@@ -11701,7 +17996,7 @@ client.on("messageCreate", async (message) => {
       lowerContent.startsWith(`${lowerPrefix}sub `) || lowerContent.startsWith(`${lowerPrefix}subscribe `) ||
       lowerContent.startsWith(`${lowerPrefix}unsub `) || lowerContent.startsWith(`${lowerPrefix}unsubscribe `))) {
     // Check for modmail thread first, then appeal thread
-    const modmailThread = await storage.getModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
     const thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
@@ -11713,6 +18008,8 @@ client.on("messageCreate", async (message) => {
     try {
       // Determine if unsubscribe command
       const wantsToUnsubscribe = lowerContent.startsWith(`${lowerPrefix}unsub`);
+      const parts = message.content.trim().split(/\s+/);
+      const hasTargetArgument = parts.length > 1 && !!parts[1];
 
       // Check for mentioned user or user ID
       const mentionedUser = message.mentions.users.first();
@@ -11724,13 +18021,21 @@ client.on("messageCreate", async (message) => {
         targetLabel = `<@${mentionedUser.id}>`;
       } else {
         // Check for user ID in message content
-        const parts = message.content.split(/\s+/);
-        if (parts.length > 1) {
+        if (hasTargetArgument) {
           const possibleId = parts[1];
+          const isValidSnowflake = /^\d{17,19}$/.test(possibleId);
+
           // Check if it's a valid Discord snowflake (17-19 digits)
-          if (/^\d{17,19}$/.test(possibleId)) {
+          if (isValidSnowflake) {
             targetUserId = possibleId;
             targetLabel = `<@${possibleId}>`;
+          } else if (!wantsToUnsubscribe) {
+            const invalidSubInputEmbed = new EmbedBuilder()
+              .setDescription("Please enter a valid ID or @ to sub the user.")
+              .setColor(0xed4245)
+              .setTimestamp();
+            await message.reply({ embeds: [invalidSubInputEmbed] });
+            return;
           }
         }
       }
@@ -11744,14 +18049,22 @@ client.on("messageCreate", async (message) => {
 
       if (wantsToUnsubscribe) {
         if (!isSubscribed) {
-          await (message.channel as any).send(`❌ ${targetLabel} ${isOtherUser ? "is" : "are"} not subscribed to this ticket.`);
+          const notSubscribedEmbed = new EmbedBuilder()
+            .setDescription(`❌ ${targetLabel} ${isOtherUser ? "is" : "are"} not subscribed to this ticket.`)
+            .setColor(0xed4245)
+            .setTimestamp();
+          await (message.channel as any).send({ embeds: [notSubscribedEmbed] });
           return;
         }
         newSubs = currentSubs.filter(id => id !== targetUserId);
         action = "unsubscribed from";
       } else {
         if (isSubscribed) {
-          await (message.channel as any).send(`❌ ${targetLabel} ${isOtherUser ? "is" : "are"} already subscribed to this ticket.`);
+          const alreadySubscribedEmbed = new EmbedBuilder()
+            .setDescription(`❌ ${targetLabel} ${isOtherUser ? "is" : "are"} already subscribed to this ticket.`)
+            .setColor(0xed4245)
+            .setTimestamp();
+          await (message.channel as any).send({ embeds: [alreadySubscribedEmbed] });
           return;
         }
         newSubs = [...currentSubs, targetUserId];
@@ -11765,9 +18078,17 @@ client.on("messageCreate", async (message) => {
       }
 
       if (isOtherUser) {
-        await (message.channel as any).send(`✅ ${targetLabel} has been ${action} this ticket.`);
+        const otherUserResultEmbed = new EmbedBuilder()
+          .setDescription(`✅ ${targetLabel} has been ${action} this ticket.`)
+          .setColor(0x23a559)
+          .setTimestamp();
+        await (message.channel as any).send({ embeds: [otherUserResultEmbed] });
       } else {
-        await (message.channel as any).send(`✅ You have ${action} this ticket.`);
+        const selfResultEmbed = new EmbedBuilder()
+          .setDescription(`✅ You have ${action} this ticket.`)
+          .setColor(0x23a559)
+          .setTimestamp();
+        await (message.channel as any).send({ embeds: [selfResultEmbed] });
       }
     } catch (error) {
       console.error("Sub command error:", error);
@@ -11779,7 +18100,7 @@ client.on("messageCreate", async (message) => {
   // This allows staff to discuss in the channel privately
   // Clear claim expiry timer only if the CLAIMER sends any message in the channel
   if (message.guild && !message.author.bot) {
-    const thread = await storage.getModmailThreadByChannel(message.channel.id);
+    const thread = await safeGetModmailThreadByChannel(message.channel.id);
     if (thread && thread.status === "open") {
       const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
       if (existingClaimTimer && existingClaimTimer.claimerId === message.author.id) {
@@ -11983,6 +18304,12 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 // Handle user leaving server - notify open modmail/appeal threads
 client.on("guildMemberRemove", async (member) => {
   try {
+    try {
+      await storage.removeInviteAttribution(member.guild.id, member.id);
+    } catch (inviteError) {
+      console.log("Could not remove invite attribution on member leave:", inviteError);
+    }
+
     // Check for open modmail thread
     const modmailThread = await storage.getOpenModmailThread(member.guild.id, member.id);
     if (modmailThread && modmailThread.channelId) {
@@ -12018,6 +18345,132 @@ client.on("guildMemberRemove", async (member) => {
     }
   } catch (e) {
     console.log("Error in guildMemberRemove handler:", e);
+  }
+});
+
+client.on("guildMemberAdd", async (member) => {
+  try {
+    try {
+      const previousSnapshot = guildInviteSnapshots.get(member.guild.id) || new Map<string, InviteSnapshot>();
+      const currentSnapshot = await fetchGuildInviteSnapshot(member.guild);
+      const previousVanitySnapshot = guildVanitySnapshots.get(member.guild.id) || null;
+      const currentVanitySnapshot = await fetchGuildVanitySnapshot(member.guild);
+
+      let detectedInviterId: string | null = null;
+
+      if (currentSnapshot) {
+        let maxDiff = 0;
+
+        for (const [code, current] of currentSnapshot.entries()) {
+          const previous = previousSnapshot.get(code);
+          const diff = (current.uses || 0) - (previous?.uses || 0);
+          if (diff > maxDiff && current.inviterId) {
+            maxDiff = diff;
+            detectedInviterId = current.inviterId;
+          }
+        }
+
+        if (detectedInviterId && detectedInviterId !== member.id) {
+          await storage.removeInviteAttribution(member.guild.id, member.id);
+          await storage.createInviteAttribution({
+            guildId: member.guild.id,
+            inviterId: detectedInviterId,
+            invitedUserId: member.id,
+          });
+        }
+
+        guildInviteSnapshots.set(member.guild.id, currentSnapshot);
+      }
+
+      if (!detectedInviterId && currentVanitySnapshot && previousVanitySnapshot) {
+        const sameCode = !!currentVanitySnapshot.code && currentVanitySnapshot.code === previousVanitySnapshot.code;
+        const vanityUseIncreased = currentVanitySnapshot.uses > previousVanitySnapshot.uses;
+
+        if (sameCode && vanityUseIncreased) {
+          const lastSharer = guildVanityLastSharer.get(member.guild.id);
+          const shareIsFresh = lastSharer && Date.now() - lastSharer.sharedAt <= VANITY_SHARE_ATTRIBUTION_WINDOW_MS;
+          const shareMatchesVanity = lastSharer && currentVanitySnapshot.code && lastSharer.code === currentVanitySnapshot.code;
+
+          if (shareIsFresh && shareMatchesVanity && lastSharer!.userId !== member.id) {
+            detectedInviterId = lastSharer!.userId;
+          }
+        }
+      }
+
+      if (!detectedInviterId && currentVanitySnapshot && !previousVanitySnapshot) {
+        const lastSharer = guildVanityLastSharer.get(member.guild.id);
+        const shareIsFresh = lastSharer && Date.now() - lastSharer.sharedAt <= VANITY_SHARE_ATTRIBUTION_WINDOW_MS;
+        const shareMatchesVanity = lastSharer && currentVanitySnapshot.code && lastSharer.code === currentVanitySnapshot.code;
+        if (shareIsFresh && shareMatchesVanity && lastSharer!.userId !== member.id) {
+          detectedInviterId = lastSharer!.userId;
+        }
+      }
+
+      if (detectedInviterId && detectedInviterId !== member.id) {
+        await storage.removeInviteAttribution(member.guild.id, member.id);
+        await storage.createInviteAttribution({
+          guildId: member.guild.id,
+          inviterId: detectedInviterId,
+          invitedUserId: member.id,
+        });
+      }
+
+      if (currentVanitySnapshot) {
+        guildVanitySnapshots.set(member.guild.id, currentVanitySnapshot);
+      }
+    } catch (inviteError) {
+      console.log("Could not process invite attribution on member join:", inviteError);
+    }
+
+    // Check for open modmail thread
+    const modmailThread = await storage.getOpenModmailThread(member.guild.id, member.id);
+    if (modmailThread && modmailThread.channelId) {
+      try {
+        const channel = await client.channels.fetch(modmailThread.channelId);
+        if (channel && "send" in channel) {
+          const joinEmbed = new EmbedBuilder()
+            .setColor(0x57f287)
+            .setDescription(`✅ **${member.user.tag} has joined the server!**`)
+            .setTimestamp();
+          await channel.send({ embeds: [joinEmbed] });
+        }
+      } catch (e) {
+        console.log("Could not notify modmail channel about user join:", e);
+      }
+    }
+
+    // Check for open appeal thread
+    const appealThread = await storage.getOpenAppealThread(member.guild.id, member.id);
+    if (appealThread && appealThread.channelId) {
+      try {
+        const channel = await client.channels.fetch(appealThread.channelId);
+        if (channel && "send" in channel) {
+          const joinEmbed = new EmbedBuilder()
+            .setColor(0x57f287)
+            .setDescription(`✅ **${member.user.tag} has joined the server!**`)
+            .setTimestamp();
+          await channel.send({ embeds: [joinEmbed] });
+        }
+      } catch (e) {
+        console.log("Could not notify appeal channel about user join:", e);
+      }
+    }
+
+    try {
+      const config = await storage.getGuildConfig(member.guild.id);
+      const welcomeSetup = getWelcomeSetupFromGuildConfig(config);
+      if (welcomeSetup.channelId) {
+        const channel = await client.channels.fetch(welcomeSetup.channelId).catch(() => null);
+        if (channel && "send" in channel) {
+          const welcomeEmbed = buildWelcomeJoinEmbed(member, welcomeSetup);
+          await channel.send({ embeds: [welcomeEmbed] });
+        }
+      }
+    } catch (welcomeError) {
+      console.log("Could not send welcome message:", welcomeError);
+    }
+  } catch (e) {
+    console.log("Error in guildMemberAdd handler:", e);
   }
 });
 

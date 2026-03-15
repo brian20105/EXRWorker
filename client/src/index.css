@@ -49,6 +49,32 @@
 }
 
 @layer base {
+  :root {
+    --color-discord-bg: #f4f6fb;
+    --color-discord-sidebar: #ffffff;
+    --color-discord-server-rail: #e9edf5;
+    --color-discord-chat-input: #eef2fa;
+    --color-discord-text-normal: #1f2633;
+    --color-discord-text-header: #111827;
+    --color-discord-text-muted: #5f6b7a;
+    --color-discord-divider: #d9e0ec;
+    --color-border: #d9e0ec;
+    --color-input: #d9e0ec;
+  }
+
+  .dark {
+    --color-discord-bg: #313338;
+    --color-discord-sidebar: #2b2d31;
+    --color-discord-server-rail: #1e1f22;
+    --color-discord-chat-input: #383a40;
+    --color-discord-text-normal: #dbdee1;
+    --color-discord-text-header: #f2f3f5;
+    --color-discord-text-muted: #949ba4;
+    --color-discord-divider: #1e1f22;
+    --color-border: #1e1f22;
+    --color-input: #1e1f22;
+  }
+
   * {
     @apply border-border;
   }

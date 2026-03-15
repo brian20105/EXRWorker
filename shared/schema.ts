@@ -69,6 +69,9 @@ export const guildConfigs = pgTable("guild_configs", {
   quizLogChannelId: text("quiz_log_channel_id"), // Channel for quiz progress logging
   snippetRoleIds: text("snippet_role_ids").array(), // Roles allowed to use snippet commands
   activityRoleIds: text("activity_role_ids").array(), // Roles allowed to use activity commands
+  messageCommandRoleIds: text("message_command_role_ids").array(), // Roles allowed to use message commands
+  rosterCommandRoleIds: text("roster_command_role_ids").array(), // Roles allowed to use roster commands
+  roleCommandRoleIds: text("role_command_role_ids").array(), // Roles allowed to use role commands
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
@@ -308,6 +311,7 @@ export const activityResetBackups = pgTable("activity_reset_backups", {
   unbanRequestsData: text("unban_requests_data"),
   modmailThreadsData: text("modmail_threads_data"),
   appealThreadsData: text("appeal_threads_data"),
+  inviteAttributionsData: text("invite_attributions_data"),
   entryCount: text("entry_count").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -319,6 +323,22 @@ export const insertActivityResetBackupSchema = createInsertSchema(activityResetB
 
 export type InsertActivityResetBackup = z.infer<typeof insertActivityResetBackupSchema>;
 export type ActivityResetBackup = typeof activityResetBackups.$inferSelect;
+
+export const inviteAttributions = pgTable("invite_attributions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  guildId: text("guild_id").notNull(),
+  inviterId: text("inviter_id").notNull(),
+  invitedUserId: text("invited_user_id").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertInviteAttributionSchema = createInsertSchema(inviteAttributions).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertInviteAttribution = z.infer<typeof insertInviteAttributionSchema>;
+export type InviteAttribution = typeof inviteAttributions.$inferSelect;
 
 // Appeal system tables (separate from modmail)
 export const appealThreads = pgTable("appeal_threads", {
