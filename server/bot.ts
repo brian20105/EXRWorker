@@ -463,9 +463,6 @@ function getDashboardUrl(): string {
   const renderUrl = (process.env.RENDER_EXTERNAL_URL || "").trim();
   if (renderUrl) return renderUrl.replace(/\/+$/, "");
 
-  const replitDomain = (process.env.REPLIT_DEV_DOMAIN || "").trim();
-  if (replitDomain) return `https://${replitDomain}`;
-
   return `http://localhost:${port}`;
 }
 
