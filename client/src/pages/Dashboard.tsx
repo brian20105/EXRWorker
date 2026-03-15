@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, ExternalLink, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings } from "lucide-react";
 import { useTheme } from "next-themes";
+import { useLocation, useRoute } from "wouter";
 
 interface Guild {
   id: string;
@@ -131,6 +132,8 @@ export default function Dashboard() {
   });
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
+  const [moduleRouteMatch, moduleRouteParams] = useRoute<{ moduleId: string }>("/dashboard/module/:moduleId");
 
   useEffect(() => {
     setThemeMounted(true);
@@ -499,6 +502,146 @@ export default function Dashboard() {
     return `${module.name} ${module.description}`.toLowerCase().includes(query);
   });
 
+  const moduleById = botFeatureModules.reduce<Record<string, BotFeatureModule>>((acc, module) => {
+    acc[module.id] = module;
+    return acc;
+  }, {});
+  const activeModuleId = moduleRouteMatch ? (moduleRouteParams?.moduleId || "") : "";
+  const activeModule = activeModuleId ? moduleById[activeModuleId] : null;
+
+  useEffect(() => {
+    if (!moduleRouteMatch) return;
+
+    const searchParams = new URLSearchParams(window.location.search);
+    const guildFromQuery = searchParams.get("guild");
+    if (guildFromQuery && guildFromQuery !== selectedGuild) {
+      setSelectedGuild(guildFromQuery);
+      return;
+    }
+
+    if (activeModule) {
+      setActivePrimaryTab("settings");
+    }
+  }, [moduleRouteMatch, moduleRouteParams?.moduleId, selectedGuild, activeModule]);
+
+  const renderActiveModuleSettings = () => {
+    if (!activeModule) return null;
+
+    const moduleId = activeModule.id;
+    return (
+      <Card className="border-border/80 bg-card/90" data-testid={`card-module-settings-${moduleId}`}>
+        <CardHeader className="space-y-1">
+          <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">{activeModule.name} Settings</CardTitle>
+          <CardDescription>{activeModule.description}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {moduleId === "modmail" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {renderChannelSelect("Modmail Category", "modmailCategoryId", categoryChannels, "select-module-modmail-category")}
+              {renderChannelSelect("Modmail Log Channel", "modmailLogChannelId", textChannels, "select-module-modmail-log")}
+            </div>
+          )}
+
+          {moduleId === "appeals" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {renderChannelSelect("Appeal Category", "appealCategoryId", categoryChannels, "select-module-appeal-category")}
+              {renderChannelSelect("Appeal Log Channel", "appealLogChannelId", textChannels, "select-module-appeal-log")}
+            </div>
+          )}
+
+          {moduleId === "payouts" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {renderChannelSelect("Payout Request Channel", "requestChannelId", textChannels, "select-module-payout-request")}
+              {renderChannelSelect("Payout Log Channel", "logChannelId", textChannels, "select-module-payout-log")}
+            </div>
+          )}
+
+          {moduleId === "moderation" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {renderChannelSelect("Moderation Log Channel", "modLogChannelId", textChannels, "select-module-mod-log")}
+            </div>
+          )}
+
+          {moduleId === "quiz" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {renderChannelSelect("Quiz Log Channel", "quizLogChannelId", textChannels, "select-module-quiz-log")}
+            </div>
+          )}
+
+          {moduleId === "staff-intro" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {renderChannelSelect("Staff Intro Channel", "staffIntroChannelId", textChannels, "select-module-staff-intro")}
+              {renderChannelSelect("Staff Intro Submissions", "staffIntroSubmissionsChannelId", textChannels, "select-module-staff-intro-submissions")}
+            </div>
+          )}
+
+          {moduleId === "inactivity" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              {renderChannelSelect("Inactivity Channel", "inactivityChannelId", textChannels, "select-module-inactivity")}
+              {renderChannelSelect("Inactivity Submissions", "inactivitySubmissionsChannelId", textChannels, "select-module-inactivity-submissions")}
+              {renderChannelSelect("Inactivity Log Channel", "inactivityLogChannelId", textChannels, "select-module-inactivity-log")}
+            </div>
+          )}
+
+          {moduleId === "permissions" && (
+            <div className="space-y-5">
+              {renderRoleSection("Manager Roles", "modRoleIds", "module-manager-role")}
+              {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "module-modmail-staff-role")}
+              {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "module-appeal-staff-role")}
+            </div>
+          )}
+
+          {moduleId === "embeds" && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Modmail Embed Title</Label>
+                <Input value={config.modmailEmbedTitle || ""} onChange={(event) => updateConfig("modmailEmbedTitle", event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Appeal Embed Title</Label>
+                <Input value={config.appealEmbedTitle || ""} onChange={(event) => updateConfig("appealEmbedTitle", event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Modmail Embed Description</Label>
+                <Textarea value={config.modmailEmbedDescription || ""} onChange={(event) => updateConfig("modmailEmbedDescription", event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Appeal Embed Description</Label>
+                <Textarea value={config.appealEmbedDescription || ""} onChange={(event) => updateConfig("appealEmbedDescription", event.target.value)} />
+              </div>
+            </div>
+          )}
+
+          {moduleId === "advanced" && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>customCategoryPings (JSON object)</Label>
+                <Textarea
+                  value={customCategoryPingsText}
+                  onChange={(event) => {
+                    setCustomCategoryPingsText(event.target.value);
+                    updateConfig("customCategoryPings", event.target.value);
+                  }}
+                  className="min-h-[180px] font-mono text-xs"
+                  data-testid="textarea-module-custom-category-pings"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>customModmailCategories (JSON array)</Label>
+                <Textarea
+                  value={customModmailCategoriesText}
+                  onChange={(event) => setCustomModmailCategoriesText(event.target.value)}
+                  className="min-h-[180px] font-mono text-xs"
+                  data-testid="textarea-module-custom-modmail-categories"
+                />
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  };
+
   const renderChannelSelect = (
     label: string,
     key: keyof GuildConfig,
@@ -708,7 +851,10 @@ export default function Dashboard() {
                       key={guild.id}
                       type="button"
                       className="group text-left"
-                      onClick={() => setSelectedGuild(guild.id)}
+                      onClick={() => {
+                        setSelectedGuild(guild.id);
+                        setLocation("/dashboard");
+                      }}
                       data-testid={`card-guild-${guild.id}`}
                     >
                       <div className="overflow-hidden rounded-xl border border-border bg-card/60 transition-all duration-200 ease-out group-hover:-translate-y-1 group-hover:border-primary/60">
@@ -742,7 +888,15 @@ export default function Dashboard() {
       <div className="mx-auto max-w-7xl space-y-6">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={() => setSelectedGuild(null)} data-testid="button-back-guilds">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSelectedGuild(null);
+                setLocation("/dashboard");
+              }}
+              data-testid="button-back-guilds"
+            >
               <ArrowLeft className="mr-2 h-4 w-4" />
               Servers
             </Button>
@@ -825,7 +979,7 @@ export default function Dashboard() {
                       <Input
                         value={quickSettings.moderationPrefix}
                         onChange={(event) => setQuickSettings((prev) => ({ ...prev, moderationPrefix: event.target.value }))}
-                        placeholder="mute, kick, ban"
+                        placeholder="!"
                         data-testid="input-bot-moderation-prefix"
                       />
                     </div>
@@ -834,7 +988,7 @@ export default function Dashboard() {
                       <Input
                         value={quickSettings.modmailPrefix}
                         onChange={(event) => setQuickSettings((prev) => ({ ...prev, modmailPrefix: event.target.value }))}
-                        placeholder="snippets, modmail, appeals"
+                        placeholder="?"
                         data-testid="input-modmail-prefix"
                       />
                     </div>
@@ -856,6 +1010,8 @@ export default function Dashboard() {
                   </div>
                 </CardContent>
               </Card>
+
+              {renderActiveModuleSettings()}
             </TabsContent>
 
             <TabsContent value="features" className="space-y-0">
@@ -893,6 +1049,19 @@ export default function Dashboard() {
                         <Badge variant={module.enabled ? "default" : "secondary"}>
                           {module.enabled ? "Enabled" : "Disabled"}
                         </Badge>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="ml-2"
+                          onClick={() => {
+                            if (!selectedGuild) return;
+                            setLocation(`/dashboard/module/${module.id}?guild=${selectedGuild}`);
+                          }}
+                          data-testid={`button-module-settings-${module.id}`}
+                        >
+                          <Settings className="mr-2 h-3.5 w-3.5" />
+                          Settings
+                        </Button>
                       </div>
                     ))}
                   </div>

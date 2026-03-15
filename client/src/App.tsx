@@ -12,6 +12,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Dashboard} />
       <Route path="/dashboard" component={Dashboard} />
+      <Route path="/dashboard/module/:moduleId" component={Dashboard} />
       <Route component={NotFound} />
     </Switch>
   );

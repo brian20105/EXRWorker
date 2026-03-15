@@ -548,6 +548,22 @@ function parseJsonObject(value?: string | null): Record<string, any> {
   }
 }
 
+function getDashboardQuickSettingsFromGuildConfig(config?: any): { moderationPrefix: string; modmailPrefix: string } {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__dashboardQuickSettings;
+  if (!raw || typeof raw !== "object") {
+    return { moderationPrefix: "", modmailPrefix: "" };
+  }
+
+  const moderationPrefix = typeof raw.moderationPrefix === "string" ? raw.moderationPrefix.trim() : "";
+  const modmailPrefix = typeof raw.modmailPrefix === "string" ? raw.modmailPrefix.trim() : "";
+
+  return {
+    moderationPrefix: moderationPrefix.slice(0, 3),
+    modmailPrefix: modmailPrefix.slice(0, 3),
+  };
+}
+
 function normalizeStringArray(value: any): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => typeof item === "string" && item.trim().length > 0);
@@ -14439,6 +14455,7 @@ client.on("messageCreate", async (message) => {
 
   // Get configurable prefix for this guild (default ".")
   let prefix = ".";
+  let acceptedPrefixes: string[] = ["."];
   let guildConfig: any;
   if (message.guild) {
     try {
@@ -14446,10 +14463,27 @@ client.on("messageCreate", async (message) => {
       if (guildConfig?.commandPrefix) {
         prefix = guildConfig.commandPrefix;
       }
+
+      const quickSettingsPrefixes = getDashboardQuickSettingsFromGuildConfig(guildConfig);
+      acceptedPrefixes = Array.from(new Set([
+        prefix,
+        quickSettingsPrefixes.moderationPrefix,
+        quickSettingsPrefixes.modmailPrefix,
+        ".",
+      ].map((value) => (value || "").trim()).filter(Boolean)));
     } catch (e) {
       // Use default prefix if config fetch fails
     }
   }
+
+  const matchedPrefix = acceptedPrefixes
+    .sort((left, right) => right.length - left.length)
+    .find((candidate) => message.content.toLowerCase().startsWith(candidate.toLowerCase()));
+
+  if (matchedPrefix) {
+    prefix = matchedPrefix;
+  }
+
   let lowerPrefix = prefix.toLowerCase();
   const lowerContent = message.content.toLowerCase();
 
