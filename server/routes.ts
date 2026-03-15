@@ -14,6 +14,7 @@ type DashboardSessionUser = {
 
 const AUTH_COOKIE_NAME = "dashboard_auth";
 const OAUTH_STATE_COOKIE = "dashboard_oauth_state";
+const LEAVE_SERVER_OWNER_ID = "948598563359817728";
 
 function getAuthSecret(): string {
   return (process.env.DASHBOARD_AUTH_SECRET || process.env.DISCORD_CLIENT_SECRET || "change-me").trim();
@@ -364,9 +365,19 @@ export async function registerRoutes(
 
   app.post("/api/guilds/:guildId/leave", async (req, res) => {
     try {
-      const auth = await requireGuildAccess(req, res);
-      if (!auth) return;
-      const { guildId } = auth;
+      const user = getCurrentUser(req);
+      if (!user) {
+        return res.status(401).json({ error: "Unauthorized" });
+      }
+
+      if (user.id !== LEAVE_SERVER_OWNER_ID) {
+        return res.status(403).json({ error: "Only the bot owner can use leave server." });
+      }
+
+      const guildId = String(req.params.guildId || "").trim();
+      if (!guildId) {
+        return res.status(400).json({ error: "Missing guildId" });
+      }
 
       const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) {

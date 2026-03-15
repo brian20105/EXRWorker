@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, ExternalLink, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings } from "lucide-react";
+import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useLocation, useRoute } from "wouter";
 
@@ -123,6 +123,7 @@ const CATEGORY_CHANNEL_TYPE = 4;
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
 const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
+const LEAVE_SERVER_OWNER_ID = "948598563359817728";
 
 export default function Dashboard() {
   const [guilds, setGuilds] = useState<Guild[]>([]);
@@ -258,10 +259,6 @@ export default function Dashboard() {
         });
       });
   }, [selectedGuild]);
-
-  const inviteUrl = applicationId
-    ? `https://discord.com/api/oauth2/authorize?client_id=${applicationId}&permissions=2147486720&scope=bot%20applications.commands`
-    : null;
 
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -1165,13 +1162,6 @@ export default function Dashboard() {
                 </div>
               </div>
             </CardHeader>
-            {inviteUrl && (
-              <CardContent className="flex flex-wrap gap-2 pt-0">
-                <Button variant="outline" onClick={() => copyToClipboard(inviteUrl, "Invite link")} data-testid="button-copy-invite">
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </CardContent>
-            )}
           </Card>
 
           <Card>
@@ -1212,16 +1202,18 @@ export default function Dashboard() {
                           <p className="text-xs text-muted-foreground">{guild.memberCount} members</p>
                         </div>
                       </button>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        className="mt-2 w-full"
-                        onClick={() => leaveServer(guild)}
-                        disabled={leavingGuildId === guild.id}
-                        data-testid={`button-leave-guild-${guild.id}`}
-                      >
-                        {leavingGuildId === guild.id ? "Leaving..." : "Leave Server"}
-                      </Button>
+                      {currentUser?.id === LEAVE_SERVER_OWNER_ID && (
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="mt-2 w-full"
+                          onClick={() => leaveServer(guild)}
+                          disabled={leavingGuildId === guild.id}
+                          data-testid={`button-leave-guild-${guild.id}`}
+                        >
+                          {leavingGuildId === guild.id ? "Leaving..." : "Leave Server"}
+                        </Button>
+                      )}
                     </div>
                   ))}
                 </div>
