@@ -90,6 +90,17 @@ interface DashboardQuickSettings {
   botNickname: string;
 }
 
+interface DashboardPermissionSettings {
+  stickyCommandRoleIds: string[];
+  roleRequestCommandRoleIds: string[];
+  prefixBanRoleIds: string[];
+  prefixMuteRoleIds: string[];
+  prefixKickRoleIds: string[];
+  prefixModlogsRoleIds: string[];
+  prefixReasonRoleIds: string[];
+  prefixRetimeRoleIds: string[];
+}
+
 interface BotFeatureModule {
   id: string;
   name: string;
@@ -129,6 +140,16 @@ export default function Dashboard() {
     moderationPrefix: "",
     modmailPrefix: "",
     botNickname: "",
+  });
+  const [permissionSettings, setPermissionSettings] = useState<DashboardPermissionSettings>({
+    stickyCommandRoleIds: [],
+    roleRequestCommandRoleIds: [],
+    prefixBanRoleIds: [],
+    prefixMuteRoleIds: [],
+    prefixKickRoleIds: [],
+    prefixModlogsRoleIds: [],
+    prefixReasonRoleIds: [],
+    prefixRetimeRoleIds: [],
   });
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
@@ -201,6 +222,7 @@ export default function Dashboard() {
         setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
         setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
         setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+        setPermissionSettings(getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setActivePrimaryTab("settings");
         setActiveSettingsTab("channels");
         setModuleSearch("");
@@ -323,6 +345,37 @@ export default function Dashboard() {
     };
   };
 
+  const normalizeStringArray = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return value
+      .map((item) => String(item || "").trim())
+      .filter(Boolean);
+  };
+
+  const getPermissionSettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardPermissionSettings => {
+    const parsed = parseJsonObjectSafely(raw);
+    const moderationSetupRaw = parsed.__moderationSetup;
+    const moderationSetup = moderationSetupRaw && typeof moderationSetupRaw === "object" && !Array.isArray(moderationSetupRaw)
+      ? moderationSetupRaw as Record<string, unknown>
+      : {};
+
+    const rolePermissionsRaw = moderationSetup.rolePermissions;
+    const rolePermissions = rolePermissionsRaw && typeof rolePermissionsRaw === "object" && !Array.isArray(rolePermissionsRaw)
+      ? rolePermissionsRaw as Record<string, unknown>
+      : {};
+
+    return {
+      stickyCommandRoleIds: normalizeStringArray(parsed.__stickyRoleIds),
+      roleRequestCommandRoleIds: normalizeStringArray(parsed.__roleRequestRoleIds),
+      prefixBanRoleIds: normalizeStringArray(rolePermissions.ban),
+      prefixMuteRoleIds: normalizeStringArray(rolePermissions.mute),
+      prefixKickRoleIds: normalizeStringArray(rolePermissions.kick),
+      prefixModlogsRoleIds: normalizeStringArray(moderationSetup.modlogsRoleIds),
+      prefixReasonRoleIds: normalizeStringArray(moderationSetup.reasonRoleIds),
+      prefixRetimeRoleIds: normalizeStringArray(moderationSetup.retimeRoleIds),
+    };
+  };
+
   const syncFeatureFlagsState = (guildConfig: GuildConfig, customCategoryPingsRaw: string | null | undefined) => {
     const defaults = getDefaultFeatureEnabledMap(guildConfig);
     const overrides = getFeatureFlagOverrides(customCategoryPingsRaw);
@@ -346,6 +399,16 @@ export default function Dashboard() {
       const nextText = JSON.stringify(parsed, null, 2);
       updateConfig("customCategoryPings", nextText);
       return nextText;
+    });
+  };
+
+  const togglePermissionRole = (key: keyof DashboardPermissionSettings, roleId: string) => {
+    setPermissionSettings((prev) => {
+      const current = prev[key] || [];
+      if (current.includes(roleId)) {
+        return { ...prev, [key]: current.filter((id) => id !== roleId) };
+      }
+      return { ...prev, [key]: [...current, roleId] };
     });
   };
 
@@ -384,6 +447,31 @@ export default function Dashboard() {
       modmailPrefix: quickSettings.modmailPrefix.trim(),
       botNickname: quickSettings.botNickname.trim(),
     };
+
+    const currentModerationSetupRaw = categoryPingsObject.__moderationSetup;
+    const currentModerationSetup = currentModerationSetupRaw && typeof currentModerationSetupRaw === "object" && !Array.isArray(currentModerationSetupRaw)
+      ? currentModerationSetupRaw as Record<string, unknown>
+      : {};
+    const currentRolePermissionsRaw = currentModerationSetup.rolePermissions;
+    const currentRolePermissions = currentRolePermissionsRaw && typeof currentRolePermissionsRaw === "object" && !Array.isArray(currentRolePermissionsRaw)
+      ? currentRolePermissionsRaw as Record<string, unknown>
+      : {};
+
+    categoryPingsObject.__moderationSetup = {
+      ...currentModerationSetup,
+      modlogsRoleIds: permissionSettings.prefixModlogsRoleIds,
+      reasonRoleIds: permissionSettings.prefixReasonRoleIds,
+      retimeRoleIds: permissionSettings.prefixRetimeRoleIds,
+      rolePermissions: {
+        ...currentRolePermissions,
+        ban: permissionSettings.prefixBanRoleIds,
+        mute: permissionSettings.prefixMuteRoleIds,
+        kick: permissionSettings.prefixKickRoleIds,
+      },
+    };
+    categoryPingsObject.__stickyRoleIds = permissionSettings.stickyCommandRoleIds;
+    categoryPingsObject.__roleRequestRoleIds = permissionSettings.roleRequestCommandRoleIds;
+
     const parsedCategoryPings = JSON.stringify(categoryPingsObject, null, 2);
 
     const parsedCustomCategories = parseJsonField(customModmailCategoriesText, "Custom Modmail Categories");
@@ -582,9 +670,27 @@ export default function Dashboard() {
 
           {moduleId === "permissions" && (
             <div className="space-y-5">
+              {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "module-payout-approval-role")}
+              {renderRoleSection("Ban/Unban + Kick Approval Roles", "modRoleIds", "module-moderation-approval-role")}
               {renderRoleSection("Manager Roles", "modRoleIds", "module-manager-role")}
               {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "module-modmail-staff-role")}
+              {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "module-modmail-block-role")}
+              {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "module-modmail-claim-role")}
               {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "module-appeal-staff-role")}
+              {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "module-activity-reset-role")}
+              {renderRoleSection("Snippet Roles", "snippetRoleIds", "module-snippet-role")}
+              {renderRoleSection("Activity Command Roles", "activityRoleIds", "module-activity-role")}
+              {renderRoleSection("Message Command Roles", "messageCommandRoleIds", "module-message-command-role")}
+              {renderRoleSection("Roster Command Roles", "rosterCommandRoleIds", "module-roster-command-role")}
+              {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "module-role-command-role")}
+              {renderPermissionRoleSection("Sticky Command Roles", "stickyCommandRoleIds", "module-sticky-command-role")}
+              {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "module-role-request-command-role")}
+              {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "module-prefix-ban-role")}
+              {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "module-prefix-mute-role")}
+              {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "module-prefix-kick-role")}
+              {renderPermissionRoleSection("Prefix Modlogs/Clean Roles", "prefixModlogsRoleIds", "module-prefix-modlogs-role")}
+              {renderPermissionRoleSection("Prefix Reason Roles", "prefixReasonRoleIds", "module-prefix-reason-role")}
+              {renderPermissionRoleSection("Prefix Retime Roles", "prefixRetimeRoleIds", "module-prefix-retime-role")}
             </div>
           )}
 
@@ -766,6 +872,73 @@ export default function Dashboard() {
             ))}
           {(((config[key] as string[] | undefined) || []).length || 0) > 8 && (
             <Badge variant="outline">+{(((config[key] as string[] | undefined) || []).length || 0) - 8} more</Badge>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderPermissionRoleSection = (label: string, key: keyof DashboardPermissionSettings, testIdPrefix: string) => (
+    <div className="space-y-3">
+      <Label>{label}</Label>
+      <div className="space-y-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
+              <span className="truncate text-left">
+                {(permissionSettings[key]?.length || 0) > 0
+                  ? `${permissionSettings[key].length} role(s) selected`
+                  : "Select roles"}
+              </span>
+              <ChevronDown className="h-4 w-4 opacity-70" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="max-h-72 w-80">
+            <div className="px-1 pb-2">
+              <Input
+                value={roleSearches[String(key)] || ""}
+                onChange={(event) =>
+                  setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
+                }
+                placeholder="Search roles..."
+                className="h-8"
+                data-testid={`${testIdPrefix}-search`}
+              />
+            </div>
+            {roles
+              .filter((role) => {
+                const query = (roleSearches[String(key)] || "").trim().toLowerCase();
+                if (!query) return true;
+                return role.name.toLowerCase().includes(query);
+              })
+              .map((role) => {
+                const selected = (permissionSettings[key] || []).includes(role.id);
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={role.id}
+                    checked={selected}
+                    onCheckedChange={() => togglePermissionRole(key, role.id)}
+                    onSelect={(event) => event.preventDefault()}
+                    data-testid={`${testIdPrefix}-${role.id}`}
+                  >
+                    {role.name}
+                  </DropdownMenuCheckboxItem>
+                );
+              })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <div className="flex flex-wrap gap-2">
+          {roles
+            .filter((role) => (permissionSettings[key] || []).includes(role.id))
+            .slice(0, 8)
+            .map((role) => (
+              <Badge key={role.id} variant="secondary" className="max-w-[220px] truncate" title={role.name}>
+                {role.name}
+              </Badge>
+            ))}
+          {(permissionSettings[key]?.length || 0) > 8 && (
+            <Badge variant="outline">+{permissionSettings[key].length - 8} more</Badge>
           )}
         </div>
       </div>
