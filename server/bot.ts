@@ -3621,6 +3621,8 @@ async function updateRosterMessages(guildId: string): Promise<void> {
 client.once("clientReady", async () => {
   console.log(`✅ Bot logged in as ${client.user?.tag}`);
 
+  processExpiredTimedMutes().catch(() => {});
+
   if (!APPLICATION_ID) {
     console.warn("⚠️  DISCORD_APPLICATION_ID not set. Skipping command registration.");
     return;
@@ -14149,6 +14151,81 @@ interface ClaimExpiryTimer {
 const pendingClaimExpiry = new Map<string, ClaimExpiryTimer>();
 const threadWasClaimed = new Set<string>();
 
+let autoUnmuteSweepRunning = false;
+
+async function processExpiredTimedMutes(): Promise<void> {
+  if (autoUnmuteSweepRunning || !client.isReady() || !client.user) return;
+  autoUnmuteSweepRunning = true;
+
+  try {
+    const now = Date.now();
+
+    for (const guild of client.guilds.cache.values()) {
+      try {
+        const config = await storage.getGuildConfig(guild.id);
+        const modSetup = getModerationSetupFromConfig(config);
+        const mutedRoleId = modSetup.mutedRoleId;
+        if (!mutedRoleId) continue;
+
+        const actions = await storage.getModerationActionsByGuild(guild.id).catch(() => [] as any[]);
+        if (!actions.length) continue;
+
+        const latestActionByTarget = new Map<string, any | null>();
+        for (const action of actions) {
+          const targetId = String(action?.targetId || "").trim();
+          if (!targetId || latestActionByTarget.has(targetId)) continue;
+
+          const actionType = String(action?.actionType || "").toLowerCase();
+          if (actionType === "mute") {
+            latestActionByTarget.set(targetId, action);
+          } else if (actionType === "unmute") {
+            latestActionByTarget.set(targetId, null);
+          }
+        }
+
+        for (const [targetId, latestAction] of latestActionByTarget.entries()) {
+          if (!latestAction) continue;
+
+          const parsed = extractReasonAndDuration(latestAction.reason);
+          const durationToken = (parsed.duration || "").toLowerCase();
+          if (!durationToken || durationToken === "permanent") continue;
+
+          const durationMs = parseDurationMs(durationToken);
+          if (!durationMs) continue;
+
+          const createdAt = latestAction.createdAt ? new Date(latestAction.createdAt).getTime() : NaN;
+          if (!Number.isFinite(createdAt)) continue;
+
+          const expiresAt = createdAt + durationMs;
+          if (expiresAt > now) continue;
+
+          const member = await guild.members.fetch(targetId).catch(() => null);
+          if (!member || !member.roles?.cache?.has(mutedRoleId)) continue;
+
+          try {
+            await member.roles.remove(mutedRoleId, `Temporary mute expired (${durationToken})`);
+            await storage.createModerationAction({
+              guildId: guild.id,
+              moderatorId: client.user.id,
+              targetId,
+              actionType: "unmute",
+              reason: `Temporary mute expired (${durationToken})`,
+              sourceType: "manual",
+              sourceMessageId: `auto-unmute-${latestAction.id}`,
+            });
+          } catch {
+            // ignore auto-unmute failures
+          }
+        }
+      } catch {
+        // ignore per-guild auto-unmute failures
+      }
+    }
+  } finally {
+    autoUnmuteSweepRunning = false;
+  }
+}
+
 const recentStaffSendCache = new Map<string, number>();
 const STAFF_SEND_DEDUP_WINDOW_MS = 1200;
 const STAFF_SEND_CACHE_TTL_MS = 15000;
@@ -14314,6 +14391,10 @@ setInterval(() => {
     }
   }
 }, 10 * 60 * 1000); // Every 10 minutes
+
+setInterval(() => {
+  processExpiredTimedMutes().catch(() => {});
+}, 60 * 1000);
 
 // Prevent duplicate message processing (in case of multiple bot instances)
 const processedMessages = new Set<string>();
