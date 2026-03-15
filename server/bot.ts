@@ -14647,7 +14647,7 @@ client.on("messageCreate", async (message) => {
     }
     const targetUser = await client.users.fetch(targetUserId).catch(() => null);
     const claimedEmbed = new EmbedBuilder()
-      .setDescription(`✅ Ticket has been claimed for ${targetUser ? targetUser.username : targetUserId}. Only they (or an Administrator) can unclaim it.`)
+      .setDescription(`✅ Ticket has been claimed for <@${targetUserId}>.`)
       .setColor(0x23a559)
       .setTimestamp();
     await message.reply({ embeds: [claimedEmbed] });
@@ -16153,7 +16153,7 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Handle !or, !override, and !unclaim command (claimer or admin can unclaim) - works in both modmail and appeal channels
+  // Handle !or, !override, and !unclaim command - works in both modmail and appeal channels
   if (message.guild && (lowerContent === `${lowerPrefix}or` || lowerContent === `${lowerPrefix}override` || lowerContent === `${lowerPrefix}unclaim`)) {
     const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
@@ -16169,18 +16169,29 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
+    const isOverrideCommand = lowerContent === `${lowerPrefix}or` || lowerContent === `${lowerPrefix}override`;
+    const isUnclaimCommand = lowerContent === `${lowerPrefix}unclaim`;
+
     if (!thread.claimedById) {
+      if (isUnclaimCommand) {
+        await sendTicketCommandEmbed(message, "❌ This ticket is not claimed by you.", 0xed4245);
+        return;
+      }
       await sendTicketCommandEmbed(message, "❌ This ticket is not claimed by anyone.", 0xed4245);
       return;
     }
 
-    // Check permission: claimer can unclaim their own ticket, or admin can unclaim any ticket
     const member = message.member;
     const hasAdminPermission = member && member.permissions.has("Administrator");
     const isClaimedByUser = thread.claimedById === message.author.id;
 
-    if (!isClaimedByUser && !hasAdminPermission) {
-      await sendTicketCommandEmbed(message, `❌ Only <@${thread.claimedById}> (who claimed this ticket) or an administrator can unclaim it.`, 0xed4245);
+    if (isOverrideCommand && !hasAdminPermission) {
+      await sendTicketCommandEmbed(message, "❌ You do not have permission to use this.", 0xed4245);
+      return;
+    }
+
+    if (isUnclaimCommand && !isClaimedByUser) {
+      await sendTicketCommandEmbed(message, "❌ This ticket is not claimed by you.", 0xed4245);
       return;
     }
 
