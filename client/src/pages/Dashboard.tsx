@@ -84,6 +84,12 @@ interface AuthUser {
 type SettingsTabKey = "channels" | "roles" | "embeds" | "advanced";
 type PrimaryTabKey = "settings" | "features";
 
+interface DashboardQuickSettings {
+  moderationPrefix: string;
+  modmailPrefix: string;
+  botNickname: string;
+}
+
 interface BotFeatureModule {
   id: string;
   name: string;
@@ -96,6 +102,7 @@ const NONE_VALUE = "__none";
 const CATEGORY_CHANNEL_TYPE = 4;
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
 const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
+const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
 
 export default function Dashboard() {
   const [guilds, setGuilds] = useState<Guild[]>([]);
@@ -117,6 +124,11 @@ export default function Dashboard() {
   const [moduleEnabledMap, setModuleEnabledMap] = useState<Record<string, boolean>>({});
   const [customCategoryPingsText, setCustomCategoryPingsText] = useState("{}");
   const [customModmailCategoriesText, setCustomModmailCategoriesText] = useState("[]");
+  const [quickSettings, setQuickSettings] = useState<DashboardQuickSettings>({
+    moderationPrefix: "",
+    modmailPrefix: "",
+    botNickname: "",
+  });
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
 
@@ -185,6 +197,7 @@ export default function Dashboard() {
         setGuildName(data.guildName || "");
         setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
         setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
+        setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setActivePrimaryTab("settings");
         setActiveSettingsTab("channels");
         setModuleSearch("");
@@ -288,6 +301,25 @@ export default function Dashboard() {
     return result;
   };
 
+  const getQuickSettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardQuickSettings => {
+    const parsed = parseJsonObjectSafely(raw);
+    const quickSettingsValue = parsed[QUICK_SETTINGS_KEY];
+    if (!quickSettingsValue || typeof quickSettingsValue !== "object" || Array.isArray(quickSettingsValue)) {
+      return {
+        moderationPrefix: "",
+        modmailPrefix: "",
+        botNickname: "",
+      };
+    }
+
+    const quickSettingsObject = quickSettingsValue as Record<string, unknown>;
+    return {
+      moderationPrefix: typeof quickSettingsObject.moderationPrefix === "string" ? quickSettingsObject.moderationPrefix : "",
+      modmailPrefix: typeof quickSettingsObject.modmailPrefix === "string" ? quickSettingsObject.modmailPrefix : "",
+      botNickname: typeof quickSettingsObject.botNickname === "string" ? quickSettingsObject.botNickname : "",
+    };
+  };
+
   const syncFeatureFlagsState = (guildConfig: GuildConfig, customCategoryPingsRaw: string | null | undefined) => {
     const defaults = getDefaultFeatureEnabledMap(guildConfig);
     const overrides = getFeatureFlagOverrides(customCategoryPingsRaw);
@@ -343,8 +375,13 @@ export default function Dashboard() {
   const saveConfig = async () => {
     if (!selectedGuild) return;
 
-    const parsedCategoryPings = parseJsonField(customCategoryPingsText, "Custom Category Pings");
-    if (parsedCategoryPings === undefined) return;
+    const categoryPingsObject = parseJsonObjectSafely(customCategoryPingsText || config.customCategoryPings || "{}");
+    categoryPingsObject[QUICK_SETTINGS_KEY] = {
+      moderationPrefix: quickSettings.moderationPrefix.trim(),
+      modmailPrefix: quickSettings.modmailPrefix.trim(),
+      botNickname: quickSettings.botNickname.trim(),
+    };
+    const parsedCategoryPings = JSON.stringify(categoryPingsObject, null, 2);
 
     const parsedCustomCategories = parseJsonField(customModmailCategoriesText, "Custom Modmail Categories");
     if (parsedCustomCategories === undefined) return;
@@ -384,6 +421,8 @@ export default function Dashboard() {
 
   const categoryChannels = channels.filter((c) => c.type === CATEGORY_CHANNEL_TYPE);
   const textChannels = channels.filter((c) => TEXT_CHANNEL_TYPES.has(c.type));
+  const voiceChannels = channels.filter((c) => c.type === 2 || c.type === 13);
+  const selectedGuildSummary = guilds.find((guild) => guild.id === selectedGuild) || null;
 
   const botFeatureDefinitions: Omit<BotFeatureModule, "enabled">[] = [
     {
@@ -688,216 +727,92 @@ export default function Dashboard() {
             <CardContent className="py-10 text-center text-muted-foreground">Loading configuration...</CardContent>
           </Card>
         ) : (
-          <Tabs value={activePrimaryTab} onValueChange={(value) => setActivePrimaryTab(value as PrimaryTabKey)} className="space-y-4">
-            <TabsList className="grid h-auto w-full grid-cols-2 gap-2 p-1 md:w-[420px]">
-              <TabsTrigger value="settings" data-testid="tab-settings">Dashboard Settings</TabsTrigger>
-              <TabsTrigger value="features" data-testid="tab-bot-features">Bot Features</TabsTrigger>
-            </TabsList>
+          <div className="space-y-6">
+            <Card className="border-border/80 bg-card/90" data-testid="card-server-info">
+              <CardHeader>
+                <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Server Info</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Members</p>
+                    <p className="mt-1 text-lg font-semibold">{selectedGuildSummary?.memberCount ?? 0}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Categories</p>
+                    <p className="mt-1 text-lg font-semibold">{categoryChannels.length}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Text Channels</p>
+                    <p className="mt-1 text-lg font-semibold">{textChannels.length}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Voice Channels</p>
+                    <p className="mt-1 text-lg font-semibold">{voiceChannels.length}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Roles</p>
+                    <p className="mt-1 text-lg font-semibold">{roles.length}</p>
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-start">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => copyToClipboard(selectedGuild || "", "Server ID")}
+                    data-testid="button-copy-server-id"
+                  >
+                    <Copy className="mr-2 h-4 w-4" />
+                    Copy Server ID
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
 
-            <TabsContent value="settings" className="space-y-0">
-              <Card className="border-border/80 bg-card/90" data-testid="card-bot-settings">
-                <CardHeader className="space-y-1">
-                  <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Settings</CardTitle>
-                  <CardDescription>Configure from web and slash commands using the same settings store.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-8">
-                  <section className="grid gap-6 lg:grid-cols-2">
-                    <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                      <div className="space-y-2">
-                        <Label>Command Prefix</Label>
-                        <Input
-                          value={config.commandPrefix || "."}
-                          maxLength={3}
-                          onChange={(e) => updateConfig("commandPrefix", e.target.value)}
-                          placeholder="?"
-                          data-testid="input-command-prefix"
-                        />
-                      </div>
-                      {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-command-log-channel")}
-                      {renderChannelSelect("Moderation Log Channel", "modLogChannelId", textChannels, "select-mod-log-channel")}
-                      {renderChannelSelect("Quiz Log Channel", "quizLogChannelId", textChannels, "select-quiz-log-channel")}
-                    </div>
-
-                    <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                      {renderRoleSection("Manager Roles (Owner/Administrator)", "modRoleIds", "badge-mod-role")}
-                      {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "badge-modmail-staff-role")}
-                      {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "badge-appeal-staff-role")}
-                    </div>
-                  </section>
-
-                  <Tabs value={activeSettingsTab} onValueChange={(value) => setActiveSettingsTab(value as SettingsTabKey)} className="space-y-4">
-                    <TabsList className="grid h-auto w-full grid-cols-2 gap-2 p-1 md:grid-cols-4">
-                      <TabsTrigger value="channels"><Hash className="mr-2 h-4 w-4" />Channels</TabsTrigger>
-                      <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Role Access</TabsTrigger>
-                      <TabsTrigger value="embeds">Embeds</TabsTrigger>
-                      <TabsTrigger value="advanced"><Braces className="mr-2 h-4 w-4" />Advanced</TabsTrigger>
-                    </TabsList>
-
-                    <TabsContent value="channels">
-                      <div className="grid gap-4 rounded-lg border border-border/70 bg-muted/20 p-4 md:grid-cols-2">
-                        {renderChannelSelect("Payout Request Channel", "requestChannelId", textChannels, "select-request-channel")}
-                        {renderChannelSelect("Payout Log Channel", "logChannelId", textChannels, "select-log-channel")}
-                        {renderChannelSelect("Modmail Category", "modmailCategoryId", categoryChannels, "select-modmail-category")}
-                        {renderChannelSelect("Modmail Log Channel", "modmailLogChannelId", textChannels, "select-modmail-log-channel")}
-                        {renderChannelSelect("Appeal Category", "appealCategoryId", categoryChannels, "select-appeal-category")}
-                        {renderChannelSelect("Appeal Log Channel", "appealLogChannelId", textChannels, "select-appeal-log-channel")}
-                        {renderChannelSelect("Staff Intro Channel", "staffIntroChannelId", textChannels, "select-staff-intro-channel")}
-                        {renderChannelSelect("Staff Intro Submission Channel", "staffIntroSubmissionsChannelId", textChannels, "select-staff-intro-submissions-channel")}
-                        {renderChannelSelect("Inactivity Channel", "inactivityChannelId", textChannels, "select-inactivity-channel")}
-                        {renderChannelSelect("Inactivity Submission Channel", "inactivitySubmissionsChannelId", textChannels, "select-inactivity-submissions-channel")}
-                        {renderChannelSelect("Inactivity Log Channel", "inactivityLogChannelId", textChannels, "select-inactivity-log-channel")}
-                      </div>
-                    </TabsContent>
-
-                    <TabsContent value="roles">
-                      <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                        {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "badge-payout-role")}
-                        {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "badge-modmail-block-role")}
-                        {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "badge-modmail-claim-role")}
-                        {renderRoleSection("Snippet Roles", "snippetRoleIds", "badge-snippet-role")}
-                        {renderRoleSection("Activity Command Roles", "activityRoleIds", "badge-activity-role")}
-                        {renderRoleSection("Message Command Roles", "messageCommandRoleIds", "badge-message-role")}
-                        {renderRoleSection("Roster Command Roles", "rosterCommandRoleIds", "badge-roster-role")}
-                        {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "badge-rolecmd-role")}
-                        {renderRoleSection("Tracked Activity Roles", "activityTrackedRoleIds", "badge-tracked-role")}
-                        {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "badge-reset-role")}
-                        {renderRoleSection("Inactivity Ping Roles", "inactivityPingRoleIds", "badge-inactivity-role")}
-                      </div>
-                    </TabsContent>
-
-                    <TabsContent value="embeds">
-                      <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <div className="space-y-2">
-                            <Label>Modmail Embed Title</Label>
-                            <Input value={config.modmailEmbedTitle || ""} onChange={(e) => updateConfig("modmailEmbedTitle", e.target.value)} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label>Appeal Embed Title</Label>
-                            <Input value={config.appealEmbedTitle || ""} onChange={(e) => updateConfig("appealEmbedTitle", e.target.value)} />
-                          </div>
-                        </div>
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <div className="space-y-2">
-                            <Label>Modmail Embed Description</Label>
-                            <Textarea value={config.modmailEmbedDescription || ""} onChange={(e) => updateConfig("modmailEmbedDescription", e.target.value)} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label>Appeal Embed Description</Label>
-                            <Textarea value={config.appealEmbedDescription || ""} onChange={(e) => updateConfig("appealEmbedDescription", e.target.value)} />
-                          </div>
-                        </div>
-
-                        <Separator />
-
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <div className="space-y-2">
-                            <Label>Staff Intro Embed Title</Label>
-                            <Input value={config.staffIntroEmbedTitle || ""} onChange={(e) => updateConfig("staffIntroEmbedTitle", e.target.value)} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label>Inactivity Embed Title</Label>
-                            <Input value={config.inactivityEmbedTitle || ""} onChange={(e) => updateConfig("inactivityEmbedTitle", e.target.value)} />
-                          </div>
-                        </div>
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <div className="space-y-2">
-                            <Label>Staff Intro Embed Description</Label>
-                            <Textarea value={config.staffIntroEmbedDescription || ""} onChange={(e) => updateConfig("staffIntroEmbedDescription", e.target.value)} />
-                          </div>
-                          <div className="space-y-2">
-                            <Label>Inactivity Embed Description</Label>
-                            <Textarea value={config.inactivityEmbedDescription || ""} onChange={(e) => updateConfig("inactivityEmbedDescription", e.target.value)} />
-                          </div>
-                        </div>
-                      </div>
-                    </TabsContent>
-
-                    <TabsContent value="advanced">
-                      <div className="space-y-6 rounded-lg border border-border/70 bg-muted/20 p-4">
-                        <div className="space-y-2">
-                          <Label>customCategoryPings (JSON object)</Label>
-                          <Textarea
-                            value={customCategoryPingsText}
-                            onChange={(e) => {
-                              setCustomCategoryPingsText(e.target.value);
-                              updateConfig("customCategoryPings", e.target.value);
-                            }}
-                            className="min-h-[180px] font-mono text-xs"
-                            data-testid="textarea-custom-category-pings"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>customModmailCategories (JSON array)</Label>
-                          <Textarea
-                            value={customModmailCategoriesText}
-                            onChange={(e) => setCustomModmailCategoriesText(e.target.value)}
-                            className="min-h-[180px] font-mono text-xs"
-                            data-testid="textarea-custom-modmail-categories"
-                          />
-                        </div>
-                      </div>
-                    </TabsContent>
-                  </Tabs>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="features" className="space-y-0">
-              <Card className="border-border/80 bg-card/90" data-testid="card-bot-features">
-                <CardHeader className="space-y-1">
-                  <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Features</CardTitle>
-                  <CardDescription>Enable or disable modules, then open module settings to configure details.</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Card className="border-border/80 bg-card/90" data-testid="card-bot-settings-simple">
+              <CardHeader className="space-y-1">
+                <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Settings</CardTitle>
+                <CardDescription>Configure moderation commands, modmail commands, nickname, and update channel.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Bot Moderation Prefix</Label>
                     <Input
-                      value={moduleSearch}
-                      onChange={(event) => setModuleSearch(event.target.value)}
-                      placeholder="Search features..."
-                      className="pl-9"
-                      data-testid="input-module-search"
+                      value={quickSettings.moderationPrefix}
+                      onChange={(event) => setQuickSettings((prev) => ({ ...prev, moderationPrefix: event.target.value }))}
+                      placeholder="mute, kick, ban"
+                      data-testid="input-bot-moderation-prefix"
                     />
                   </div>
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    {filteredModules.map((module) => (
-                      <div key={module.id} className="rounded-lg border border-border/70 bg-card/40 p-4">
-                        <div className="mb-3 flex items-start justify-between gap-3">
-                          <div>
-                            <p className="font-semibold">{module.name}</p>
-                            <p className="mt-1 text-sm text-muted-foreground">{module.description}</p>
-                          </div>
-                          <Switch
-                            checked={module.enabled}
-                            onCheckedChange={(nextChecked) => setFeatureEnabled(module.id, nextChecked)}
-                            data-testid={`switch-module-${module.id}`}
-                          />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant={module.enabled ? "default" : "secondary"}>
-                            {module.enabled ? "Enabled" : "Disabled"}
-                          </Badge>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              setActivePrimaryTab("settings");
-                              setActiveSettingsTab(module.tab);
-                            }}
-                            data-testid={`button-module-settings-${module.id}`}
-                          >
-                            <Settings className="mr-2 h-3.5 w-3.5" />
-                            Settings
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
+                  <div className="space-y-2">
+                    <Label>Modmail Prefix</Label>
+                    <Input
+                      value={quickSettings.modmailPrefix}
+                      onChange={(event) => setQuickSettings((prev) => ({ ...prev, modmailPrefix: event.target.value }))}
+                      placeholder="snippets, modmail, appeals"
+                      data-testid="input-modmail-prefix"
+                    />
                   </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Bot Nickname</Label>
+                    <Input
+                      value={quickSettings.botNickname}
+                      onChange={(event) => setQuickSettings((prev) => ({ ...prev, botNickname: event.target.value }))}
+                      placeholder="Expert Helper Bot"
+                      data-testid="input-bot-nickname"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    {renderChannelSelect("Updates Channel", "commandLogChannelId", textChannels, "select-updates-channel")}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         )}
       </div>
     </div>
