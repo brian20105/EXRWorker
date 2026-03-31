@@ -17575,7 +17575,7 @@ client.on("messageCreate", async (message) => {
 
     const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
-    const thread = modmailThread || appealThread;
+    let thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
     if (!thread) return;
 
@@ -18667,7 +18667,7 @@ client.on("messageCreate", async (message) => {
     // Check for modmail thread first, then appeal thread
     const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
-    const thread = modmailThread || appealThread;
+    let thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
 
     if (!thread) {
@@ -19885,7 +19885,7 @@ client.on("messageCreate", async (message) => {
             let failureDescription = "⚠️ **Could not DM user due to a Discord error.**";
             try {
               const guild = await client.guilds.fetch(thread.guildId);
-              const memberStillInServer = await guild.members.fetch(user.id).then(() => true).catch(() => false);
+              const memberStillInServer = await guild.members.fetch(thread.userId).then(() => true).catch(() => false);
               if (!memberStillInServer) {
                 failureDescription = "⚠️ **User has left the server.**";
               } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
@@ -20609,7 +20609,7 @@ client.on("messageCreate", async (message) => {
       let failureDescription = "⚠️ **Could not DM user due to a Discord error.**";
       try {
         const guild = await client.guilds.fetch(thread.guildId);
-        const memberStillInServer = await guild.members.fetch(user.id).then(() => true).catch(() => false);
+        const memberStillInServer = await guild.members.fetch(thread.userId).then(() => true).catch(() => false);
         if (!memberStillInServer) {
           failureDescription = "⚠️ **User has left the server.**";
         } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
@@ -20939,7 +20939,7 @@ client.on("messageCreate", async (message) => {
       let failureDescription = "⚠️ **Could not DM user due to a Discord error.**";
       try {
         const guild = await client.guilds.fetch(thread.guildId);
-        const memberStillInServer = await guild.members.fetch(user.id).then(() => true).catch(() => false);
+        const memberStillInServer = await guild.members.fetch(thread.userId).then(() => true).catch(() => false);
         if (!memberStillInServer) {
           failureDescription = "⚠️ **User has left the server.**";
         } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
@@ -20964,7 +20964,7 @@ client.on("messageCreate", async (message) => {
     // Check for modmail thread first, then appeal thread
     const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
-    const thread = modmailThread || appealThread;
+    let thread = modmailThread || appealThread;
     const isAppeal = !modmailThread && !!appealThread;
 
     if (!thread) {
