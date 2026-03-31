@@ -94,7 +94,7 @@ function clearSessionCookie(req: Request, res: Response) {
 
 function getRequestOrigin(req: Request): string {
   const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "http").split(",")[0].trim();
-  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost:5000").split(",")[0].trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost:2000").split(",")[0].trim();
   return `${proto}://${host}`;
 }
 
@@ -170,25 +170,8 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
 }
 
 function getDashboardUrl(): string {
-  const port = process.env.PORT || "5000";
-  const defaultDashboardUrl = "https://expertworker.onrender.com";
-
-  const configured = (process.env.DASHBOARD_URL || "").trim();
-  if (configured) return configured.replace(/\/+$/, "");
-
-  const configuredDomain = (process.env.DASHBOARD_DOMAIN || "").trim();
-  if (configuredDomain) {
-    return configuredDomain.replace(/\/+$/, "");
-  }
-
-  const renderUrl = (process.env.RENDER_EXTERNAL_URL || "").trim();
-  if (renderUrl) return renderUrl.replace(/\/+$/, "");
-
-  if (process.env.NODE_ENV !== "production") {
-    return `http://localhost:${port}`;
-  }
-
-  return defaultDashboardUrl;
+  const dashboardPort = process.env.DASHBOARD_PORT || process.env.PORT || "2000";
+  return `http://localhost:${dashboardPort}/dashboard`;
 }
 
 function getBotNicknameFromCustomCategoryPings(raw: unknown): { hasBotNickname: boolean; botNickname: string | null } {

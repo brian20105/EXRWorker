@@ -14,9 +14,11 @@ import {
   TextInputStyle,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  RoleSelectMenuBuilder,
   ChannelType,
   AttachmentBuilder,
   PermissionFlagsBits,
+  AuditLogEvent,
 } from "discord.js";
 import { storage } from "./storage.ts";
 // Safe wrapper to avoid crashes when storage backend temporarily errors
@@ -216,7 +218,7 @@ function formatUrlListForField(urls: string[], maxLength = 1000): string {
   return lines.join("\n");
 }
 
-function extractAttachmentObjects(source: any): Array<{ url: string; contentType?: string }> {
+function extractAttachmentObjects(source: any): Array<{ url: string; proxyUrl?: string; contentType?: string }> {
   if (!source?.attachments) return [];
 
   const attachmentsRaw = source.attachments;
@@ -231,6 +233,7 @@ function extractAttachmentObjects(source: any): Array<{ url: string; contentType
   return entries
     .map((item: any) => ({
       url: (item?.url || item?.proxyURL || "").trim(),
+      proxyUrl: (item?.proxyURL || "").trim() || undefined,
       contentType: item?.contentType,
     }))
     .filter((item: any) => !!item.url);
@@ -257,7 +260,54 @@ function extractEmbedMediaUrls(embeds: any): string[] {
   return uniqueStrings(urls);
 }
 
-function pickFirstImageUrl(attachments: Array<{ url: string; contentType?: string }>, embedMediaUrls: string[]): string | undefined {
+async function downloadAttachmentsAsFiles(
+  attachmentsInput: any
+): Promise<Array<{ builder: AttachmentBuilder; name: string; isImage: boolean }>> {
+  const attachments: Array<{ url: string; proxyUrl?: string; contentType?: string }> =
+    Array.isArray(attachmentsInput)
+      ? attachmentsInput
+      : typeof attachmentsInput?.values === "function"
+        ? Array.from(attachmentsInput.values())
+        : typeof attachmentsInput === "object" && attachmentsInput !== null
+          ? Object.values(attachmentsInput)
+          : [];
+
+  const results: Array<{ builder: AttachmentBuilder; name: string; isImage: boolean }> = [];
+  for (const att of attachments) {
+    const primaryUrl = ((att as any)?.url || (att as any)?.proxyURL || "").trim();
+    const proxyUrl = ((att as any)?.proxyUrl || (att as any)?.proxyURL || "").trim();
+    const contentType = ((att as any)?.contentType || "") as string;
+    const candidateUrls = uniqueStrings([primaryUrl, proxyUrl]);
+    for (const candidateUrl of candidateUrls) {
+      if (!candidateUrl) continue;
+
+      try {
+        const timeoutSignal = typeof (AbortSignal as any)?.timeout === "function"
+          ? (AbortSignal as any).timeout(12000)
+          : undefined;
+
+        const response = timeoutSignal
+          ? await fetch(candidateUrl, { signal: timeoutSignal } as any)
+          : await fetch(candidateUrl);
+
+        if (!response.ok) continue;
+        const arrayBuffer = await response.arrayBuffer();
+        if (arrayBuffer.byteLength === 0) continue;
+        const buffer = Buffer.from(arrayBuffer);
+        const rawName = candidateUrl.split('/').pop()?.split('?')[0] || 'attachment';
+        const name = rawName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'attachment';
+        const isImage = /\.(png|jpe?g|gif|webp|bmp)$/i.test(name) || contentType.startsWith('image/');
+        results.push({ builder: new AttachmentBuilder(buffer, { name }), name, isImage });
+        break;
+      } catch {
+        // try next candidate URL
+      }
+    }
+  }
+  return results;
+}
+
+function pickFirstImageUrl(attachments: Array<{ url: string; proxyUrl?: string; contentType?: string }>, embedMediaUrls: string[]): string | undefined {
   const imageAttachment = attachments.find((item) => {
     const type = (item.contentType || "").toLowerCase();
     return type.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(item.url);
@@ -307,7 +357,7 @@ function buildDMRelayDescriptionFromText(text: string, isForwarded: boolean): st
   return clampEmbedDescription(normalized);
 }
 
-async function buildDMRelayPayload(message: any): Promise<{ description: string; plainText: string; attachmentUrls: string[]; imageUrl?: string }> {
+async function buildDMRelayPayload(message: any): Promise<{ description: string; plainText: string; attachmentUrls: string[]; imageUrl?: string; rawAttachments: Array<{ url: string; proxyUrl?: string; contentType?: string }> }> {
   const isForwarded = isForwardedDMMessage(message);
   const directContentRaw = (message.content || "").trim();
   const directContent = isForwarded && isForwardedPlaceholderText(directContentRaw) ? "" : directContentRaw;
@@ -363,7 +413,7 @@ async function buildDMRelayPayload(message: any): Promise<{ description: string;
 
   const imageUrl = pickFirstImageUrl(allAttachments, [...snapshotEmbedMedia, ...referenceEmbedMedia, ...messageEmbedMedia]);
 
-  return { description, plainText, attachmentUrls, imageUrl };
+  return { description, plainText, attachmentUrls, imageUrl, rawAttachments: allAttachments };
 }
 
 function isForwardedDMMessage(message: any): boolean {
@@ -427,9 +477,133 @@ interface PendingRoleRequest {
   reason: string;
   proof: string;
   createdAt: number;
+  reviewerId?: string | null;
 }
 const pendingRoleRequests = new Map<string, PendingRoleRequest>();
 const handledRoleRequestIds = new Set<string>();
+
+interface StaffApplicationState {
+  guildId: string;
+  currentQuestion: number;
+  answers: string[];
+  startedAt: number;
+  questions: string[];
+}
+
+interface PendingStaffApplicationSubmission {
+  id: string;
+  guildId: string;
+  userId: string;
+  questions: string[];
+  answers: string[];
+  status: "pending" | "approved" | "denied";
+  reviewedById?: string;
+  messageId?: string;
+  createdAt: number;
+}
+
+const activeStaffApplications = new Map<string, StaffApplicationState>();
+const pendingStaffApplicationSubmissions = new Map<string, PendingStaffApplicationSubmission>();
+
+function generateStaffApplicationSubmissionId(): string {
+  return `staffapp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function extractUserIdFromMention(value?: string): string | null {
+  if (!value) return null;
+  const match = value.match(/<@!?(\d{17,20})>/);
+  if (match) return match[1];
+  const parenMatch = value.match(/\((\d{17,20})\)/);
+  if (parenMatch) return parenMatch[1];
+  const anySnowflake = value.match(/\b(\d{17,20})\b/);
+  return anySnowflake ? anySnowflake[1] : null;
+}
+
+function extractRoleIdFromField(value?: string): string | null {
+  if (!value) return null;
+  const mentionMatch = value.match(/<@&(\d{17,20})>/);
+  if (mentionMatch) return mentionMatch[1];
+  const parenMatch = value.match(/\((\d{17,20})\)/);
+  return parenMatch ? parenMatch[1] : null;
+}
+
+function extractChannelIdFromMention(value?: string): string | null {
+  if (!value) return null;
+  const match = value.match(/<#(\d{17,20})>/);
+  if (match) return match[1];
+  const anySnowflake = value.match(/\b(\d{17,20})\b/);
+  return anySnowflake ? anySnowflake[1] : null;
+}
+
+function getFieldValueByName(fields: any[] | undefined, name: string): string {
+  if (!Array.isArray(fields)) return "";
+  const field = fields.find((f: any) => String(f?.name || "").toLowerCase() === name.toLowerCase());
+  return String(field?.value || "").trim();
+}
+
+function hydratePendingRoleRequestFromMessage(requestId: string, guildId: string, message: any): PendingRoleRequest | undefined {
+  try {
+    const embed = message?.embeds?.[0];
+    const fields = embed?.fields || [];
+
+    const targetUserValue = getFieldValueByName(fields, "Target User");
+    const requestedByValue = getFieldValueByName(fields, "Requested By");
+    const requestedRoleValue = getFieldValueByName(fields, "Requested Role");
+    const reasonValue = getFieldValueByName(fields, "Reason");
+    const proofValue = getFieldValueByName(fields, "Proof Player Meets Requirements");
+    const ticketValue = getFieldValueByName(fields, "Ticket");
+
+    const targetUserId = extractUserIdFromMention(targetUserValue);
+    const requestedById = extractUserIdFromMention(requestedByValue);
+    const roleInput = extractRoleIdFromField(requestedRoleValue) || requestedRoleValue;
+    const threadChannelId = extractChannelIdFromMention(ticketValue) || message?.channelId;
+
+    if (!targetUserId || !requestedById || !roleInput || !threadChannelId) return undefined;
+
+    const hydrated: PendingRoleRequest = {
+      id: requestId,
+      guildId,
+      threadId: threadChannelId,
+      threadChannelId,
+      requestedById,
+      targetUserId,
+      roleInput,
+      reason: reasonValue || "No reason provided.",
+      proof: proofValue || "No proof provided.",
+      createdAt: Date.now(),
+      reviewerId: null,
+    };
+
+    pendingRoleRequests.set(requestId, hydrated);
+    return hydrated;
+  } catch {
+    return undefined;
+  }
+}
+
+async function hydratePendingRoleRequestFromChannel(
+  requestId: string,
+  guildId: string,
+  channel: any,
+): Promise<PendingRoleRequest | undefined> {
+  try {
+    if (!channel || !("messages" in channel) || !channel.messages?.fetch) return undefined;
+    const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+    if (!recent) return undefined;
+
+    for (const [, msg] of recent) {
+      const embed = msg?.embeds?.[0];
+      const footerText = String(embed?.footer?.text || "");
+      if (!footerText.includes(`Request ID: ${requestId}`)) continue;
+      const hydrated = hydratePendingRoleRequestFromMessage(requestId, guildId, msg);
+      if (hydrated) return hydrated;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
 
 function generateRoleRequestId(): string {
   return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -446,25 +620,8 @@ const pendingWelcomeMessageColors = new Map<string, number | null>();
 const DISCORD_MESSAGE_LINK_REGEX = /https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)\/(\d+)/i;
 
 function getDashboardUrl(): string {
-  const port = process.env.PORT || "5000";
-  const defaultDashboardUrl = "https://expertworker.onrender.com";
-
-  const configured = (process.env.DASHBOARD_URL || "").trim();
-  if (configured) return configured.replace(/\/+$/, "");
-
-  const configuredDomain = (process.env.DASHBOARD_DOMAIN || "").trim();
-  if (configuredDomain) {
-    return configuredDomain.replace(/\/+$/, "");
-  }
-
-  const renderUrl = (process.env.RENDER_EXTERNAL_URL || "").trim();
-  if (renderUrl) return renderUrl.replace(/\/+$/, "");
-
-  if (process.env.NODE_ENV !== "production") {
-    return `http://localhost:${port}`;
-  }
-
-  return defaultDashboardUrl;
+  const dashboardPort = process.env.DASHBOARD_PORT || process.env.PORT || "2000";
+  return `http://localhost:${dashboardPort}/dashboard`;
 }
 
 function isHttpUrl(value: string): boolean {
@@ -775,9 +932,26 @@ function getRoleRequestChannelIdFromGuildConfig(config?: any): string | null {
   return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
 }
 
+function getProRoleRequestChannelIdFromGuildConfig(config?: any): string | null {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const channelId = root?.__proRoleRequestChannelId;
+  return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
+}
+
+function getProRoleIdsFromGuildConfig(config?: any): string[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  return normalizeStringArray(root?.__proRoleIds);
+}
+
 function getAcceptedPlayersChannelIdFromGuildConfig(config?: any): string | null {
   const root = parseJsonObject(config?.customCategoryPings);
   const channelId = root?.__acceptedPlayersChannelId;
+  return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
+}
+
+function getJoinedPlayersChannelIdFromGuildConfig(config?: any): string | null {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const channelId = root?.__joinedPlayersChannelId;
   return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
 }
 
@@ -786,9 +960,482 @@ function getRoleRequestRoleIdsFromGuildConfig(config?: any): string[] {
   return normalizeStringArray(root?.__roleRequestRoleIds);
 }
 
+function getUnbanAllRoleIdsFromGuildConfig(config?: any): string[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  return normalizeStringArray(root?.__unbanAllRoleIds);
+}
+
+type ActivityCheckGroup = "staff" | "administration" | "maximum_authority";
+type ExtraActivityCounterKey =
+  | "role_requests_reviewed"
+  | "kick_requests_reviewed"
+  | "partnerships"
+  | "accepted_semi_pros_pros"
+  | "staff_accepted";
+
+const ACTIVITY_CHECK_GROUP_LABELS: Record<ActivityCheckGroup, string> = {
+  staff: "Staff",
+  administration: "Administration Team",
+  maximum_authority: "Maximum Authority",
+};
+
+interface StaffApplicationsSetupConfig {
+  channelId: string | null;
+  submissionsChannelId: string | null;
+  embedTitle: string;
+  embedDescription: string;
+  acceptanceMessage: string;
+  questions: string[];
+}
+
+const STAFF_HUB_GUILD_ID = "1474862267249070192";
+const STAFF_APPLICATION_ACCEPTANCE_MESSAGE_TEMPLATE = [
+  "*Hello, I am reaching out in regards to the staff application you made for Team Expert. We have decided to accept you onto the team, We will invite you to join our Staff HQ so you can be introed into the Staff Team here at Team Expert.*",
+  "",
+  "You have 24 hours to join this server - (Server Link)",
+  "",
+  "*Once you have joined, you will be greeted with staff information as well of the staff quiz + other channels.*",
+  "",
+  "**Staff Intro Video** - <https://streamable.com/16nta5>",
+  "**Staff Quiz** - https://discord.com/channels/1474862267249070192/1474914416125284593/1474919703884337395",
+  "",
+  "*Staff Information includes videos to help you pass your quiz, once finished the quiz. Let an admin know in general chat of the server that you have finished it.*",
+  "",
+  "***Please note that the videos are optional but increase your chances of passing!***",
+].join("\n");
+
+interface StaffApplicationBlockEntry {
+  blockedById: string;
+  reason: string | null;
+  expiresAt: string | null;
+}
+
+const DEFAULT_STAFF_APPLICATION_QUESTIONS = [
+  "How do you handle a difficult moderation situation?",
+  "Why do you want to join our staff team?",
+  "What is your prior moderation experience?",
+  "How active can you be each week?",
+  "Anything else you'd like us to know?",
+];
+
+const DEFAULT_STAFF_APPLICATION_SETUP: StaffApplicationsSetupConfig = {
+  channelId: null,
+  submissionsChannelId: null,
+  embedTitle: "Staff Applications",
+  embedDescription: "Click the button below to apply for staff.",
+  acceptanceMessage: "Congratulations! Your staff application has been accepted. Welcome to the team.",
+  questions: DEFAULT_STAFF_APPLICATION_QUESTIONS,
+};
+
+function getActivityCheckRoleGroupsFromGuildConfig(config?: any): Record<ActivityCheckGroup, string[]> {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__activityCheckRoleGroups;
+  if (!raw || typeof raw !== "object") {
+    return {
+      staff: [],
+      administration: [],
+      maximum_authority: [],
+    };
+  }
+
+  return {
+    staff: normalizeStringArray(raw?.staff),
+    administration: normalizeStringArray(raw?.administration),
+    maximum_authority: normalizeStringArray(raw?.maximum_authority),
+  };
+}
+
+function resolveGuildRolesFromStoredValues(guild: any, values: string[]): any[] {
+  if (!guild) return [];
+
+  const resolved = new Map<string, any>();
+  const normalizedByName = new Map<string, any[]>();
+
+  guild.roles.cache.forEach((role: any) => {
+    const key = String(role.name || "").trim().toLowerCase();
+    if (!key) return;
+    const existing = normalizedByName.get(key) || [];
+    existing.push(role);
+    normalizedByName.set(key, existing);
+  });
+
+  for (const value of values) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed) continue;
+
+    const byId = guild.roles.cache.get(trimmed);
+    if (byId) {
+      resolved.set(byId.id, byId);
+      continue;
+    }
+
+    let candidateName = trimmed;
+    if (/^\d{17,20}$/.test(trimmed)) {
+      for (const otherGuild of client.guilds.cache.values()) {
+        const otherRole = otherGuild.roles.cache.get(trimmed);
+        if (otherRole?.name) {
+          candidateName = otherRole.name;
+          break;
+        }
+      }
+    }
+
+    const byName = normalizedByName.get(candidateName.toLowerCase()) || [];
+    for (const role of byName) {
+      resolved.set(role.id, role);
+    }
+  }
+
+  return Array.from(resolved.values());
+}
+
+function writeActivityCheckRoleGroupsToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  group: ActivityCheckGroup,
+  roleIds: string[],
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  const existing = getActivityCheckRoleGroupsFromGuildConfig({ customCategoryPings: existingCustomCategoryPings });
+  root.__activityCheckRoleGroups = {
+    ...existing,
+    [group]: roleIds,
+  };
+  return JSON.stringify(root);
+}
+
+async function getSyncedActivityCheckRoleGroupValues(baseGuildId: string, group: ActivityCheckGroup): Promise<string[]> {
+  const currentConfig = await storage.getGuildConfig(baseGuildId).catch(() => undefined);
+  const currentValues = getActivityCheckRoleGroupsFromGuildConfig(currentConfig)[group] || [];
+  if (currentValues.length > 0) return currentValues;
+
+  for (const guild of client.guilds.cache.values()) {
+    if (guild.id === baseGuildId) continue;
+    const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    const values = getActivityCheckRoleGroupsFromGuildConfig(config)[group] || [];
+    if (values.length > 0) return values;
+  }
+
+  return [];
+}
+
+async function writeSyncedActivityCheckRoleGroups(group: ActivityCheckGroup, roleValues: string[]): Promise<void> {
+  const guilds = Array.from(client.guilds.cache.values());
+  if (guilds.length === 0) return;
+
+  await Promise.all(guilds.map(async (guild) => {
+    const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    await storage.upsertGuildConfig({
+      guildId: guild.id,
+      customCategoryPings: writeActivityCheckRoleGroupsToConfig(config?.customCategoryPings, group, roleValues),
+    });
+  }));
+}
+
+function getPartnershipActivityChannelIdFromGuildConfig(config?: any): string | null {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const channelId = root?.__partnershipActivityChannelId;
+  return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
+}
+
+function writePartnershipActivityChannelToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  channelId: string | null,
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  root.__partnershipActivityChannelId = channelId || null;
+  return JSON.stringify(root);
+}
+
+function getExtraActivityCountersFromGuildConfig(config?: any): Record<string, Record<string, Record<string, number>>> {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__activityExtraCounters;
+  if (!raw || typeof raw !== "object") return {};
+  return raw as Record<string, Record<string, Record<string, number>>>;
+}
+
+function getExtraActivityCounterForUser(
+  config: any,
+  guildId: string,
+  key: ExtraActivityCounterKey,
+  userId: string,
+): number {
+  const counters: Record<string, Record<string, Record<string, number>>> = getExtraActivityCountersFromGuildConfig(config);
+  const scoped: Record<string, number> = counters[key]?.[guildId] || {};
+  const rawValue = scoped?.[userId];
+  const value = Number(rawValue || 0);
+  return Number.isFinite(value) ? value : 0;
+}
+
+async function incrementExtraActivityCounter(
+  guildId: string,
+  key: ExtraActivityCounterKey,
+  userId: string,
+  amount = 1,
+): Promise<void> {
+  if (!guildId || !userId || amount === 0) return;
+
+  const config = await storage.getGuildConfig(guildId);
+  const root = parseJsonObject(config?.customCategoryPings);
+  const counters: Record<string, Record<string, Record<string, number>>> = getExtraActivityCountersFromGuildConfig(config);
+  const scopedByKeyRaw = counters[key] as unknown;
+  const scopedByKey: Record<string, Record<string, number>> =
+    (scopedByKeyRaw && typeof scopedByKeyRaw === "object"
+      ? scopedByKeyRaw
+      : {}) as Record<string, Record<string, number>>;
+  const scopedByGuild: Record<string, number> = scopedByKey[guildId] || {};
+  const current = Number(scopedByGuild[userId] || 0);
+  const next = Math.max(0, current + amount);
+
+  const nextCounters = {
+    ...counters,
+    [key]: {
+      ...scopedByKey,
+      [guildId]: {
+        ...scopedByGuild,
+        [userId]: next,
+      },
+    },
+  };
+
+  root.__activityExtraCounters = nextCounters;
+
+  await storage.upsertGuildConfig({
+    guildId,
+    customCategoryPings: JSON.stringify(root),
+  });
+}
+
+function getExtraActivityGuildIds(baseGuildId: string, useAllGuilds: boolean): string[] {
+  if (!useAllGuilds) return [baseGuildId];
+
+  const guildIds = new Set<string>();
+  if (baseGuildId) guildIds.add(baseGuildId);
+  for (const guild of client.guilds.cache.values()) {
+    guildIds.add(guild.id);
+  }
+  return Array.from(guildIds);
+}
+
+async function getExtraActivityStatsForScope(
+  baseGuildId: string,
+  key: ExtraActivityCounterKey,
+  useAllGuilds: boolean,
+): Promise<Array<{ userId: string; count: number }>> {
+  const totals = new Map<string, number>();
+  const guildIds = getExtraActivityGuildIds(baseGuildId, useAllGuilds);
+
+  for (const guildId of guildIds) {
+    const config = await storage.getGuildConfig(guildId).catch(() => undefined);
+    const scoped = getExtraActivityCountersFromGuildConfig(config)[key]?.[guildId] || {};
+    for (const [userId, rawCount] of Object.entries(scoped)) {
+      const count = Number(rawCount || 0);
+      if (!Number.isFinite(count) || count <= 0) continue;
+      totals.set(userId, (totals.get(userId) || 0) + count);
+    }
+  }
+
+  return Array.from(totals.entries()).map(([userId, count]) => ({ userId, count }));
+}
+
+async function getExtraActivityCountForUserAcrossScope(
+  baseGuildId: string,
+  key: ExtraActivityCounterKey,
+  userId: string,
+  useAllGuilds: boolean,
+): Promise<number> {
+  const stats = await getExtraActivityStatsForScope(baseGuildId, key, useAllGuilds);
+  const match = stats.find((entry) => entry.userId === userId);
+  return match?.count || 0;
+}
+
+async function adjustExtraActivityCounterForScope(
+  baseGuildId: string,
+  key: ExtraActivityCounterKey,
+  userId: string,
+  amount: number,
+  useAllGuilds: boolean,
+): Promise<void> {
+  const guildIds = getExtraActivityGuildIds(baseGuildId, useAllGuilds);
+  for (const guildId of guildIds) {
+    await incrementExtraActivityCounter(guildId, key, userId, amount);
+  }
+}
+
+async function resetExtraActivityCounterForGuild(
+  guildId: string,
+  key: ExtraActivityCounterKey,
+  userId?: string,
+): Promise<number> {
+  const config = await storage.getGuildConfig(guildId);
+  const root = parseJsonObject(config?.customCategoryPings);
+  const counters = getExtraActivityCountersFromGuildConfig(config);
+  const scopedByKey = counters[key] || {};
+  const scopedByGuild = { ...(scopedByKey[guildId] || {}) };
+
+  let removed = 0;
+  if (userId) {
+    removed = Number(scopedByGuild[userId] || 0);
+    if (userId in scopedByGuild) {
+      delete scopedByGuild[userId];
+    }
+  } else {
+    removed = Object.values(scopedByGuild).reduce((sum, value) => sum + Number(value || 0), 0);
+    for (const keyToDelete of Object.keys(scopedByGuild)) {
+      delete scopedByGuild[keyToDelete];
+    }
+  }
+
+  root.__activityExtraCounters = {
+    ...counters,
+    [key]: {
+      ...scopedByKey,
+      [guildId]: scopedByGuild,
+    },
+  };
+
+  await storage.upsertGuildConfig({
+    guildId,
+    customCategoryPings: JSON.stringify(root),
+  });
+
+  return removed;
+}
+
+function getStaffApplicationsSetupFromGuildConfig(config?: any): StaffApplicationsSetupConfig {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__staffApplicationsSetup;
+  if (!raw || typeof raw !== "object") {
+    return { ...DEFAULT_STAFF_APPLICATION_SETUP };
+  }
+
+  const questions = normalizeStringArray(raw.questions).slice(0, 10);
+
+  return {
+    channelId: typeof raw.channelId === "string" && raw.channelId.trim() ? raw.channelId.trim() : null,
+    submissionsChannelId: typeof raw.submissionsChannelId === "string" && raw.submissionsChannelId.trim() ? raw.submissionsChannelId.trim() : null,
+    embedTitle: typeof raw.embedTitle === "string" && raw.embedTitle.trim() ? raw.embedTitle : DEFAULT_STAFF_APPLICATION_SETUP.embedTitle,
+    embedDescription: typeof raw.embedDescription === "string" && raw.embedDescription.trim() ? raw.embedDescription : DEFAULT_STAFF_APPLICATION_SETUP.embedDescription,
+    acceptanceMessage: typeof raw.acceptanceMessage === "string" && raw.acceptanceMessage.trim() ? raw.acceptanceMessage : DEFAULT_STAFF_APPLICATION_SETUP.acceptanceMessage,
+    questions: questions.length > 0 ? questions : [...DEFAULT_STAFF_APPLICATION_SETUP.questions],
+  };
+}
+
+function writeStaffApplicationsSetupToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  updates: Partial<StaffApplicationsSetupConfig>,
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  const current = getStaffApplicationsSetupFromGuildConfig({ customCategoryPings: existingCustomCategoryPings });
+
+  root.__staffApplicationsSetup = {
+    ...current,
+    ...updates,
+    questions: updates.questions ? updates.questions.slice(0, 10) : current.questions,
+  };
+
+  return JSON.stringify(root);
+}
+
+async function createStaffHubInviteUrl(): Promise<string | null> {
+  try {
+    const guild = await client.guilds.fetch(STAFF_HUB_GUILD_ID);
+    await guild.channels.fetch();
+
+    const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
+    if (!me) return null;
+
+    const candidateChannels = guild.channels.cache
+      .filter((channel: any) => channel && (channel.type === ChannelType.GuildText || channel.type === ChannelType.GuildAnnouncement))
+      .sort((a: any, b: any) => Number(a.position || 0) - Number(b.position || 0));
+
+    for (const [, channel] of candidateChannels) {
+      const permissions = channel.permissionsFor(me);
+      if (!permissions?.has(PermissionFlagsBits.ViewChannel)) continue;
+      if (!permissions?.has(PermissionFlagsBits.CreateInstantInvite)) continue;
+
+      const invite = await guild.invites.create(channel.id, {
+        maxAge: 86400,
+        maxUses: 1,
+        unique: true,
+        reason: "Staff application acceptance message",
+      }).catch(() => null);
+
+      if (invite?.url) return invite.url;
+    }
+  } catch {
+    // ignore invite creation failures
+  }
+
+  return null;
+}
+
+function buildStaffAcceptanceMessage(inviteUrl: string | null): string {
+  const replacement = inviteUrl || "Staff Hub invite unavailable right now. Please contact management to get access.";
+  return STAFF_APPLICATION_ACCEPTANCE_MESSAGE_TEMPLATE.replace("(Server Link)", replacement);
+}
+
+function getStaffApplicationBlocksFromGuildConfig(config?: any): Record<string, StaffApplicationBlockEntry> {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__staffApplicationBlocks;
+  if (!raw || typeof raw !== "object") return {};
+
+  const blocks: Record<string, StaffApplicationBlockEntry> = {};
+  for (const [userId, value] of Object.entries(raw)) {
+    const entry = value as any;
+    if (!entry || typeof entry !== "object") continue;
+    blocks[userId] = {
+      blockedById: String(entry.blockedById || ""),
+      reason: typeof entry.reason === "string" ? entry.reason : null,
+      expiresAt: typeof entry.expiresAt === "string" ? entry.expiresAt : null,
+    };
+  }
+
+  return blocks;
+}
+
+function getActiveStaffApplicationBlockFromGuildConfig(config: any, userId: string): StaffApplicationBlockEntry | undefined {
+  const blocks = getStaffApplicationBlocksFromGuildConfig(config);
+  const entry = blocks[userId];
+  if (!entry) return undefined;
+
+  if (!entry.expiresAt) return entry;
+
+  const expiresAtMs = new Date(entry.expiresAt).getTime();
+  if (!Number.isFinite(expiresAtMs)) return undefined;
+  if (Date.now() >= expiresAtMs) return undefined;
+  return entry;
+}
+
+function writeStaffApplicationBlockToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  userId: string,
+  block: StaffApplicationBlockEntry,
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  const existing = getStaffApplicationBlocksFromGuildConfig({ customCategoryPings: existingCustomCategoryPings });
+  root.__staffApplicationBlocks = {
+    ...existing,
+    [userId]: block,
+  };
+  return JSON.stringify(root);
+}
+
+function removeStaffApplicationBlockFromConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  userId: string,
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  const existing = getStaffApplicationBlocksFromGuildConfig({ customCategoryPings: existingCustomCategoryPings });
+  if (existing[userId]) {
+    delete existing[userId];
+  }
+  root.__staffApplicationBlocks = existing;
+  return JSON.stringify(root);
+}
+
 function writeRoleRequestSettingsToConfig(
   existingCustomCategoryPings: string | null | undefined,
-  updates: { channelId?: string | null; acceptedPlayersChannelId?: string | null; roleIds?: string[] },
+  updates: { channelId?: string | null; acceptedPlayersChannelId?: string | null; joinedPlayersChannelId?: string | null; roleIds?: string[]; proRoleIds?: string[]; proRequestChannelId?: string | null },
 ): string {
   const root = parseJsonObject(existingCustomCategoryPings);
   if (Object.prototype.hasOwnProperty.call(updates, "channelId")) {
@@ -797,9 +1444,27 @@ function writeRoleRequestSettingsToConfig(
   if (Object.prototype.hasOwnProperty.call(updates, "acceptedPlayersChannelId")) {
     root.__acceptedPlayersChannelId = updates.acceptedPlayersChannelId || null;
   }
+  if (Object.prototype.hasOwnProperty.call(updates, "joinedPlayersChannelId")) {
+    root.__joinedPlayersChannelId = updates.joinedPlayersChannelId || null;
+  }
   if (updates.roleIds) {
     root.__roleRequestRoleIds = updates.roleIds;
   }
+  if (updates.proRoleIds) {
+    root.__proRoleIds = updates.proRoleIds;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "proRequestChannelId")) {
+    root.__proRoleRequestChannelId = updates.proRequestChannelId || null;
+  }
+  return JSON.stringify(root);
+}
+
+function writeUnbanAllPermissionToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  roleIds: string[],
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  root.__unbanAllRoleIds = roleIds;
   return JSON.stringify(root);
 }
 
@@ -810,7 +1475,9 @@ type RequestPingTarget =
   | "kick_requests"
   | "inactivity_submissions"
   | "quiz_submissions"
+  | "staff_submissions"
   | "role_requests"
+  | "pro_role_requests"
   | "modmail_tickets"
   | "appeal_tickets";
 
@@ -821,7 +1488,9 @@ const REQUEST_PING_TARGET_LABELS: Record<RequestPingTarget, string> = {
   kick_requests: "Kick Requests",
   inactivity_submissions: "Inactivity Submissions",
   quiz_submissions: "Staff Intro Quiz Submissions",
+  staff_submissions: "Staff Application Submissions",
   role_requests: "Role Requests",
+  pro_role_requests: "Pro Role Requests",
   modmail_tickets: "Modmail Tickets",
   appeal_tickets: "Appeal Tickets",
 };
@@ -838,25 +1507,144 @@ function getRequestPingRolesMapFromGuildConfig(config?: any): Record<string, str
   return result;
 }
 
+function getRequestPingRoleNamesMapFromGuildConfig(config?: any): Record<string, string[]> {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__requestPingRoleNames;
+  if (!raw || typeof raw !== "object") return {};
+
+  const result: Record<string, string[]> = {};
+  for (const [target, value] of Object.entries(raw)) {
+    result[target] = normalizeStringArray(value);
+  }
+  return result;
+}
+
 function getRequestPingRoleIdsFromGuildConfig(config: any, target: RequestPingTarget): string[] {
   const map = getRequestPingRolesMapFromGuildConfig(config);
   return map[target] || [];
+}
+
+function getRequestPingRoleNamesFromGuildConfig(config: any, target: RequestPingTarget): string[] {
+  const map = getRequestPingRoleNamesMapFromGuildConfig(config);
+  return map[target] || [];
+}
+
+function formatRequestPingRolesForGuild(config: any, target: RequestPingTarget, guild: any): string {
+  const roleIds = getRequestPingRoleIdsFromGuildConfig(config, target);
+  const roleNames = getRequestPingRoleNamesFromGuildConfig(config, target);
+
+  if (!guild) {
+    return roleNames.length > 0 ? roleNames.join(", ") : roleIds.length > 0 ? roleIds.join(", ") : "None";
+  }
+
+  const parts: string[] = [];
+  const seen = new Set<string>();
+
+  for (const roleId of roleIds) {
+    const role = guild.roles.cache.get(roleId);
+    if (role) {
+      parts.push(`<@&${role.id}>`);
+      seen.add(role.name.trim().toLowerCase());
+      continue;
+    }
+
+    let sourceRoleName: string | null = null;
+    for (const otherGuild of client.guilds.cache.values()) {
+      const otherRole = otherGuild.roles.cache.get(roleId);
+      if (otherRole?.name) {
+        sourceRoleName = otherRole.name;
+        break;
+      }
+    }
+
+    if (sourceRoleName) {
+      const localMatch = guild.roles.cache.find((entry: any) => String(entry.name || "").trim().toLowerCase() === sourceRoleName!.trim().toLowerCase());
+      if (localMatch) {
+        parts.push(`<@&${localMatch.id}>`);
+      } else if (!seen.has(sourceRoleName.trim().toLowerCase())) {
+        parts.push(sourceRoleName);
+      }
+      seen.add(sourceRoleName.trim().toLowerCase());
+    }
+  }
+
+  for (const roleName of roleNames) {
+    const trimmed = roleName.trim();
+    if (!trimmed) continue;
+    const role = guild.roles.cache.find((entry: any) => String(entry.name || "").trim().toLowerCase() === trimmed.toLowerCase());
+    if (role) {
+      if (!parts.includes(`<@&${role.id}>`)) {
+        parts.push(`<@&${role.id}>`);
+      }
+      seen.add(trimmed.toLowerCase());
+      continue;
+    }
+
+    if (!seen.has(trimmed.toLowerCase())) {
+      parts.push(trimmed);
+      seen.add(trimmed.toLowerCase());
+    }
+  }
+
+  return parts.length > 0 ? parts.join(", ") : "None";
 }
 
 function writeRequestPingRolesToConfig(
   existingCustomCategoryPings: string | null | undefined,
   target: RequestPingTarget,
   roleIds: string[],
+  roleNames?: string[],
 ): string {
   const root = parseJsonObject(existingCustomCategoryPings);
   const existingMap = typeof root.__requestPingRoleIds === "object" && root.__requestPingRoleIds
     ? root.__requestPingRoleIds
     : {};
+  const existingNamesMap = typeof root.__requestPingRoleNames === "object" && root.__requestPingRoleNames
+    ? root.__requestPingRoleNames
+    : {};
   root.__requestPingRoleIds = {
     ...existingMap,
     [target]: roleIds,
   };
+  root.__requestPingRoleNames = {
+    ...existingNamesMap,
+    [target]: roleNames || [],
+  };
   return JSON.stringify(root);
+}
+
+async function getSyncedRequestPingConfig(target: RequestPingTarget, baseGuildId: string): Promise<{ roleIds: string[]; roleNames: string[] }> {
+  const currentConfig = await storage.getGuildConfig(baseGuildId).catch(() => undefined);
+  const currentRoleIds = getRequestPingRoleIdsFromGuildConfig(currentConfig, target);
+  const currentRoleNames = getRequestPingRoleNamesFromGuildConfig(currentConfig, target);
+  if (currentRoleIds.length > 0 || currentRoleNames.length > 0) {
+    return { roleIds: currentRoleIds, roleNames: currentRoleNames };
+  }
+
+  for (const guild of client.guilds.cache.values()) {
+    if (guild.id === baseGuildId) continue;
+    const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    const roleIds = getRequestPingRoleIdsFromGuildConfig(config, target);
+    const roleNames = getRequestPingRoleNamesFromGuildConfig(config, target);
+    if (roleIds.length > 0 || roleNames.length > 0) {
+      return { roleIds, roleNames };
+    }
+  }
+
+  return { roleIds: [], roleNames: [] };
+}
+
+async function writeSyncedRequestPingRoles(target: RequestPingTarget, roleIds: string[], roleNames: string[]): Promise<void> {
+  const guilds = Array.from(client.guilds.cache.values());
+  if (guilds.length === 0) return;
+
+  await Promise.all(guilds.map(async (guild) => {
+    const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    await storage.upsertGuildConfig({
+      guildId: guild.id,
+      customCategoryPings: writeRequestPingRolesToConfig(config?.customCategoryPings, target, roleIds, roleNames),
+    });
+  }));
 }
 
 interface WelcomeSetupConfig {
@@ -1574,6 +2362,13 @@ setInterval(() => {
     }
   }
 
+  for (const [userId, appState] of Array.from(activeStaffApplications.entries())) {
+    if (now - appState.startedAt > THIRTY_MINUTES) {
+      activeStaffApplications.delete(userId);
+      console.log(`[STAFF APP] Cleaned up expired staff application session for user ${userId}`);
+    }
+  }
+
   // Safety cleanup for processingQuizStart
   if (processingQuizStart.size > 20) {
     console.log(`[CLEANUP] Clearing ${processingQuizStart.size} stale quiz starts`);
@@ -1927,6 +2722,122 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
   }
 }
 
+async function sendStaffApplicationQuestion(userId: string, dmChannel: any, isFirst = false): Promise<void> {
+  const applicationState = activeStaffApplications.get(userId);
+  if (!applicationState) return;
+
+  const question = applicationState.questions[applicationState.currentQuestion];
+  if (!question) return;
+
+  const content = isFirst
+    ? `**Staff Application**\n\nPlease answer all questions honestly.\n\n**Question 1:** ${question}`
+    : `**Question ${applicationState.currentQuestion + 1}:** ${question}`;
+
+  const terminateRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`staff_app_terminate_${applicationState.guildId}`)
+      .setLabel("Terminate Application")
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("✖️")
+  );
+
+  await dmChannel.send({ content, components: [terminateRow] });
+}
+
+async function processStaffApplicationAnswer(userId: string, answer: string, dmChannel: any): Promise<void> {
+  const applicationState = activeStaffApplications.get(userId);
+  if (!applicationState) return;
+
+  applicationState.answers.push(answer);
+  applicationState.currentQuestion++;
+
+  if (applicationState.currentQuestion < applicationState.questions.length) {
+    await sendStaffApplicationQuestion(userId, dmChannel);
+    return;
+  }
+
+  activeStaffApplications.delete(userId);
+
+  const guildConfig = await storage.getGuildConfig(applicationState.guildId);
+  const setup = getStaffApplicationsSetupFromGuildConfig(guildConfig);
+
+  if (!setup.submissionsChannelId) {
+    await dmChannel.send({
+      content: "✅ Your application was completed, but submissions channel is not configured yet. Please contact an administrator.",
+    });
+    return;
+  }
+
+  const submissionId = generateStaffApplicationSubmissionId();
+  const submission: PendingStaffApplicationSubmission = {
+    id: submissionId,
+    guildId: applicationState.guildId,
+    userId,
+    questions: [...applicationState.questions],
+    answers: [...applicationState.answers],
+    status: "pending",
+    createdAt: Date.now(),
+  };
+  pendingStaffApplicationSubmissions.set(submissionId, submission);
+
+  try {
+    const submissionsChannel = await safeChannelFetch(setup.submissionsChannelId);
+    if (submissionsChannel && "send" in submissionsChannel) {
+      const fields = submission.questions.map((question, index) => ({
+        name: `Q${index + 1}: ${question}`.slice(0, 256),
+        value: submission.answers[index] || "No answer",
+        inline: false,
+      }));
+
+      const embed = new EmbedBuilder()
+        .setTitle("Staff Application Submission")
+        .setColor(0xf0b232)
+        .setDescription(`**Submitted by:** <@${userId}>`)
+        .addFields(fields)
+        .setFooter({ text: `Submission ID: ${submissionId}` })
+        .setTimestamp();
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`staff_app_approve_${submissionId}`)
+          .setLabel("Accept")
+          .setStyle(ButtonStyle.Success)
+          .setEmoji("✅"),
+        new ButtonBuilder()
+          .setCustomId(`staff_app_deny_${submissionId}`)
+          .setLabel("Deny")
+          .setStyle(ButtonStyle.Danger)
+          .setEmoji("❌"),
+        new ButtonBuilder()
+          .setCustomId(`staff_app_modlogs_${submissionId}`)
+          .setLabel("Modlogs")
+          .setStyle(ButtonStyle.Secondary)
+          .setEmoji("📚"),
+      );
+
+      const staffSubmissionPingRoles = getRequestPingRoleIdsFromGuildConfig(guildConfig, "staff_submissions");
+      const staffSubmissionPingContent = staffSubmissionPingRoles.length > 0
+        ? staffSubmissionPingRoles.map((id) => `<@&${id}>`).join(" ")
+        : undefined;
+
+      const sent = await submissionsChannel.send({
+        content: staffSubmissionPingContent,
+        embeds: [embed],
+        components: [row],
+      });
+
+      submission.messageId = sent.id;
+      pendingStaffApplicationSubmissions.set(submissionId, submission);
+    }
+  } catch (error) {
+    console.log("[STAFF APP] Failed to send submission:", error);
+  }
+
+  await dmChannel.send({
+    content: "✅ Thank you. Your staff application has been submitted for review.",
+  });
+}
+
 
 const commands = [
   new SlashCommandBuilder()
@@ -2118,6 +3029,26 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("set_pro_roles")
+    .setDescription("Configure pro roles that route requests to a separate channel (up to 10)")
+    .setDefaultMemberPermissions(0)
+    .addRoleOption((o) => o.setName("role1").setDescription("Pro role 1").setRequired(false))
+    .addRoleOption((o) => o.setName("role2").setDescription("Pro role 2").setRequired(false))
+    .addRoleOption((o) => o.setName("role3").setDescription("Pro role 3").setRequired(false))
+    .addRoleOption((o) => o.setName("role4").setDescription("Pro role 4").setRequired(false))
+    .addRoleOption((o) => o.setName("role5").setDescription("Pro role 5").setRequired(false))
+    .addRoleOption((o) => o.setName("role6").setDescription("Pro role 6").setRequired(false))
+    .addRoleOption((o) => o.setName("role7").setDescription("Pro role 7").setRequired(false))
+    .addRoleOption((o) => o.setName("role8").setDescription("Pro role 8").setRequired(false))
+    .addRoleOption((o) => o.setName("role9").setDescription("Pro role 9").setRequired(false))
+    .addRoleOption((o) => o.setName("role10").setDescription("Pro role 10").setRequired(false)),
+  new SlashCommandBuilder()
+    .setName("setup_pro_role_requests")
+    .setDescription("Set the destination channel for pro role requests (can use channel id for cross-server)")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((opt) => opt.setName("channel").setDescription("Channel where pro role requests will be sent").setRequired(false))
+    .addStringOption((opt) => opt.setName("channel_id").setDescription("Channel ID to use (useful for cross-server destinations)").setRequired(false)),
+  new SlashCommandBuilder()
     .setName("accepted_players")
     .setDescription("Set the channel where approved player announcements are posted")
     .setDefaultMemberPermissions(0)
@@ -2125,6 +3056,16 @@ const commands = [
       option
         .setName("channel")
         .setDescription("Channel where accepted player messages will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("joined_players")
+    .setDescription("Set the channel where joined/accepted player announcements are also posted")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Channel where joined player messages will be sent")
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -2186,57 +3127,84 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("activity")
-    .setDescription("View the activity leaderboard")
-    .addUserOption((option) =>
-      option
-        .setName("member")
-        .setDescription("View activity for a specific member")
-        .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("category")
-        .setDescription("Filter by request type")
-        .setRequired(false)
-        .addChoices(
-          { name: "Ban Requests", value: "ban" },
-          { name: "Moderation Bans", value: "modban" },
-          { name: "Moderation Kicks", value: "kick" },
-          { name: "Moderation Mutes", value: "mute" },
-          { name: "Unban Requests", value: "unban" },
-          { name: "Invites", value: "invites" },
-          { name: "Modmails handled", value: "modmail" },
-          { name: "Appeals handled", value: "appeal" },
-          { name: "Staff Reports", value: "staffreport" }
+    .setDescription("Activity commands")
+    .addSubcommand((sub) =>
+      sub
+        .setName("check")
+        .setDescription("Open private activity check menu")
+        .addIntegerOption((option) =>
+          option
+            .setName("from")
+            .setDescription("Start of range in days ago (e.g. 7 = from 7 days ago)")
+            .setRequired(false)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("to")
+            .setDescription("End of range in days ago (e.g. 0 = up to now, leave empty for all time)")
+            .setRequired(false)
         )
     )
-    .addStringOption((option) =>
-      option
-        .setName("scope")
-        .setDescription("Show stats from this server only or all servers")
-        .setRequired(false)
-        .addChoices(
-          { name: "All Servers", value: "all" },
-          { name: "This Server Only", value: "guild" }
+    .addSubcommand((sub) =>
+      sub
+        .setName("leaderboard")
+        .setDescription("View the activity leaderboard")
+        .addUserOption((option) =>
+          option
+            .setName("member")
+            .setDescription("View activity for a specific member")
+            .setRequired(false)
         )
-    )
-    .addIntegerOption((option) =>
-      option
-        .setName("from")
-        .setDescription("Start time in days ago (e.g., 7 for last week)")
-        .setRequired(false)
-    )
-    .addIntegerOption((option) =>
-      option
-        .setName("to")
-        .setDescription("End time in days ago (e.g., 0 for today, leave empty for all time)")
-        .setRequired(false)
-    )
-    .addIntegerOption((option) =>
-      option
-        .setName("page")
-        .setDescription("Page number (for leaderboard)")
-        .setRequired(false)
+        .addStringOption((option) =>
+          option
+            .setName("category")
+            .setDescription("Filter by request type")
+            .setRequired(false)
+            .addChoices(
+              { name: "Ban Requests", value: "ban" },
+              { name: "Moderation Bans", value: "modban" },
+              { name: "Moderation Kicks", value: "kick" },
+              { name: "Moderation Mutes", value: "mute" },
+              { name: "Unban Requests", value: "unban" },
+              { name: "Invites", value: "invites" },
+              { name: "Modmails handled", value: "modmail" },
+              { name: "Appeals handled", value: "appeal" },
+              { name: "Staff Reports", value: "staffreport" },
+              { name: "Partnerships", value: "partnerships" },
+              { name: "Accepted Staff", value: "staff_accepted" },
+              { name: "Role Requests Reviewed", value: "role_requests_reviewed" },
+              { name: "Kick Requests Reviewed", value: "kick_requests_reviewed" },
+              { name: "Accepted Semi Pros & Pros", value: "accepted_semi_pros_pros" }
+            )
+        )
+        .addStringOption((option) =>
+          option
+            .setName("scope")
+            .setDescription("Show stats from this server only or all servers")
+            .setRequired(false)
+            .addChoices(
+              { name: "All Servers", value: "all" },
+              { name: "This Server Only", value: "guild" }
+            )
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("from")
+            .setDescription("Start time in days ago (e.g., 7 for last week)")
+            .setRequired(false)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("to")
+            .setDescription("End time in days ago (e.g., 0 for today, leave empty for all time)")
+            .setRequired(false)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("page")
+            .setDescription("Page number (for leaderboard)")
+            .setRequired(false)
+        )
     ),
   new SlashCommandBuilder()
     .setName("clear-role")
@@ -2247,6 +3215,15 @@ const commands = [
         .setName("role")
         .setDescription("The role to clear members from")
         .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("unban")
+    .setDescription("Unban commands")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("all")
+        .setDescription("Unban everyone currently banned in this server")
     ),
   new SlashCommandBuilder()
     .setName("activity_add")
@@ -2278,7 +3255,12 @@ const commands = [
           { name: "Invites", value: "invites" },
           { name: "Modmails Handled", value: "modmail" },
           { name: "Appeals Handled", value: "appeal" },
-          { name: "Staff Reports", value: "staffreport" }
+          { name: "Staff Reports", value: "staffreport" },
+          { name: "Partnerships", value: "partnerships" },
+          { name: "Accepted Staff", value: "staff_accepted" },
+          { name: "Role Requests Reviewed", value: "role_requests_reviewed" },
+          { name: "Kick Requests Reviewed", value: "kick_requests_reviewed" },
+          { name: "Accepted Semi Pros & Pros", value: "accepted_semi_pros_pros" }
         )
     )
     .addStringOption((option) =>
@@ -2321,7 +3303,12 @@ const commands = [
           { name: "Invites", value: "invites" },
           { name: "Modmails Handled", value: "modmail" },
           { name: "Appeals Handled", value: "appeal" },
-          { name: "Staff Reports", value: "staffreport" }
+          { name: "Staff Reports", value: "staffreport" },
+          { name: "Partnerships", value: "partnerships" },
+          { name: "Accepted Staff", value: "staff_accepted" },
+          { name: "Role Requests Reviewed", value: "role_requests_reviewed" },
+          { name: "Kick Requests Reviewed", value: "kick_requests_reviewed" },
+          { name: "Accepted Semi Pros & Pros", value: "accepted_semi_pros_pros" }
         )
     )
     .addStringOption((option) =>
@@ -2349,7 +3336,12 @@ const commands = [
           { name: "Invites", value: "invites" },
           { name: "Modmails Handled", value: "modmail" },
           { name: "Appeals Handled", value: "appeal" },
-          { name: "Staff Reports", value: "staffreport" }
+          { name: "Staff Reports", value: "staffreport" },
+          { name: "Partnerships", value: "partnerships" },
+          { name: "Accepted Staff", value: "staff_accepted" },
+          { name: "Role Requests Reviewed", value: "role_requests_reviewed" },
+          { name: "Kick Requests Reviewed", value: "kick_requests_reviewed" },
+          { name: "Accepted Semi Pros & Pros", value: "accepted_semi_pros_pros" }
         )
     )
     .addUserOption((option) =>
@@ -2359,43 +3351,54 @@ const commands = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
-    .setName("activity_check")
-    .setDescription("Check activity stats for members with a specific role (private/ephemeral)")
+    .setName("pick")
+    .setDescription("Pick role groups and mappings")
     .setDefaultMemberPermissions(0)
-    .addRoleOption((option) =>
-      option
-        .setName("role")
-        .setDescription("The role to check activity for")
-        .setRequired(true)
-    )
-    .addIntegerOption((option) =>
-      option
-        .setName("from")
-        .setDescription("Start time in days ago (e.g., 7 for last week)")
-        .setRequired(false)
-    )
-    .addIntegerOption((option) =>
-      option
-        .setName("to")
-        .setDescription("End time in days ago (e.g., 0 for today)")
-        .setRequired(false)
-    )
-    .addStringOption((option) =>
-      option
-        .setName("category")
-        .setDescription("Optional category filter")
-        .setRequired(false)
-        .addChoices(
-          { name: "Moderation Bans", value: "modban" },
-          { name: "Moderation Kicks", value: "kick" },
-          { name: "Moderation Mutes", value: "mute" },
-          { name: "Ban Requests", value: "ban" },
-          { name: "Unban Requests", value: "unban" },
-          { name: "Invites", value: "invites" },
-          { name: "Modmails Handled", value: "modmail" },
-          { name: "Appeals Handled", value: "appeal" },
-          { name: "Staff Reports", value: "staffreport" }
+    .addSubcommand((sub) =>
+      sub
+        .setName("roles")
+        .setDescription("Set up to 20 roles for a specific activity dropdown group")
+        .addStringOption((option) =>
+          option
+            .setName("group")
+            .setDescription("Which dropdown group to configure")
+            .setRequired(true)
+            .addChoices(
+              { name: "Staff", value: "staff" },
+              { name: "Administration Team", value: "administration" },
+              { name: "Maximum Authority", value: "maximum_authority" },
+            )
         )
+        .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
+        .addRoleOption((option) => option.setName("role2").setDescription("Role 2").setRequired(false))
+        .addRoleOption((option) => option.setName("role3").setDescription("Role 3").setRequired(false))
+        .addRoleOption((option) => option.setName("role4").setDescription("Role 4").setRequired(false))
+        .addRoleOption((option) => option.setName("role5").setDescription("Role 5").setRequired(false))
+        .addRoleOption((option) => option.setName("role6").setDescription("Role 6").setRequired(false))
+        .addRoleOption((option) => option.setName("role7").setDescription("Role 7").setRequired(false))
+        .addRoleOption((option) => option.setName("role8").setDescription("Role 8").setRequired(false))
+        .addRoleOption((option) => option.setName("role9").setDescription("Role 9").setRequired(false))
+        .addRoleOption((option) => option.setName("role10").setDescription("Role 10").setRequired(false))
+        .addRoleOption((option) => option.setName("role11").setDescription("Role 11").setRequired(false))
+        .addRoleOption((option) => option.setName("role12").setDescription("Role 12").setRequired(false))
+        .addRoleOption((option) => option.setName("role13").setDescription("Role 13").setRequired(false))
+        .addRoleOption((option) => option.setName("role14").setDescription("Role 14").setRequired(false))
+        .addRoleOption((option) => option.setName("role15").setDescription("Role 15").setRequired(false))
+        .addRoleOption((option) => option.setName("role16").setDescription("Role 16").setRequired(false))
+        .addRoleOption((option) => option.setName("role17").setDescription("Role 17").setRequired(false))
+        .addRoleOption((option) => option.setName("role18").setDescription("Role 18").setRequired(false))
+        .addRoleOption((option) => option.setName("role19").setDescription("Role 19").setRequired(false))
+        .addRoleOption((option) => option.setName("role20").setDescription("Role 20").setRequired(false))
+    ),
+  new SlashCommandBuilder()
+    .setName("set_partnership_channel")
+    .setDescription("Set the partnership channel for partnerships activity tracking")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("Partnership channel to track")
+        .setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName("restore_activity")
@@ -2441,6 +3444,34 @@ const commands = [
     .setName("setup_staff_intro")
     .setDescription("Post the staff introduction quiz in the current channel")
     .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("setup_staff_applications")
+    .setDescription("Post the staff application embed in the current channel")
+    .setDefaultMemberPermissions(0),
+  new SlashCommandBuilder()
+    .setName("setup_staff_app_submissions")
+    .setDescription("Set the channel for staff application submissions")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where staff applications will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_staff_app_questions")
+    .setDescription("Configure up to 10 staff application questions")
+    .setDefaultMemberPermissions(0)
+    .addStringOption((option) => option.setName("question1").setDescription("Question 1").setRequired(false))
+    .addStringOption((option) => option.setName("question2").setDescription("Question 2").setRequired(false))
+    .addStringOption((option) => option.setName("question3").setDescription("Question 3").setRequired(false))
+    .addStringOption((option) => option.setName("question4").setDescription("Question 4").setRequired(false))
+    .addStringOption((option) => option.setName("question5").setDescription("Question 5").setRequired(false))
+    .addStringOption((option) => option.setName("question6").setDescription("Question 6").setRequired(false))
+    .addStringOption((option) => option.setName("question7").setDescription("Question 7").setRequired(false))
+    .addStringOption((option) => option.setName("question8").setDescription("Question 8").setRequired(false))
+    .addStringOption((option) => option.setName("question9").setDescription("Question 9").setRequired(false))
+    .addStringOption((option) => option.setName("question10").setDescription("Question 10").setRequired(false)),
   new SlashCommandBuilder()
     .setName("setup_quiz_log")
     .setDescription("Set the channel for quiz progress logging")
@@ -2575,7 +3606,9 @@ const commands = [
               { name: "Kick Requests", value: "kick_requests" },
               { name: "Inactivity Submissions", value: "inactivity_submissions" },
               { name: "Staff Intro Quiz Submissions", value: "quiz_submissions" },
+              { name: "Staff Application Submissions", value: "staff_submissions" },
               { name: "Role Requests", value: "role_requests" },
+              { name: "Pro Role Requests", value: "pro_role_requests" },
               { name: "Modmail Tickets", value: "modmail_tickets" },
               { name: "Appeal Tickets", value: "appeal_tickets" },
             )
@@ -2669,6 +3702,7 @@ const commands = [
               { name: "Modmail", value: "modmail" },
               { name: "Appeal", value: "appeal" },
               { name: "Staff Intro", value: "staffintro" },
+              { name: "Staff Applications", value: "staffapplications" },
               { name: "Inactivity", value: "inactivity" }
             )
         )
@@ -2713,13 +3747,14 @@ const commands = [
     .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("block")
-    .setDescription("Block a user from opening modmail tickets")
+    .setDescription("Block a user from bot systems")
     .setDefaultMemberPermissions(0)
     .addStringOption((option) =>
       option.setName("system").setDescription("Which system to block from").setRequired(true)
         .addChoices(
           { name: "Modmail", value: "modmail" },
-          { name: "Ban Appeal", value: "appeal" }
+          { name: "Ban Appeal", value: "appeal" },
+          { name: "Staff Applications", value: "staff_applications" }
         )
     )
     .addUserOption((option) =>
@@ -2743,7 +3778,7 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName("unblock")
-    .setDescription("Unblock a user from modmail or appeals")
+    .setDescription("Unblock a user from bot systems")
     .setDefaultMemberPermissions(0)
     .addUserOption((option) =>
       option.setName("user").setDescription("User to unblock").setRequired(true)
@@ -2752,7 +3787,8 @@ const commands = [
       option.setName("system").setDescription("Which system to unblock from").setRequired(true)
         .addChoices(
           { name: "Modmail", value: "modmail" },
-          { name: "Ban Appeal", value: "appeal" }
+          { name: "Ban Appeal", value: "appeal" },
+          { name: "Staff Applications", value: "staff_applications" }
         )
     )
     .addStringOption((option) =>
@@ -2766,8 +3802,7 @@ const commands = [
       option.setName("type").setDescription("Permission type").setRequired(true)
         .addChoices(
           { name: "Payout Approval", value: "payout" },
-          { name: "Ban/Unban Approval", value: "moderation" },
-          { name: "Kick Approval", value: "kick_approval" },
+          { name: "Ban/Unban + Kick Approval", value: "moderation" },
           { name: "Modmail Block", value: "block" },
           { name: "Modmail Claim", value: "claim" },
           { name: "Activity Reset", value: "activity_reset" },
@@ -2779,6 +3814,7 @@ const commands = [
           { name: "Role Commands", value: "role_commands" },
           { name: "Sticky Commands", value: "sticky_commands" },
           { name: "Role Request Commands", value: "role_request_commands" },
+          { name: "Unban All Command", value: "unban_all_command" },
           { name: "Prefix Ban Command", value: "prefix_ban" },
           { name: "Prefix Fullban Command", value: "prefix_fullban" },
           { name: "Prefix Fakeban Command", value: "prefix_fakeban" },
@@ -3229,6 +4265,26 @@ async function hasRoleRequestPermission(
   return allowedRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
+async function hasUnbanAllPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+  const allowedRoleIds = getUnbanAllRoleIdsFromGuildConfig(config);
+
+  if (!allowedRoleIds || allowedRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string'
+      ? BigInt(memberPermissions)
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return allowedRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
 function getInteractionMemberContext(interaction: any): { memberRoles: string[] | undefined; memberPermissions: bigint | string | undefined } {
   const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id) as string[] | undefined;
   const memberPermissions = (interaction.member as any)?.permissions?.bitfield as bigint | string | undefined;
@@ -3622,6 +4678,7 @@ client.once("clientReady", async () => {
   console.log(`✅ Bot logged in as ${client.user?.tag}`);
 
   processExpiredTimedMutes().catch(() => {});
+  processExpiredTimedBans().catch(() => {});
 
   if (!APPLICATION_ID) {
     console.warn("⚠️  DISCORD_APPLICATION_ID not set. Skipping command registration.");
@@ -3652,6 +4709,44 @@ client.once("clientReady", async () => {
         }
       } catch (cleanupError: any) {
         console.log("⚠️ Could not clean legacy /edit_embed command:", cleanupError?.message || cleanupError);
+      }
+
+      // Server-sync /activity so updates are available immediately per guild
+      try {
+        const activityBuilder = commands.find((cmd: any) => {
+          try {
+            return typeof cmd?.toJSON === "function" && cmd.toJSON()?.name === "activity";
+          } catch {
+            return false;
+          }
+        }) as any;
+
+        if (activityBuilder && client.guilds.cache.size > 0) {
+          const activityPayload = activityBuilder.toJSON();
+          let syncedCount = 0;
+
+          for (const guild of client.guilds.cache.values()) {
+            try {
+              const route = Routes.applicationGuildCommands(APPLICATION_ID, guild.id);
+              const guildCommands = await rest.get(route) as any[];
+              const existingActivity = guildCommands.find((cmd: any) => cmd?.name === "activity" && (cmd?.type === 1 || cmd?.type === undefined));
+
+              if (existingActivity?.id) {
+                await rest.patch(Routes.applicationGuildCommand(APPLICATION_ID, guild.id, existingActivity.id), { body: activityPayload });
+              } else {
+                await rest.post(route, { body: activityPayload });
+              }
+
+              syncedCount++;
+            } catch (guildSyncError: any) {
+              console.log(`⚠️ Could not guild-sync /activity for ${guild.name} (${guild.id}):`, guildSyncError?.message || guildSyncError);
+            }
+          }
+
+          console.log(`✅ /activity server-synced in ${syncedCount}/${client.guilds.cache.size} guild(s)`);
+        }
+      } catch (activitySyncError: any) {
+        console.log("⚠️ Could not server-sync /activity command:", activitySyncError?.message || activitySyncError);
       }
 
       console.log("✅ Slash commands registered successfully!");
@@ -4643,6 +5738,44 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Role requests will be sent to <#${channel.id}>.`,
         });
+      } else if (commandName === "set_pro_roles") {
+        if (!await safeDeferReply(interaction)) return;
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const roles: string[] = [];
+        for (let i = 1; i <= 10; i++) {
+          const r = interaction.options.getRole(`role${i}`);
+          if (r) roles.push(r.id);
+        }
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writeRoleRequestSettingsToConfig(config?.customCategoryPings, {
+            proRoleIds: roles,
+          }),
+        });
+
+        const roleMentions = roles.length ? roles.map(id => `<@&${id}>`).join(" ") : "(none)";
+        await interaction.editReply({ content: `✅ Pro roles updated: ${roleMentions}` });
+      } else if (commandName === "setup_pro_role_requests") {
+        if (!await safeDeferReply(interaction)) return;
+        const channelOpt = interaction.options.getChannel("channel");
+        const channelIdStr = interaction.options.getString("channel_id");
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
+        const channelIdToStore = channelOpt ? channelOpt.id : (channelIdStr ? channelIdStr.trim() : null);
+        if (!channelIdToStore) {
+          await interaction.editReply({ content: "❌ Provide a channel or channel_id to set." });
+          return;
+        }
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writeRoleRequestSettingsToConfig(config?.customCategoryPings, {
+            proRequestChannelId: channelIdToStore,
+          }),
+        });
+
+        await interaction.editReply({ content: `✅ Pro role requests will be routed to <#${channelIdToStore}> (if accessible).` });
       } else if (commandName === "accepted_players") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -4658,6 +5791,22 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({
           content: `✅ Accepted players messages will be sent to <#${channel.id}>.`,
+        });
+      } else if (commandName === "joined_players") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writeRoleRequestSettingsToConfig(config?.customCategoryPings, {
+            joinedPlayersChannelId: channel.id,
+          }),
+        });
+
+        await interaction.editReply({
+          content: `✅ Joined players messages will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "dashboard") {
         if (!await safeDeferReply(interaction)) return;
@@ -4806,6 +5955,44 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        const subcommand = interaction.options.getSubcommand(true);
+        if (subcommand === "check") {
+          const fromDays = interaction.options.getInteger("from") ?? -1;
+          const toDays = interaction.options.getInteger("to") ?? -1;
+          const selectCustomId = `activity_check_group_select:${fromDays}:${toDays}`;
+
+          const groupMenu = new StringSelectMenuBuilder()
+            .setCustomId(selectCustomId)
+            .setPlaceholder("Choose activity group")
+            .addOptions(
+              new StringSelectMenuOptionBuilder().setLabel("Staff").setValue("staff"),
+              new StringSelectMenuOptionBuilder().setLabel("Administration Team").setValue("administration"),
+              new StringSelectMenuOptionBuilder().setLabel("Maximum Authority").setValue("maximum_authority"),
+            );
+
+          const now = new Date();
+          let dateHint = "All time";
+          if (fromDays !== -1 && toDays !== -1) {
+            const f = new Date(now.getTime() - fromDays * 86400000);
+            const t = new Date(now.getTime() - toDays * 86400000);
+            dateHint = `<t:${Math.floor(f.getTime()/1000)}:D> → <t:${Math.floor(t.getTime()/1000)}:D>`;
+          } else if (fromDays !== -1) {
+            const f = new Date(now.getTime() - fromDays * 86400000);
+            dateHint = `From <t:${Math.floor(f.getTime()/1000)}:D> to now`;
+          } else if (toDays !== -1) {
+            const t = new Date(now.getTime() - toDays * 86400000);
+            dateHint = `Up to <t:${Math.floor(t.getTime()/1000)}:D>`;
+          }
+
+          const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(groupMenu);
+          await interaction.reply({
+            content: `Select which activity group you want to check:\n🗓️ **Date range:** ${dateHint}`,
+            components: [row],
+            flags: 64,
+          });
+          return;
+        }
+
         if (!await safeDeferReply(interaction, false)) return;
 
         try {
@@ -4846,6 +6033,11 @@ client.on("interactionCreate", async (interaction) => {
             let memberKickStats = 0;
             let memberModerationBanStats = 0;
             let memberInviteStats = 0;
+            let memberPartnershipsStats = 0;
+            let memberAcceptedStaffStats = 0;
+            let memberRoleRequestsReviewedStats = 0;
+            let memberKickRequestsReviewedStats = 0;
+            let memberAcceptedSemiProsProsStats = 0;
             let memberModmailCategoryStats: { category: string; count: number }[] = [];
 
             try {
@@ -4883,6 +6075,15 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) {
               console.log("Could not fetch member appeal stats:", e);
             }
+            try {
+              memberPartnershipsStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", targetMember.id, useAllGuilds);
+              memberAcceptedStaffStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", targetMember.id, useAllGuilds);
+              memberRoleRequestsReviewedStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", targetMember.id, useAllGuilds);
+              memberKickRequestsReviewedStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", targetMember.id, useAllGuilds);
+              memberAcceptedSemiProsProsStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", targetMember.id, useAllGuilds);
+            } catch (e) {
+              console.log("Could not fetch member extra activity stats:", e);
+            }
 
             const memberModeration = moderationByUser.get(targetMember.id);
             memberMuteStats = memberModeration?.mutes || 0;
@@ -4914,7 +6115,7 @@ client.on("interactionCreate", async (interaction) => {
               console.log("Could not fetch member staff report stats:", e);
             }
 
-            const totalActivityWithStaffReports = memberBanStats + memberUnbanStats + memberInviteStats + memberModmailStats + memberAppealStats + memberMuteStats + memberKickStats + memberModerationBanStats + memberStaffReportStats;
+            const totalActivityWithStaffReports = memberBanStats + memberUnbanStats + memberInviteStats + memberModmailStats + memberAppealStats + memberMuteStats + memberKickStats + memberModerationBanStats + memberStaffReportStats + memberPartnershipsStats + memberAcceptedStaffStats + memberRoleRequestsReviewedStats + memberKickRequestsReviewedStats + memberAcceptedSemiProsProsStats;
 
             let statsText = `**Total Activity:** ${totalActivityWithStaffReports}\n\n`;
             statsText += `**Ban Requests:** ${memberBanStats}\n`;
@@ -4925,7 +6126,12 @@ client.on("interactionCreate", async (interaction) => {
             statsText += `**Invites:** ${memberInviteStats}\n`;
             statsText += `**Modmails Handled:** ${memberModmailStats}\n`;
             statsText += `**Appeals Handled:** ${memberAppealStats}\n`;
-            statsText += `**Staff Reports:** ${memberStaffReportStats}`;
+            statsText += `**Staff Reports:** ${memberStaffReportStats}\n`;
+            statsText += `**Partnerships:** ${memberPartnershipsStats}\n`;
+            statsText += `**Accepted Staff:** ${memberAcceptedStaffStats}\n`;
+            statsText += `**Role Requests Reviewed:** ${memberRoleRequestsReviewedStats}\n`;
+            statsText += `**Kick Requests Reviewed:** ${memberKickRequestsReviewedStats}\n`;
+            statsText += `**Accepted Semi Pros & Pros:** ${memberAcceptedSemiProsProsStats}`;
 
             // Add modmail category breakdown if available
             if (memberModmailStats > 0 && memberModmailCategoryStats.length > 0) {
@@ -4966,6 +6172,11 @@ client.on("interactionCreate", async (interaction) => {
           let modmailStats: { userId: string; count: number }[] = [];
           let appealStats: { userId: string; count: number }[] = [];
           let staffReportStats: { userId: string; count: number }[] = [];
+          let partnershipsStats: { userId: string; count: number }[] = [];
+          let acceptedStaffStats: { userId: string; count: number }[] = [];
+          let roleRequestsReviewedStats: { userId: string; count: number }[] = [];
+          let kickRequestsReviewedStats: { userId: string; count: number }[] = [];
+          let acceptedSemiProsProsStats: { userId: string; count: number }[] = [];
           let modmailCategoryStats: { category: string; count: number }[] = [];
 
           try {
@@ -5036,6 +6247,22 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not fetch staff report stats:", e);
           }
 
+          if (!category || category === "partnerships") {
+            partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", useAllGuilds);
+          }
+          if (!category || category === "staff_accepted") {
+            acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", useAllGuilds);
+          }
+          if (!category || category === "role_requests_reviewed") {
+            roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", useAllGuilds);
+          }
+          if (!category || category === "kick_requests_reviewed") {
+            kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", useAllGuilds);
+          }
+          if (!category || category === "accepted_semi_pros_pros") {
+            acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", useAllGuilds);
+          }
+
           try {
             if (!category || category === "modmail") {
               modmailCategoryStats = await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays);
@@ -5076,6 +6303,21 @@ client.on("interactionCreate", async (interaction) => {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
           for (const stat of staffReportStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of partnershipsStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of acceptedStaffStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of roleRequestsReviewedStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of kickRequestsReviewedStats) {
+            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          }
+          for (const stat of acceptedSemiProsProsStats) {
             combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
 
@@ -5125,7 +6367,35 @@ client.on("interactionCreate", async (interaction) => {
           const end = start + 10;
           const currentLeaderboard = leaderboard.slice(start, end);
 
-          const categoryText = category === "ban" ? "Ban Requests" : category === "modban" ? "Moderation Bans" : category === "kick" ? "Moderation Kicks" : category === "mute" ? "Moderation Mutes" : category === "unban" ? "Unban Requests" : category === "invites" ? "Invites" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
+          const categoryText = category === "ban"
+            ? "Ban Requests"
+            : category === "modban"
+              ? "Moderation Bans"
+              : category === "kick"
+                ? "Moderation Kicks"
+                : category === "mute"
+                  ? "Moderation Mutes"
+                  : category === "unban"
+                    ? "Unban Requests"
+                    : category === "invites"
+                      ? "Invites"
+                      : category === "modmail"
+                        ? "Modmails Handled"
+                        : category === "appeal"
+                          ? "Ban Appeals Handled"
+                          : category === "staffreport"
+                            ? "Staff Reports"
+                            : category === "partnerships"
+                              ? "Partnerships"
+                              : category === "staff_accepted"
+                                ? "Accepted Staff"
+                                : category === "role_requests_reviewed"
+                                  ? "Role Requests Reviewed"
+                                  : category === "kick_requests_reviewed"
+                                    ? "Kick Requests Reviewed"
+                                    : category === "accepted_semi_pros_pros"
+                                      ? "Accepted Semi Pros & Pros"
+                                      : "All Activity";
 
           const embed = new EmbedBuilder()
             .setTitle(`${categoryText} Leaderboard`)
@@ -5148,6 +6418,11 @@ client.on("interactionCreate", async (interaction) => {
           const modmailTotal = modmailStats.reduce((sum, e) => sum + e.count, 0);
           const appealTotal = appealStats.reduce((sum, e) => sum + e.count, 0);
           const staffReportTotal = staffReportStats.reduce((sum, e) => sum + e.count, 0);
+          const partnershipsTotal = partnershipsStats.reduce((sum, e) => sum + e.count, 0);
+          const acceptedStaffTotal = acceptedStaffStats.reduce((sum, e) => sum + e.count, 0);
+          const roleRequestsReviewedTotal = roleRequestsReviewedStats.reduce((sum, e) => sum + e.count, 0);
+          const kickRequestsReviewedTotal = kickRequestsReviewedStats.reduce((sum, e) => sum + e.count, 0);
+          const acceptedSemiProsProsTotal = acceptedSemiProsProsStats.reduce((sum, e) => sum + e.count, 0);
 
           if (leaderboard.length === 0) {
             embed.addFields({ name: "\u200B", value: "No activity found for the specified filters.", inline: false });
@@ -5173,6 +6448,11 @@ client.on("interactionCreate", async (interaction) => {
             statsText += `\nModmails Handled: ${modmailTotal}`;
             statsText += `\nAppeals Handled: ${appealTotal}`;
             statsText += `\nStaff Reports: ${staffReportTotal}`;
+            statsText += `\nPartnerships: ${partnershipsTotal}`;
+            statsText += `\nAccepted Staff: ${acceptedStaffTotal}`;
+            statsText += `\nRole Requests Reviewed: ${roleRequestsReviewedTotal}`;
+            statsText += `\nKick Requests Reviewed: ${kickRequestsReviewedTotal}`;
+            statsText += `\nAccepted Semi Pros & Pros: ${acceptedSemiProsProsTotal}`;
             if (category === "modmail") {
               // "Modmails Handled" view - show category breakdown
               if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
@@ -5392,6 +6672,8 @@ client.on("interactionCreate", async (interaction) => {
               await storage.addBanActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "unban") {
               await storage.addUnbanActivityEntries(targetGuildId, user.id, amount);
+            } else if (category === "partnerships" || category === "staff_accepted" || category === "role_requests_reviewed" || category === "kick_requests_reviewed" || category === "accepted_semi_pros_pros") {
+              await adjustExtraActivityCounterForScope(interaction.guildId!, category as ExtraActivityCounterKey, user.id, amount, serverOption === "global");
             } else if (category === "modban" || category === "kick" || category === "mute") {
               await storage.addModerationActivityEntries(targetGuildId, user.id, category, amount);
             }
@@ -5411,6 +6693,16 @@ client.on("interactionCreate", async (interaction) => {
                     ? "unban request"
                       : category === "invites"
                         ? "invite"
+                    : category === "partnerships"
+                      ? "partnership"
+                    : category === "staff_accepted"
+                      ? "accepted staff"
+                    : category === "role_requests_reviewed"
+                      ? "role request review"
+                    : category === "kick_requests_reviewed"
+                      ? "kick request review"
+                    : category === "accepted_semi_pros_pros"
+                      ? "accepted semi pro/pro"
                     : category === "staffreport"
                       ? "staff report"
                       : category === "appeal"
@@ -5456,6 +6748,9 @@ client.on("interactionCreate", async (interaction) => {
               removed = await storage.removeInviteActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "staffreport") {
               removed = await storage.removeStaffReportEntries(targetGuildId, user.id, amount);
+            } else if (category === "partnerships" || category === "staff_accepted" || category === "role_requests_reviewed" || category === "kick_requests_reviewed" || category === "accepted_semi_pros_pros") {
+              await adjustExtraActivityCounterForScope(interaction.guildId!, category as ExtraActivityCounterKey, user.id, -amount, serverOption === "global");
+              removed = amount;
             } else if (category === "modban" || category === "kick" || category === "mute") {
               removed = await storage.removeModerationActivityEntries(targetGuildId, user.id, category, amount);
             } else {
@@ -5477,6 +6772,16 @@ client.on("interactionCreate", async (interaction) => {
                     ? "unban request"
                       : category === "invites"
                         ? "invite"
+                    : category === "partnerships"
+                      ? "partnership"
+                    : category === "staff_accepted"
+                      ? "accepted staff"
+                    : category === "role_requests_reviewed"
+                      ? "role request review"
+                    : category === "kick_requests_reviewed"
+                      ? "kick request review"
+                    : category === "accepted_semi_pros_pros"
+                      ? "accepted semi pro/pro"
                     : category === "staffreport"
                       ? "staff report"
                       : category === "appeal"
@@ -5514,12 +6819,16 @@ client.on("interactionCreate", async (interaction) => {
 
           let count = 0;
           try {
-            count = await storage.resetActivityStats(interaction.guildId!, interaction.user.id, category || undefined, user?.id);
+            if (category === "partnerships" || category === "staff_accepted" || category === "role_requests_reviewed" || category === "kick_requests_reviewed" || category === "accepted_semi_pros_pros") {
+              count = await resetExtraActivityCounterForGuild(interaction.guildId!, category as ExtraActivityCounterKey, user?.id);
+            } else {
+              count = await storage.resetActivityStats(interaction.guildId!, interaction.user.id, category || undefined, user?.id);
+            }
           } catch (e) {
             console.log("Could not reset activity stats:", e);
           }
 
-          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "invites" ? "invite" : category === "modmail" ? "modmail" : category === "appeal" ? "appeal" : category === "staffreport" ? "staff report" : "all";
+          const categoryText = category === "ban" ? "ban request" : category === "unban" ? "unban request" : category === "invites" ? "invite" : category === "modmail" ? "modmail" : category === "appeal" ? "appeal" : category === "staffreport" ? "staff report" : category === "partnerships" ? "partnership" : category === "staff_accepted" ? "accepted staff" : category === "role_requests_reviewed" ? "role request review" : category === "kick_requests_reviewed" ? "kick request review" : category === "accepted_semi_pros_pros" ? "accepted semi pro/pro" : "all";
           const userText = user ? `<@${user.id}>` : "everyone";
 
           await interaction.editReply({
@@ -5529,177 +6838,42 @@ client.on("interactionCreate", async (interaction) => {
           console.log("Error in /activity_reset command:", error.message);
           await interaction.editReply({ content: "Failed to reset activity stats. Please try again." }).catch(() => {});
         }
-      } else if (commandName === "activity_check") {
-        // Check for activity permission before deferring
-        const memberRolesCheck = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id) || [];
-        const memberPermissionsCheck = (interaction.member as any)?.permissions?.bitfield;
-        const hasActivityPermCheck = await hasActivityPermission(memberRolesCheck, memberPermissionsCheck, interaction.guildId!);
+      } else if (commandName === "pick") {
+        if (!await safeDeferReply(interaction, true)) return;
 
-        if (!hasActivityPermCheck) {
-          await interaction.reply({ content: "You don't have permission to use this command.", flags: 64 });
+        const subcommand = interaction.options.getSubcommand(true);
+        if (subcommand !== "roles") {
+          await interaction.editReply({ content: "Unsupported pick subcommand." });
           return;
         }
 
-        // Ephemeral response - only the user can see it
-        if (!await safeDeferReply(interaction, true)) return;
-
-        try {
-          const role = interaction.options.getRole("role", true);
-          let fromDays = interaction.options.getInteger("from") ?? undefined;
-          let toDays = interaction.options.getInteger("to") ?? undefined;
-          const category = interaction.options.getString("category");
-          const guild = interaction.guild;
-
-          if (!guild) {
-            await interaction.editReply({ content: "This command must be used in a server." });
-            return;
-          }
-
-          // Validate from/to ranges
-          if (fromDays !== undefined && fromDays < 0) fromDays = 0;
-          if (toDays !== undefined && toDays < 0) toDays = 0;
-          if (fromDays !== undefined && toDays !== undefined && fromDays < toDays) {
-            // Swap if from is less than to (from should be further back)
-            [fromDays, toDays] = [toDays, fromDays];
-          }
-
-          // Fetch all members with the role
-          try {
-            await guild.members.fetch({ time: 30000 });
-          } catch (e) {
-            console.log("Could not fully fetch members");
-          }
-
-          const guildRole = guild.roles.cache.get(role.id);
-          if (!guildRole) {
-            await interaction.editReply({ content: "Role not found." });
-            return;
-          }
-
-          const membersWithRole = Array.from(guildRole.members.values());
-          if (membersWithRole.length === 0) {
-            await interaction.editReply({ content: `No members found with the role **${guildRole.name}**.` });
-            return;
-          }
-
-          // Build leaderboard data with parallel fetching for better performance
-          const moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays).catch(() => [] as { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[]);
-          const moderationMap = new Map(moderationStatsRows.map((entry) => [entry.moderatorId, entry]));
-
-          const leaderboardData: { userId: string; username: string; modmail: number; appeal: number; ban: number; unban: number; invites: number; staffreport: number; mute: number; kick: number; modban: number; total: number }[] = [];
-
-          // Process in batches of 10 for better performance
-          const batchSize = 10;
-          for (let i = 0; i < membersWithRole.length; i += batchSize) {
-            const batch = membersWithRole.slice(i, i + batchSize);
-            const batchResults = await Promise.all(batch.map(async (member) => {
-              const [modmailCount, appealCount, banCount, unbanCount, inviteCount, staffReportCount] = await Promise.all([
-                storage.getModmailStatsForUserAllGuilds(member.id, fromDays, toDays),
-                storage.getAppealStatsForUserAllGuilds(member.id, fromDays, toDays),
-                storage.getActivityStatsForUserAllGuilds(member.id, "ban", fromDays, toDays),
-                storage.getActivityStatsForUserAllGuilds(member.id, "unban", fromDays, toDays),
-                storage.getInviteStatsForUserAllGuilds(member.id, fromDays, toDays),
-                storage.getStaffReportStatsForUserAllGuilds(member.id, fromDays, toDays)
-              ]);
-              const moderationEntry = moderationMap.get(member.id);
-              const muteCount = moderationEntry?.mutes || 0;
-              const kickCount = moderationEntry?.kicks || 0;
-              const modBanCount = moderationEntry?.bans || 0;
-
-              const total = category === "modban" ? modBanCount
-                : category === "kick" ? kickCount
-                : category === "mute" ? muteCount
-                : category === "ban" ? banCount
-                : category === "unban" ? unbanCount
-                : category === "invites" ? inviteCount
-                : category === "modmail" ? modmailCount
-                : category === "appeal" ? appealCount
-                : category === "staffreport" ? staffReportCount
-                : modmailCount + appealCount + banCount + unbanCount + inviteCount + staffReportCount + muteCount + kickCount + modBanCount;
-              return {
-                userId: member.id,
-                username: member.user.username,
-                modmail: modmailCount,
-                appeal: appealCount,
-                ban: banCount,
-                unban: unbanCount,
-                invites: inviteCount,
-                staffreport: staffReportCount,
-                mute: muteCount,
-                kick: kickCount,
-                modban: modBanCount,
-                total: total
-              };
-            }));
-            leaderboardData.push(...batchResults);
-          }
-
-          // Sort by total (descending)
-          leaderboardData.sort((a, b) => b.total - a.total);
-
-          // Build time range description with Discord timestamps
-          let timeRangeDesc = "";
-          const now = Math.floor(Date.now() / 1000);
-          if (fromDays !== undefined && toDays !== undefined) {
-            const fromTimestamp = now - (fromDays * 24 * 60 * 60);
-            const toTimestamp = now - (toDays * 24 * 60 * 60);
-            timeRangeDesc = `Time Range: <t:${fromTimestamp}:D> to <t:${toTimestamp}:D>`;
-          } else if (fromDays !== undefined) {
-            const fromTimestamp = now - (fromDays * 24 * 60 * 60);
-            timeRangeDesc = `Time Range: Since <t:${fromTimestamp}:D>`;
-          } else if (toDays !== undefined) {
-            const toTimestamp = now - (toDays * 24 * 60 * 60);
-            timeRangeDesc = `Time Range: Up to <t:${toTimestamp}:D>`;
-          } else {
-            timeRangeDesc = "Time Range: All time";
-          }
-
-          // Calculate totals
-          const totalModmail = leaderboardData.reduce((sum, e) => sum + e.modmail, 0);
-          const totalAppeal = leaderboardData.reduce((sum, e) => sum + e.appeal, 0);
-          const totalBan = leaderboardData.reduce((sum, e) => sum + e.ban, 0);
-          const totalModBan = leaderboardData.reduce((sum, e) => sum + e.modban, 0);
-          const totalKick = leaderboardData.reduce((sum, e) => sum + e.kick, 0);
-          const totalMute = leaderboardData.reduce((sum, e) => sum + e.mute, 0);
-          const totalUnban = leaderboardData.reduce((sum, e) => sum + e.unban, 0);
-          const totalInvites = leaderboardData.reduce((sum, e) => sum + e.invites, 0);
-          const totalStaffReport = leaderboardData.reduce((sum, e) => sum + e.staffreport, 0);
-          const grandTotal = leaderboardData.reduce((sum, e) => sum + e.total, 0);
-
-          // Build header with requested order labels
-          const headerText = `Activity Check for ${guildRole.name}\n${timeRangeDesc}\n\nOrder: Modmails, Appeals, Ban Requests, Unban Requests, Invites, Mutes, Kicks, Bans, Staff Reports`;
-          const totalsText = `Totals: Modmails:${totalModmail} | Appeals:${totalAppeal} | Ban Requests:${totalBan} | Unban Requests:${totalUnban} | Invites:${totalInvites} | Mutes:${totalMute} | Kicks:${totalKick} | Bans:${totalModBan} | Staff Reports:${totalStaffReport} | Total:${grandTotal}`;
-
-          // Build compact rows (order shown only in header)
-          const rows = leaderboardData.map((entry, index) => {
-            const num = (index + 1).toString();
-            const mm = entry.modmail.toString();
-            const ap = entry.appeal.toString();
-            const br = entry.ban.toString();
-            const ub = entry.unban.toString();
-            const iv = entry.invites.toString();
-            const mmt = entry.mute.toString();
-            const mk = entry.kick.toString();
-            const mb = entry.modban.toString();
-            const sr = entry.staffreport.toString();
-            const tot = entry.total.toString();
-            return `${num} <@${entry.userId}> | ${mm} | ${ap} | ${br} | ${ub} | ${iv} | ${mmt} | ${mk} | ${mb} | ${sr} | ${tot}`;
-          });
-
-          const body = rows.join("\n") || "No entries found.";
-          const footerNotes = `\n\nStaff Of The Week:\nPromotions:\nDemotion Warnings:\nDemotions:\n\nNotes -`;
-          const content = `\`\`\`\n${headerText}\n${totalsText}\n\n${body}${footerNotes}\n\`\`\``;
-
-          if (content.length > 3900) {
-            await interaction.editReply({ content: "Activity check output is too long for one message. Use a smaller role/filter range." });
-            return;
-          }
-
-          await interaction.editReply({ content });
-        } catch (error: any) {
-          console.log("Error in /activity_check command:", error.message, error.stack);
-          await interaction.editReply({ content: "Failed to check activity. Please try again." }).catch(() => {});
+        const group = interaction.options.getString("group", true) as ActivityCheckGroup;
+        const roleNames: string[] = [];
+        for (let i = 1; i <= 20; i++) {
+          const role = interaction.options.getRole(`role${i}`);
+          if (role) roleNames.push(role.name);
         }
+
+        await writeSyncedActivityCheckRoleGroups(group, roleNames);
+
+        const mentions = roleNames.length > 0 ? roleNames.join(", ") : "None";
+        await interaction.editReply({
+          content: `✅ ${ACTIVITY_CHECK_GROUP_LABELS[group]} synced roles updated: ${mentions}`,
+        });
+      } else if (commandName === "set_partnership_channel") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+        const currentConfig = await storage.getGuildConfig(interaction.guildId!);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writePartnershipActivityChannelToConfig(currentConfig?.customCategoryPings, channel.id),
+        });
+
+        await interaction.editReply({
+          content: `✅ Partnerships activity will now be tracked from <#${channel.id}>.`,
+        });
       } else if (commandName === "restore_activity") {
         if (!await safeDeferReply(interaction, false)) return;
 
@@ -6007,6 +7181,79 @@ client.on("interactionCreate", async (interaction) => {
             content: "✅ Staff introduction quiz has been posted!",
           });
         } catch (e) {}
+      } else if (commandName === "setup_staff_applications") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const setup = getStaffApplicationsSetupFromGuildConfig(config);
+
+        const embed = new EmbedBuilder()
+          .setTitle(setup.embedTitle)
+          .setDescription(setup.embedDescription)
+          .setColor(0x57f287)
+          .setFooter({ text: "Applications are submitted through DMs" });
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`start_staff_application_${interaction.guildId}`)
+            .setLabel("Apply For Staff")
+            .setStyle(ButtonStyle.Success)
+        );
+
+        if (interaction.channel && "send" in interaction.channel) {
+          await interaction.channel.send({ embeds: [embed], components: [row] });
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeStaffApplicationsSetupToConfig(config?.customCategoryPings, {
+              channelId: interaction.channelId,
+            }),
+          });
+        }
+
+        await interaction.editReply({ content: "✅ Staff applications embed has been posted." });
+      } else if (commandName === "setup_staff_app_submissions") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writeStaffApplicationsSetupToConfig(config?.customCategoryPings, {
+            submissionsChannelId: channel.id,
+          }),
+        });
+
+        await interaction.editReply({
+          content: `✅ Staff application submissions will be sent to <#${channel.id}>.`,
+        });
+      } else if (commandName === "setup_staff_app_questions") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const configuredQuestions: string[] = [];
+        for (let i = 1; i <= 10; i++) {
+          const value = interaction.options.getString(`question${i}`);
+          if (value && value.trim().length > 0) configuredQuestions.push(value.trim());
+        }
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        if (configuredQuestions.length > 0) {
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeStaffApplicationsSetupToConfig(config?.customCategoryPings, {
+              questions: configuredQuestions,
+            }),
+          });
+        }
+
+        const latestConfig = await storage.getGuildConfig(interaction.guildId!);
+        const setup = getStaffApplicationsSetupFromGuildConfig(latestConfig);
+        const questionSummary = setup.questions.map((question, index) => `**Q${index + 1}:** ${question}`).join("\n");
+
+        await interaction.editReply({
+          content: `✅ Staff application questions updated.\n\n${questionSummary}`,
+        });
       } else if (commandName === "setup_quiz_log") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -6251,7 +7498,6 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const subcommand = interaction.options.getSubcommand(true);
-        const config = await storage.getGuildConfig(interaction.guildId!);
 
         if (subcommand === "set") {
           const target = interaction.options.getString("embeds", true) as RequestPingTarget;
@@ -6262,11 +7508,11 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           const roles = Array.from(roleIds);
+          const roleNames = roles
+            .map((id) => interaction.guild?.roles.cache.get(id)?.name)
+            .filter((value): value is string => !!value);
 
-          await storage.upsertGuildConfig({
-            guildId: interaction.guildId!,
-            customCategoryPings: writeRequestPingRolesToConfig(config?.customCategoryPings, target, roles),
-          });
+          await writeSyncedRequestPingRoles(target, roles, roleNames);
 
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None";
           const targetLabel = REQUEST_PING_TARGET_LABELS[target] || target;
@@ -6277,12 +7523,15 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const lines = (Object.keys(REQUEST_PING_TARGET_LABELS) as RequestPingTarget[]).map((target) => {
+        const lines = await Promise.all((Object.keys(REQUEST_PING_TARGET_LABELS) as RequestPingTarget[]).map(async (target) => {
           const label = REQUEST_PING_TARGET_LABELS[target];
-          const roleIds = getRequestPingRoleIdsFromGuildConfig(config, target);
-          const rolesText = roleIds.length > 0 ? roleIds.map(id => `<@&${id}>`).join(", ") : "None";
+          const syncedConfig = await getSyncedRequestPingConfig(target, interaction.guildId!);
+          const virtualConfig = {
+            customCategoryPings: writeRequestPingRolesToConfig(undefined, target, syncedConfig.roleIds, syncedConfig.roleNames),
+          } as any;
+          const rolesText = formatRequestPingRolesForGuild(virtualConfig, target, interaction.guild);
           return `• **${label}:** ${rolesText}`;
-        });
+        }));
 
         await interaction.reply({
           content: `📌 **Current Request Ping Mappings**\n${lines.join("\n")}`,
@@ -6591,6 +7840,47 @@ client.on("interactionCreate", async (interaction) => {
           );
 
           await interaction.showModal(modal);
+        } else if (embedType === "staffapplications") {
+          const setup = getStaffApplicationsSetupFromGuildConfig(config);
+
+          const modal = new ModalBuilder()
+            .setCustomId(`config_staffapplications_modal_${interaction.guildId}`)
+            .setTitle("Edit Staff Applications Embed");
+
+          const titleInput = new TextInputBuilder()
+            .setCustomId("embed_title")
+            .setLabel("Embed Title")
+            .setStyle(TextInputStyle.Short)
+            .setValue(setup.embedTitle)
+            .setMaxLength(256)
+            .setRequired(true);
+
+          const descriptionInput = new TextInputBuilder()
+            .setCustomId("embed_description")
+            .setLabel("Description (use Enter for line breaks)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setValue(setup.embedDescription)
+            .setMaxLength(4000)
+            .setRequired(true);
+
+          const imageInput = new TextInputBuilder()
+            .setCustomId("embed_image_url")
+            .setLabel("Image URL or message link (optional)")
+            .setStyle(TextInputStyle.Short)
+            .setMaxLength(4000)
+            .setRequired(false);
+
+          if (imageLink) {
+            imageInput.setValue(imageLink.slice(0, 4000));
+          }
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(titleInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(descriptionInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(imageInput)
+          );
+
+          await interaction.showModal(modal);
         } else if (embedType === "inactivity") {
           const currentTitle = config?.inactivityEmbedTitle || "Inactivity Request";
           const currentDescription = config?.inactivityEmbedDescription || "Click the button below to submit an inactivity request.";
@@ -6855,6 +8145,19 @@ client.on("interactionCreate", async (interaction) => {
             reason,
             expiresAt,
           });
+        } else if (system === "staff_applications") {
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeStaffApplicationBlockToConfig(
+              config?.customCategoryPings,
+              targetUser.id,
+              {
+                blockedById: interaction.user.id,
+                reason: reason || null,
+                expiresAt: expiresAt ? expiresAt.toISOString() : null,
+              },
+            ),
+          });
         } else {
           await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
           await storage.createModmailBlock({
@@ -6867,7 +8170,11 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const durationText = timeUnit === "permanent" ? "permanently" : `for ${duration} ${timeUnit}`;
-        const systemText = system === "appeal" ? "ban appeals" : "modmail";
+        const systemText = system === "appeal"
+          ? "ban appeals"
+          : system === "staff_applications"
+            ? "staff applications"
+            : "modmail";
         await interaction.editReply({ content: `✅ <@${targetUser.id}> has been blocked from ${systemText} ${durationText}.${reason ? ` Reason: ${reason}` : ""}` });
       } else if (commandName === "unblock") {
         if (!await safeDeferReply(interaction)) return;
@@ -6892,10 +8199,77 @@ client.on("interactionCreate", async (interaction) => {
         if (system === "appeal") {
           await storage.removeAppealBlock(interaction.guildId!, targetUser.id);
           await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from ban appeals.${reason ? ` Reason: ${reason}` : ""}` });
+        } else if (system === "staff_applications") {
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: removeStaffApplicationBlockFromConfig(config?.customCategoryPings, targetUser.id),
+          });
+          await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from staff applications.${reason ? ` Reason: ${reason}` : ""}` });
         } else {
           await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
           await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.${reason ? ` Reason: ${reason}` : ""}` });
         }
+      } else if (commandName === "unban") {
+        const { memberRoles, memberPermissions } = getInteractionMemberContext(interaction);
+        const hasPermission = await hasUnbanAllPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+        if (!hasPermission) {
+          await interaction.reply({ content: "❌ You don't have permission to use this command.", ephemeral: true });
+          return;
+        }
+
+        if (!await safeDeferReply(interaction)) return;
+
+        const subcommand = interaction.options.getSubcommand(true);
+        if (subcommand !== "all") {
+          await interaction.editReply({ content: "❌ Unknown subcommand." });
+          return;
+        }
+
+        const guild = interaction.guild;
+        if (!guild) {
+          await interaction.editReply({ content: "❌ This command must be used in a server." });
+          return;
+        }
+
+        const bans = await guild.bans.fetch().catch(() => null);
+        if (!bans || bans.size === 0) {
+          await interaction.editReply({ content: "✅ There are no banned users in this server." });
+          return;
+        }
+
+        const auditReason = `Bulk unban via /unban all by ${interaction.user.tag}`;
+        let successCount = 0;
+        let failCount = 0;
+        const failedUsers: string[] = [];
+
+        await interaction.editReply({ content: `⏳ Unbanning **${bans.size}** user${bans.size === 1 ? "" : "s"}...` });
+
+        for (const [, ban] of bans) {
+          try {
+            await guild.members.unban(ban.user.id, auditReason);
+            guild.bans.cache.delete(ban.user.id);
+            successCount++;
+          } catch {
+            failCount++;
+            failedUsers.push(ban.user.tag || ban.user.id);
+          }
+        }
+
+        if (successCount === 0) {
+          await interaction.editReply({ content: `❌ Failed to unban anyone.${failedUsers.length > 0 ? ` Failed users: ${failedUsers.slice(0, 10).join(", ")}${failedUsers.length > 10 ? ` +${failedUsers.length - 10} more` : ""}` : ""}` });
+          return;
+        }
+
+        const summaryParts = [
+          `✅ Unbanned **${successCount}** user${successCount === 1 ? "" : "s"} in this server.`,
+        ];
+
+        if (failCount > 0) {
+          summaryParts.push(`Failed for **${failCount}** user${failCount === 1 ? "" : "s"}: ${failedUsers.slice(0, 10).join(", ")}${failedUsers.length > 10 ? ` +${failedUsers.length - 10} more` : ""}`);
+        }
+
+        await interaction.editReply({ content: summaryParts.join("\n") });
       } else if (commandName === "permissions") {
         if (!canUsePrefixCommand(interaction)) {
           await interaction.reply({
@@ -6923,7 +8297,7 @@ client.on("interactionCreate", async (interaction) => {
 
         const typeLabels: Record<string, string> = {
           payout: "Payout Approval",
-          moderation: "Ban/Unban Approval",
+          moderation: "Ban/Unban + Kick Approval",
           kick_approval: "Kick Approval",
           block: "Modmail Block",
           claim: "Modmail Claim",
@@ -6936,6 +8310,7 @@ client.on("interactionCreate", async (interaction) => {
           role_commands: "Role Commands",
           sticky_commands: "Sticky Commands",
           role_request_commands: "Role Request Commands",
+          unban_all_command: "Unban All Command",
           prefix_ban: "Prefix Ban Command",
           prefix_fullban: "Prefix Fullban Command",
           prefix_fakeban: "Prefix Fakeban Command",
@@ -7024,6 +8399,20 @@ client.on("interactionCreate", async (interaction) => {
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
           const labelName = typeLabels[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /setup_role_requests to set the destination channel.`, ephemeral: true });
+          return;
+        }
+
+        if (permType === "unban_all_command") {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeUnbanAllPermissionToConfig(config?.customCategoryPings, roles),
+          });
+
+          const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
+          const labelName = typeLabels[permType] || permType;
+          await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /unban all to unban everyone in this server.`, ephemeral: true });
           return;
         }
 
@@ -7320,27 +8709,51 @@ client.on("interactionCreate", async (interaction) => {
 
         // Get all blocked users from modmail and appeals
         const modmailBlocks = await storage.getAllModmailBlocksGlobal();
-        const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt }));
+        const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
         
         const appealBlocks = await storage.getAllAppealBlocksGlobal();
-        const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt }));
+        const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
+
+        const staffApplicationBlocked: Array<{ userId: string; type: "staff_applications"; reason: string | null; expiresAt: Date | null; blockedById: string | null }> = [];
+        for (const guild of client.guilds.cache.values()) {
+          const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
+          const staffAppBlocks = getStaffApplicationBlocksFromGuildConfig(guildConfig);
+
+          for (const [userId, block] of Object.entries(staffAppBlocks)) {
+            const expiresAt = block.expiresAt ? new Date(block.expiresAt) : null;
+            if (expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) {
+              continue;
+            }
+
+            staffApplicationBlocked.push({
+              userId,
+              type: "staff_applications",
+              reason: block.reason,
+              expiresAt,
+              blockedById: block.blockedById || null,
+            });
+          }
+        }
 
         // Combine and deduplicate
-        const blockedMap = new Map<string, { userId: string; types: string[]; reasons: Map<string, string | null>; expireTimes: Map<string, Date | null> }>();
-        for (const b of [...modmailBlocked, ...appealBlocked]) {
+        const blockedMap = new Map<string, { userId: string; types: string[]; reasons: Map<string, string | null>; expireTimes: Map<string, Date | null>; blockedByIds: Map<string, string | null> }>();
+        for (const b of [...modmailBlocked, ...appealBlocked, ...staffApplicationBlocked]) {
           if (blockedMap.has(b.userId)) {
             const existing = blockedMap.get(b.userId)!;
             if (!existing.types.includes(b.type)) {
               existing.types.push(b.type);
               existing.reasons.set(b.type, b.reason);
               existing.expireTimes.set(b.type, b.expiresAt);
+              existing.blockedByIds.set(b.type, b.blockedById);
             }
           } else {
             const reasons = new Map<string, string | null>();
             const expireTimes = new Map<string, Date | null>();
+            const blockedByIds = new Map<string, string | null>();
             reasons.set(b.type, b.reason);
             expireTimes.set(b.type, b.expiresAt);
-            blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes });
+            blockedByIds.set(b.type, b.blockedById);
+            blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes, blockedByIds });
           }
         }
 
@@ -7364,9 +8777,11 @@ client.on("interactionCreate", async (interaction) => {
           for (const type of item.types) {
             const reason = item.reasons.get(type);
             const expiresAt = item.expireTimes.get(type);
+            const blockedById = item.blockedByIds.get(type);
             const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
             const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
-            details.push(`${type}: ${reasonText} (${durationText})`);
+            const blockedByText = blockedById ? `Blocked by: <@${blockedById}>` : "Blocked by: Unknown";
+            details.push(`${type}: ${reasonText} (${durationText}; ${blockedByText})`);
           }
           
           listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
@@ -8130,6 +9545,177 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
+      if (interaction.customId.startsWith("activity_check_group_select")) {
+        const { memberRoles, memberPermissions } = getInteractionMemberContext(interaction);
+        const hasPermission = await hasActivityPermission(memberRoles, memberPermissions, interaction.guildId!);
+        if (!hasPermission) {
+          await replyInteractionFailed(interaction);
+          return;
+        }
+
+        const guild = interaction.guild;
+        const group = (interaction.values[0] || "staff") as ActivityCheckGroup;
+        if (!guild) {
+          await interaction.reply({ content: "This command must be used in a server.", ephemeral: true });
+          return;
+        }
+
+        // Parse from/to from custom ID: activity_check_group_select:fromDays:toDays
+        const idParts = interaction.customId.split(":");
+        const rawFrom = idParts[1] !== undefined ? parseInt(idParts[1]) : -1;
+        const rawTo = idParts[2] !== undefined ? parseInt(idParts[2]) : -1;
+        const fromDays = rawFrom === -1 ? undefined : rawFrom;
+        const toDays = rawTo === -1 ? undefined : rawTo;
+
+        const roleRefs = await getSyncedActivityCheckRoleGroupValues(interaction.guildId!, group);
+        const resolvedRoles = resolveGuildRolesFromStoredValues(guild, roleRefs);
+
+        if (roleRefs.length === 0) {
+          await interaction.reply({
+            content: `No roles configured for **${ACTIVITY_CHECK_GROUP_LABELS[group]}**. Use \`/pick roles\` first.`,
+            ephemeral: true,
+          });
+          return;
+        }
+
+        try {
+          await guild.members.fetch({ time: 30000 });
+        } catch {
+          // ignore fetch failures, cache may still be sufficient
+        }
+
+        const membersMap = new Map<string, any>();
+        for (const role of resolvedRoles) {
+          role.members.forEach((member: any) => membersMap.set(member.id, member));
+        }
+
+        const members = Array.from(membersMap.values());
+        if (members.length === 0) {
+          await interaction.reply({
+            content: `No members found in configured roles for **${ACTIVITY_CHECK_GROUP_LABELS[group]}**.`,
+            ephemeral: true,
+          });
+          return;
+        }
+
+        const moderationRowsByGuild = await Promise.all(
+          Array.from(client.guilds.cache.values()).map((g) =>
+            storage.getModerationStats(g.id, fromDays, toDays).catch(() => [] as { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[])
+          )
+        );
+        const moderationTotals = new Map<string, { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }>();
+        for (const rowsForGuild of moderationRowsByGuild) {
+          for (const row of rowsForGuild) {
+            const current = moderationTotals.get(row.moderatorId) || {
+              moderatorId: row.moderatorId,
+              warns: 0,
+              mutes: 0,
+              unmutes: 0,
+              kicks: 0,
+              bans: 0,
+              unbans: 0,
+            };
+            current.warns += row.warns || 0;
+            current.mutes += row.mutes || 0;
+            current.unmutes += row.unmutes || 0;
+            current.kicks += row.kicks || 0;
+            current.bans += row.bans || 0;
+            current.unbans += row.unbans || 0;
+            moderationTotals.set(row.moderatorId, current);
+          }
+        }
+        const moderationStatsRows = Array.from(moderationTotals.values());
+        const moderationMap = new Map(moderationStatsRows.map((entry) => [entry.moderatorId, entry]));
+        const banStats = await storage.getAllGuildsBanStats(fromDays, toDays).catch(() => [] as { userId: string; count: number }[]);
+        const unbanStats = await storage.getAllGuildsUnbanStats(fromDays, toDays).catch(() => [] as { userId: string; count: number }[]);
+        const banMap = new Map(banStats.map((entry) => [entry.userId, entry.count]));
+        const unbanMap = new Map(unbanStats.map((entry) => [entry.userId, entry.count]));
+
+        const rows: Array<{ userId: string; total: number; line: string }> = [];
+        for (const member of members) {
+          const userId = member.id;
+          const moderation = moderationMap.get(userId);
+          const muteCount = moderation?.mutes || 0;
+          const modBanCount = moderation?.bans || 0;
+          const modKickCount = moderation?.kicks || 0;
+
+          if (group === "staff") {
+            const [modmailCount, inviteCount, staffReportCount, appealCount] = await Promise.all([
+              storage.getModmailStatsForUserAllGuilds(userId, fromDays, toDays),
+              storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
+              storage.getStaffReportStatsForUserAllGuilds(userId, fromDays, toDays),
+              storage.getAppealStatsForUserAllGuilds(userId, fromDays, toDays),
+            ]);
+
+            const total = modmailCount + muteCount + inviteCount + staffReportCount + appealCount;
+            rows.push({
+              userId,
+              total,
+              line: `<@${userId}> | ${modmailCount} | ${muteCount} | ${inviteCount} | ${staffReportCount} | ${appealCount} | ${total}`,
+            });
+            continue;
+          }
+
+          if (group === "administration") {
+            const [roleRequestsReviewed, kickRequestsReviewed, staffAccepted] = await Promise.all([
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", userId, true),
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", userId, true),
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", userId, true),
+            ]);
+            const banUnbanKickReviewed = (banMap.get(userId) || 0) + (unbanMap.get(userId) || 0) + kickRequestsReviewed;
+            const total = roleRequestsReviewed + banUnbanKickReviewed + staffAccepted + modBanCount + modKickCount;
+
+            rows.push({
+              userId,
+              total,
+              line: `<@${userId}> | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount} | ${total}`,
+            });
+            continue;
+          }
+
+          const [partnerships, acceptedSemiProsPros] = await Promise.all([
+            getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", userId, true),
+            getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", userId, true),
+          ]);
+          const total = partnerships + acceptedSemiProsPros + modBanCount + modKickCount;
+
+          rows.push({
+            userId,
+            total,
+            line: `<@${userId}> | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount} | ${total}`,
+          });
+        }
+
+        rows.sort((a, b) => b.total - a.total);
+
+        // Build date range line
+        let dateRangeLine = "All time";
+        if (fromDays !== undefined || toDays !== undefined) {
+          const now = new Date();
+          const fromTs = fromDays !== undefined ? Math.floor((now.getTime() - fromDays * 86400000) / 1000) : null;
+          const toTs = toDays !== undefined ? Math.floor((now.getTime() - toDays * 86400000) / 1000) : Math.floor(now.getTime() / 1000);
+          dateRangeLine = fromTs ? `<t:${fromTs}:D> → <t:${toTs}:D>` : `Up to <t:${toTs}:D>`;
+        }
+
+        const header =
+          group === "staff"
+            ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Mutes | Invites | Staff Reports | Appeals | Total`
+            : group === "administration"
+              ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Role Requests | Ban/Unban/Kick Reviews | Staff Accepted | Mod Bans | Mod Kicks | Total`
+              : `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Partnerships | Accepted Semi Pros & Pros | Mod Bans | Mod Kicks | Total`;
+
+        const body = rows.map((entry, index) => `${index + 1}. ${entry.line}`).join("\n") || "No entries found.";
+        const content = `\`\`\`\n${header}\n\n${body}\n\`\`\``;
+
+        if (content.length > 3900) {
+          await interaction.reply({ content: "Output is too long. Reduce members in configured roles.", ephemeral: true });
+          return;
+        }
+
+        await interaction.reply({ content, ephemeral: true });
+        return;
+      }
+
       // Handle roster selection
       if (interaction.customId === "roster_selection") {
         const rosterId = interaction.values[0];
@@ -8259,10 +9845,20 @@ client.on("interactionCreate", async (interaction) => {
             if (pendingData.attachments.length > 0) {
               const urls = pendingData.attachments.map((a: any) => a.url);
               userEmbed.addFields({ name: "Attachments", value: urls.join("\n"), inline: false });
-              const firstImage = pendingData.attachments.find((a: any) => a.contentType?.startsWith("image/"));
-              if (firstImage) {
-                userEmbed.setImage(firstImage.url);
+              const baseDescription = pendingData.messageContent || "(No text content)";
+              userEmbed.setDescription(`${baseDescription}\n\n(${user.tag}) has sent attachment(s).`);
+            }
+
+            // Download and re-upload so images never expire
+            let selectFileBuilders: Array<{ builder: AttachmentBuilder; name: string; isImage: boolean }> = [];
+            try {
+              if (pendingData.attachments.length > 0) {
+                selectFileBuilders = await downloadAttachmentsAsFiles(pendingData.attachments);
               }
+            } catch {}
+            const selectUploadedFiles = selectFileBuilders.map(f => f.builder);
+            if (selectUploadedFiles.length > 0) {
+              await ticketChannel.send({ files: selectUploadedFiles });
             }
 
             await ticketChannel.send({ embeds: [userEmbed] });
@@ -8330,6 +9926,382 @@ client.on("interactionCreate", async (interaction) => {
         const sourceUserId = match[3];
         const selectedAction = interaction.values[0];
 
+        // Claim ticket via select menu
+        if (selectedAction === "claim_ticket") {
+          if (!await safeDeferUpdate(interaction)) return;
+          try {
+            // Find thread by ID first, then fallback to channel lookup
+            let thread = await storage.getModmailThread(threadId);
+            if (!thread) thread = await safeGetModmailThreadByChannel(interaction.channelId!);
+            if (!thread) {
+              await interaction.followUp({ content: "Thread not found.", flags: 64 });
+              return;
+            }
+
+            if (thread.claimedById) {
+              await interaction.followUp({ content: `This ticket is claimed by <@${thread.claimedById}>.`, flags: 64 });
+              return;
+            }
+
+            const config = await storage.getGuildConfig(interaction.guildId!);
+            const claimRoleIds = config?.modmailClaimRoleIds || config?.modmailStaffRoleIds || [];
+            const memberRoles = interaction.member?.roles;
+            const hasClaimPermission = claimRoleIds.length === 0 || 
+              (memberRoles && Array.isArray(memberRoles) 
+                ? claimRoleIds.some(id => memberRoles.includes(id))
+                : memberRoles && 'cache' in memberRoles && claimRoleIds.some(id => memberRoles.cache.has(id)));
+
+            if (!hasClaimPermission) {
+              await interaction.followUp({ content: "You don't have permission to claim tickets.", flags: 64 });
+              return;
+            }
+
+            await storage.updateModmailThread(threadId, { claimedById: interaction.user.id });
+            threadWasClaimed.add(threadId);
+
+            const claimEmbed = new EmbedBuilder()
+              .setDescription(`Claimed by ${interaction.user.username}`)
+              .setColor(0xed4245)
+              .setTimestamp();
+
+            // Update message components to show claimed state
+            try {
+              await interaction.message.edit({
+                components: [
+                  new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_unclaim_${threadId}`)
+                      .setLabel(`Claimed by ${interaction.user.username}`)
+                      .setStyle(ButtonStyle.Secondary)
+                      .setDisabled(true),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_toggle_${threadId}`)
+                      .setLabel("Toggle Member")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("👥"),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_request_role_${threadId}`)
+                      .setLabel("Request A Role")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("🛡️")
+                  ),
+                  new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_modlogs_${threadId}`)
+                      .setLabel("Modlogs")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("📚"),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_logs_${threadId}`)
+                      .setLabel("Modmail Logs")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("📝"),
+                    new ButtonBuilder()
+                      .setCustomId(`appeal_logs_${threadId}`)
+                      .setLabel("Appeal Logs")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("⚖️"),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_close_${threadId}`)
+                      .setLabel("Close")
+                      .setStyle(ButtonStyle.Danger)
+                      .setEmoji("🔒")
+                  )
+                ]
+              });
+            } catch (e) {}
+
+            await interaction.followUp({ embeds: [claimEmbed] });
+
+            // Also update any other ticket header/control messages in this channel (for select-based claim)
+            try {
+              if (interaction.channel && "messages" in interaction.channel) {
+                const recent = await (interaction.channel as any).messages.fetch({ limit: 50 });
+                const duplicate = recent.find((m: any) => {
+                  if (!m.author || m.author.id !== client.user?.id) return false;
+                  if (!m.components || m.components.length === 0) return false;
+                  return m.components.some((row: any) => row.components && row.components.some((c: any) => c.customId === `modmail_claim_${threadId}` || c.customId === `appeal_claim_${threadId}`));
+                });
+                if (duplicate && duplicate.id !== interaction.message.id) {
+                  await duplicate.edit({ components: [
+                    new ActionRowBuilder<ButtonBuilder>().addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_unclaim_${threadId}`)
+                        .setLabel(`Claimed by ${interaction.user.username}`)
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_toggle_${threadId}`)
+                        .setLabel("Toggle Member")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("👥"),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_request_role_${threadId}`)
+                        .setLabel("Request A Role")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("🛡️")
+                    ),
+                    new ActionRowBuilder<ButtonBuilder>().addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_modlogs_${threadId}`)
+                        .setLabel("Modlogs")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("📚"),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_logs_${threadId}`)
+                        .setLabel("Modmail Logs")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("📝"),
+                      new ButtonBuilder()
+                        .setCustomId(`appeal_logs_${threadId}`)
+                        .setLabel("Appeal Logs")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("⚖️"),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_close_${threadId}`)
+                        .setLabel("Close")
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji("🔒")
+                    )
+                  ]}).catch(() => {});
+                }
+              }
+            } catch (e) {}
+
+            // Start auto-unclaim timer if user is waiting
+            if (interaction.channel) {
+              const channelId = interaction.channel.id;
+              const claimerId = interaction.user.id;
+              const threadMessages = await storage.getModmailMessages(threadId);
+              const lastMessage = threadMessages.length > 0 ? threadMessages[threadMessages.length - 1] : null;
+              const userIsWaiting = lastMessage && lastMessage.isStaff !== "true";
+              if (userIsWaiting) {
+                const CLAIM_EXPIRY_TIME = 15 * 60 * 1000;
+                const existingClaimTimer = pendingClaimExpiry.get(channelId);
+                if (existingClaimTimer) clearTimeout(existingClaimTimer.timeout);
+                const claimExpiryTimeout = setTimeout(async () => {
+                  pendingClaimExpiry.delete(channelId);
+                  try {
+                    const currentThread = await safeGetModmailThreadByChannel(channelId);
+                    if (!currentThread || currentThread.status !== "open") return;
+                    if (currentThread.claimedById !== claimerId) return;
+                    await storage.updateModmailThread(currentThread.id, { claimedById: null });
+                    const channel = await client.channels.fetch(channelId);
+                    await sendAutoUnclaimEmbed(channel, claimerId);
+                  } catch (e) {
+                    console.log("Could not process auto-unclaim on user message");
+                  }
+                }, CLAIM_EXPIRY_TIME);
+
+                pendingClaimExpiry.set(channelId, { timeout: claimExpiryTimeout, claimerId });
+              }
+            }
+          } catch (e) {
+            console.log("Error in claim_ticket select action:", e);
+            await interaction.followUp({ content: "Failed to claim ticket.", flags: 64 });
+          }
+          return;
+        }
+
+        // Close ticket via select menu
+        if (selectedAction === "close_ticket") {
+          if (!await safeDeferReply(interaction)) return;
+          try {
+            const thread = await storage.getModmailThread(threadId) || await safeGetModmailThreadByChannel(interaction.channelId!);
+            if (!thread) {
+              await interaction.editReply({ content: "Thread not found." });
+              return;
+            }
+
+            if (thread.claimedById && thread.claimedById !== interaction.user.id) {
+              const embed = new EmbedBuilder()
+                .setColor(0x5865f2)
+                .setDescription(`Only <@${thread.claimedById}> can close this ticket.`)
+                .setTimestamp();
+              await interaction.editReply({ embeds: [embed] });
+              return;
+            }
+
+            await storage.updateModmailThread(threadId, {
+              status: "closed",
+              closedById: interaction.user.id,
+              closeReason: "Closed via menu",
+              closedAt: new Date(),
+            });
+
+            await storage.addModmailActivityEntries(interaction.guildId!, interaction.user.id, 1);
+
+            if (interaction.channel) {
+              const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
+              if (existingClaimTimer) {
+                clearTimeout(existingClaimTimer.timeout);
+                pendingClaimExpiry.delete(interaction.channel.id);
+              }
+            }
+
+            // Send logs if configured
+            try {
+              const guildId = interaction.guildId!;
+              const closerId = interaction.user.id;
+              const channelId = interaction.channel?.id;
+              const threadUserId = thread.userId;
+              const threadIdForLog = thread.id;
+              const config = await storage.getGuildConfig(guildId);
+              if (config?.modmailLogChannelId) {
+                const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+                if (logChannel && "send" in logChannel) {
+                  const messages = await storage.getModmailMessages(threadIdForLog);
+                  const transcriptContent = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] ${m.authorId}: ${m.content}`).join("\n");
+                  const buffer = Buffer.from(transcriptContent, "utf-8");
+                  const attachment = new AttachmentBuilder(buffer, { name: `transcript-${threadIdForLog}.txt` });
+                  const pageSize = 10;
+                  const pageMessages = messages.slice(0, pageSize);
+                  let transcriptPreview = pageMessages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] <@${m.authorId}>: ${m.content}`).join("\n");
+                  transcriptPreview = clampEmbedFieldValue(transcriptPreview);
+                  const logEmbed = new EmbedBuilder()
+                    .setTitle("Ticket Closed")
+                    .setColor(0xed4245)
+                    .addFields(
+                      { name: "Opened By", value: `<@${threadUserId}>`, inline: true },
+                      { name: "Closed By", value: `<@${closerId}>`, inline: true },
+                      { name: "Transcript", value: transcriptPreview, inline: false }
+                    )
+                    .setTimestamp();
+                  const totalPages = Math.ceil(messages.length / pageSize) || 1;
+                  const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_transcript_0_${threadIdForLog}`)
+                      .setLabel("Previous Page")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setDisabled(true),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_transcript_1_${threadIdForLog}`)
+                      .setLabel("Next Page")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setDisabled(totalPages <= 1)
+                  );
+                  await logChannel.send({ embeds: [logEmbed], components: [transcriptButtons], files: [attachment] });
+                }
+              }
+            } catch (e) {}
+
+            await interaction.editReply({ content: "Ticket closed. Deleting channel..." });
+
+            (async () => {
+              try {
+                const user = await client.users.fetch(thread.userId);
+                const closeEmbed = new EmbedBuilder()
+                  .setTitle("Ticket Closed")
+                  .setDescription("Your ticket has been closed by staff.")
+                  .setColor(0xed4245)
+                  .setTimestamp();
+                await user.send({ embeds: [closeEmbed] });
+              } catch (e) {}
+              if (interaction.channel?.id) {
+                try {
+                  const chan = await client.channels.fetch(interaction.channel.id);
+                  if (chan) await chan.delete();
+                } catch (e) {}
+              }
+            })().catch(() => {});
+          } catch (error: any) {
+            console.log("Error in close_ticket select action:", error.message);
+            await interaction.editReply({ content: "Failed to close ticket. Please try again." }).catch(() => {});
+          }
+          return;
+        }
+
+        // Override / unclaim ticket via select menu (admin override)
+        if (selectedAction === "override_ticket") {
+          if (!await safeDeferUpdate(interaction)) return;
+          try {
+            const thread = await storage.getModmailThread(threadId) || await safeGetModmailThreadByChannel(interaction.channelId!);
+            if (!thread) {
+              await interaction.followUp({ content: "Thread not found.", flags: 64 });
+              return;
+            }
+
+            const member = interaction.member;
+            const hasAdminPermission = member && (member as any).permissions?.has && (member as any).permissions.has("Administrator");
+            const isClaimedByUser = thread.claimedById === interaction.user.id;
+            if (!hasAdminPermission && !isClaimedByUser) {
+              await interaction.followUp({ content: "❌ Only the staff member who claimed this ticket (or an Administrator) can unclaim/override it.", flags: 64 });
+              return;
+            }
+
+            const previousClaimer = thread.claimedById;
+            if (thread.isAppeal) {
+              await storage.updateAppealThread(thread.id, { claimedById: null });
+            } else {
+              await storage.updateModmailThread(thread.id, { claimedById: null });
+            }
+
+            const unclaimEmbed = new EmbedBuilder()
+              .setDescription(`🔓 Ticket unclaimed. (Was claimed by <@${previousClaimer}>)`)
+              .setColor(0xf0b232)
+              .setTimestamp();
+
+            try {
+              await interaction.message.edit({ components: [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_claim_${thread.id}`)
+                    .setLabel("Claim")
+                    .setStyle(ButtonStyle.Primary)
+                    .setEmoji("👋"),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_toggle_${thread.id}`)
+                    .setLabel("Toggle Member")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("👥"),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_request_role_${thread.id}`)
+                    .setLabel("Request A Role")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("🛡️")
+                ),
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_modlogs_${thread.id}`)
+                    .setLabel("Modlogs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("📚"),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_logs_${thread.id}`)
+                    .setLabel("Modmail Logs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("📝"),
+                  new ButtonBuilder()
+                    .setCustomId(`appeal_logs_${thread.id}`)
+                    .setLabel("Appeal Logs")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setEmoji("⚖️"),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_close_${thread.id}`)
+                    .setLabel("Close")
+                    .setStyle(ButtonStyle.Danger)
+                    .setEmoji("🔒")
+                )
+              ]});
+            } catch (e) {}
+
+            await interaction.followUp({ embeds: [unclaimEmbed] });
+
+            // Clear any auto-unclaim timer
+            if (interaction.channelId) {
+              const timer = pendingClaimExpiry.get(interaction.channelId);
+              if (timer) {
+                clearTimeout(timer.timeout);
+                pendingClaimExpiry.delete(interaction.channelId);
+              }
+            }
+          } catch (error: any) {
+            console.log("Error in override_ticket select action:", error.message);
+            await interaction.followUp({ content: "Failed to override/unclaim ticket.", flags: 64 }).catch(() => {});
+          }
+          return;
+        }
+
         if (selectedAction === "toggle_member") {
           const modal = new ModalBuilder()
             .setCustomId(`modmail_toggle_modal_${threadId}`)
@@ -8367,46 +10339,18 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (selectedAction === "request_role") {
-          const modal = new ModalBuilder()
-            .setCustomId(`modmail_request_role_modal_${threadId}`)
-            .setTitle("Request A Role");
+          const roleSelect = new RoleSelectMenuBuilder()
+            .setCustomId(`modmail_request_role_select_${threadId}`)
+            .setPlaceholder("Select the role to request")
+            .setMinValues(1)
+            .setMaxValues(1);
 
-          const userIdInput = new TextInputBuilder()
-            .setCustomId("user_id")
-            .setLabel("User ID")
-            .setPlaceholder("Enter the Discord user ID")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-          const roleInput = new TextInputBuilder()
-            .setCustomId("role_input")
-            .setLabel("Role ID")
-            .setPlaceholder("Example: 123456789012345678")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
-          const reasonInput = new TextInputBuilder()
-            .setCustomId("reason")
-            .setLabel("Reason")
-            .setPlaceholder("Why should this role be granted?")
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true);
-
-          const proofInput = new TextInputBuilder()
-            .setCustomId("proof_requirements")
-            .setLabel("Proof Player Meets Requirements")
-            .setPlaceholder("Paste clips or links that prove they meet requirements")
-            .setStyle(TextInputStyle.Paragraph)
-            .setRequired(true);
-
-          modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(roleInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
-            new ActionRowBuilder<TextInputBuilder>().addComponents(proofInput)
-          );
-
-          await interaction.showModal(modal);
+          const row = new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(roleSelect);
+          await interaction.reply({
+            content: "Select the role to request, then you'll fill out the request details.",
+            components: [row],
+            flags: 64,
+          });
           return;
         }
 
@@ -8514,6 +10458,42 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         await interaction.reply({ content: response, flags: 64 });
+        return;
+      }
+
+      // Handle custom modmail menu selections created by .menu prefix command
+      if (interaction.customId.startsWith("modmail_menu_")) {
+        const parts = interaction.customId.split("_");
+        // customId format: modmail_menu_<channelId>_<messageId>
+        const channelId = parts[2];
+        const messageId = parts[3];
+
+        const modmailThread = await safeGetModmailThreadByChannel(interaction.channelId!);
+        if (!modmailThread) {
+          await interaction.reply({ content: "This menu can only be used inside modmail threads.", flags: 64 });
+          return;
+        }
+
+        const selected = interaction.values && interaction.values[0];
+        if (!selected) {
+          await interaction.reply({ content: "No action selected.", flags: 64 });
+          return;
+        }
+
+        try {
+          if (selected === "close_ticket") {
+            await storage.updateModmailThread(modmailThread.id, { status: "closed", closedById: interaction.user.id, closedAt: new Date() });
+            await interaction.reply({ content: `✅ Ticket closed by <@${interaction.user.id}>.`, flags: 64 });
+            await (interaction.channel as any).send({ content: `Ticket closed by <@${interaction.user.id}>.` }).catch(() => {});
+            return;
+          }
+
+          // For other actions, just acknowledge for now
+          await interaction.reply({ content: `Selected action: ${selected}`, flags: 64 });
+        } catch (e) {
+          console.log("Error handling modmail_menu selection:", e);
+          await interaction.reply({ content: "Failed to perform action.", flags: 64 });
+        }
         return;
       }
 
@@ -8881,6 +10861,18 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("🛡️")
           );
 
+              // Add a compact header action dropdown for ticket-level actions
+              const headerActionMenu = new StringSelectMenuBuilder()
+                .setCustomId(`modmail_action_${thread.id}_0_${thread.userId}`)
+                .setPlaceholder("Ticket actions...")
+                .addOptions(
+                  new StringSelectMenuOptionBuilder().setLabel("Claim Ticket").setDescription("Claim this ticket").setValue("claim_ticket").setEmoji("🙋"),
+                  new StringSelectMenuOptionBuilder().setLabel("Close Ticket").setDescription("Close this ticket").setValue("close_ticket").setEmoji("🔒"),
+                  new StringSelectMenuOptionBuilder().setLabel("Override / Unclaim").setDescription("Admin: unclaim or override this ticket").setValue("override_ticket").setEmoji("🔁")
+                );
+
+              const headerActionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(headerActionMenu);
+
           const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_modlogs_${thread.id}`)
@@ -8899,7 +10891,7 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("⚖️")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -9088,6 +11080,18 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("🛡️")
           );
 
+          // Add a compact header action dropdown for ticket-level actions
+          const headerActionMenu = new StringSelectMenuBuilder()
+            .setCustomId(`modmail_action_${thread.id}_0_${thread.userId}`)
+            .setPlaceholder("Ticket actions...")
+            .addOptions(
+              new StringSelectMenuOptionBuilder().setLabel("Claim Ticket").setDescription("Claim this ticket").setValue("claim_ticket").setEmoji("🙋"),
+              new StringSelectMenuOptionBuilder().setLabel("Close Ticket").setDescription("Close this ticket").setValue("close_ticket").setEmoji("🔒"),
+              new StringSelectMenuOptionBuilder().setLabel("Override / Unclaim").setDescription("Admin: unclaim or override this ticket").setValue("override_ticket").setEmoji("🔁")
+            );
+
+          const headerActionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(headerActionMenu);
+
           const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_modlogs_${thread.id}`)
@@ -9106,7 +11110,7 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("⚖️")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -9139,6 +11143,45 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
       // End of select menu handlers
+      } else if (interaction.isRoleSelectMenu()) {
+        if (interaction.customId.startsWith("modmail_request_role_select_")) {
+          const threadId = interaction.customId.replace("modmail_request_role_select_", "");
+          const selectedRoleId = interaction.values[0];
+
+          const modal = new ModalBuilder()
+            .setCustomId(`modmail_request_role_modal_${threadId}_${selectedRoleId}`)
+            .setTitle("Request A Role");
+
+          const userIdInput = new TextInputBuilder()
+            .setCustomId("user_id")
+            .setLabel("User ID")
+            .setPlaceholder("Enter the Discord user ID")
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true);
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Reason")
+            .setPlaceholder("Why should this role be granted?")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+
+          const proofInput = new TextInputBuilder()
+            .setCustomId("proof_requirements")
+            .setLabel("Proof Player Meets Requirements")
+            .setPlaceholder("Paste clips or links that prove they meet requirements")
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true);
+
+          modal.addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(proofInput)
+          );
+
+          await interaction.showModal(modal);
+          return;
+        }
       } else if (interaction.isButton()) {
         const customId = interaction.customId;
         
@@ -9553,27 +11596,49 @@ client.on("interactionCreate", async (interaction) => {
 
           // Get all blocked users from modmail and appeals
           const modmailBlocks = await storage.getAllModmailBlocksGlobal();
-          const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt }));
+          const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
           
           const appealBlocks = await storage.getAllAppealBlocksGlobal();
-          const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt }));
+          const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
+
+          const staffApplicationBlocked: Array<{ userId: string; type: "staff_applications"; reason: string | null; expiresAt: Date | null; blockedById: string | null }> = [];
+          for (const guild of client.guilds.cache.values()) {
+            const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
+            const staffAppBlocks = getStaffApplicationBlocksFromGuildConfig(guildConfig);
+
+            for (const [userId, block] of Object.entries(staffAppBlocks)) {
+              const expiresAt = block.expiresAt ? new Date(block.expiresAt) : null;
+              if (expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) continue;
+
+              staffApplicationBlocked.push({
+                userId,
+                type: "staff_applications",
+                reason: block.reason,
+                expiresAt,
+                blockedById: block.blockedById || null,
+              });
+            }
+          }
 
           // Combine and deduplicate
-          const blockedMap = new Map<string, { userId: string; types: string[]; reasons: Map<string, string | null>; expireTimes: Map<string, Date | null> }>();
-          for (const b of [...modmailBlocked, ...appealBlocked]) {
+          const blockedMap = new Map<string, { userId: string; types: string[]; reasons: Map<string, string | null>; expireTimes: Map<string, Date | null>; blockedByIds: Map<string, string | null> }>();
+          for (const b of [...modmailBlocked, ...appealBlocked, ...staffApplicationBlocked]) {
             if (blockedMap.has(b.userId)) {
               const existing = blockedMap.get(b.userId)!;
               if (!existing.types.includes(b.type)) {
                 existing.types.push(b.type);
                 existing.reasons.set(b.type, b.reason);
                 existing.expireTimes.set(b.type, b.expiresAt);
+                existing.blockedByIds.set(b.type, b.blockedById);
               }
             } else {
               const reasons = new Map<string, string | null>();
               const expireTimes = new Map<string, Date | null>();
+              const blockedByIds = new Map<string, string | null>();
               reasons.set(b.type, b.reason);
               expireTimes.set(b.type, b.expiresAt);
-              blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes });
+              blockedByIds.set(b.type, b.blockedById);
+              blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes, blockedByIds });
             }
           }
 
@@ -9592,9 +11657,11 @@ client.on("interactionCreate", async (interaction) => {
             for (const type of item.types) {
               const reason = item.reasons.get(type);
               const expiresAt = item.expireTimes.get(type);
+              const blockedById = item.blockedByIds.get(type);
               const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
               const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
-              details.push(`${type}: ${reasonText} (${durationText})`);
+              const blockedByText = blockedById ? `Blocked by: <@${blockedById}>` : "Blocked by: Unknown";
+              details.push(`${type}: ${reasonText} (${durationText}; ${blockedByText})`);
             }
             
             listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
@@ -9979,6 +12046,11 @@ client.on("interactionCreate", async (interaction) => {
             let modmailStats: { userId: string; count: number }[] = [];
             let appealStats: { userId: string; count: number }[] = [];
             let staffReportStats: { userId: string; count: number }[] = [];
+            let partnershipsStats: { userId: string; count: number }[] = [];
+            let acceptedStaffStats: { userId: string; count: number }[] = [];
+            let roleRequestsReviewedStats: { userId: string; count: number }[] = [];
+            let kickRequestsReviewedStats: { userId: string; count: number }[] = [];
+            let acceptedSemiProsProsStats: { userId: string; count: number }[] = [];
             let modmailCategoryStats: { category: string; count: number }[] = [];
             let moderationStatsRows: { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[] = [];
 
@@ -10030,6 +12102,22 @@ client.on("interactionCreate", async (interaction) => {
                 staffReportStats = await storage.getStaffReportStats(interaction.guildId!, fromDays, toDays);
               }
             } catch (e) {}
+
+            if (!category || category === "partnerships") {
+              partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", useAllGuilds);
+            }
+            if (!category || category === "staff_accepted") {
+              acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", useAllGuilds);
+            }
+            if (!category || category === "role_requests_reviewed") {
+              roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", useAllGuilds);
+            }
+            if (!category || category === "kick_requests_reviewed") {
+              kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", useAllGuilds);
+            }
+            if (!category || category === "accepted_semi_pros_pros") {
+              acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", useAllGuilds);
+            }
             try {
               if (!category || category === "modmail") {
                 modmailCategoryStats = await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays);
@@ -10052,6 +12140,11 @@ client.on("interactionCreate", async (interaction) => {
             for (const stat of modmailStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
             for (const stat of appealStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
             for (const stat of staffReportStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of partnershipsStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of acceptedStaffStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of roleRequestsReviewedStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of kickRequestsReviewedStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            for (const stat of acceptedSemiProsProsStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
 
             delete combinedStats["staff_report_entry"];
             delete combinedStats["manual_entry"];
@@ -10078,7 +12171,35 @@ client.on("interactionCreate", async (interaction) => {
             const start = (page - 1) * 10;
             const currentLeaderboard = leaderboard.slice(start, start + 10);
 
-            const categoryText = category === "ban" ? "Ban Requests" : category === "modban" ? "Moderation Bans" : category === "kick" ? "Moderation Kicks" : category === "mute" ? "Moderation Mutes" : category === "unban" ? "Unban Requests" : category === "invites" ? "Invites" : category === "modmail" ? "Modmails Handled" : category === "appeal" ? "Ban Appeals Handled" : category === "staffreport" ? "Staff Reports" : "All Activity";
+            const categoryText = category === "ban"
+              ? "Ban Requests"
+              : category === "modban"
+                ? "Moderation Bans"
+                : category === "kick"
+                  ? "Moderation Kicks"
+                  : category === "mute"
+                    ? "Moderation Mutes"
+                    : category === "unban"
+                      ? "Unban Requests"
+                      : category === "invites"
+                        ? "Invites"
+                        : category === "modmail"
+                          ? "Modmails Handled"
+                          : category === "appeal"
+                            ? "Ban Appeals Handled"
+                            : category === "staffreport"
+                              ? "Staff Reports"
+                              : category === "partnerships"
+                                ? "Partnerships"
+                                : category === "staff_accepted"
+                                  ? "Accepted Staff"
+                                  : category === "role_requests_reviewed"
+                                    ? "Role Requests Reviewed"
+                                    : category === "kick_requests_reviewed"
+                                      ? "Kick Requests Reviewed"
+                                      : category === "accepted_semi_pros_pros"
+                                        ? "Accepted Semi Pros & Pros"
+                                        : "All Activity";
 
             const embed = new EmbedBuilder()
               .setTitle(`${categoryText} Leaderboard`)
@@ -10095,6 +12216,11 @@ client.on("interactionCreate", async (interaction) => {
             const modmailTotal = modmailStats.reduce((sum, e) => sum + e.count, 0);
             const appealTotal = appealStats.reduce((sum, e) => sum + e.count, 0);
             const staffReportTotal = staffReportStats.reduce((sum, e) => sum + e.count, 0);
+            const partnershipsTotal = partnershipsStats.reduce((sum, e) => sum + e.count, 0);
+            const acceptedStaffTotal = acceptedStaffStats.reduce((sum, e) => sum + e.count, 0);
+            const roleRequestsReviewedTotal = roleRequestsReviewedStats.reduce((sum, e) => sum + e.count, 0);
+            const kickRequestsReviewedTotal = kickRequestsReviewedStats.reduce((sum, e) => sum + e.count, 0);
+            const acceptedSemiProsProsTotal = acceptedSemiProsProsStats.reduce((sum, e) => sum + e.count, 0);
 
             let leaderboardText = "";
             currentLeaderboard.forEach((entry, index) => {
@@ -10112,6 +12238,11 @@ client.on("interactionCreate", async (interaction) => {
             statsText += `\nModmails Handled: ${modmailTotal}`;
             statsText += `\nAppeals Handled: ${appealTotal}`;
             statsText += `\nStaff Reports: ${staffReportTotal}`;
+            statsText += `\nPartnerships: ${partnershipsTotal}`;
+            statsText += `\nAccepted Staff: ${acceptedStaffTotal}`;
+            statsText += `\nRole Requests Reviewed: ${roleRequestsReviewedTotal}`;
+            statsText += `\nKick Requests Reviewed: ${kickRequestsReviewedTotal}`;
+            statsText += `\nAccepted Semi Pros & Pros: ${acceptedSemiProsProsTotal}`;
             if (category === "modmail") {
               if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
                 const categoryLabels: { [key: string]: string } = {};
@@ -10244,6 +12375,60 @@ client.on("interactionCreate", async (interaction) => {
               )
             ]
           });
+          // Also update any other ticket header/control messages in this channel
+          try {
+            if (interaction.channel && "messages" in interaction.channel) {
+              const recent = await (interaction.channel as any).messages.fetch({ limit: 50 });
+              const duplicate = recent.find((m: any) => {
+                if (!m.author || m.author.id !== client.user?.id) return false;
+                if (!m.components || m.components.length === 0) return false;
+                return m.components.some((row: any) => row.components && row.components.some((c: any) => c.customId === `modmail_claim_${threadId}` || c.customId === `appeal_claim_${threadId}`));
+              });
+              if (duplicate && duplicate.id !== interaction.message.id) {
+                await duplicate.edit({ components: [
+                  new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_unclaim_${threadId}`)
+                      .setLabel(`Claimed by ${interaction.user.username}`)
+                      .setStyle(ButtonStyle.Secondary)
+                      .setDisabled(true),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_toggle_${threadId}`)
+                      .setLabel("Toggle Member")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("👥"),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_request_role_${threadId}`)
+                      .setLabel("Request A Role")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("🛡️")
+                  ),
+                  new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_modlogs_${threadId}`)
+                      .setLabel("Modlogs")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("📚"),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_logs_${threadId}`)
+                      .setLabel("Modmail Logs")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("📝"),
+                    new ButtonBuilder()
+                      .setCustomId(`appeal_logs_${threadId}`)
+                      .setLabel("Appeal Logs")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setEmoji("⚖️"),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_close_${threadId}`)
+                      .setLabel("Close")
+                      .setStyle(ButtonStyle.Danger)
+                      .setEmoji("🔒")
+                  )
+                ]}).catch(() => {});
+              }
+            }
+          } catch (e) {}
 
           await interaction.followUp({ embeds: [claimEmbed] });
 
@@ -10361,7 +12546,60 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           await interaction.followUp({ embeds: [unclaimEmbed] });
-
+            // Also update any other ticket header/control messages in this channel
+            try {
+              if (interaction.channel && "messages" in interaction.channel) {
+                const recent = await (interaction.channel as any).messages.fetch({ limit: 50 });
+                const duplicate = recent.find((m: any) => {
+                  if (!m.author || m.author.id !== client.user?.id) return false;
+                  if (!m.components || m.components.length === 0) return false;
+                  return m.components.some((row: any) => row.components && row.components.some((c: any) => c.customId === `modmail_claim_${threadId}` || c.customId === `appeal_claim_${threadId}`));
+                });
+                if (duplicate && duplicate.id !== interaction.message.id) {
+                  await duplicate.edit({ components: [
+                    new ActionRowBuilder<ButtonBuilder>().addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_claim_${threadId}`)
+                        .setLabel("Claim")
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji("👋"),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_toggle_${threadId}`)
+                        .setLabel("Toggle Member")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("👥"),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_request_role_${threadId}`)
+                        .setLabel("Request A Role")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("🛡️")
+                    ),
+                    new ActionRowBuilder<ButtonBuilder>().addComponents(
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_modlogs_${threadId}`)
+                        .setLabel("Modlogs")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("📚"),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_logs_${threadId}`)
+                        .setLabel("Modmail Logs")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("📝"),
+                      new ButtonBuilder()
+                        .setCustomId(`appeal_logs_${threadId}`)
+                        .setLabel("Appeal Logs")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setEmoji("⚖️"),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_close_${threadId}`)
+                        .setLabel("Close")
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji("🔒")
+                    )
+                  ]}).catch(() => {});
+                }
+              }
+            } catch (e) {}
           // Clear any auto-unclaim timer
           if (interaction.channelId) {
             const timer = pendingClaimExpiry.get(interaction.channelId);
@@ -10378,46 +12616,18 @@ client.on("interactionCreate", async (interaction) => {
       } else if (interaction.customId.startsWith("modmail_request_role_")) {
         const threadId = interaction.customId.replace("modmail_request_role_", "");
 
-        const modal = new ModalBuilder()
-          .setCustomId(`modmail_request_role_modal_${threadId}`)
-          .setTitle("Request A Role");
+        const roleSelect = new RoleSelectMenuBuilder()
+          .setCustomId(`modmail_request_role_select_${threadId}`)
+          .setPlaceholder("Select the role to request")
+          .setMinValues(1)
+          .setMaxValues(1);
 
-        const userIdInput = new TextInputBuilder()
-          .setCustomId("user_id")
-          .setLabel("User ID")
-          .setPlaceholder("Enter the Discord user ID")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true);
-
-        const roleInput = new TextInputBuilder()
-          .setCustomId("role_input")
-          .setLabel("Role ID")
-          .setPlaceholder("Example: 123456789012345678")
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true);
-
-        const reasonInput = new TextInputBuilder()
-          .setCustomId("reason")
-          .setLabel("Reason")
-          .setPlaceholder("Why should this role be granted?")
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true);
-
-        const proofInput = new TextInputBuilder()
-          .setCustomId("proof_requirements")
-          .setLabel("Proof Player Meets Requirements")
-          .setPlaceholder("Paste clips or links that prove they meet requirements")
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true);
-
-        modal.addComponents(
-          new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
-          new ActionRowBuilder<TextInputBuilder>().addComponents(roleInput),
-          new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
-          new ActionRowBuilder<TextInputBuilder>().addComponents(proofInput)
-        );
-
-        await interaction.showModal(modal);
+        const row = new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(roleSelect);
+        await interaction.reply({
+          content: "Select the role to request, then you'll fill out the request details.",
+          components: [row],
+          flags: 64,
+        });
         return;
       } else if (interaction.customId.startsWith("modmail_toggle_")) {
         // Show modal to add/remove member from ticket
@@ -10557,7 +12767,11 @@ client.on("interactionCreate", async (interaction) => {
 
           // Check if ticket is claimed and if the closer is the claimer
           if (thread.claimedById && thread.claimedById !== interaction.user.id) {
-            await interaction.editReply({ content: `Only <@${thread.claimedById}> (who claimed this ticket) can close it.` });
+            const embed = new EmbedBuilder()
+              .setColor(0x5865f2)
+              .setDescription(`Only <@${thread.claimedById}> can close this ticket.`)
+              .setTimestamp();
+            await interaction.editReply({ embeds: [embed] });
             return;
           }
 
@@ -10638,6 +12852,21 @@ client.on("interactionCreate", async (interaction) => {
 
           // Reply to user
           await interaction.editReply({ content: "Ticket closed. Deleting channel..." });
+
+          // Attempt to remove components from other ticket header/control messages in this channel
+          try {
+            if (interaction.channel && "messages" in interaction.channel) {
+              const recent = await (interaction.channel as any).messages.fetch({ limit: 50 });
+              const duplicate = recent.find((m: any) => {
+                if (!m.author || m.author.id !== client.user?.id) return false;
+                if (!m.components || m.components.length === 0) return false;
+                return m.components.some((row: any) => row.components && row.components.some((c: any) => c.customId === `modmail_claim_${threadId}` || c.customId === `appeal_claim_${threadId}` || c.customId === `modmail_close_${threadId}`));
+              });
+              if (duplicate) {
+                await duplicate.edit({ components: [] }).catch(() => {});
+              }
+            }
+          } catch (e) {}
 
         // Background: DM user and delete channel
         (async () => {
@@ -10972,6 +13201,68 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({ embeds: [embed], components: [row] });
         return;
+      } else if (interaction.customId.startsWith("start_staff_application_")) {
+        const guildId = interaction.customId.replace("start_staff_application_", "");
+        const user = interaction.user;
+
+        try {
+          if (!await safeDeferReply(interaction)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            return;
+          }
+          throw error;
+        }
+
+        if (activeStaffApplications.has(user.id)) {
+          await interaction.editReply({
+            content: "You already have an active staff application in progress. Check your DMs.",
+          });
+          return;
+        }
+
+        try {
+          const config = await storage.getGuildConfig(guildId);
+          const block = getActiveStaffApplicationBlockFromGuildConfig(config, user.id);
+          if (block) {
+            const expiresText = block.expiresAt
+              ? ` Your block expires <t:${Math.floor(new Date(block.expiresAt).getTime() / 1000)}:R>.`
+              : " You are permanently blocked.";
+            await interaction.editReply({
+              content: `❌ You are blocked from staff applications.${expiresText}`,
+            });
+            return;
+          }
+
+          const setup = getStaffApplicationsSetupFromGuildConfig(config);
+          const questions = setup.questions.slice(0, 10);
+
+          if (questions.length === 0) {
+            await interaction.editReply({ content: "No staff application questions are configured yet." });
+            return;
+          }
+
+          activeStaffApplications.set(user.id, {
+            guildId,
+            currentQuestion: 0,
+            answers: [],
+            startedAt: Date.now(),
+            questions,
+          });
+
+          const dmChannel = await user.createDM();
+          await sendStaffApplicationQuestion(user.id, dmChannel, true);
+
+          await interaction.editReply({
+            content: "✅ Staff application started. Check your DMs.",
+          });
+        } catch (error: any) {
+          activeStaffApplications.delete(user.id);
+          await interaction.editReply({
+            content: "❌ I couldn't DM you. Please open your DMs and try again.",
+          });
+        }
+        return;
       } else if (interaction.customId.startsWith("start_quiz_")) {
         const guildId = interaction.customId.replace("start_quiz_", "");
         const user = interaction.user;
@@ -11127,6 +13418,134 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Error showing inactivity review modal:", error.message);
           }
         }
+        return;
+      } else if (interaction.customId.startsWith("staff_app_modlogs_")) {
+        try {
+          if (!await safeDeferReply(interaction, true)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+
+        const hasPermission = await canUseModlogsButtons(interaction);
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to view modlogs." });
+          return;
+        }
+
+        const submissionId = interaction.customId.replace("staff_app_modlogs_", "");
+        const submission = pendingStaffApplicationSubmissions.get(submissionId);
+
+        if (!submission) {
+          await interaction.editReply({ content: "Staff application submission not found or expired." });
+          return;
+        }
+
+        const actions = await storage.getAllModerationActionsByTarget(submission.userId);
+        const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+
+        if (filtered.length === 0) {
+          await interaction.editReply({ content: "ℹ️ No logs found for that user." });
+          return;
+        }
+
+        const targetUser = await client.users.fetch(submission.userId).catch(() => null);
+        const targetLabel = targetUser?.username || submission.userId;
+        const { embed, totalPages } = buildModlogsEmbed(submission.userId, targetLabel, filtered, 1, MODLOGS_ITEMS_PER_PAGE);
+
+        const components: any[] = [];
+        if (totalPages > 1) {
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`modlogs_page_${interaction.user.id}_${submission.userId}_1_prev`)
+              .setLabel("◀")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(true),
+            new ButtonBuilder()
+              .setCustomId(`modlogs_page_${interaction.user.id}_${submission.userId}_1_next`)
+              .setLabel("▶")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(false),
+          );
+          components.push(row);
+        }
+
+        await interaction.editReply({ embeds: [embed], components });
+        return;
+      } else if (interaction.customId.startsWith("staff_app_terminate_")) {
+        const userId = interaction.user.id;
+        if (activeStaffApplications.has(userId)) {
+          activeStaffApplications.delete(userId);
+          await interaction.reply({
+            content: "❌ Your staff application has been terminated. You may start a new one at any time.",
+          });
+        } else {
+          await interaction.reply({
+            content: "⚠️ There is no active application to terminate.",
+          });
+        }
+        return;
+      } else if (interaction.customId.startsWith("staff_app_approve_") || interaction.customId.startsWith("staff_app_deny_")) {
+        try {
+          if (!await safeDeferReply(interaction, true)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+
+        const isApprove = interaction.customId.startsWith("staff_app_approve_");
+        const submissionId = interaction.customId.replace(isApprove ? "staff_app_approve_" : "staff_app_deny_", "");
+        const submission = pendingStaffApplicationSubmissions.get(submissionId);
+
+        if (!submission) {
+          await interaction.editReply({ content: "Staff application submission not found or expired." });
+          return;
+        }
+
+        if (submission.status !== "pending") {
+          await interaction.editReply({ content: "This submission has already been reviewed." });
+          return;
+        }
+
+        submission.status = isApprove ? "approved" : "denied";
+        submission.reviewedById = interaction.user.id;
+        pendingStaffApplicationSubmissions.set(submissionId, submission);
+
+        const updatedEmbed = new EmbedBuilder()
+          .setTitle(`Staff Application Submission - ${isApprove ? "Accepted" : "Denied"}`)
+          .setColor(isApprove ? 0x23a559 : 0xda373c)
+          .setDescription(`**Submitted by:** <@${submission.userId}>`)
+          .addFields(
+            ...submission.questions.map((question, index) => ({
+              name: `Q${index + 1}: ${question}`.slice(0, 256),
+              value: submission.answers[index] || "No answer",
+              inline: false,
+            })),
+            { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: false },
+          )
+          .setFooter({ text: `Submission ID: ${submissionId}` })
+          .setTimestamp();
+
+        if (interaction.message) {
+          await interaction.message.edit({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+        }
+
+        if (isApprove) {
+          try {
+            const inviteUrl = await createStaffHubInviteUrl();
+            const acceptanceMessage = buildStaffAcceptanceMessage(inviteUrl);
+            const user = await client.users.fetch(submission.userId);
+            await user.send({ content: acceptanceMessage });
+          } catch {
+            // ignore DM failures
+          }
+
+          await incrementExtraActivityCounter(submission.guildId, "staff_accepted", interaction.user.id, 1).catch(() => {});
+        }
+
+        await interaction.editReply({
+          content: isApprove ? "✅ Staff application accepted." : "✅ Staff application denied.",
+        });
         return;
       } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
         const isApprove = interaction.customId.startsWith("quiz_approve_");
@@ -11421,6 +13840,128 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
         return;
+      } else if (interaction.customId.startsWith("role_request_review_")) {
+        // Someone clicked Review — assign reviewer and update message UI
+        try {
+          const match = interaction.customId.match(/^role_request_review_(.+)$/);
+          if (!match) {
+            await interaction.reply({ content: "Invalid review action.", flags: 64 });
+            return;
+          }
+          const requestId = match[1];
+          let pending = pendingRoleRequests.get(requestId);
+          if (!pending && interaction.message) {
+            const hydrated = hydratePendingRoleRequestFromMessage(requestId, interaction.guildId!, interaction.message);
+            if (hydrated) pending = hydrated;
+          }
+          if (!pending && interaction.channel) {
+            const hydrated = await hydratePendingRoleRequestFromChannel(requestId, interaction.guildId!, interaction.channel);
+            if (hydrated) pending = hydrated;
+          }
+          if (!pending) {
+            await interaction.reply({ content: "This role request has expired or is no longer available.", flags: 64 });
+            return;
+          }
+          if (pending.reviewerId) {
+            await interaction.reply({ content: `This request is already being reviewed by <@${pending.reviewerId}>.`, flags: 64 });
+            return;
+          }
+
+          // Set reviewer
+          pending.reviewerId = interaction.user.id;
+          pendingRoleRequests.set(requestId, pending);
+
+          // Update embed to show reviewer and gray out original approve/deny buttons
+          try {
+            if (interaction.message) {
+              const origEmbed = EmbedBuilder.from(interaction.message.embeds[0] || new EmbedBuilder());
+              // Add/replace Reviewed By field
+              const fields = (origEmbed.data.fields || []).filter(
+                f => (f.name || "") !== "Reviewed By"
+              );
+              fields.push({ name: "Reviewed By", value: `<@${interaction.user.id}>`, inline: false });
+              origEmbed.setFields(fields as any[]);
+
+              const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`role_request_review_${requestId}`)
+                  .setLabel(`Reviewing (${interaction.user.username})`)
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(true)
+              );
+
+              const reviewerRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`role_request_reviewer_approve_${requestId}`)
+                  .setLabel("Approve (Reviewer)")
+                  .setStyle(ButtonStyle.Success)
+                  .setEmoji("✅"),
+                new ButtonBuilder()
+                  .setCustomId(`role_request_reviewer_deny_${requestId}`)
+                  .setLabel("Deny (Reviewer)")
+                  .setStyle(ButtonStyle.Danger)
+                  .setEmoji("❌")
+              );
+
+              await interaction.message.edit({ embeds: [origEmbed], components: [disabledRow, reviewerRow] }).catch(() => {});
+            }
+          } catch (e) {}
+
+          await interaction.reply({ content: `You are now reviewing this request. Only you may approve or deny.`, flags: 64 });
+        } catch (error: any) {
+          console.log("Error in role_request_review handler:", error);
+          await interaction.reply({ content: "Failed to mark request for review.", flags: 64 }).catch(() => {});
+        }
+        return;
+      } else if (interaction.customId.startsWith("role_request_reviewer_")) {
+        // Reviewer-specific approve/deny buttons
+        try {
+          const match = interaction.customId.match(/^role_request_reviewer_(approve|deny)_(.+)$/);
+          if (!match) {
+            await interaction.reply({ content: "Invalid role request action.", flags: 64 });
+            return;
+          }
+          const action = match[1];
+          const requestId = match[2];
+          let pending = pendingRoleRequests.get(requestId);
+          if (!pending && interaction.message) {
+            const hydrated = hydratePendingRoleRequestFromMessage(requestId, interaction.guildId!, interaction.message);
+            if (hydrated) pending = hydrated;
+          }
+          if (!pending && interaction.channel) {
+            const hydrated = await hydratePendingRoleRequestFromChannel(requestId, interaction.guildId!, interaction.channel);
+            if (hydrated) pending = hydrated;
+          }
+          if (!pending) {
+            await interaction.reply({ content: "This role request has expired or is no longer available.", flags: 64 });
+            return;
+          }
+          if (!pending.reviewerId || pending.reviewerId !== interaction.user.id) {
+            await interaction.reply({ content: `❌ Only <@${pending.reviewerId}> may approve or deny this request.`, flags: 64 });
+            return;
+          }
+
+          const modal = new ModalBuilder()
+            .setCustomId(`role_request_action_${action}_${requestId}`)
+            .setTitle(action === "approve" ? "Approve Role Request" : "Deny Role Request");
+
+          const noteInput = new TextInputBuilder()
+            .setCustomId("action_note")
+            .setLabel("Review Note (optional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Add an optional note for this decision...")
+            .setRequired(false);
+
+          modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(noteInput));
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Interaction expired:', interaction.id);
+          } else {
+            throw error;
+          }
+        }
+        return;
       } else if (interaction.customId.startsWith("role_request_approve_") || interaction.customId.startsWith("role_request_deny_")) {
         try {
           const roleReqMatch = interaction.customId.match(/^role_request_(approve|deny)_(.+)$/);
@@ -11432,8 +13973,32 @@ client.on("interactionCreate", async (interaction) => {
           const action = roleReqMatch[1];
           const requestId = roleReqMatch[2];
 
-          if (handledRoleRequestIds.has(requestId) || !pendingRoleRequests.has(requestId)) {
+          if (handledRoleRequestIds.has(requestId)) {
             await interaction.reply({ content: "This role request has already been handled.", flags: 64 });
+            return;
+          }
+
+          let pending = pendingRoleRequests.get(requestId);
+          if (!pending && interaction.message) {
+            const hydrated = hydratePendingRoleRequestFromMessage(requestId, interaction.guildId!, interaction.message);
+            if (hydrated) pending = hydrated;
+          }
+          if (!pending && interaction.channel) {
+            const hydrated = await hydratePendingRoleRequestFromChannel(requestId, interaction.guildId!, interaction.channel);
+            if (hydrated) pending = hydrated;
+          }
+          if (!pending) {
+            await interaction.reply({ content: "This role request has expired or is no longer available.", flags: 64 });
+            return;
+          }
+
+          if (!pending.reviewerId) {
+            await interaction.reply({ content: "❌ You must click Review first before approving or denying this request.", flags: 64 });
+            return;
+          }
+
+          if (pending.reviewerId !== interaction.user.id) {
+            await interaction.reply({ content: `❌ This request is being reviewed by <@${pending.reviewerId}>. Only they can approve/deny.`, flags: 64 });
             return;
           }
 
@@ -11731,7 +14296,13 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           const pendingRequest = pendingRoleRequests.get(requestId);
-          if (!pendingRequest || pendingRequest.guildId !== interaction.guildId) {
+          let resolvedPendingRequest = pendingRequest;
+          if (!resolvedPendingRequest && interaction.channel) {
+            const hydrated = await hydratePendingRoleRequestFromChannel(requestId, interaction.guildId!, interaction.channel);
+            if (hydrated) resolvedPendingRequest = hydrated;
+          }
+
+          if (!resolvedPendingRequest) {
             await interaction.editReply({ content: "This role request has expired or is no longer available." });
             return;
           }
@@ -11758,8 +14329,28 @@ client.on("interactionCreate", async (interaction) => {
 
           await guild.roles.fetch().catch(() => null);
           let resolvedRole: any = null;
-          if (/^\d{17,20}$/.test(pendingRequest.roleInput)) {
-            resolvedRole = await guild.roles.fetch(pendingRequest.roleInput).catch(() => null);
+          const currentRequestedRoleValue = (() => {
+            try {
+              const fields = interaction.message?.embeds?.[0]?.fields || [];
+              const field = fields.find((f: any) => String(f?.name || "").toLowerCase() === "requested role");
+              return String(field?.value || "").trim();
+            } catch {
+              return "";
+            }
+          })();
+          let resolvedRoleLabel = currentRequestedRoleValue || resolvedPendingRequest.roleInput;
+          if (/^\d{17,20}$/.test(resolvedPendingRequest.roleInput)) {
+            resolvedRole = await guild.roles.fetch(resolvedPendingRequest.roleInput).catch(() => null);
+            // If not found in reviewer's guild, try the source guild (for cross-guild pro requests)
+            if (!resolvedRole && resolvedPendingRequest.guildId && resolvedPendingRequest.guildId !== guild.id) {
+              const sourceGuild = await client.guilds.fetch(resolvedPendingRequest.guildId).catch(() => null);
+              if (sourceGuild) {
+                resolvedRole = await sourceGuild.roles.fetch(resolvedPendingRequest.roleInput).catch(() => null);
+              }
+            }
+            if (resolvedRole) {
+              resolvedRoleLabel = `<@&${resolvedPendingRequest.roleInput}> (${resolvedPendingRequest.roleInput})`;
+            }
           }
 
           handledRoleRequestIds.add(requestId);
@@ -11770,13 +14361,13 @@ client.on("interactionCreate", async (interaction) => {
             .setTitle("🛡️ Role Request")
             .setColor(action === "approve" ? 0x23a559 : 0xda373c)
             .addFields(
-              { name: "Target User", value: `<@${pendingRequest.targetUserId}>\n(${pendingRequest.targetUserId})`, inline: true },
-              { name: "Requested By", value: `<@${pendingRequest.requestedById}>`, inline: true },
+              { name: "Target User", value: `<@${resolvedPendingRequest.targetUserId}>\n(${resolvedPendingRequest.targetUserId})`, inline: true },
+              { name: "Requested By", value: `<@${resolvedPendingRequest.requestedById}>`, inline: true },
               { name: "Status", value: actionStatus, inline: true },
-              { name: "Requested Role", value: resolvedRole ? `<@&${resolvedRole.id}> (${resolvedRole.id})` : pendingRequest.roleInput, inline: false },
-              { name: "Reason", value: pendingRequest.reason, inline: false },
-              { name: "Proof Player Meets Requirements", value: pendingRequest.proof, inline: false },
-              { name: "Ticket", value: `<#${pendingRequest.threadChannelId}>`, inline: false },
+              { name: "Requested Role", value: resolvedRoleLabel, inline: false },
+              { name: "Reason", value: resolvedPendingRequest.reason, inline: false },
+              { name: "Proof Player Meets Requirements", value: resolvedPendingRequest.proof, inline: false },
+              { name: "Ticket", value: `<#${resolvedPendingRequest.threadChannelId}>`, inline: false },
               { name: "Reviewed By", value: `<@${interaction.user.id}>`, inline: false }
             )
             .setTimestamp();
@@ -11790,18 +14381,18 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           try {
-            const requestingStaff = await client.users.fetch(pendingRequest.requestedById);
+            const requestingStaff = await client.users.fetch(resolvedPendingRequest.requestedById);
             const dmEmbed = new EmbedBuilder()
               .setTitle(`Role Request ${action === "approve" ? "Approved" : "Denied"}`)
               .setColor(action === "approve" ? 0x23a559 : 0xda373c)
               .setDescription(action === "approve"
-                ? `Your role request for <@${pendingRequest.targetUserId}> to receive **${resolvedRole?.name || pendingRequest.roleInput}** has been approved.`
-                : `Your role request for <@${pendingRequest.targetUserId}> to receive **${pendingRequest.roleInput}** has been denied.`)
+                ? `Your role request for <@${resolvedPendingRequest.targetUserId}> to receive **${resolvedRole?.name || resolvedPendingRequest.roleInput}** has been approved.`
+                : `Your role request for <@${resolvedPendingRequest.targetUserId}> to receive **${resolvedPendingRequest.roleInput}** has been denied.`)
               .addFields(
-                { name: "Target User", value: `<@${pendingRequest.targetUserId}>`, inline: true },
+                { name: "Target User", value: `<@${resolvedPendingRequest.targetUserId}>`, inline: true },
                 { name: "Reviewed By", value: `<@${interaction.user.id}>`, inline: true },
-                { name: "Reason", value: pendingRequest.reason, inline: false },
-                { name: "Proof Player Meets Requirements", value: pendingRequest.proof, inline: false }
+                { name: "Reason", value: resolvedPendingRequest.reason, inline: false },
+                { name: "Proof Player Meets Requirements", value: resolvedPendingRequest.proof, inline: false }
               )
               .setTimestamp();
             if (actionNote) dmEmbed.addFields({ name: "Review Note", value: actionNote, inline: false });
@@ -11810,19 +14401,44 @@ client.on("interactionCreate", async (interaction) => {
 
           if (action === "approve") {
             try {
-              const config = await storage.getGuildConfig(interaction.guildId!);
+              const sourceGuildId = resolvedPendingRequest.guildId || interaction.guildId!;
+              const config = await storage.getGuildConfig(sourceGuildId);
               const acceptedPlayersChannelId = getAcceptedPlayersChannelIdFromGuildConfig(config);
               if (acceptedPlayersChannelId) {
                 const acceptedChannel = await client.channels.fetch(acceptedPlayersChannelId).catch(() => null);
                 if (acceptedChannel && "send" in acceptedChannel) {
-                  const grantedRoleText = resolvedRole ? `<@&${resolvedRole.id}>` : pendingRequest.roleInput;
+                  const grantedRoleText = resolvedRole ? `<@&${resolvedRole.id}>` : resolvedPendingRequest.roleInput;
                   await acceptedChannel.send({
-                    content: `<@${pendingRequest.targetUserId}> - ${pendingRequest.proof} - Granted ${grantedRoleText}`,
+                    content: `<@${resolvedPendingRequest.targetUserId}> - ${resolvedPendingRequest.proof} - Granted ${grantedRoleText}`,
                   });
                 }
               }
+                try {
+                  const joinedPlayersChannelId = getJoinedPlayersChannelIdFromGuildConfig(config);
+                  if (joinedPlayersChannelId) {
+                    const joinedChannel = await client.channels.fetch(joinedPlayersChannelId).catch(() => null);
+                    if (joinedChannel && "send" in joinedChannel) {
+                      const grantedRoleText = resolvedRole ? `<@&${resolvedRole.id}>` : resolvedPendingRequest.roleInput;
+                      await joinedChannel.send({
+                        content: `<@${resolvedPendingRequest.targetUserId}> has joined as ${grantedRoleText}`,
+                      }).catch(() => {});
+                    }
+                  }
+                } catch {}
             } catch {}
           }
+
+          // Record activity for approving/denying a role request
+          try {
+            const sourceGuildId = resolvedPendingRequest.guildId || interaction.guildId!;
+            await incrementExtraActivityCounter(sourceGuildId, "role_requests_reviewed", interaction.user.id, 1);
+
+            const sourceConfig = await storage.getGuildConfig(sourceGuildId);
+            const proRoles = getProRoleIdsFromGuildConfig(sourceConfig);
+            if (proRoles.includes(resolvedPendingRequest.roleInput)) {
+              await incrementExtraActivityCounter(sourceGuildId, "accepted_semi_pros_pros", interaction.user.id, 1);
+            }
+          } catch {}
 
           await interaction.editReply({
             content: action === "approve" ? "✅ Role request approved." : "✅ Role request denied.",
@@ -11838,9 +14454,18 @@ client.on("interactionCreate", async (interaction) => {
         if (!await safeDeferReply(interaction)) return;
 
         try {
-          const threadId = interaction.customId.replace("modmail_request_role_modal_", "");
+          const modalPayload = interaction.customId.replace("modmail_request_role_modal_", "");
+          const payloadLastUnderscore = modalPayload.lastIndexOf("_");
+          const selectedRoleIdFromDropdown = payloadLastUnderscore > 0
+            ? modalPayload.slice(payloadLastUnderscore + 1)
+            : "";
+          const threadId = payloadLastUnderscore > 0 && /^\d{17,20}$/.test(selectedRoleIdFromDropdown)
+            ? modalPayload.slice(0, payloadLastUnderscore)
+            : modalPayload;
           const targetUserId = interaction.fields.getTextInputValue("user_id").trim();
-          const roleInput = interaction.fields.getTextInputValue("role_input").trim();
+          const roleInput = /^\d{17,20}$/.test(selectedRoleIdFromDropdown)
+            ? selectedRoleIdFromDropdown
+            : interaction.fields.getTextInputValue("role_input").trim();
           const reason = interaction.fields.getTextInputValue("reason").trim();
           const proof = interaction.fields.getTextInputValue("proof_requirements").trim();
 
@@ -11925,6 +14550,7 @@ client.on("interactionCreate", async (interaction) => {
             reason,
             proof,
             createdAt: Date.now(),
+            reviewerId: null,
           });
 
           const requestEmbed = new EmbedBuilder()
@@ -11934,7 +14560,17 @@ client.on("interactionCreate", async (interaction) => {
               { name: "Target User", value: `<@${targetUserId}>\n(${targetUserId})`, inline: true },
               { name: "Requested By", value: `<@${interaction.user.id}>`, inline: true },
               { name: "Status", value: "⏳ Pending", inline: true },
-              { name: "Requested Role", value: roleInput, inline: false },
+              {
+                name: "Requested Role",
+                value: (() => {
+                  const configuredProRoles = getProRoleIdsFromGuildConfig(config);
+                  const isProRoleRequest = configuredProRoles.includes(roleInput);
+                  return isProRoleRequest
+                    ? `${resolvedRoleName} (${roleInput})`
+                    : `<@&${roleInput}> (${roleInput})`;
+                })(),
+                inline: false,
+              },
               { name: "Reason", value: reason, inline: false },
               { name: "Proof Player Meets Requirements", value: proof, inline: false },
               { name: "Ticket", value: `<#${thread.channelId}>`, inline: false }
@@ -11944,21 +14580,89 @@ client.on("interactionCreate", async (interaction) => {
 
           const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
-              .setCustomId(`role_request_approve_${requestId}`)
-              .setLabel("Approve")
-              .setStyle(ButtonStyle.Success)
-              .setEmoji("✅"),
-            new ButtonBuilder()
-              .setCustomId(`role_request_deny_${requestId}`)
-              .setLabel("Deny")
-              .setStyle(ButtonStyle.Danger)
-              .setEmoji("❌")
+              .setCustomId(`role_request_review_${requestId}`)
+              .setLabel("Review")
+              .setStyle(ButtonStyle.Primary)
+              .setEmoji("🛡️")
           );
 
-          const roleRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "role_requests");
+          let roleRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "role_requests");
+          if (interaction.guild) {
+            await interaction.guild.roles.fetch().catch(() => null);
+            roleRequestPingRoles = roleRequestPingRoles.filter((id) => !!interaction.guild!.roles.cache.get(id));
+          }
           const roleRequestPingContent = roleRequestPingRoles.length > 0 ? roleRequestPingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
+          let proRoleRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "pro_role_requests");
+          if (interaction.guild) {
+            await interaction.guild.roles.fetch().catch(() => null);
+            proRoleRequestPingRoles = proRoleRequestPingRoles.filter((id) => !!interaction.guild!.roles.cache.get(id));
+          }
+          const effectiveProPingRoleIds = proRoleRequestPingRoles.length > 0 ? proRoleRequestPingRoles : roleRequestPingRoles;
 
-          await requestChannel.send({ content: roleRequestPingContent, embeds: [requestEmbed], components: [row] });
+          // Try pro-role routing first
+          try {
+            const proRoles = getProRoleIdsFromGuildConfig(config);
+            const proChannelId = getProRoleRequestChannelIdFromGuildConfig(config);
+            if (proRoles && proRoles.length > 0 && proChannelId && proRoles.includes(roleInput)) {
+              const proChannel = await client.channels.fetch(proChannelId).catch(() => null);
+              if (proChannel && "send" in proChannel) {
+                let proPingRoleIdsToSend = [...effectiveProPingRoleIds];
+
+                const destinationGuildId = (proChannel as any)?.guildId || (proChannel as any)?.guild?.id || null;
+                if (destinationGuildId) {
+                  if (destinationGuildId !== interaction.guildId) {
+                    const destinationConfig = await storage.getGuildConfig(destinationGuildId).catch(() => null);
+                    let destinationProRoles = getRequestPingRoleIdsFromGuildConfig(destinationConfig, "pro_role_requests");
+                    let destinationFallbackRoles = getRequestPingRoleIdsFromGuildConfig(destinationConfig, "role_requests");
+
+                    const destinationGuild = await client.guilds.fetch(destinationGuildId).catch(() => null);
+                    if (destinationGuild) {
+                      await destinationGuild.roles.fetch().catch(() => null);
+                      destinationProRoles = destinationProRoles.filter((id) => !!destinationGuild.roles.cache.get(id));
+                      destinationFallbackRoles = destinationFallbackRoles.filter((id) => !!destinationGuild.roles.cache.get(id));
+                    }
+
+                    proPingRoleIdsToSend = destinationProRoles.length > 0 ? destinationProRoles : destinationFallbackRoles;
+                  } else if (interaction.guild) {
+                    await interaction.guild.roles.fetch().catch(() => null);
+                    proPingRoleIdsToSend = proPingRoleIdsToSend.filter((id) => !!interaction.guild!.roles.cache.get(id));
+                  }
+                }
+
+                const proRoleRequestPingContent = proPingRoleIdsToSend.length > 0
+                  ? proPingRoleIdsToSend.map(id => `<@&${id}>`).join(" ")
+                  : undefined;
+
+                await proChannel.send({
+                  content: proRoleRequestPingContent,
+                  embeds: [requestEmbed],
+                  components: [row],
+                  allowedMentions: { roles: proPingRoleIdsToSend, parse: [] },
+                });
+              } else {
+                await requestChannel.send({
+                  content: roleRequestPingContent,
+                  embeds: [requestEmbed],
+                  components: [row],
+                  allowedMentions: { roles: roleRequestPingRoles, parse: [] },
+                });
+              }
+            } else {
+              await requestChannel.send({
+                content: roleRequestPingContent,
+                embeds: [requestEmbed],
+                components: [row],
+                allowedMentions: { roles: roleRequestPingRoles, parse: [] },
+              });
+            }
+          } catch (e) {
+            await requestChannel.send({
+              content: roleRequestPingContent,
+              embeds: [requestEmbed],
+              components: [row],
+              allowedMentions: { roles: roleRequestPingRoles, parse: [] },
+            });
+          }
 
           let snippetRoleName = "Staff";
           const requesterMember = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
@@ -12179,6 +14883,50 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({
           content: `✅ Staff Intro embed updated!${updatedByMessageId ? " (message updated in real time)" : ""}\n• **Title:** ${title}\n• **Description:**\n${description}${resolvedImageUrl ? `\n• **Image:** ${resolvedImageUrl}` : ""}\n\nRun \`/setup_intro\` again to post the updated embed.`,
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith("config_staffapplications_modal_")) {
+        if (!await safeDeferReply(interaction)) return;
+
+        const title = interaction.fields.getTextInputValue("embed_title");
+        const description = interaction.fields.getTextInputValue("embed_description");
+        const imageInput = (() => {
+          try { return (interaction.fields.getTextInputValue("embed_image_url") || "").trim(); }
+          catch { return ""; }
+        })();
+        const resolvedImageUrl = imageInput ? await resolveEmbedImageUrl(imageInput) : null;
+
+        if (imageInput && !resolvedImageUrl) {
+          await interaction.editReply({ content: "❌ Invalid image link. Provide a direct image URL or a Discord message link that contains an image." });
+          return;
+        }
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writeStaffApplicationsSetupToConfig(config?.customCategoryPings, {
+            embedTitle: title,
+            embedDescription: description,
+          }),
+        });
+
+        const pendingEditKey = `${interaction.user.id}:${interaction.guildId}`;
+        const pendingTarget = pendingEmbedEditTargets.get(pendingEditKey);
+        const updatedByMessageId = pendingTarget?.embedType === "staffapplications"
+          ? await tryUpdateEmbedMessageById(
+              pendingTarget.channelId,
+              pendingTarget.messageId,
+              title,
+              description,
+              resolvedImageUrl,
+            )
+          : false;
+        pendingEmbedEditTargets.delete(pendingEditKey);
+
+        await interaction.editReply({
+          content: `✅ Staff Applications embed updated!${updatedByMessageId ? " (message updated in real time)" : ""}\n• **Title:** ${title}\n• **Description:**\n${description}${resolvedImageUrl ? `\n• **Image:** ${resolvedImageUrl}` : ""}`,
         });
         return;
       }
@@ -12423,6 +15171,18 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("🛡️")
           );
 
+          // Add a compact header action dropdown for ticket-level actions
+          const headerActionMenu = new StringSelectMenuBuilder()
+            .setCustomId(`modmail_action_${thread.id}_0_${thread.userId}`)
+            .setPlaceholder("Ticket actions...")
+            .addOptions(
+              new StringSelectMenuOptionBuilder().setLabel("Claim Ticket").setDescription("Claim this ticket").setValue("claim_ticket").setEmoji("🙋"),
+              new StringSelectMenuOptionBuilder().setLabel("Close Ticket").setDescription("Close this ticket").setValue("close_ticket").setEmoji("🔒"),
+              new StringSelectMenuOptionBuilder().setLabel("Override / Unclaim").setDescription("Admin: unclaim or override this ticket").setValue("override_ticket").setEmoji("🔁")
+            );
+
+          const headerActionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(headerActionMenu);
+
           const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_modlogs_${thread.id}`)
@@ -12441,7 +15201,7 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("⚖️")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -12693,7 +15453,7 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("⚖️")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -12936,7 +15696,7 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("⚖️")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted to **${guild.name}**! Staff will respond shortly. Reply to this DM to communicate with them.` });
@@ -13470,6 +16230,8 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `Kick request ${action === "approve" ? "approved" : "denied"} successfully.`,
         });
+
+        await incrementExtraActivityCounter(interaction.guildId!, "kick_requests_reviewed", interaction.user.id, 1).catch(() => {});
 
         const guildName = interaction.guild?.name || "Unknown";
         const reviewerUsername = interaction.user.username;
@@ -14152,6 +16914,7 @@ const pendingClaimExpiry = new Map<string, ClaimExpiryTimer>();
 const threadWasClaimed = new Set<string>();
 
 let autoUnmuteSweepRunning = false;
+let autoUnbanSweepRunning = false;
 
 async function processExpiredTimedMutes(): Promise<void> {
   if (autoUnmuteSweepRunning || !client.isReady() || !client.user) return;
@@ -14223,6 +16986,105 @@ async function processExpiredTimedMutes(): Promise<void> {
     }
   } finally {
     autoUnmuteSweepRunning = false;
+  }
+}
+
+async function processExpiredTimedBans(): Promise<void> {
+  if (autoUnbanSweepRunning || !client.isReady() || !client.user) return;
+  autoUnbanSweepRunning = true;
+
+  try {
+    const now = Date.now();
+
+    for (const guild of client.guilds.cache.values()) {
+      try {
+        const actions = await storage.getModerationActionsByGuild(guild.id).catch(() => [] as any[]);
+        if (!actions.length) continue;
+
+        const latestActionByTarget = new Map<string, any | null>();
+        for (const action of actions) {
+          const targetId = String(action?.targetId || "").trim();
+          if (!targetId || latestActionByTarget.has(targetId)) continue;
+
+          const actionType = String(action?.actionType || "").toLowerCase();
+          if (actionType === "ban" || actionType === "fullban") {
+            latestActionByTarget.set(targetId, action);
+          } else if (actionType === "unban") {
+            latestActionByTarget.set(targetId, null);
+          }
+        }
+
+        for (const [targetId, latestAction] of latestActionByTarget.entries()) {
+          if (!latestAction) continue;
+
+          const actionType = String(latestAction?.actionType || "").toLowerCase();
+          if (actionType !== "ban" && actionType !== "fullban") continue;
+
+          const parsed = extractReasonAndDuration(latestAction.reason);
+          const durationToken = (parsed.duration || "").toLowerCase();
+          if (!durationToken || durationToken === "permanent") continue;
+
+          const durationMs = parseDurationMs(durationToken);
+          if (!durationMs) continue;
+
+          const createdAt = latestAction.createdAt ? new Date(latestAction.createdAt).getTime() : NaN;
+          if (!Number.isFinite(createdAt)) continue;
+
+          const expiresAt = createdAt + durationMs;
+          if (expiresAt > now) continue;
+
+          let unbanned = false;
+
+          if (actionType === "fullban") {
+            for (const targetGuild of client.guilds.cache.values()) {
+              try {
+                await targetGuild.bans.fetch(targetId);
+              } catch {
+                continue;
+              }
+
+              try {
+                await targetGuild.members.unban(targetId, `Temporary fullban expired (${durationToken})`);
+                unbanned = true;
+              } catch {
+                // ignore per-guild auto-unban failures
+              }
+            }
+          } else {
+            try {
+              await guild.bans.fetch(targetId);
+            } catch {
+              continue;
+            }
+
+            try {
+              await guild.members.unban(targetId, `Temporary ban expired (${durationToken})`);
+              unbanned = true;
+            } catch {
+              // ignore auto-unban failures
+            }
+          }
+
+          if (!unbanned) continue;
+
+          await storage.createModerationAction({
+            guildId: guild.id,
+            moderatorId: client.user.id,
+            targetId,
+            actionType: "unban",
+            reason: actionType === "fullban"
+              ? `Temporary fullban expired (${durationToken})`
+              : `Temporary ban expired (${durationToken})`,
+            sourceType: "manual",
+            sourceMessageId: `auto-unban-${latestAction.id}`,
+          });
+        }
+      } catch {
+        // ignore per-guild auto-unban failures
+      }
+    }
+  } finally {
+    autoUnbanSweepRunning = false;
   }
 }
 
@@ -14394,6 +17256,10 @@ setInterval(() => {
 
 setInterval(() => {
   processExpiredTimedMutes().catch(() => {});
+}, 60 * 1000);
+
+setInterval(() => {
+  processExpiredTimedBans().catch(() => {});
 }, 60 * 1000);
 
 // Prevent duplicate message processing (in case of multiple bot instances)
@@ -14616,6 +17482,19 @@ client.on("messageCreate", async (message) => {
     } catch {
       // Ignore vanity invite tracking errors
     }
+
+    try {
+      const guildConfig = await storage.getGuildConfig(message.guild.id);
+      const partnershipChannelId = getPartnershipActivityChannelIdFromGuildConfig(guildConfig);
+      if (partnershipChannelId && message.channel.id === partnershipChannelId) {
+        const hasInviteLink = /discord(?:app\.com\/invite|\.com\/invite|\.gg)\/[\w-]+/i.test(message.content);
+        if (hasInviteLink) {
+          await incrementExtraActivityCounter(message.guild.id, "partnerships", message.author.id, 1);
+        }
+      }
+    } catch {
+      // ignore partnerships activity tracking errors
+    }
   }
 
   // Legacy fallback: allow '.' prefix for core staff commands even if guild prefix changed.
@@ -14811,6 +17690,51 @@ client.on("messageCreate", async (message) => {
       }
     } catch (e) {
       console.log("Could not update claim button after .claim:", e);
+    }
+
+    return;
+  }
+
+  // Handle menu command in modmail threads (prefix, e.g. .menu)
+  if (message.guild && lowerContent === `${lowerPrefix}menu`) {
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
+    if (!modmailThread) return; // ignore if not in a modmail thread
+
+    try {
+      // Find the most recent user (non-staff) modmail message for this thread
+      const msgs = await storage.getModmailMessages(modmailThread.id);
+      let lastUserMsg: any | undefined = undefined;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m && String(m.isStaff) !== "true") {
+          lastUserMsg = m;
+          break;
+        }
+      }
+
+      if (!lastUserMsg || !lastUserMsg.channelMessageId) {
+        await message.reply({ content: "Could not find a recent user message to attach the menu to.", flags: 64 });
+        return;
+      }
+
+      const actionMenu = new StringSelectMenuBuilder()
+        .setCustomId(`modmail_action_${modmailThread.id}_${lastUserMsg.channelMessageId}_${lastUserMsg.authorId}`)
+        .setPlaceholder("Select an action...")
+        .addOptions(
+          new StringSelectMenuOptionBuilder().setLabel("Toggle Member").setDescription("Add or remove a member from this ticket").setValue("toggle_member").setEmoji("👥"),
+          new StringSelectMenuOptionBuilder().setLabel("Request A Role").setDescription("Create a role request from this ticket").setValue("request_role").setEmoji("🛡️"),
+          new StringSelectMenuOptionBuilder().setLabel("Claim Ticket").setDescription("Claim this ticket").setValue("claim_ticket").setEmoji("🙋"),
+          new StringSelectMenuOptionBuilder().setLabel("Close Ticket").setDescription("Close this ticket").setValue("close_ticket").setEmoji("🔒"),
+          new StringSelectMenuOptionBuilder().setLabel("Override / Unclaim").setDescription("Admin: unclaim or override this ticket").setValue("override_ticket").setEmoji("🔁"),
+          new StringSelectMenuOptionBuilder().setLabel("User Modlogs").setDescription("Show modlogs for this user").setValue("user_modlogs").setEmoji("📚"),
+          new StringSelectMenuOptionBuilder().setLabel("Modmail Logs").setDescription("Show modmail logs for this user").setValue("user_modmail_logs").setEmoji("📝"),
+          new StringSelectMenuOptionBuilder().setLabel("Appeal Logs").setDescription("Show appeal logs for this user").setValue("user_appeal_logs").setEmoji("⚖️")
+        );
+
+      const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
+      await message.channel.send({ content: "", components: [actionRow] });
+    } catch (e) {
+      console.log("Failed to send modmail action menu:", e);
     }
 
     return;
@@ -15535,29 +18459,18 @@ client.on("messageCreate", async (message) => {
               }
 
               if (durationMs && durationMs > 0) {
-                const guildIds = guilds.map((guild) => guild.id);
-                setTimeout(async () => {
-                  for (const guildId of guildIds) {
-                    try {
-                      const guild = await client.guilds.fetch(guildId);
-                      await guild.members.unban(targetUserId, `Temporary fullban expired (${durationToken})`);
-                    } catch {
-                      // ignore unban failures
-                    }
-                  }
-                }, durationMs);
-
                 await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fullbanned in **${successCount}/${guilds.length}** servers for \`${durationToken}\`. | ${reason}`);
               } else {
                 await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was permanently fullbanned in **${successCount}/${guilds.length}** servers. | ${reason}`);
               }
 
+              const storedReason = composeReasonWithDuration(reason, durationMs && durationToken ? durationToken : "permanent");
               const actionEntry = await storage.createModerationAction({
                 guildId: message.guild.id,
                 moderatorId: message.author.id,
                 targetId: targetUserId,
                 actionType: "fullban",
-                reason,
+                reason: storedReason,
                 sourceType: "manual",
                 sourceMessageId: message.id,
               });
@@ -15568,27 +18481,18 @@ client.on("messageCreate", async (message) => {
             await message.guild.members.ban(targetUserId, { reason });
 
             if (durationMs && durationMs > 0) {
-              const guildId = message.guild.id;
-              setTimeout(async () => {
-                try {
-                  const guild = await client.guilds.fetch(guildId);
-                  await guild.members.unban(targetUserId, `Temporary ban expired (${durationToken})`);
-                } catch {
-                  // ignore unban failures
-                }
-              }, durationMs);
-
               await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
             } else {
               await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
             }
 
+            const storedReason = composeReasonWithDuration(reason, durationMs && durationToken ? durationToken : "permanent");
             const actionEntry = await storage.createModerationAction({
               guildId: message.guild.id,
               moderatorId: message.author.id,
               targetId: targetUserId,
               actionType: "ban",
-              reason,
+              reason: storedReason,
               sourceType: "manual",
               sourceMessageId: message.id,
             });
@@ -15671,18 +18575,6 @@ client.on("messageCreate", async (message) => {
             }
 
             if (durationMs && durationMs > 0) {
-              const guildIds = guilds.map((guild) => guild.id);
-              setTimeout(async () => {
-                for (const guildId of guildIds) {
-                  try {
-                    const guild = await client.guilds.fetch(guildId);
-                    await guild.members.unban(targetUserId, `Temporary fullban expired (${durationToken})`);
-                  } catch {
-                    // ignore unban failures
-                  }
-                }
-              }, durationMs);
-
               await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fullbanned in **${successCount}/${guilds.length}** servers for \`${durationToken}\`. | ${reason}`);
             } else {
               await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was permanently fullbanned in **${successCount}/${guilds.length}** servers. | ${reason}`);
@@ -15695,16 +18587,6 @@ client.on("messageCreate", async (message) => {
             await targetMember.ban({ reason });
 
             if (durationMs && durationMs > 0) {
-              const guildId = message.guild.id;
-              setTimeout(async () => {
-                try {
-                  const guild = await client.guilds.fetch(guildId);
-                  await guild.members.unban(targetUserId, `Temporary ban expired (${durationToken})`);
-                } catch {
-                  // ignore unban failures
-                }
-              }, durationMs);
-
               await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
             } else {
               await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
@@ -15718,12 +18600,15 @@ client.on("messageCreate", async (message) => {
           await targetMember.kick(reason);
           await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was kicked. | ${reason}`);
         } else if (command === "unmute") {
-          if (modSetup.mutedRoleId && targetMember.roles?.cache?.has(modSetup.mutedRoleId)) {
-            try {
-              await targetMember.roles.remove(modSetup.mutedRoleId, `Unmuted by ${message.author.tag}: ${reason}`);
-            } catch {
-              // ignore muted-role removal failures
-            }
+          if (!modSetup.mutedRoleId || !targetMember.roles?.cache?.has(modSetup.mutedRoleId)) {
+            await sendPrefixCommandMessage(`${errorEmoji} This user is not muted`, true);
+            return;
+          }
+
+          try {
+            await targetMember.roles.remove(modSetup.mutedRoleId, `Unmuted by ${message.author.tag}: ${reason}`);
+          } catch {
+            // ignore muted-role removal failures
           }
 
           await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was unmuted. | ${reason}`);
@@ -15753,7 +18638,7 @@ client.on("messageCreate", async (message) => {
           await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was muted. | ${reason}`);
         }
 
-        const storedReason = command === "mute"
+        const storedReason = (command === "mute" || isBanLikeCommand)
           ? composeReasonWithDuration(reason, durationMs && durationToken ? durationToken : "permanent")
           : reason;
 
@@ -15786,6 +18671,38 @@ client.on("messageCreate", async (message) => {
     const isAppeal = !modmailThread && !!appealThread;
 
     if (!thread) {
+      // Fallbacks: try to find a thread for this channel by scanning guild threads
+      try {
+        const allThreads = await storage.getAllModmailThreads(message.guild.id);
+        const byChannel = allThreads.find((t: any) => t.channelId === message.channel.id);
+        if (byChannel) {
+          thread = byChannel;
+        }
+      } catch (e) {}
+    }
+
+    if (!thread) {
+      // Try to find a thread by checking recent channel messages mapped to stored modmail messages
+      try {
+        const recent = await (message.channel as any).messages.fetch({ limit: 25 }).catch(() => null);
+        if (recent) {
+          for (const m of recent.values()) {
+            try {
+              const mm = await storage.getModmailMessageByChannelMessageId(String(m.id));
+              if (mm) {
+                const t = await storage.getModmailThread(mm.threadId);
+                if (t) {
+                  thread = t;
+                  break;
+                }
+              }
+            } catch (e) { }
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!thread) {
       return;
     }
 
@@ -15796,7 +18713,11 @@ client.on("messageCreate", async (message) => {
 
     // Check if ticket is claimed and if the closer is the claimer
     if (thread.claimedById && thread.claimedById !== message.author.id) {
-      await message.reply(`Only <@${thread.claimedById}> (who claimed this ticket) can close it.`);
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setDescription(`Only <@${thread.claimedById}> can close this ticket.`)
+        .setTimestamp();
+      await message.reply({ embeds: [embed] });
       return;
     }
 
@@ -16859,7 +19780,12 @@ client.on("messageCreate", async (message) => {
       !(lowerContent === `${lowerPrefix}ar` || lowerContent.startsWith(`${lowerPrefix}ar `)) &&
       !(lowerContent === `${lowerPrefix}reply` || lowerContent.startsWith(`${lowerPrefix}reply `)) &&
       !(lowerContent === `${lowerPrefix}anonreply` || lowerContent.startsWith(`${lowerPrefix}anonreply `)) &&
-      !lowerContent.startsWith(`${lowerPrefix}edit `) && !lowerContent.startsWith(`${lowerPrefix}delete`)) {
+      !lowerContent.startsWith(`${lowerPrefix}edit `) && !lowerContent.startsWith(`${lowerPrefix}delete`) &&
+      // Exclude subscribe/unsubscribe commands so they are handled by their dedicated handler
+      !(lowerContent === `${lowerPrefix}sub` || lowerContent.startsWith(`${lowerPrefix}sub `)) &&
+      !(lowerContent === `${lowerPrefix}subscribe` || lowerContent.startsWith(`${lowerPrefix}subscribe `)) &&
+      !(lowerContent === `${lowerPrefix}unsub` || lowerContent.startsWith(`${lowerPrefix}unsub `)) &&
+      !(lowerContent === `${lowerPrefix}unsubscribe` || lowerContent.startsWith(`${lowerPrefix}unsubscribe `))) {
     const alias = message.content.substring(prefix.length).toLowerCase().split(" ")[0];
     if (alias) {
       // Check for modmail thread first, then appeal thread
@@ -16995,6 +19921,13 @@ client.on("messageCreate", async (message) => {
       console.log(`[DM] User has active quiz, processing answer`);
       const answer = message.content.trim();
       await processQuizAnswer(message.author.id, answer, message.channel);
+      return;
+    }
+
+    const staffApplicationState = activeStaffApplications.get(message.author.id);
+    if (staffApplicationState) {
+      const answer = message.content.trim();
+      await processStaffApplicationAnswer(message.author.id, answer, message.channel);
       return;
     }
 
@@ -17188,13 +20121,21 @@ client.on("messageCreate", async (message) => {
             userEmbed.setFooter({ text: "Added Member" });
           }
 
+          // Download and re-upload attachments so they never expire
+          let fileBuilders: Array<{ builder: AttachmentBuilder; name: string; isImage: boolean }> = [];
+          try {
+            if (relayPayload.rawAttachments && relayPayload.rawAttachments.length > 0) {
+              fileBuilders = await downloadAttachmentsAsFiles(relayPayload.rawAttachments);
+            }
+          } catch {
+            // fall back to URL-based embed if download fails
+          }
+          const uploadedFiles = fileBuilders.map(f => f.builder);
+
           // Add attachment info to embed if there are any
           if (attachmentUrls.length > 0) {
             userEmbed.addFields({ name: "Attachments", value: formatUrlListForField(attachmentUrls), inline: false });
-          }
-
-          if (relayPayload.imageUrl) {
-            userEmbed.setImage(relayPayload.imageUrl);
+            userEmbed.setDescription(`${embedBodyText}\n\n(${message.author.tag}) has sent attachment(s).`);
           }
 
           // Add action dropdown (replaces old Send Message button)
@@ -17223,6 +20164,21 @@ client.on("messageCreate", async (message) => {
                 .setValue("request_role")
                 .setEmoji("🛡️"),
               new StringSelectMenuOptionBuilder()
+                .setLabel("Claim Ticket")
+                .setDescription("Claim this ticket")
+                .setValue("claim_ticket")
+                .setEmoji("🙋"),
+              new StringSelectMenuOptionBuilder()
+                .setLabel("Close Ticket")
+                .setDescription("Close this ticket")
+                .setValue("close_ticket")
+                .setEmoji("🔒"),
+              new StringSelectMenuOptionBuilder()
+                .setLabel("Override / Unclaim")
+                .setDescription("Admin: unclaim or override this ticket")
+                .setValue("override_ticket")
+                .setEmoji("🔁"),
+              new StringSelectMenuOptionBuilder()
                 .setLabel("User Modlogs")
                 .setDescription("Show modlogs for this user")
                 .setValue("user_modlogs")
@@ -17240,7 +20196,32 @@ client.on("messageCreate", async (message) => {
             );
 
           const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
-          const channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+          // Dedupe: avoid sending the same relay embed multiple times in quick succession
+          let channelMsg: any = null;
+          try {
+            const recent = await (modmailChannel as any).messages.fetch({ limit: 5 });
+            const duplicate = recent.find((m: any) => {
+              if (!m.author || m.author.id !== client.user?.id) return false;
+              const emb = m.embeds?.[0];
+              if (!emb) return false;
+              // compare description and author name
+              return emb.description === userEmbed.data.description && emb.author?.name === message.author.tag && Date.now() - new Date(m.createdTimestamp).getTime() < 10000;
+            });
+            if (!duplicate) {
+              if (uploadedFiles.length > 0) {
+                await modmailChannel.send({ files: uploadedFiles });
+              }
+              channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+            } else {
+              channelMsg = duplicate;
+            }
+          } catch (e) {
+            // fallback to sending if fetch fails
+            if (uploadedFiles.length > 0) {
+              await modmailChannel.send({ files: uploadedFiles });
+            }
+            channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+          }
 
           // Store the message content and attachments for the copy button
           const storedRelayText = relayPayload.plainText || description;
@@ -17377,28 +20358,34 @@ client.on("messageCreate", async (message) => {
         }
       }
 
+      const normalizedReplyContent = (replyContent || "").replace(/\u200b/g, "").trim();
+      const hasMeaningfulReplyContent = /[\p{L}\p{N}]/u.test(normalizedReplyContent);
+      const displayReplyContent = hasMeaningfulReplyContent ? normalizedReplyContent : "";
+
       const staffEmbed = new EmbedBuilder()
         .setAuthor({ name: roleName, iconURL: message.author.displayAvatarURL() })
-        .setDescription(replyContent || "(Attachment)")
+        .setDescription(displayReplyContent || "(No text content)")
         .setColor(0x5865f2)
         .setFooter({ text: message.author.tag })
         .setTimestamp();
+      const dmStaffEmbed = new EmbedBuilder(staffEmbed.data);
 
       // Collect attachment URLs from the .r message
       const attachmentUrls = message.attachments.map(a => a.url);
 
-      // Add attachment info to embed if there are any
+      // Download and re-upload attachments to avoid CDN expiry
+      const uploadedReplyFiles = await downloadAttachmentsAsFiles(message.attachments);
+      const replyDmBuilders = uploadedReplyFiles.map(f => f.builder);
+
       if (attachmentUrls.length > 0) {
-        staffEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
-        // Set the first image as the embed image if it's an image
-        const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
-        if (firstImageAttachment) {
-          staffEmbed.setImage(firstImageAttachment.url);
-        }
+        dmStaffEmbed.setDescription(`${displayReplyContent || "(No text content)"}\n\n(${message.author.tag}) has sent attachment(s).`);
       }
 
-      // Send to user DM
-      const dmMessage = await user.send({ embeds: [staffEmbed] });
+      // Send files outside the embed first, then send the embed
+      if (replyDmBuilders.length > 0) {
+        await user.send({ files: replyDmBuilders });
+      }
+      const dmMessage = await user.send({ embeds: [dmStaffEmbed] });
 
       // Also send to added members if this is a modmail thread
       const addedMemberIds = (thread as any).addedMemberIds as string[] | null | undefined;
@@ -17406,7 +20393,11 @@ client.on("messageCreate", async (message) => {
         for (const memberId of addedMemberIds) {
           try {
             const addedMember = await client.users.fetch(memberId);
-            await addedMember.send({ embeds: [staffEmbed] });
+            const addedReplyFiles = await downloadAttachmentsAsFiles(message.attachments);
+            if (addedReplyFiles.length > 0) {
+              await addedMember.send({ files: addedReplyFiles.map(f => f.builder) });
+            }
+            await addedMember.send({ embeds: [dmStaffEmbed] });
           } catch {
             // Could not DM added member
           }
@@ -17414,6 +20405,9 @@ client.on("messageCreate", async (message) => {
       }
 
       // Send to channel as well
+      if (uploadedReplyFiles.length > 0) {
+        await (message.channel as any).send({ files: uploadedReplyFiles.map(f => f.builder) });
+      }
       const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
 
       // Save message with message IDs
@@ -17421,7 +20415,7 @@ client.on("messageCreate", async (message) => {
         await storage.addAppealMessage({
           threadId: thread.id,
           authorId: message.author.id,
-          content: buildStoredTranscriptContent(replyContent, attachmentUrls),
+          content: buildStoredTranscriptContent(displayReplyContent, attachmentUrls),
           isStaff: "true",
           channelMessageId: channelMessage.id,
           dmMessageId: dmMessage.id,
@@ -17430,7 +20424,7 @@ client.on("messageCreate", async (message) => {
         await storage.addModmailMessage({
           threadId: thread.id,
           authorId: message.author.id,
-          content: buildStoredTranscriptContent(replyContent, attachmentUrls),
+          content: buildStoredTranscriptContent(displayReplyContent, attachmentUrls),
           isStaff: "true",
           channelMessageId: channelMessage.id,
           dmMessageId: dmMessage.id,
@@ -17683,26 +20677,33 @@ client.on("messageCreate", async (message) => {
       const user = await client.users.fetch(thread.userId);
 
       // Anonymous reply - use "Staff Team" instead of individual staff info
+      const normalizedArReplyContent = (replyContent || "").replace(/\u200b/g, "").trim();
+      const hasMeaningfulArReplyContent = /[\p{L}\p{N}]/u.test(normalizedArReplyContent);
+      const displayArReplyContent = hasMeaningfulArReplyContent ? normalizedArReplyContent : "";
+
       const staffEmbed = new EmbedBuilder()
         .setAuthor({ name: "Staff Team" })
-        .setDescription(replyContent || "(Attachment)")
+        .setDescription(displayArReplyContent || "(No text content)")
         .setColor(0x5865f2)
         .setTimestamp();
+      const dmStaffEmbed = new EmbedBuilder(staffEmbed.data);
 
       // Collect attachment URLs from the .ar message
       const attachmentUrls = message.attachments.map(a => a.url);
 
-      // Add attachment info to embed if there are any
+      // Download and re-upload attachments to avoid CDN expiry
+      const uploadedArFiles = await downloadAttachmentsAsFiles(message.attachments);
+      const arDmBuilders = uploadedArFiles.map(f => f.builder);
+
       if (attachmentUrls.length > 0) {
-        staffEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
-        const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
-        if (firstImageAttachment) {
-          staffEmbed.setImage(firstImageAttachment.url);
-        }
+        dmStaffEmbed.setDescription(`${displayArReplyContent || "(No text content)"}\n\n(Staff Team) has sent attachment(s).`);
       }
 
-      // Send to user DM
-      const dmMessage = await user.send({ embeds: [staffEmbed] });
+      // Send files outside the embed first, then send the embed
+      if (arDmBuilders.length > 0) {
+        await user.send({ files: arDmBuilders });
+      }
+      const dmMessage = await user.send({ embeds: [dmStaffEmbed] });
 
       // Also send to added members if this is a modmail thread
       const addedMemberIdsAr = (thread as any).addedMemberIds as string[] | null | undefined;
@@ -17710,7 +20711,11 @@ client.on("messageCreate", async (message) => {
         for (const memberId of addedMemberIdsAr) {
           try {
             const addedMember = await client.users.fetch(memberId);
-            await addedMember.send({ embeds: [staffEmbed] });
+            const addedArFiles = await downloadAttachmentsAsFiles(message.attachments);
+            if (addedArFiles.length > 0) {
+              await addedMember.send({ files: addedArFiles.map(f => f.builder) });
+            }
+            await addedMember.send({ embeds: [dmStaffEmbed] });
           } catch {
             // Could not DM added member
           }
@@ -17720,20 +20725,20 @@ client.on("messageCreate", async (message) => {
       // For channel message, show sender name for staff visibility but no pfp
       const channelEmbed = new EmbedBuilder()
         .setAuthor({ name: "Staff Team (Anonymous)" })
-        .setDescription(replyContent || "(Attachment)")
+        .setDescription(displayArReplyContent || "(No text content)")
         .setColor(0x5865f2)
         .setFooter({ text: `Sent by ${message.author.tag}` })
         .setTimestamp();
 
       if (attachmentUrls.length > 0) {
-        channelEmbed.addFields({ name: "Attachments", value: attachmentUrls.join("\n"), inline: false });
-        const firstImageAttachment = message.attachments.find(a => a.contentType?.startsWith("image/"));
-        if (firstImageAttachment) {
-          channelEmbed.setImage(firstImageAttachment.url);
-        }
+        channelEmbed.addFields({ name: "Attachments", value: formatUrlListForField(attachmentUrls), inline: false });
+        channelEmbed.setDescription(`${displayArReplyContent || "(No text content)"}\n\n(Staff Team) has sent attachment(s).`);
       }
 
-      // Send to channel
+      // Send to channel — files outside the embed, then embed
+      if (uploadedArFiles.length > 0) {
+        await (message.channel as any).send({ files: uploadedArFiles.map(f => f.builder) });
+      }
       const channelMessage = await (message.channel as any).send({ embeds: [channelEmbed] });
 
       // Save message with message IDs
@@ -17741,7 +20746,7 @@ client.on("messageCreate", async (message) => {
         await storage.addAppealMessage({
           threadId: thread.id,
           authorId: message.author.id,
-          content: buildStoredTranscriptContent(`[Anonymous] ${replyContent}`, attachmentUrls),
+          content: buildStoredTranscriptContent(`[Anonymous] ${displayArReplyContent}`, attachmentUrls),
           isStaff: "true",
           channelMessageId: channelMessage.id,
           dmMessageId: dmMessage.id,
@@ -17750,7 +20755,7 @@ client.on("messageCreate", async (message) => {
         await storage.addModmailMessage({
           threadId: thread.id,
           authorId: message.author.id,
-          content: buildStoredTranscriptContent(`[Anonymous] ${replyContent}`, attachmentUrls),
+          content: buildStoredTranscriptContent(`[Anonymous] ${displayArReplyContent}`, attachmentUrls),
           isStaff: "true",
           channelMessageId: channelMessage.id,
           dmMessageId: dmMessage.id,
@@ -18168,8 +21173,10 @@ client.on("messageCreate", async (message) => {
         try {
           const channelMsg = await (message.channel as any).messages.fetch(modmailMsg.channelMessageId);
           await channelMsg.delete();
-        } catch (e) {
-          console.log("Could not delete channel message:", e);
+        } catch (e: any) {
+          if (e?.code !== 10008) {
+            console.log("Could not delete channel message:", e);
+          }
         }
       }
 
@@ -18179,8 +21186,10 @@ client.on("messageCreate", async (message) => {
           const dmChannel = await user.createDM();
           const dmMsg = await dmChannel.messages.fetch(modmailMsg.dmMessageId);
           await dmMsg.delete();
-        } catch (e) {
-          console.log("Could not delete DM message:", e);
+        } catch (e: any) {
+          if (e?.code !== 10008) {
+            console.log("Could not delete DM message:", e);
+          }
         }
       }
 
@@ -18530,37 +21539,55 @@ client.on("guildMemberRemove", async (member) => {
       console.log("Could not remove invite attribution on member leave:", inviteError);
     }
 
-    // Check for open modmail thread
-    const modmailThread = await storage.getOpenModmailThread(member.guild.id, member.id);
-    if (modmailThread && modmailThread.channelId) {
-      try {
-        const channel = await client.channels.fetch(modmailThread.channelId);
-        if (channel && "send" in channel) {
-          const leaveEmbed = new EmbedBuilder()
-            .setColor(0xed4245)
-            .setDescription(`⚠️ **${member.user.tag} has left the server!**`)
-            .setTimestamp();
-          await channel.send({ embeds: [leaveEmbed] });
+    // Determine whether user was banned, kicked, or left
+    let leaveStatus: "left" | "banned" | "kicked" = "left";
+    try {
+      const ban = await member.guild.bans.fetch(member.id).catch(() => null);
+      if (ban) {
+        leaveStatus = "banned";
+      } else {
+        try {
+          const logs = await member.guild.fetchAuditLogs({ limit: 6, type: AuditLogEvent.MemberKick });
+          const entry = logs.entries.find((e: any) => e.target?.id === member.id);
+          if (entry) {
+            const timeDiff = Date.now() - entry.createdTimestamp;
+            if (timeDiff < 15000) leaveStatus = "kicked";
+          }
+        } catch (auditErr) {
+          // ignore audit log errors (no perms etc.)
         }
-      } catch (e) {
-        console.log("Could not notify modmail channel about user leave:", e);
       }
+    } catch (err) {
+      // ignore
     }
 
-    // Check for open appeal thread
+    // Notify open modmail/appeal threads (deduplicated by channel)
+    const modmailThread = await storage.getOpenModmailThread(member.guild.id, member.id);
     const appealThread = await storage.getOpenAppealThread(member.guild.id, member.id);
-    if (appealThread && appealThread.channelId) {
-      try {
-        const channel = await client.channels.fetch(appealThread.channelId);
-        if (channel && "send" in channel) {
-          const leaveEmbed = new EmbedBuilder()
-            .setColor(0xed4245)
-            .setDescription(`⚠️ **${member.user.tag} has left the server!**`)
-            .setTimestamp();
-          await channel.send({ embeds: [leaveEmbed] });
+
+    const channelIds = new Set<string>();
+    if (modmailThread?.channelId) channelIds.add(modmailThread.channelId);
+    if (appealThread?.channelId) channelIds.add(appealThread.channelId);
+
+    if (channelIds.size > 0) {
+      const description =
+        leaveStatus === "banned"
+          ? `⚠️ **${member.user.tag} was banned from the server!**`
+          : leaveStatus === "kicked"
+          ? `⚠️ **${member.user.tag} was kicked from the server!**`
+          : `⚠️ **${member.user.tag} has left the server!**`;
+
+      const leaveEmbed = new EmbedBuilder().setColor(0xed4245).setDescription(description).setTimestamp();
+
+      for (const channelId of channelIds) {
+        try {
+          const channel = await client.channels.fetch(channelId);
+          if (channel && "send" in channel) {
+            await channel.send({ embeds: [leaveEmbed] });
+          }
+        } catch (e) {
+          console.log(`Could not notify channel ${channelId} about user leave:`, e);
         }
-      } catch (e) {
-        console.log("Could not notify appeal channel about user leave:", e);
       }
     }
   } catch (e) {
@@ -18643,36 +21670,29 @@ client.on("guildMemberAdd", async (member) => {
     }
 
     // Check for open modmail thread
-    const modmailThread = await storage.getOpenModmailThread(member.guild.id, member.id);
-    if (modmailThread && modmailThread.channelId) {
-      try {
-        const channel = await client.channels.fetch(modmailThread.channelId);
-        if (channel && "send" in channel) {
-          const joinEmbed = new EmbedBuilder()
-            .setColor(0x57f287)
-            .setDescription(`✅ **${member.user.tag} has joined the server!**`)
-            .setTimestamp();
-          await channel.send({ embeds: [joinEmbed] });
-        }
-      } catch (e) {
-        console.log("Could not notify modmail channel about user join:", e);
-      }
-    }
+    // Notify open modmail/appeal threads for joins (deduplicated by channel)
+    const modmailThreadJoin = await storage.getOpenModmailThread(member.guild.id, member.id);
+    const appealThreadJoin = await storage.getOpenAppealThread(member.guild.id, member.id);
 
-    // Check for open appeal thread
-    const appealThread = await storage.getOpenAppealThread(member.guild.id, member.id);
-    if (appealThread && appealThread.channelId) {
-      try {
-        const channel = await client.channels.fetch(appealThread.channelId);
-        if (channel && "send" in channel) {
-          const joinEmbed = new EmbedBuilder()
-            .setColor(0x57f287)
-            .setDescription(`✅ **${member.user.tag} has joined the server!**`)
-            .setTimestamp();
-          await channel.send({ embeds: [joinEmbed] });
+    const joinChannelIds = new Set<string>();
+    if (modmailThreadJoin?.channelId) joinChannelIds.add(modmailThreadJoin.channelId);
+    if (appealThreadJoin?.channelId) joinChannelIds.add(appealThreadJoin.channelId);
+
+    if (joinChannelIds.size > 0) {
+      const joinEmbed = new EmbedBuilder()
+        .setColor(0x57f287)
+        .setDescription(`✅ **${member.user.tag} has joined the server!**`)
+        .setTimestamp();
+
+      for (const channelId of joinChannelIds) {
+        try {
+          const channel = await client.channels.fetch(channelId);
+          if (channel && "send" in channel) {
+            await channel.send({ embeds: [joinEmbed] });
+          }
+        } catch (e) {
+          console.log(`Could not notify channel ${channelId} about user join:`, e);
         }
-      } catch (e) {
-        console.log("Could not notify appeal channel about user join:", e);
       }
     }
 
