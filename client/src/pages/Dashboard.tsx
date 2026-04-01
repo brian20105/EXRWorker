@@ -142,7 +142,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [leavingGuildId, setLeavingGuildId] = useState<string | null>(null);
-  const [botStatus, setBotStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [botStatus, setBotStatus] = useState<"checking" | "online" | "offline" | "external">("checking");
   const [applicationId, setApplicationId] = useState<string | null>(null);
   const [themeMounted, setThemeMounted] = useState(false);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
@@ -1193,6 +1193,12 @@ export default function Dashboard() {
                     <Badge variant="destructive" data-testid="badge-status-offline">
                       <AlertCircle className="mr-1 h-3 w-3" />
                       Offline
+                    </Badge>
+                  )}
+                  {botStatus === "external" && (
+                    <Badge variant="secondary" data-testid="badge-status-external">
+                      <Settings className="mr-1 h-3 w-3" />
+                      Bot in VS Code
                     </Badge>
                   )}
                   {botStatus === "checking" && <Badge variant="secondary">Checking</Badge>}

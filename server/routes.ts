@@ -373,7 +373,8 @@ export async function registerRoutes(
   });
 
   app.get("/api/bot-status", (req, res) => {
-    const status = client.isReady() ? "online" : "offline";
+    const runBot = (process.env.RUN_BOT || "false").trim().toLowerCase() === "true";
+    const status = runBot ? (client.isReady() ? "online" : "offline") : "external";
     const applicationId = process.env.DISCORD_APPLICATION_ID || null;
     
     res.json({ 
