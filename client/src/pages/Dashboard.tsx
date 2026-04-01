@@ -133,6 +133,27 @@ const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
 const LEAVE_SERVER_OWNER_ID = "948598563359817728";
 
 export default function Dashboard() {
+  const fetchJsonWithTimeout = async (url: string, init?: RequestInit, timeoutMs = 12000) => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, { ...(init || {}), signal: controller.signal });
+      const contentType = (response.headers.get("content-type") || "").toLowerCase();
+      const payload = contentType.includes("application/json")
+        ? await response.json().catch(() => ({}))
+        : { error: await response.text().catch(() => "") };
+
+      if (!response.ok) {
+        throw new Error(payload?.error || `Request failed (HTTP ${response.status})`);
+      }
+
+      return payload;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
+
   const [guilds, setGuilds] = useState<Guild[]>([]);
   const [selectedGuild, setSelectedGuild] = useState<string | null>(null);
   const [config, setConfig] = useState<GuildConfig>({ commandPrefix: "." });
@@ -192,8 +213,7 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/bot-status")
-      .then((res) => res.json())
+    fetchJsonWithTimeout("/api/bot-status")
       .then((data) => {
         setBotStatus(data.status);
         setApplicationId(data.applicationId);
@@ -202,15 +222,14 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/auth/me")
+    fetchJsonWithTimeout("/api/auth/me")
       .then(async (res) => {
-        if (!res.ok) {
+        if (!res?.authenticated) {
           setCurrentUser(null);
           return;
         }
-        const data = await res.json();
-        if (data?.authenticated && data?.user) {
-          setCurrentUser(data.user as AuthUser);
+        if (res?.user) {
+          setCurrentUser(res.user as AuthUser);
         } else {
           setCurrentUser(null);
         }
@@ -221,12 +240,24 @@ export default function Dashboard() {
 
   useEffect(() => {
     setLoading(true);
-    fetch("/api/guilds")
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data)) {
-          setGuilds(data);
+    const loadGuilds = async () => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const data = await fetchJsonWithTimeout("/api/guilds", undefined, 12000);
+          if (Array.isArray(data)) {
+            setGuilds(data);
+          }
+          return;
+        } catch (error) {
+          lastError = error;
         }
+      }
+      throw lastError;
+    };
+
+    loadGuilds()
+      .then((data) => {
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -236,14 +267,7 @@ export default function Dashboard() {
     if (!selectedGuild) return;
 
     setLoading(true);
-    fetch(`/api/guilds/${selectedGuild}/config`)
-      .then(async (res) => {
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data?.error || "Unable to load server config");
-        }
-        return data;
-      })
+    fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/config`, undefined, 15000)
       .then((data) => {
         const nextConfig = (data.config || {}) as GuildConfig;
         setConfig(nextConfig);
