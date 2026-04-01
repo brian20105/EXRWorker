@@ -609,7 +609,17 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
+      const contentType = (res.headers.get("content-type") || "").toLowerCase();
+      let data: any = {};
+
+      if (contentType.includes("application/json")) {
+        data = await res.json().catch(() => ({}));
+      } else {
+        const text = await res.text().catch(() => "");
+        if (text) {
+          data = { error: text.slice(0, 300) };
+        }
+      }
 
       if (!res.ok) {
         if (res.status === 401 || res.status === 403) {
@@ -617,13 +627,14 @@ export default function Dashboard() {
           setSelectedGuild(null);
           return;
         }
-        toast({ title: "Save failed", description: data.error || "Could not save config.", variant: "destructive" });
+        toast({ title: "Save failed", description: data.error || `Could not save config (HTTP ${res.status}).`, variant: "destructive" });
       } else {
         setConfig((data.config || payload) as GuildConfig);
         toast({ title: "Saved", description: "Dashboard configuration updated." });
       }
-    } catch {
-      toast({ title: "Save failed", description: "Network error while saving.", variant: "destructive" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Network error while saving.";
+      toast({ title: "Save failed", description: message, variant: "destructive" });
     }
     setSaving(false);
   };
@@ -1210,21 +1221,13 @@ export default function Dashboard() {
           <Card>
             <CardHeader>
               <CardTitle className="text-4xl font-semibold tracking-tight">Servers</CardTitle>
-              <CardDescription>
-                {botStatus === "external"
-                  ? `Servers from Discord API (${guilds.length} servers)`
-                  : `Servers you're in (${guilds.length} servers)`}
-              </CardDescription>
+              <CardDescription>Servers you're in ({guilds.length} servers)</CardDescription>
             </CardHeader>
             <CardContent>
               {loading ? (
                 <p className="py-4 text-center text-muted-foreground">Loading servers...</p>
               ) : guilds.length === 0 ? (
-                <p className="py-4 text-center text-muted-foreground">
-                  {botStatus === "external"
-                    ? "No servers returned yet. Make sure Render has DISCORD_BOT_TOKEN and refresh the page."
-                    : "No servers found. Invite the bot first."}
-                </p>
+                <p className="py-4 text-center text-muted-foreground">No servers found. Invite the bot first.</p>
               ) : (
                 <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
                   {guilds.map((guild) => (
