@@ -125,6 +125,34 @@ interface BotFeatureModule {
   enabled: boolean;
 }
 
+const GUILD_ROLE_CONFIG_KEYS: Array<keyof GuildConfig> = [
+  "allowedRoleIds",
+  "modRoleIds",
+  "modmailStaffRoleIds",
+  "modmailBlockRoleIds",
+  "modmailClaimRoleIds",
+  "appealStaffRoleIds",
+  "snippetRoleIds",
+  "activityRoleIds",
+  "messageCommandRoleIds",
+  "rosterCommandRoleIds",
+  "roleCommandRoleIds",
+  "activityTrackedRoleIds",
+  "activityResetRoleIds",
+  "inactivityPingRoleIds",
+];
+
+const PERMISSION_ROLE_KEYS: Array<keyof DashboardPermissionSettings> = [
+  "stickyCommandRoleIds",
+  "roleRequestCommandRoleIds",
+  "prefixBanRoleIds",
+  "prefixMuteRoleIds",
+  "prefixKickRoleIds",
+  "prefixModlogsRoleIds",
+  "prefixReasonRoleIds",
+  "prefixRetimeRoleIds",
+];
+
 const NONE_VALUE = "__none";
 const CATEGORY_CHANNEL_TYPE = 4;
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
@@ -281,10 +309,23 @@ export default function Dashboard() {
     fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/config`, undefined, 15000)
       .then((data) => {
         const nextConfig = (data.config || {}) as GuildConfig;
-        setConfig(nextConfig);
         setChannels(data.channels || []);
         setRoles(data.roles || []);
         setGuildName(data.guildName || "");
+
+        const validRoleIds = new Set(((data.roles || []) as Role[]).map((role) => role.id));
+        const sanitizeRoleIds = (value: unknown) => Array.isArray(value)
+          ? value.map((entry) => String(entry || "")).filter((entry) => validRoleIds.has(entry))
+          : [];
+
+        const sanitizedConfig: GuildConfig = { ...nextConfig };
+        for (const roleKey of GUILD_ROLE_CONFIG_KEYS) {
+          if (roleKey in sanitizedConfig) {
+            (sanitizedConfig as any)[roleKey] = sanitizeRoleIds((sanitizedConfig as any)[roleKey]);
+          }
+        }
+        setConfig(sanitizedConfig);
+
         const nextMemberCount = typeof data.memberCount === "number" ? data.memberCount : null;
         setSelectedGuildMemberCount(nextMemberCount);
         if (typeof data.memberCount === "number") {
@@ -297,13 +338,18 @@ export default function Dashboard() {
         setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
         setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
         setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
-        setPermissionSettings(getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+        const nextPermissionSettings = getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+        const sanitizedPermissionSettings: DashboardPermissionSettings = { ...nextPermissionSettings };
+        for (const roleKey of PERMISSION_ROLE_KEYS) {
+          sanitizedPermissionSettings[roleKey] = sanitizeRoleIds(nextPermissionSettings[roleKey]);
+        }
+        setPermissionSettings(sanitizedPermissionSettings);
         setWelcomeEmbedSettings(getWelcomeEmbedSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setBotPresenceSettings(getBotPresenceSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
         setActivePrimaryTab("settings");
         setActiveSettingsTab("channels");
         setModuleSearch("");
-        syncFeatureFlagsState(nextConfig, nextConfig.customCategoryPings || "{}");
+        syncFeatureFlagsState(sanitizedConfig, nextConfig.customCategoryPings || "{}");
         setLoading(false);
       })
       .catch((error: any) => {
@@ -457,6 +503,11 @@ export default function Dashboard() {
       .filter(Boolean);
   };
 
+  const filterToCurrentServerRoleIds = (roleIds: string[] | undefined) => {
+    const validRoleIds = new Set(roles.map((role) => role.id));
+    return (roleIds || []).filter((id) => validRoleIds.has(id));
+  };
+
   const getPermissionSettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardPermissionSettings => {
     const parsed = parseJsonObjectSafely(raw);
     const moderationSetupRaw = parsed.__moderationSetup;
@@ -552,8 +603,9 @@ export default function Dashboard() {
   };
 
   const togglePermissionRole = (key: keyof DashboardPermissionSettings, roleId: string) => {
+    const validRoleIds = new Set(roles.map((role) => role.id));
     setPermissionSettings((prev) => {
-      const current = prev[key] || [];
+      const current = (prev[key] || []).filter((id) => validRoleIds.has(id));
       if (current.includes(roleId)) {
         return { ...prev, [key]: current.filter((id) => id !== roleId) };
       }
@@ -562,7 +614,8 @@ export default function Dashboard() {
   };
 
   const toggleRole = (key: keyof GuildConfig, roleId: string) => {
-    const current = (config[key] as string[] | undefined) || [];
+    const validRoleIds = new Set(roles.map((role) => role.id));
+    const current = ((config[key] as string[] | undefined) || []).filter((id) => validRoleIds.has(id));
     if (current.includes(roleId)) {
       updateConfig(key, current.filter((id) => id !== roleId));
       return;
@@ -1079,7 +1132,10 @@ export default function Dashboard() {
     );
   };
 
-  const renderRoleSection = (label: string, key: keyof GuildConfig, testIdPrefix: string) => (
+  const renderRoleSection = (label: string, key: keyof GuildConfig, testIdPrefix: string) => {
+    const selectedRoleIds = filterToCurrentServerRoleIds((config[key] as string[] | undefined) || []);
+
+    return (
     <div className="space-y-3">
       <Label>{label}</Label>
       <div className="space-y-2">
@@ -1087,8 +1143,8 @@ export default function Dashboard() {
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
               <span className="truncate text-left">
-                {(((config[key] as string[] | undefined) || []).length || 0) > 0
-                  ? `${((config[key] as string[] | undefined) || []).length} role(s) selected`
+                {(selectedRoleIds.length || 0) > 0
+                  ? `${selectedRoleIds.length} role(s) selected`
                   : "Select roles"}
               </span>
               <ChevronDown className="h-4 w-4 opacity-70" />
@@ -1113,7 +1169,7 @@ export default function Dashboard() {
                 return role.name.toLowerCase().includes(query);
               })
               .map((role) => {
-              const selected = ((config[key] as string[] | undefined) || []).includes(role.id);
+              const selected = selectedRoleIds.includes(role.id);
               return (
                 <DropdownMenuCheckboxItem
                   key={role.id}
@@ -1131,22 +1187,26 @@ export default function Dashboard() {
 
         <div className="flex flex-wrap gap-2">
           {roles
-            .filter((role) => ((config[key] as string[] | undefined) || []).includes(role.id))
+            .filter((role) => selectedRoleIds.includes(role.id))
             .slice(0, 8)
             .map((role) => (
               <Badge key={role.id} variant="secondary" className="max-w-[220px] truncate" title={role.name}>
                 {role.name}
               </Badge>
             ))}
-          {(((config[key] as string[] | undefined) || []).length || 0) > 8 && (
-            <Badge variant="outline">+{(((config[key] as string[] | undefined) || []).length || 0) - 8} more</Badge>
+          {(selectedRoleIds.length || 0) > 8 && (
+            <Badge variant="outline">+{selectedRoleIds.length - 8} more</Badge>
           )}
         </div>
       </div>
     </div>
   );
+  };
 
-  const renderPermissionRoleSection = (label: string, key: keyof DashboardPermissionSettings, testIdPrefix: string) => (
+  const renderPermissionRoleSection = (label: string, key: keyof DashboardPermissionSettings, testIdPrefix: string) => {
+    const selectedRoleIds = filterToCurrentServerRoleIds(permissionSettings[key] || []);
+
+    return (
     <div className="space-y-3">
       <Label>{label}</Label>
       <div className="space-y-2">
@@ -1154,8 +1214,8 @@ export default function Dashboard() {
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
               <span className="truncate text-left">
-                {(permissionSettings[key]?.length || 0) > 0
-                  ? `${permissionSettings[key].length} role(s) selected`
+                {(selectedRoleIds.length || 0) > 0
+                  ? `${selectedRoleIds.length} role(s) selected`
                   : "Select roles"}
               </span>
               <ChevronDown className="h-4 w-4 opacity-70" />
@@ -1180,7 +1240,7 @@ export default function Dashboard() {
                 return role.name.toLowerCase().includes(query);
               })
               .map((role) => {
-                const selected = (permissionSettings[key] || []).includes(role.id);
+                const selected = selectedRoleIds.includes(role.id);
                 return (
                   <DropdownMenuCheckboxItem
                     key={role.id}
@@ -1198,20 +1258,21 @@ export default function Dashboard() {
 
         <div className="flex flex-wrap gap-2">
           {roles
-            .filter((role) => (permissionSettings[key] || []).includes(role.id))
+            .filter((role) => selectedRoleIds.includes(role.id))
             .slice(0, 8)
             .map((role) => (
               <Badge key={role.id} variant="secondary" className="max-w-[220px] truncate" title={role.name}>
                 {role.name}
               </Badge>
             ))}
-          {(permissionSettings[key]?.length || 0) > 8 && (
-            <Badge variant="outline">+{permissionSettings[key].length - 8} more</Badge>
+          {(selectedRoleIds.length || 0) > 8 && (
+            <Badge variant="outline">+{selectedRoleIds.length - 8} more</Badge>
           )}
         </div>
       </div>
     </div>
   );
+  };
 
   if (!selectedGuild) {
     return (
