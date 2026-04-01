@@ -620,6 +620,11 @@ const pendingWelcomeMessageColors = new Map<string, number | null>();
 const DISCORD_MESSAGE_LINK_REGEX = /https?:\/\/(?:canary\.|ptb\.)?discord(?:app)?\.com\/channels\/(\d+)\/(\d+)\/(\d+)/i;
 
 function getDashboardUrl(): string {
+  const configuredBase = (process.env.DASHBOARD_URL || "").trim().replace(/\/+$/, "");
+  if (configuredBase) {
+    return /\/dashboard$/i.test(configuredBase) ? configuredBase : `${configuredBase}/dashboard`;
+  }
+
   const dashboardPort = process.env.DASHBOARD_PORT || process.env.PORT || "2000";
   return `http://localhost:${dashboardPort}/dashboard`;
 }

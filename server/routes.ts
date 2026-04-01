@@ -246,6 +246,11 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
 }
 
 function getDashboardUrl(): string {
+  const configuredBase = (process.env.DASHBOARD_URL || "").trim().replace(/\/+$/, "");
+  if (configuredBase) {
+    return /\/dashboard$/i.test(configuredBase) ? configuredBase : `${configuredBase}/dashboard`;
+  }
+
   const dashboardPort = process.env.DASHBOARD_PORT || process.env.PORT || "2000";
   return `http://localhost:${dashboardPort}/dashboard`;
 }
