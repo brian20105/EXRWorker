@@ -39,9 +39,11 @@ const AUTH_COOKIE_NAME = "dashboard_auth";
 const OAUTH_STATE_COOKIE = "dashboard_oauth_state";
 const LEAVE_SERVER_OWNER_ID = "948598563359817728";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
+const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 let cachedGuildSummaries: DashboardGuildSummary[] = [];
 let cachedGuildSummariesAt = 0;
+const accessDecisionCache = new Map<string, { allowed: boolean; checkedAt: number }>();
 
 function getAuthSecret(): string {
   return (process.env.DASHBOARD_AUTH_SECRET || process.env.DISCORD_CLIENT_SECRET || "change-me").trim();
@@ -169,12 +171,38 @@ async function discordApiRequest(path: string, init?: RequestInit) {
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    const error = new Error(`Discord API ${path} failed (${response.status}): ${text || "unknown_error"}`) as Error & { status?: number };
+    const compactText = String(text || "").replace(/\s+/g, " ").trim();
+    const isRateLimited = response.status === 429 || compactText.includes("1015") || compactText.toLowerCase().includes("rate limited");
+    const safeMessage = isRateLimited
+      ? `Discord API ${path} failed (${response.status}): rate_limited`
+      : `Discord API ${path} failed (${response.status}): ${(compactText || "unknown_error").slice(0, 300)}`;
+    const error = new Error(safeMessage) as Error & { status?: number };
     error.status = response.status;
     throw error;
   }
 
   return response;
+}
+
+function getCachedGuildSummaryById(guildId: string): DashboardGuildSummary | null {
+  const fromCache = cachedGuildSummaries.find((guild) => guild.id === guildId);
+  return fromCache || null;
+}
+
+function getCachedAccessDecision(userId: string, guildId: string): boolean | null {
+  const key = `${userId}:${guildId}`;
+  const cached = accessDecisionCache.get(key);
+  if (!cached) return null;
+  if ((Date.now() - cached.checkedAt) > ACCESS_CACHE_TTL_MS) {
+    accessDecisionCache.delete(key);
+    return null;
+  }
+  return cached.allowed;
+}
+
+function setCachedAccessDecision(userId: string, guildId: string, allowed: boolean): void {
+  const key = `${userId}:${guildId}`;
+  accessDecisionCache.set(key, { allowed, checkedAt: Date.now() });
 }
 
 function getCachedGuildSummaries(): DashboardGuildSummary[] | null {
@@ -251,6 +279,7 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
     if (!member) return false;
 
     if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+      setCachedAccessDecision(userId, guildId, true);
       return true;
     }
 
@@ -258,7 +287,9 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
     const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
     if (managerRoleIds.length === 0) return false;
 
-    return managerRoleIds.some((roleId) => member.roles.cache.has(roleId));
+    const allowed = managerRoleIds.some((roleId) => member.roles.cache.has(roleId));
+    setCachedAccessDecision(userId, guildId, allowed);
+    return allowed;
   }
 
   if (!getBotToken()) return false;
@@ -268,6 +299,7 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
   const roleIds = Array.isArray(member.roles) ? member.roles : [];
 
   if (hasAdministratorPermission(member.permissions)) {
+    setCachedAccessDecision(userId, guildId, true);
     return true;
   }
 
@@ -275,7 +307,9 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
   const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
   if (managerRoleIds.length === 0) return false;
 
-  return managerRoleIds.some((roleId) => roleIds.includes(roleId));
+  const allowed = managerRoleIds.some((roleId) => roleIds.includes(roleId));
+  setCachedAccessDecision(userId, guildId, allowed);
+  return allowed;
 }
 
 async function requireGuildAccess(req: Request, res: Response): Promise<{ user: DashboardSessionUser; guildId: string } | null> {
@@ -297,6 +331,10 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
   } catch (error: any) {
     const isRateLimited = error?.status === 429 || String(error?.message || "").includes("1015");
     if (isRateLimited) {
+      const cachedAllowed = getCachedAccessDecision(user.id, guildId);
+      if (cachedAllowed === true) {
+        return { user, guildId };
+      }
       res.status(503).json({ error: "Discord is temporarily rate-limited. Please retry in a few seconds." });
       return null;
     }
@@ -650,11 +688,31 @@ export async function registerRoutes(
         });
       }
 
-      const [guildResponse, channelsResponse, rolesResponse] = await Promise.all([
-        discordApiRequest(`/guilds/${guildId}?with_counts=true`),
-        discordApiRequest(`/guilds/${guildId}/channels`),
-        discordApiRequest(`/guilds/${guildId}/roles`),
-      ]);
+      let guildResponse: Response;
+      let channelsResponse: Response;
+      let rolesResponse: Response;
+
+      try {
+        [guildResponse, channelsResponse, rolesResponse] = await Promise.all([
+          discordApiRequest(`/guilds/${guildId}?with_counts=true`),
+          discordApiRequest(`/guilds/${guildId}/channels`),
+          discordApiRequest(`/guilds/${guildId}/roles`),
+        ]);
+      } catch (error: any) {
+        const isRateLimited = error?.status === 429 || String(error?.message || "").includes("1015") || String(error?.message || "").includes("rate_limited");
+        if (isRateLimited) {
+          const fallbackSummary = getCachedGuildSummaryById(guildId);
+          return res.json({
+            config: config || {},
+            channels: [],
+            roles: [],
+            guildName: fallbackSummary?.name || "Unknown",
+            memberCount: fallbackSummary?.memberCount ?? 0,
+            warning: "Discord is temporarily rate-limited. Channel and role lists may be temporarily unavailable.",
+          });
+        }
+        throw error;
+      }
 
       const guild = await guildResponse.json().catch(() => ({}));
       const channelsRaw = await channelsResponse.json().catch(() => []);

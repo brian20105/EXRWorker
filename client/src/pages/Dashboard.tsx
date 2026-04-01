@@ -145,7 +145,15 @@ export default function Dashboard() {
         : { error: await response.text().catch(() => "") };
 
       if (!response.ok) {
-        const requestError = new Error(payload?.error || `Request failed (HTTP ${response.status})`);
+        const rawMessage = String(payload?.error || `Request failed (HTTP ${response.status})`);
+        const lowered = rawMessage.toLowerCase();
+        const looksLikeHtml = lowered.includes("<!doctype") || lowered.includes("<html") || lowered.includes("cloudflare");
+        const isRateLimited = response.status === 429 || response.status === 503 || lowered.includes("1015") || lowered.includes("rate_limited") || lowered.includes("rate limited");
+        const friendlyMessage = isRateLimited
+          ? "Discord is temporarily rate-limited. Please retry in a few seconds."
+          : (looksLikeHtml ? `Request failed (HTTP ${response.status})` : rawMessage.slice(0, 300));
+
+        const requestError = new Error(friendlyMessage || `Request failed (HTTP ${response.status})`);
         (requestError as Error & { status?: number }).status = response.status;
         throw requestError;
       }
