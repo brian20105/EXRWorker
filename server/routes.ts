@@ -263,16 +263,11 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
 
   if (!getBotToken()) return false;
 
-  const guildsResponse = await discordApiRequest("/users/@me/guilds");
-  const guilds = (await guildsResponse.json().catch(() => [])) as DiscordRestGuild[];
-  const guild = guilds.find((entry) => String(entry?.id || "") === guildId);
-  if (!guild) return false;
-
   const memberResponse = await discordApiRequest(`/guilds/${guildId}/members/${userId}`);
   const member = (await memberResponse.json().catch(() => ({}))) as DiscordRestGuildMember;
   const roleIds = Array.isArray(member.roles) ? member.roles : [];
 
-  if (hasAdministratorPermission(member.permissions || guild.permissions)) {
+  if (hasAdministratorPermission(member.permissions)) {
     return true;
   }
 
@@ -296,7 +291,19 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
     return null;
   }
 
-  const allowed = await canAccessGuild(user.id, guildId);
+  let allowed = false;
+  try {
+    allowed = await canAccessGuild(user.id, guildId);
+  } catch (error: any) {
+    const isRateLimited = error?.status === 429 || String(error?.message || "").includes("1015");
+    if (isRateLimited) {
+      res.status(503).json({ error: "Discord is temporarily rate-limited. Please retry in a few seconds." });
+      return null;
+    }
+    res.status(500).json({ error: "Could not verify server access right now. Please retry." });
+    return null;
+  }
+
   if (!allowed) {
     res.status(403).json({ error: "You do not have manager role access for this server." });
     return null;
