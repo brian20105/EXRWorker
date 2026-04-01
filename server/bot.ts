@@ -19,6 +19,7 @@ import {
   AttachmentBuilder,
   PermissionFlagsBits,
   AuditLogEvent,
+  ActivityType,
 } from "discord.js";
 import { storage } from "./storage.ts";
 // Safe wrapper to avoid crashes when storage backend temporarily errors
@@ -727,6 +728,123 @@ function getDashboardQuickSettingsFromGuildConfig(config?: any): { moderationPre
     moderationPrefix: moderationPrefix.slice(0, 3),
     modmailPrefix: modmailPrefix.slice(0, 3),
   };
+}
+
+function getDashboardBotNicknameFromGuildConfig(config?: any): { hasBotNickname: boolean; botNickname: string | null } {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__dashboardQuickSettings;
+  if (!raw || typeof raw !== "object") {
+    return { hasBotNickname: false, botNickname: null };
+  }
+
+  if (!("botNickname" in raw)) {
+    return { hasBotNickname: false, botNickname: null };
+  }
+
+  const nicknameRaw = (raw as Record<string, unknown>).botNickname;
+  if (typeof nicknameRaw !== "string") {
+    return { hasBotNickname: false, botNickname: null };
+  }
+
+  const normalized = nicknameRaw.trim();
+  return {
+    hasBotNickname: true,
+    botNickname: normalized.length > 0 ? normalized.slice(0, 32) : null,
+  };
+}
+
+function getDashboardBotPresenceFromGuildConfig(config?: any): {
+  hasPresence: boolean;
+  status: "online" | "idle" | "dnd" | "invisible";
+  activityType: "playing" | "listening" | "watching" | "competing";
+  activityText: string;
+} {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__dashboardBotPresence;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      hasPresence: false,
+      status: "online",
+      activityType: "playing",
+      activityText: "",
+    };
+  }
+
+  const status = typeof raw.status === "string" ? raw.status.toLowerCase() : "online";
+  const activityType = typeof raw.activityType === "string" ? raw.activityType.toLowerCase() : "playing";
+  const activityText = typeof raw.activityText === "string" ? raw.activityText : "";
+
+  return {
+    hasPresence: true,
+    status: (status === "online" || status === "idle" || status === "dnd" || status === "invisible") ? status : "online",
+    activityType: (activityType === "playing" || activityType === "listening" || activityType === "watching" || activityType === "competing")
+      ? activityType
+      : "playing",
+    activityText,
+  };
+}
+
+const DASHBOARD_ACTIVITY_TYPE_MAP: Record<string, ActivityType> = {
+  playing: ActivityType.Playing,
+  listening: ActivityType.Listening,
+  watching: ActivityType.Watching,
+  competing: ActivityType.Competing,
+};
+
+let dashboardSettingsSyncInFlight = false;
+
+async function syncDashboardSettingsFromStorage(): Promise<void> {
+  if (!client.isReady() || !client.user || dashboardSettingsSyncInFlight) {
+    return;
+  }
+
+  dashboardSettingsSyncInFlight = true;
+  try {
+    let selectedPresence: ReturnType<typeof getDashboardBotPresenceFromGuildConfig> | null = null;
+
+    for (const guild of client.guilds.cache.values()) {
+      const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+      if (!config) continue;
+
+      const nicknameInput = getDashboardBotNicknameFromGuildConfig(config);
+      if (nicknameInput.hasBotNickname) {
+        const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+        if (me) {
+          const currentNickname = me.nickname || null;
+          if (currentNickname !== nicknameInput.botNickname) {
+            await me.setNickname(nicknameInput.botNickname).catch(() => undefined);
+          }
+        }
+      }
+
+      if (!selectedPresence) {
+        const presenceInput = getDashboardBotPresenceFromGuildConfig(config);
+        if (presenceInput.hasPresence) {
+          selectedPresence = presenceInput;
+        }
+      }
+    }
+
+    if (selectedPresence) {
+      const activityText = selectedPresence.activityText.trim();
+      if (!activityText) {
+        client.user.setPresence({
+          status: selectedPresence.status,
+          activities: [],
+        });
+      } else {
+        client.user.setPresence({
+          status: selectedPresence.status,
+          activities: [{
+            name: activityText,
+            type: DASHBOARD_ACTIVITY_TYPE_MAP[selectedPresence.activityType] ?? 0,
+          }],
+        });
+      }
+    }
+  } finally {
+    dashboardSettingsSyncInFlight = false;
+  }
 }
 
 function normalizeStringArray(value: any): string[] {
@@ -4772,6 +4890,11 @@ client.once("clientReady", async () => {
       console.log("⚠️ Could not initialize invite snapshots:", error?.message || error);
     }
   })();
+
+  syncDashboardSettingsFromStorage().catch(() => undefined);
+  setInterval(() => {
+    syncDashboardSettingsFromStorage().catch(() => undefined);
+  }, 30000);
 });
 
 const processedInteractions = new Set<string>();
