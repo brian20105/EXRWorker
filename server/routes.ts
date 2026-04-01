@@ -479,6 +479,88 @@ function applyBotPresenceFromCustomCategoryPings(raw: unknown): void {
   });
 }
 
+function parseDashboardBotPresenceForPropagation(raw: unknown): {
+  status: "online" | "idle" | "dnd" | "invisible";
+  activityType: "playing" | "listening" | "watching" | "competing";
+  activityText: string;
+  updatedAt: number;
+} | null {
+  if (typeof raw !== "string") return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+    const presenceRaw = (parsed as Record<string, unknown>).__dashboardBotPresence;
+    if (!presenceRaw || typeof presenceRaw !== "object" || Array.isArray(presenceRaw)) return null;
+
+    const presence = presenceRaw as Record<string, unknown>;
+    const status = typeof presence.status === "string" ? presence.status.toLowerCase() : "online";
+    const activityType = typeof presence.activityType === "string" ? presence.activityType.toLowerCase() : "playing";
+    const activityText = typeof presence.activityText === "string" ? presence.activityText : "";
+    const updatedAt = typeof presence.updatedAt === "number" && Number.isFinite(presence.updatedAt)
+      ? presence.updatedAt
+      : Date.now();
+
+    return {
+      status: (status === "online" || status === "idle" || status === "dnd" || status === "invisible") ? status : "online",
+      activityType: (activityType === "playing" || activityType === "listening" || activityType === "watching" || activityType === "competing")
+        ? activityType
+        : "playing",
+      activityText,
+      updatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeDashboardBotPresence(raw: unknown, presence: {
+  status: "online" | "idle" | "dnd" | "invisible";
+  activityType: "playing" | "listening" | "watching" | "competing";
+  activityText: string;
+  updatedAt: number;
+}): string {
+  let root: Record<string, unknown> = {};
+
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        root = parsed as Record<string, unknown>;
+      }
+    } catch {
+      root = {};
+    }
+  }
+
+  root.__dashboardBotPresence = presence;
+  return JSON.stringify(root);
+}
+
+async function propagateDashboardBotPresenceToAllGuildConfigs(presence: {
+  status: "online" | "idle" | "dnd" | "invisible";
+  activityType: "playing" | "listening" | "watching" | "competing";
+  activityText: string;
+  updatedAt: number;
+}): Promise<void> {
+  try {
+    const rows = await db
+      .select({ guildId: guildConfigs.guildId, customCategoryPings: guildConfigs.customCategoryPings })
+      .from(guildConfigs);
+
+    for (const row of rows) {
+      const guildId = String(row.guildId || "").trim();
+      if (!guildId) continue;
+
+      const mergedCustomCategoryPings = writeDashboardBotPresence(row.customCategoryPings, presence);
+      await storage.upsertGuildConfig({ guildId, customCategoryPings: mergedCustomCategoryPings });
+    }
+  } catch {
+    // Best-effort propagation
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -841,7 +923,16 @@ export async function registerRoutes(
       }
       
       await storage.upsertGuildConfig({ guildId, ...updates });
-      const config = await storage.getGuildConfig(guildId);
+      let config = await storage.getGuildConfig(guildId);
+
+      const presenceSource = typeof updates.customCategoryPings === "string"
+        ? updates.customCategoryPings
+        : config?.customCategoryPings;
+      const propagatedPresence = parseDashboardBotPresenceForPropagation(presenceSource);
+      if (propagatedPresence) {
+        await propagateDashboardBotPresenceToAllGuildConfigs(propagatedPresence);
+        config = await storage.getGuildConfig(guildId);
+      }
 
       const nicknameInput = getBotNicknameFromCustomCategoryPings(
         typeof updates.customCategoryPings === "string"
