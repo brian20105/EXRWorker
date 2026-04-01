@@ -145,7 +145,9 @@ export default function Dashboard() {
         : { error: await response.text().catch(() => "") };
 
       if (!response.ok) {
-        throw new Error(payload?.error || `Request failed (HTTP ${response.status})`);
+        const requestError = new Error(payload?.error || `Request failed (HTTP ${response.status})`);
+        (requestError as Error & { status?: number }).status = response.status;
+        throw requestError;
       }
 
       return payload;
@@ -291,7 +293,9 @@ export default function Dashboard() {
         setSelectedGuild(null);
         toast({
           title: "Access denied",
-          description: error?.message || "Login with Discord and make sure you have a manager role in this server.",
+          description: error?.status === 401
+            ? "Please login first to access the server."
+            : (error?.message || "Login with Discord and make sure you have a manager role in this server."),
           variant: "destructive",
         });
       });
@@ -1259,6 +1263,14 @@ export default function Dashboard() {
                         type="button"
                         className="w-full"
                         onClick={() => {
+                          if (!currentUser) {
+                            toast({
+                              title: "Login required",
+                              description: "Please login first to access the server.",
+                              variant: "destructive",
+                            });
+                            return;
+                          }
                           setSelectedGuild(guild.id);
                           setLocation("/dashboard");
                         }}
