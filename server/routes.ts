@@ -12,6 +12,21 @@ type DashboardSessionUser = {
   avatar: string | null;
 };
 
+type DiscordRestGuild = {
+  id: string;
+  name: string;
+  icon: string | null;
+  owner?: boolean;
+  permissions?: string;
+  approximate_member_count?: number;
+};
+
+type DiscordRestGuildMember = {
+  user?: { id?: string };
+  roles?: string[];
+  permissions?: string;
+};
+
 const AUTH_COOKIE_NAME = "dashboard_auth";
 const OAUTH_STATE_COOKIE = "dashboard_oauth_state";
 const LEAVE_SERVER_OWNER_ID = "948598563359817728";
@@ -117,14 +132,87 @@ function getCurrentUser(req: Request): DashboardSessionUser | null {
   return verifySession(token);
 }
 
+function getBotToken(): string {
+  return (process.env.DISCORD_BOT_TOKEN || "").trim();
+}
+
+function getBotAuthHeaders(): Record<string, string> {
+  const token = getBotToken();
+  return token ? { Authorization: `Bot ${token}` } : {};
+}
+
+async function discordApiRequest(path: string, init?: RequestInit) {
+  const token = getBotToken();
+  if (!token) {
+    throw new Error("DISCORD_BOT_TOKEN is not configured");
+  }
+
+  const response = await fetch(`https://discord.com/api/v10${path}`, {
+    ...init,
+    headers: {
+      ...getBotAuthHeaders(),
+      ...(init?.headers || {}),
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Discord API ${path} failed (${response.status}): ${text || "unknown_error"}`);
+  }
+
+  return response;
+}
+
+function hasAdministratorPermission(permissionValue: string | undefined): boolean {
+  if (!permissionValue) return false;
+  try {
+    return (BigInt(permissionValue) & BigInt(PermissionFlagsBits.Administrator)) !== 0n;
+  } catch {
+    return false;
+  }
+}
+
+function toGuildIconUrl(guildId: string, icon: string | null | undefined): string | null {
+  if (!icon) return null;
+  return `https://cdn.discordapp.com/icons/${guildId}/${icon}.png?size=128`;
+}
+
+function toRoleHexColor(color: number | undefined): string {
+  const normalized = Number.isFinite(color) ? Math.max(0, Math.min(0xffffff, Number(color))) : 0;
+  return `#${normalized.toString(16).padStart(6, "0")}`;
+}
+
 async function canAccessGuild(userId: string, guildId: string): Promise<boolean> {
-  const guild = client.guilds.cache.get(guildId);
+  if (client.isReady()) {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return false;
+
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return false;
+
+    if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return true;
+    }
+
+    const config = await storage.getGuildConfig(guildId);
+    const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
+    if (managerRoleIds.length === 0) return false;
+
+    return managerRoleIds.some((roleId) => member.roles.cache.has(roleId));
+  }
+
+  if (!getBotToken()) return false;
+
+  const guildsResponse = await discordApiRequest("/users/@me/guilds");
+  const guilds = (await guildsResponse.json().catch(() => [])) as DiscordRestGuild[];
+  const guild = guilds.find((entry) => String(entry?.id || "") === guildId);
   if (!guild) return false;
 
-  const member = await guild.members.fetch(userId).catch(() => null);
-  if (!member) return false;
+  const memberResponse = await discordApiRequest(`/guilds/${guildId}/members/${userId}`);
+  const member = (await memberResponse.json().catch(() => ({}))) as DiscordRestGuildMember;
+  const roleIds = Array.isArray(member.roles) ? member.roles : [];
 
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+  if (hasAdministratorPermission(member.permissions || guild.permissions)) {
     return true;
   }
 
@@ -132,7 +220,7 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
   const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
   if (managerRoleIds.length === 0) return false;
 
-  return managerRoleIds.some((roleId) => member.roles.cache.has(roleId));
+  return managerRoleIds.some((roleId) => roleIds.includes(roleId));
 }
 
 async function requireGuildAccess(req: Request, res: Response): Promise<{ user: DashboardSessionUser; guildId: string } | null> {
@@ -387,17 +475,26 @@ export async function registerRoutes(
 
   app.get("/api/guilds", async (req, res) => {
     try {
-      if (!client.isReady()) {
-        return res.status(503).json({ error: "Bot not ready" });
+      if (client.isReady()) {
+        const guilds = client.guilds.cache.map((g) => ({
+          id: g.id,
+          name: g.name,
+          icon: g.iconURL(),
+          memberCount: g.memberCount,
+        }));
+        return res.json(guilds);
       }
 
-      const guilds = client.guilds.cache.map((g) => ({
-        id: g.id,
-        name: g.name,
-        icon: g.iconURL(),
-        memberCount: g.memberCount,
+      const guildsResponse = await discordApiRequest("/users/@me/guilds");
+      const guilds = (await guildsResponse.json().catch(() => [])) as DiscordRestGuild[];
+      const normalized = guilds.map((guild) => ({
+        id: String(guild.id),
+        name: String(guild.name || "Unknown"),
+        icon: toGuildIconUrl(String(guild.id), guild.icon),
+        memberCount: Number(guild.approximate_member_count || 0),
       }));
-      res.json(guilds);
+
+      res.json(normalized);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -419,12 +516,17 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing guildId" });
       }
 
-      const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
-      if (!guild) {
-        return res.status(404).json({ error: "Server not found." });
+      if (client.isReady()) {
+        const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+        if (!guild) {
+          return res.status(404).json({ error: "Server not found." });
+        }
+
+        await guild.leave();
+        return res.json({ success: true });
       }
 
-      await guild.leave();
+      await discordApiRequest(`/users/@me/guilds/${guildId}`, { method: "DELETE" });
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message || "Failed to leave server." });
@@ -437,19 +539,57 @@ export async function registerRoutes(
       if (!auth) return;
       const { guildId } = auth;
       const config = await storage.getGuildConfig(guildId);
-      
-      const guild = client.guilds.cache.get(guildId);
-      const channels = guild?.channels.cache
-        .map(c => ({ id: c.id, name: c.name, type: c.type })) || [];
-      const roles = guild?.roles.cache
-        .filter(r => r.name !== "@everyone")
-        .map(r => ({ id: r.id, name: r.name, color: r.hexColor })) || [];
-      
+
+      if (client.isReady()) {
+        const guild = client.guilds.cache.get(guildId);
+        const channels = guild?.channels.cache
+          .map(c => ({ id: c.id, name: c.name, type: c.type })) || [];
+        const roles = guild?.roles.cache
+          .filter(r => r.name !== "@everyone")
+          .map(r => ({ id: r.id, name: r.name, color: r.hexColor })) || [];
+
+        return res.json({
+          config: config || {},
+          channels,
+          roles,
+          guildName: guild?.name || "Unknown"
+        });
+      }
+
+      const [guildResponse, channelsResponse, rolesResponse] = await Promise.all([
+        discordApiRequest(`/guilds/${guildId}`),
+        discordApiRequest(`/guilds/${guildId}/channels`),
+        discordApiRequest(`/guilds/${guildId}/roles`),
+      ]);
+
+      const guild = await guildResponse.json().catch(() => ({}));
+      const channelsRaw = await channelsResponse.json().catch(() => []);
+      const rolesRaw = await rolesResponse.json().catch(() => []);
+
+      const channels = Array.isArray(channelsRaw)
+        ? channelsRaw.map((channel: any) => ({
+            id: String(channel?.id || ""),
+            name: String(channel?.name || ""),
+            type: Number(channel?.type ?? 0),
+          })).filter((channel: any) => channel.id)
+        : [];
+
+      const roles = Array.isArray(rolesRaw)
+        ? rolesRaw
+            .filter((role: any) => String(role?.name || "") !== "@everyone")
+            .map((role: any) => ({
+              id: String(role?.id || ""),
+              name: String(role?.name || ""),
+              color: toRoleHexColor(Number(role?.color ?? 0)),
+            }))
+            .filter((role: any) => role.id)
+        : [];
+
       res.json({ 
         config: config || {},
         channels,
         roles,
-        guildName: guild?.name || "Unknown"
+        guildName: String((guild as any)?.name || "Unknown")
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
