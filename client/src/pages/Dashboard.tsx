@@ -162,6 +162,7 @@ export default function Dashboard() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [guildName, setGuildName] = useState("");
+  const [selectedGuildMemberCount, setSelectedGuildMemberCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [leavingGuildId, setLeavingGuildId] = useState<string | null>(null);
@@ -276,6 +277,15 @@ export default function Dashboard() {
         setChannels(data.channels || []);
         setRoles(data.roles || []);
         setGuildName(data.guildName || "");
+        const nextMemberCount = typeof data.memberCount === "number" ? data.memberCount : null;
+        setSelectedGuildMemberCount(nextMemberCount);
+        if (typeof data.memberCount === "number") {
+          setGuilds((previous) => previous.map((guild) => (
+            guild.id === selectedGuild
+              ? { ...guild, memberCount: data.memberCount }
+              : guild
+          )));
+        }
         setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
         setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
         setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
@@ -291,6 +301,7 @@ export default function Dashboard() {
       .catch((error: any) => {
         setLoading(false);
         setSelectedGuild(null);
+        setSelectedGuildMemberCount(null);
         toast({
           title: "Access denied",
           description: error?.status === 401
@@ -1384,7 +1395,7 @@ export default function Dashboard() {
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
                     <div>
                       <p className="text-xs uppercase tracking-wide text-muted-foreground">Members</p>
-                      <p className="mt-1 text-lg font-semibold">{selectedGuildSummary?.memberCount ?? 0}</p>
+                      <p className="mt-1 text-lg font-semibold">{selectedGuildMemberCount ?? selectedGuildSummary?.memberCount ?? 0}</p>
                     </div>
                     <div>
                       <p className="text-xs uppercase tracking-wide text-muted-foreground">Categories</p>

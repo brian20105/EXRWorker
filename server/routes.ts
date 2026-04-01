@@ -520,7 +520,7 @@ export async function registerRoutes(
         return res.json(freshCache);
       }
 
-      const guildsResponse = await discordApiRequest("/users/@me/guilds");
+      const guildsResponse = await discordApiRequest("/users/@me/guilds?with_counts=true");
       const guilds = (await guildsResponse.json().catch(() => [])) as DiscordRestGuild[];
       const normalized = guilds.map((guild) => ({
         id: String(guild.id),
@@ -593,12 +593,13 @@ export async function registerRoutes(
           config: config || {},
           channels,
           roles,
-          guildName: guild?.name || "Unknown"
+          guildName: guild?.name || "Unknown",
+          memberCount: guild?.memberCount ?? 0,
         });
       }
 
       const [guildResponse, channelsResponse, rolesResponse] = await Promise.all([
-        discordApiRequest(`/guilds/${guildId}`),
+        discordApiRequest(`/guilds/${guildId}?with_counts=true`),
         discordApiRequest(`/guilds/${guildId}/channels`),
         discordApiRequest(`/guilds/${guildId}/roles`),
       ]);
@@ -630,7 +631,8 @@ export async function registerRoutes(
         config: config || {},
         channels,
         roles,
-        guildName: String((guild as any)?.name || "Unknown")
+        guildName: String((guild as any)?.name || "Unknown"),
+        memberCount: Number((guild as any)?.approximate_member_count ?? (guild as any)?.member_count ?? 0),
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
