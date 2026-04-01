@@ -758,6 +758,7 @@ function getDashboardBotPresenceFromGuildConfig(config?: any): {
   status: "online" | "idle" | "dnd" | "invisible";
   activityType: "playing" | "listening" | "watching" | "competing";
   activityText: string;
+  updatedAt: number;
 } {
   const root = parseJsonObject(config?.customCategoryPings);
   const raw = root?.__dashboardBotPresence;
@@ -767,12 +768,14 @@ function getDashboardBotPresenceFromGuildConfig(config?: any): {
       status: "online",
       activityType: "playing",
       activityText: "",
+      updatedAt: 0,
     };
   }
 
   const status = typeof raw.status === "string" ? raw.status.toLowerCase() : "online";
   const activityType = typeof raw.activityType === "string" ? raw.activityType.toLowerCase() : "playing";
   const activityText = typeof raw.activityText === "string" ? raw.activityText : "";
+  const updatedAt = typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0;
 
   return {
     hasPresence: true,
@@ -781,6 +784,7 @@ function getDashboardBotPresenceFromGuildConfig(config?: any): {
       ? activityType
       : "playing",
     activityText,
+    updatedAt,
   };
 }
 
@@ -826,14 +830,17 @@ async function syncDashboardSettingsFromStorage(): Promise<void> {
         if (me) {
           const currentNickname = me.nickname || null;
           if (currentNickname !== nicknameInput.botNickname) {
-            await me.setNickname(nicknameInput.botNickname).catch(() => undefined);
+            await me.setNickname(nicknameInput.botNickname).catch((error: any) => {
+              console.log(`[dashboard-sync] nickname update failed in guild ${guild.id}:`, error?.message || error);
+              return undefined;
+            });
           }
         }
       }
 
-      if (!selectedPresence) {
-        const presenceInput = getDashboardBotPresenceFromGuildConfig(config);
-        if (presenceInput.hasPresence) {
+      const presenceInput = getDashboardBotPresenceFromGuildConfig(config);
+      if (presenceInput.hasPresence) {
+        if (!selectedPresence || presenceInput.updatedAt >= selectedPresence.updatedAt) {
           selectedPresence = presenceInput;
         }
       }
@@ -862,6 +869,7 @@ async function syncDashboardSettingsFromStorage(): Promise<void> {
       }
 
       lastAppliedPresenceSignature = presenceSignature;
+      console.log(`[dashboard-sync] applied presence: ${selectedPresence.status} | ${selectedPresence.activityType} | ${activityText || "(none)"}`);
     }
   } finally {
     dashboardSettingsSyncInFlight = false;

@@ -616,6 +616,7 @@ export default function Dashboard() {
       status: botPresenceSettings.status,
       activityType: botPresenceSettings.activityType,
       activityText: botPresenceSettings.activityText,
+      updatedAt: Date.now(),
     };
 
     const parsedCategoryPings = JSON.stringify(categoryPingsObject, null, 2);
