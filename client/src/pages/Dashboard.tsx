@@ -801,7 +801,6 @@ export default function Dashboard() {
             <div className="space-y-5">
               {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "module-payout-approval-role")}
               {renderRoleSection("Ban/Unban + Kick Approval Roles", "modRoleIds", "module-moderation-approval-role")}
-              {renderRoleSection("Manager Roles", "modRoleIds", "module-manager-role")}
               {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "module-modmail-staff-role")}
               {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "module-modmail-block-role")}
               {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "module-modmail-claim-role")}
@@ -1378,6 +1377,16 @@ export default function Dashboard() {
                       Copy Server ID
                     </Button>
                   </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-border/80 bg-card/90" data-testid="card-website-access">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Website Access</CardTitle>
+                  <CardDescription>These manager roles can access and edit this server in the dashboard website.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {renderRoleSection("Manager Roles", "modRoleIds", "settings-manager-role")}
                 </CardContent>
               </Card>
 
