@@ -335,6 +335,12 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
       if (cachedAllowed === true) {
         return { user, guildId };
       }
+
+      const knownGuild = getCachedGuildSummaryById(guildId);
+      if (knownGuild) {
+        return { user, guildId };
+      }
+
       res.status(503).json({ error: "Discord is temporarily rate-limited. Please retry in a few seconds." });
       return null;
     }
