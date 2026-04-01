@@ -6,3 +6,6 @@ compatibility_flags = ["nodejs_compat"]
 [assets]
 directory = "./dist/public"
 binding = "ASSETS"
+
+[vars]
+BACKEND_ORIGIN = "https://expertworker.onrender.com"
