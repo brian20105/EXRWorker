@@ -27,9 +27,20 @@ type DiscordRestGuildMember = {
   permissions?: string;
 };
 
+type DashboardGuildSummary = {
+  id: string;
+  name: string;
+  icon: string | null;
+  memberCount: number;
+};
+
 const AUTH_COOKIE_NAME = "dashboard_auth";
 const OAUTH_STATE_COOKIE = "dashboard_oauth_state";
 const LEAVE_SERVER_OWNER_ID = "948598563359817728";
+const GUILDS_CACHE_TTL_MS = 60 * 1000;
+
+let cachedGuildSummaries: DashboardGuildSummary[] = [];
+let cachedGuildSummariesAt = 0;
 
 function getAuthSecret(): string {
   return (process.env.DASHBOARD_AUTH_SECRET || process.env.DISCORD_CLIENT_SECRET || "change-me").trim();
@@ -157,10 +168,23 @@ async function discordApiRequest(path: string, init?: RequestInit) {
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Discord API ${path} failed (${response.status}): ${text || "unknown_error"}`);
+    const error = new Error(`Discord API ${path} failed (${response.status}): ${text || "unknown_error"}`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
   }
 
   return response;
+}
+
+function getCachedGuildSummaries(): DashboardGuildSummary[] | null {
+  if (!cachedGuildSummaries.length) return null;
+  if ((Date.now() - cachedGuildSummariesAt) > GUILDS_CACHE_TTL_MS) return null;
+  return cachedGuildSummaries;
+}
+
+function setCachedGuildSummaries(value: DashboardGuildSummary[]) {
+  cachedGuildSummaries = value;
+  cachedGuildSummariesAt = Date.now();
 }
 
 function hasAdministratorPermission(permissionValue: string | undefined): boolean {
@@ -487,7 +511,13 @@ export async function registerRoutes(
           icon: g.iconURL(),
           memberCount: g.memberCount,
         }));
+        setCachedGuildSummaries(guilds);
         return res.json(guilds);
+      }
+
+      const freshCache = getCachedGuildSummaries();
+      if (freshCache) {
+        return res.json(freshCache);
       }
 
       const guildsResponse = await discordApiRequest("/users/@me/guilds");
@@ -499,8 +529,14 @@ export async function registerRoutes(
         memberCount: Number(guild.approximate_member_count || 0),
       }));
 
+      setCachedGuildSummaries(normalized);
+
       res.json(normalized);
     } catch (e: any) {
+      const fallbackCache = cachedGuildSummaries.length ? cachedGuildSummaries : null;
+      if (fallbackCache && (e?.status === 429 || String(e?.message || "").includes("1015"))) {
+        return res.json(fallbackCache);
+      }
       res.status(500).json({ error: e.message });
     }
   });
