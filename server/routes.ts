@@ -100,12 +100,12 @@ function getRequestOrigin(req: Request): string {
 
 function getDiscordRedirectUri(req?: Request): string {
   if (req) {
-    const configured = (process.env.DISCORD_REDIRECT_URI || "").trim();
+    const configured = (process.env.DISCORD_REDIRECT_URI || "").replace(/\s+/g, "").trim();
     if (configured) return configured;
     return `${getRequestOrigin(req)}/api/auth/discord/callback`;
   }
 
-  const configured = (process.env.DISCORD_REDIRECT_URI || "").trim();
+  const configured = (process.env.DISCORD_REDIRECT_URI || "").replace(/\s+/g, "").trim();
   if (configured) return configured;
 
   const base = getDashboardUrl().replace(/\/dashboard\/?$/i, "");
