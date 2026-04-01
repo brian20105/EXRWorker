@@ -6,6 +6,8 @@
   "scripts": {
     "dev:client": "vite dev --host --port 5173",
     "dev": "tsx server/start.ts",
+    "bot": "tsx server/run-bot.ts",
+    "bot:dev": "tsx --watch server/run-bot.ts",
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
