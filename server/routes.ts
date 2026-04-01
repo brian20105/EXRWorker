@@ -100,21 +100,9 @@ function getRequestOrigin(req: Request): string {
 
 function getDiscordRedirectUri(req?: Request): string {
   if (req) {
-    const requestBased = `${getRequestOrigin(req)}/api/auth/discord/callback`;
     const configured = (process.env.DISCORD_REDIRECT_URI || "").trim();
-    if (!configured) return requestBased;
-
-    try {
-      const configuredUrl = new URL(configured);
-      const requestUrl = new URL(requestBased);
-      if (configuredUrl.hostname !== requestUrl.hostname) {
-        return requestBased;
-      }
-    } catch {
-      return requestBased;
-    }
-
-    return configured;
+    if (configured) return configured;
+    return `${getRequestOrigin(req)}/api/auth/discord/callback`;
   }
 
   const configured = (process.env.DISCORD_REDIRECT_URI || "").trim();
