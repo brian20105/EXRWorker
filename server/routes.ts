@@ -2,9 +2,10 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { client } from "./bot";
-import { insertGuildConfigSchema } from "@shared/schema";
+import { guildConfigs, insertGuildConfigSchema } from "@shared/schema";
 import crypto from "crypto";
 import { ActivityType, PermissionFlagsBits } from "discord.js";
+import { db } from "./sql";
 
 type DashboardSessionUser = {
   id: string;
@@ -185,6 +186,41 @@ function getCachedGuildSummaries(): DashboardGuildSummary[] | null {
 function setCachedGuildSummaries(value: DashboardGuildSummary[]) {
   cachedGuildSummaries = value;
   cachedGuildSummariesAt = Date.now();
+}
+
+async function getGuildSummariesFromStoredConfigs(): Promise<DashboardGuildSummary[]> {
+  try {
+    const configRows = await db.select({ guildId: guildConfigs.guildId }).from(guildConfigs);
+    const uniqueGuildIds = Array.from(new Set(configRows.map((row) => String(row.guildId || "").trim()).filter(Boolean)));
+    if (uniqueGuildIds.length === 0) {
+      return [];
+    }
+
+    const summaries: DashboardGuildSummary[] = [];
+    for (const guildId of uniqueGuildIds) {
+      try {
+        const guildResponse = await discordApiRequest(`/guilds/${guildId}?with_counts=true`);
+        const guild = await guildResponse.json().catch(() => ({} as any));
+        summaries.push({
+          id: guildId,
+          name: String((guild as any)?.name || `Server ${guildId}`),
+          icon: toGuildIconUrl(guildId, (guild as any)?.icon ?? null),
+          memberCount: Number((guild as any)?.approximate_member_count ?? (guild as any)?.member_count ?? 0),
+        });
+      } catch {
+        summaries.push({
+          id: guildId,
+          name: `Server ${guildId}`,
+          icon: null,
+          memberCount: 0,
+        });
+      }
+    }
+
+    return summaries;
+  } catch {
+    return [];
+  }
 }
 
 function hasAdministratorPermission(permissionValue: string | undefined): boolean {
@@ -537,6 +573,15 @@ export async function registerRoutes(
       if (fallbackCache && (e?.status === 429 || String(e?.message || "").includes("1015"))) {
         return res.json(fallbackCache);
       }
+
+      if (e?.status === 429 || String(e?.message || "").includes("1015")) {
+        const storedFallback = await getGuildSummariesFromStoredConfigs();
+        if (storedFallback.length > 0) {
+          setCachedGuildSummaries(storedFallback);
+          return res.json(storedFallback);
+        }
+      }
+
       res.status(500).json({ error: e.message });
     }
   });
