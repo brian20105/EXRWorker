@@ -791,14 +791,28 @@ const DASHBOARD_ACTIVITY_TYPE_MAP: Record<string, ActivityType> = {
   competing: ActivityType.Competing,
 };
 
+const DASHBOARD_SETTINGS_SYNC_INTERVAL_MS = 5000;
+const DASHBOARD_SETTINGS_SYNC_STALE_MS = 15000;
+
 let dashboardSettingsSyncInFlight = false;
+let dashboardSettingsSyncStartedAt = 0;
+let lastAppliedPresenceSignature: string | null = null;
 
 async function syncDashboardSettingsFromStorage(): Promise<void> {
-  if (!client.isReady() || !client.user || dashboardSettingsSyncInFlight) {
+  if (!client.isReady() || !client.user) {
     return;
   }
 
+  const now = Date.now();
+  if (dashboardSettingsSyncInFlight) {
+    if ((now - dashboardSettingsSyncStartedAt) < DASHBOARD_SETTINGS_SYNC_STALE_MS) {
+      return;
+    }
+    dashboardSettingsSyncInFlight = false;
+  }
+
   dashboardSettingsSyncInFlight = true;
+  dashboardSettingsSyncStartedAt = now;
   try {
     let selectedPresence: ReturnType<typeof getDashboardBotPresenceFromGuildConfig> | null = null;
 
@@ -827,6 +841,11 @@ async function syncDashboardSettingsFromStorage(): Promise<void> {
 
     if (selectedPresence) {
       const activityText = selectedPresence.activityText.trim();
+      const presenceSignature = `${selectedPresence.status}|${selectedPresence.activityType}|${activityText}`;
+      if (lastAppliedPresenceSignature === presenceSignature) {
+        return;
+      }
+
       if (!activityText) {
         client.user.setPresence({
           status: selectedPresence.status,
@@ -841,6 +860,8 @@ async function syncDashboardSettingsFromStorage(): Promise<void> {
           }],
         });
       }
+
+      lastAppliedPresenceSignature = presenceSignature;
     }
   } finally {
     dashboardSettingsSyncInFlight = false;
@@ -4894,7 +4915,7 @@ client.once("clientReady", async () => {
   syncDashboardSettingsFromStorage().catch(() => undefined);
   setInterval(() => {
     syncDashboardSettingsFromStorage().catch(() => undefined);
-  }, 30000);
+  }, DASHBOARD_SETTINGS_SYNC_INTERVAL_MS);
 });
 
 const processedInteractions = new Set<string>();
