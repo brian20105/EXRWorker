@@ -487,6 +487,14 @@ export default function Dashboard() {
     persistDashboardColors(defaultBackground, defaultButtons);
   };
 
+  const applyBackgroundPresetColor = (hexColor: string) => {
+    const nextColor = normalizeHexColor(hexColor, backgroundColor);
+    setBackgroundColor(nextColor);
+    setButtonColor(nextColor);
+    applyDashboardColorOverrides(nextColor, nextColor);
+    persistDashboardColors(nextColor, nextColor);
+  };
+
   const renderBackgroundPresetControls = (idSuffix: string) => {
     const statusSuffix = idSuffix ? `-${idSuffix}` : "";
 
@@ -499,7 +507,7 @@ export default function Dashboard() {
           <button
             key={`${statusSuffix}-${preset}`}
             type="button"
-            onClick={() => updateBackgroundColor(preset)}
+            onClick={() => applyBackgroundPresetColor(preset)}
             className="h-6 w-6 rounded border border-border"
             style={{ backgroundColor: preset }}
             title={preset}
