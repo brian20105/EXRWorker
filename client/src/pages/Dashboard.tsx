@@ -885,8 +885,11 @@ export default function Dashboard() {
 
   const resetDashboardColorsToDefault = () => {
     const defaultBackground = DEFAULT_TOP_FADE_COLOR;
+    const defaultButton = "#5865f2";
     setBackgroundColor(defaultBackground);
-    persistDashboardColors(defaultBackground, buttonColor);
+    setButtonColor(defaultButton);
+    applyDashboardColorOverrides(defaultBackground, defaultButton);
+    persistDashboardColors(defaultBackground, defaultButton);
   };
 
   const applyBackgroundPresetColor = (hexColor: string) => {
