@@ -1560,10 +1560,23 @@ export async function registerRoutes(
         return res.status(403).json({ error: "You need dashboard access to both servers to manage role sync." });
       }
 
-      const sourceGuild = client.guilds.cache.get(sourceGuildId);
-      const targetGuild = client.guilds.cache.get(targetGuildId);
+      let sourceGuild = client.guilds.cache.get(sourceGuildId);
+      let targetGuild = client.guilds.cache.get(targetGuildId);
+      if (!sourceGuild) {
+        try { sourceGuild = await client.guilds.fetch(sourceGuildId) as any; } catch { /* not in guild */ }
+      }
+      if (!targetGuild) {
+        try { targetGuild = await client.guilds.fetch(targetGuildId) as any; } catch { /* not in guild */ }
+      }
       if (!sourceGuild || !targetGuild) {
         return res.status(400).json({ error: "The bot must be in both servers for role sync." });
+      }
+      // Ensure role caches are populated before checking
+      if (!sourceGuild.roles.cache.size) {
+        try { await sourceGuild.roles.fetch(); } catch { /* ignore */ }
+      }
+      if (!targetGuild.roles.cache.size) {
+        try { await targetGuild.roles.fetch(); } catch { /* ignore */ }
       }
       if (!sourceGuild.roles.cache.has(sourceRoleId) || !targetGuild.roles.cache.has(targetRoleId)) {
         return res.status(400).json({ error: "One of the selected roles was not found in its server." });
