@@ -160,6 +160,9 @@ const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
+const DEFAULT_ENABLED_STATUS_COLOR = "#00ff7b";
+const DEFAULT_DISABLED_STATUS_COLOR = "#ff0000";
+const STATUS_COLOR_PRESETS = ["#ff0000", "#00ff7b", "#0000ff"];
 
 function normalizeHexColor(input: string | null | undefined, fallback: string): string {
   const normalized = String(input || "").trim().toLowerCase();
@@ -186,6 +189,15 @@ function applyDashboardColorOverrides(backgroundHex: string, buttonHex: string) 
   rootStyle.setProperty("--color-discord-blurple-hover", buttonHover);
   rootStyle.setProperty("--color-primary", button);
   rootStyle.setProperty("--color-ring", button);
+}
+
+function getReadableTextColor(backgroundHex: string): string {
+  const normalized = normalizeHexColor(backgroundHex, "#000000").slice(1);
+  const red = parseInt(normalized.slice(0, 2), 16);
+  const green = parseInt(normalized.slice(2, 4), 16);
+  const blue = parseInt(normalized.slice(4, 6), 16);
+  const luminance = (0.299 * red) + (0.587 * green) + (0.114 * blue);
+  return luminance > 150 ? "#0f172a" : "#ffffff";
 }
 
 export default function Dashboard() {
@@ -235,6 +247,8 @@ export default function Dashboard() {
   const [themeMounted, setThemeMounted] = useState(false);
   const [backgroundColor, setBackgroundColor] = useState("#313338");
   const [buttonColor, setButtonColor] = useState("#5865f2");
+  const [enabledStatusColor, setEnabledStatusColor] = useState(DEFAULT_ENABLED_STATUS_COLOR);
+  const [disabledStatusColor, setDisabledStatusColor] = useState(DEFAULT_DISABLED_STATUS_COLOR);
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [roleSearches, setRoleSearches] = useState<Record<string, string>>({});
   const [channelSearches, setChannelSearches] = useState<Record<string, string>>({});
@@ -292,15 +306,21 @@ export default function Dashboard() {
     }
 
     try {
-      const parsed = JSON.parse(stored) as { background?: string; button?: string };
+      const parsed = JSON.parse(stored) as { background?: string; button?: string; enabledStatus?: string; disabledStatus?: string };
       const nextBackground = normalizeHexColor(parsed?.background, currentBackground);
       const nextButton = normalizeHexColor(parsed?.button, currentButton);
+      const nextEnabledStatus = normalizeHexColor(parsed?.enabledStatus, DEFAULT_ENABLED_STATUS_COLOR);
+      const nextDisabledStatus = normalizeHexColor(parsed?.disabledStatus, DEFAULT_DISABLED_STATUS_COLOR);
       setBackgroundColor(nextBackground);
       setButtonColor(nextButton);
+      setEnabledStatusColor(nextEnabledStatus);
+      setDisabledStatusColor(nextDisabledStatus);
       applyDashboardColorOverrides(nextBackground, nextButton);
     } catch {
       setBackgroundColor(currentBackground);
       setButtonColor(currentButton);
+      setEnabledStatusColor(DEFAULT_ENABLED_STATUS_COLOR);
+      setDisabledStatusColor(DEFAULT_DISABLED_STATUS_COLOR);
     }
   }, []);
 
@@ -429,8 +449,18 @@ export default function Dashboard() {
     setTheme(isDark ? "light" : "dark");
   };
 
-  const persistDashboardColors = (nextBackground: string, nextButton: string) => {
-    const payload = { background: nextBackground, button: nextButton };
+  const persistDashboardColors = (
+    nextBackground: string,
+    nextButton: string,
+    nextEnabledStatus: string,
+    nextDisabledStatus: string,
+  ) => {
+    const payload = {
+      background: nextBackground,
+      button: nextButton,
+      enabledStatus: nextEnabledStatus,
+      disabledStatus: nextDisabledStatus,
+    };
     window.localStorage.setItem(DASHBOARD_COLOR_STORAGE_KEY, JSON.stringify(payload));
   };
 
@@ -438,14 +468,78 @@ export default function Dashboard() {
     const nextBackground = normalizeHexColor(nextValue, backgroundColor);
     setBackgroundColor(nextBackground);
     applyDashboardColorOverrides(nextBackground, buttonColor);
-    persistDashboardColors(nextBackground, buttonColor);
+    persistDashboardColors(nextBackground, buttonColor, enabledStatusColor, disabledStatusColor);
   };
 
   const updateButtonColor = (nextValue: string) => {
     const nextButton = normalizeHexColor(nextValue, buttonColor);
     setButtonColor(nextButton);
     applyDashboardColorOverrides(backgroundColor, nextButton);
-    persistDashboardColors(backgroundColor, nextButton);
+    persistDashboardColors(backgroundColor, nextButton, enabledStatusColor, disabledStatusColor);
+  };
+
+  const updateEnabledStatusColor = (nextValue: string) => {
+    const nextEnabledStatus = normalizeHexColor(nextValue, enabledStatusColor);
+    setEnabledStatusColor(nextEnabledStatus);
+    persistDashboardColors(backgroundColor, buttonColor, nextEnabledStatus, disabledStatusColor);
+  };
+
+  const updateDisabledStatusColor = (nextValue: string) => {
+    const nextDisabledStatus = normalizeHexColor(nextValue, disabledStatusColor);
+    setDisabledStatusColor(nextDisabledStatus);
+    persistDashboardColors(backgroundColor, buttonColor, enabledStatusColor, nextDisabledStatus);
+  };
+
+  const resetStatusColorsToDefault = () => {
+    setEnabledStatusColor(DEFAULT_ENABLED_STATUS_COLOR);
+    setDisabledStatusColor(DEFAULT_DISABLED_STATUS_COLOR);
+    persistDashboardColors(backgroundColor, buttonColor, DEFAULT_ENABLED_STATUS_COLOR, DEFAULT_DISABLED_STATUS_COLOR);
+  };
+
+  const applyStatusPresetColor = (hexColor: string) => {
+    updateEnabledStatusColor(hexColor);
+    updateDisabledStatusColor(hexColor);
+  };
+
+  const renderStatusColorControls = (idSuffix: string) => {
+    const statusSuffix = idSuffix ? `-${idSuffix}` : "";
+
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1" data-testid={`button-status-color-controls${statusSuffix}`}>
+        <Label htmlFor={`enabled-status-color${statusSuffix}`} className="text-xs text-muted-foreground">Enabled</Label>
+        <input
+          id={`enabled-status-color${statusSuffix}`}
+          type="color"
+          value={enabledStatusColor}
+          onChange={(event) => updateEnabledStatusColor(event.target.value)}
+          className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent p-0"
+          data-testid={`input-enabled-status-color${statusSuffix}`}
+        />
+        <Label htmlFor={`disabled-status-color${statusSuffix}`} className="text-xs text-muted-foreground">Disabled</Label>
+        <input
+          id={`disabled-status-color${statusSuffix}`}
+          type="color"
+          value={disabledStatusColor}
+          onChange={(event) => updateDisabledStatusColor(event.target.value)}
+          className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent p-0"
+          data-testid={`input-disabled-status-color${statusSuffix}`}
+        />
+        <Button type="button" variant="outline" size="sm" onClick={resetStatusColorsToDefault} data-testid={`button-status-colors-default${statusSuffix}`}>
+          Default
+        </Button>
+        {STATUS_COLOR_PRESETS.map((preset) => (
+          <button
+            key={`${statusSuffix}-${preset}`}
+            type="button"
+            onClick={() => applyStatusPresetColor(preset)}
+            className="h-6 w-6 rounded border border-border"
+            style={{ backgroundColor: preset }}
+            title={preset}
+            data-testid={`button-status-preset-${preset.replace("#", "")}${statusSuffix}`}
+          />
+        ))}
+      </div>
+    );
   };
 
   const beginDiscordLogin = () => {
@@ -1386,6 +1480,7 @@ export default function Dashboard() {
                       data-testid="input-button-color"
                     />
                   </div>
+                  {renderStatusColorControls("list")}
                   {currentUser ? (
                     <Button variant="outline" size="sm" onClick={logout} data-testid="button-logout">
                       Sign Out
@@ -1533,6 +1628,7 @@ export default function Dashboard() {
                 data-testid="input-button-color-selected"
               />
             </div>
+            {renderStatusColorControls("selected")}
             <Button onClick={saveConfig} disabled={saving} data-testid="button-save">
               <Save className="mr-2 h-4 w-4" />
               {saving ? "Saving..." : "Save Changes"}
@@ -1750,7 +1846,14 @@ export default function Dashboard() {
                             data-testid={`switch-module-${module.id}`}
                           />
                         </div>
-                        <Badge variant={module.enabled ? "default" : "secondary"}>
+                        <Badge
+                          variant="outline"
+                          style={{
+                            backgroundColor: module.enabled ? enabledStatusColor : disabledStatusColor,
+                            borderColor: module.enabled ? enabledStatusColor : disabledStatusColor,
+                            color: getReadableTextColor(module.enabled ? enabledStatusColor : disabledStatusColor),
+                          }}
+                        >
                           {module.enabled ? "Enabled" : "Disabled"}
                         </Badge>
                         <Button
