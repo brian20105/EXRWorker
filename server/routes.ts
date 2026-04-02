@@ -203,6 +203,19 @@ function getCurrentUser(req: Request): DashboardSessionUser | null {
   return verifySession(token);
 }
 
+function requireOwnerAccess(req: Request, res: Response): DashboardSessionUser | null {
+  const user = getCurrentUser(req);
+  if (!user) {
+    res.status(401).json({ error: "Unauthorized" });
+    return null;
+  }
+  if (!PRIVILEGED_DASHBOARD_USER_IDS.has(user.id)) {
+    res.status(403).json({ error: "Access denied. Owner dashboard only." });
+    return null;
+  }
+  return user;
+}
+
 function getBotToken(): string {
   return (process.env.DISCORD_BOT_TOKEN || "").trim();
 }
@@ -1185,6 +1198,83 @@ export async function registerRoutes(
       botTag: client.user?.tag || null,
       dashboardUrl: getDashboardUrl(),
     });
+  });
+
+  app.get("/api/owner/bot-control/status", async (req, res) => {
+    if (!requireOwnerAccess(req, res)) return;
+
+    const status = client.isReady() ? "online" : "offline";
+    const guildCount = client.isReady() ? client.guilds.cache.size : 0;
+    res.json({ success: true, status, guildCount, botTag: client.user?.tag || null });
+  });
+
+  app.post("/api/owner/bot-control/turn-on", async (req, res) => {
+    if (!requireOwnerAccess(req, res)) return;
+
+    try {
+      if (client.isReady()) {
+        return res.json({ success: true, status: "online", message: "Bot is already online." });
+      }
+
+      const token = getBotToken();
+      if (!token) {
+        return res.status(500).json({ error: "DISCORD_BOT_TOKEN is not configured." });
+      }
+
+      await client.login(token);
+      return res.json({ success: true, status: client.isReady() ? "online" : "offline" });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to turn bot on." });
+    }
+  });
+
+  app.post("/api/owner/bot-control/turn-off", async (req, res) => {
+    if (!requireOwnerAccess(req, res)) return;
+
+    try {
+      await client.destroy();
+      return res.json({ success: true, status: "offline" });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to turn bot off." });
+    }
+  });
+
+  app.post("/api/owner/bot-control/leave-all", async (req, res) => {
+    if (!requireOwnerAccess(req, res)) return;
+
+    try {
+      const left: string[] = [];
+      const failed: Array<{ guildId: string; reason: string }> = [];
+
+      if (client.isReady()) {
+        const guilds = Array.from(client.guilds.cache.values());
+        for (const guild of guilds) {
+          try {
+            await guild.leave();
+            left.push(guild.id);
+          } catch (error: any) {
+            failed.push({ guildId: guild.id, reason: error?.message || "leave_failed" });
+          }
+        }
+      } else {
+        const listResponse = await discordApiRequest("/users/@me/guilds");
+        const guilds = (await listResponse.json().catch(() => [])) as Array<{ id: string }>;
+        for (const guild of guilds) {
+          const guildId = String(guild?.id || "").trim();
+          if (!guildId) continue;
+          try {
+            await discordApiRequest(`/users/@me/guilds/${guildId}`, { method: "DELETE" });
+            left.push(guildId);
+          } catch (error: any) {
+            failed.push({ guildId, reason: error?.message || "leave_failed" });
+          }
+        }
+      }
+
+      return res.json({ success: true, leftCount: left.length, failedCount: failed.length, failed });
+    } catch (e: any) {
+      return res.status(500).json({ error: e?.message || "Failed to leave all servers." });
+    }
   });
 
   app.get("/api/guilds", async (req, res) => {

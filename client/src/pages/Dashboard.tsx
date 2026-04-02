@@ -361,6 +361,13 @@ export default function Dashboard() {
   const [backgroundColor, setBackgroundColor] = useState(DEFAULT_TOP_FADE_COLOR);
   const [buttonColor, setButtonColor] = useState("#5865f2");
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const isOwnerUser = !!currentUser?.id && PRIVILEGED_DASHBOARD_USER_IDS.has(currentUser.id);
+  const [showOwnerDashboard, setShowOwnerDashboard] = useState(false);
+  const [ownerBotStatus, setOwnerBotStatus] = useState<"online" | "offline" | "checking">("checking");
+  const [ownerGuildCount, setOwnerGuildCount] = useState<number>(0);
+  const [ownerTurningOn, setOwnerTurningOn] = useState(false);
+  const [ownerTurningOff, setOwnerTurningOff] = useState(false);
+  const [ownerLeavingAll, setOwnerLeavingAll] = useState(false);
   const [roleSearches, setRoleSearches] = useState<Record<string, string>>({});
   const [channelSearches, setChannelSearches] = useState<Record<string, string>>({});
   const [moduleSearch, setModuleSearch] = useState("");
@@ -551,6 +558,11 @@ export default function Dashboard() {
       .catch(() => setCurrentUser(null))
       .finally(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!showOwnerDashboard || !isOwnerUser) return;
+    refreshOwnerBotStatus().catch(() => undefined);
+  }, [showOwnerDashboard, isOwnerUser]);
 
   useEffect(() => {
     setLoading(true);
@@ -1130,6 +1142,78 @@ export default function Dashboard() {
       toast({ title: "Leave failed", description: "Network error while leaving server.", variant: "destructive" });
     }
     setLeavingGuildId(null);
+  };
+
+  const refreshOwnerBotStatus = async () => {
+    if (!isOwnerUser) return;
+    try {
+      const data = await fetchJsonWithTimeout("/api/owner/bot-control/status", undefined, 12000);
+      setOwnerBotStatus(data?.status === "online" ? "online" : "offline");
+      setOwnerGuildCount(Number(data?.guildCount || 0));
+    } catch (error: any) {
+      setOwnerBotStatus("offline");
+      toast({ title: "Error", description: error?.message || "Failed to fetch owner bot status.", variant: "destructive" });
+    }
+  };
+
+  const turnBotOn = async () => {
+    if (!isOwnerUser) {
+      toast({ title: "Access denied", description: "Owner dashboard only.", variant: "destructive" });
+      return;
+    }
+    setOwnerTurningOn(true);
+    try {
+      await fetchJsonWithTimeout("/api/owner/bot-control/turn-on", { method: "POST" }, 20000);
+      await refreshOwnerBotStatus();
+      toast({ title: "Bot online", description: "Bot has been turned on." });
+    } catch (error: any) {
+      toast({ title: "Error", description: error?.message || "Failed to turn bot on.", variant: "destructive" });
+    }
+    setOwnerTurningOn(false);
+  };
+
+  const turnBotOff = async () => {
+    if (!isOwnerUser) {
+      toast({ title: "Access denied", description: "Owner dashboard only.", variant: "destructive" });
+      return;
+    }
+    setOwnerTurningOff(true);
+    try {
+      await fetchJsonWithTimeout("/api/owner/bot-control/turn-off", { method: "POST" }, 20000);
+      await refreshOwnerBotStatus();
+      toast({ title: "Bot offline", description: "Bot has been turned off." });
+    } catch (error: any) {
+      toast({ title: "Error", description: error?.message || "Failed to turn bot off.", variant: "destructive" });
+    }
+    setOwnerTurningOff(false);
+  };
+
+  const leaveAllServers = async () => {
+    if (!isOwnerUser) {
+      toast({ title: "Access denied", description: "Owner dashboard only.", variant: "destructive" });
+      return;
+    }
+
+    const confirmed = window.confirm("LEAVE ALL SERVERS? This will make the bot leave every server immediately.");
+    if (!confirmed) return;
+
+    setOwnerLeavingAll(true);
+    try {
+      const data = await fetchJsonWithTimeout("/api/owner/bot-control/leave-all", { method: "POST" }, 60000);
+      const leftCount = Number(data?.leftCount || 0);
+      const failedCount = Number(data?.failedCount || 0);
+      toast({
+        title: "Leave all completed",
+        description: failedCount > 0
+          ? `Left ${leftCount} server(s), failed ${failedCount}.`
+          : `Left ${leftCount} server(s).`,
+      });
+      setGuilds([]);
+      await refreshOwnerBotStatus();
+    } catch (error: any) {
+      toast({ title: "Error", description: error?.message || "Failed to leave all servers.", variant: "destructive" });
+    }
+    setOwnerLeavingAll(false);
   };
 
   const updateConfig = <K extends keyof GuildConfig>(key: K, value: GuildConfig[K]) => {
@@ -2079,11 +2163,72 @@ export default function Dashboard() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-4xl font-semibold tracking-tight">Servers</CardTitle>
-              <CardDescription>Servers you're in ({guilds.length} servers)</CardDescription>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-4xl font-semibold tracking-tight">Servers</CardTitle>
+                  <CardDescription>Servers you're in ({guilds.length} servers)</CardDescription>
+                </div>
+                {isOwnerUser && (
+                  <Button
+                    variant={showOwnerDashboard ? "secondary" : "outline"}
+                    onClick={() => {
+                      if (!isOwnerUser) {
+                        toast({ title: "Access denied", description: "Owner dashboard only.", variant: "destructive" });
+                        return;
+                      }
+                      setShowOwnerDashboard((previous) => !previous);
+                    }}
+                    data-testid="button-owners-dashboard"
+                  >
+                    Owner's Dashboard
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
-              {loading ? (
+              {showOwnerDashboard ? (
+                isOwnerUser ? (
+                  <div className="space-y-4">
+                    <div className="rounded-lg border border-border/70 bg-card/70 p-4">
+                      <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Owner Controls</p>
+                      <p className="mt-1 text-sm text-muted-foreground">Only authorized owner IDs can access this panel.</p>
+                      <p className="mt-2 text-sm">
+                        Bot status: <span className={ownerBotStatus === "online" ? "text-green-500 font-medium" : ownerBotStatus === "offline" ? "text-destructive font-medium" : "text-muted-foreground font-medium"}>{ownerBotStatus}</span>
+                        {` • ${ownerGuildCount} server(s)`}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-3">
+                      <Button
+                        onClick={turnBotOn}
+                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll}
+                        className="bg-green-600 text-white hover:bg-green-700"
+                        data-testid="button-owner-turn-bot-on"
+                      >
+                        {ownerTurningOn ? "Turning On..." : "Turn Bot On"}
+                      </Button>
+                      <Button
+                        onClick={turnBotOff}
+                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll}
+                        className="bg-red-600 text-white hover:bg-red-700"
+                        data-testid="button-owner-turn-bot-off"
+                      >
+                        {ownerTurningOff ? "Turning Off..." : "Turn Bot Off"}
+                      </Button>
+                      <Button
+                        onClick={leaveAllServers}
+                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll}
+                        className="bg-red-800 text-white hover:bg-red-900"
+                        data-testid="button-owner-leave-all-servers"
+                      >
+                        {ownerLeavingAll ? "Leaving All..." : "LEAVE ALL SERVERS"}
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="py-4 text-center text-destructive">Access denied.</p>
+                )
+              ) : loading ? (
                 <p className="py-4 text-center text-muted-foreground">Loading servers...</p>
               ) : guilds.length === 0 ? (
                 <p className="py-4 text-center text-muted-foreground">No servers found. Invite the bot first.</p>
@@ -2123,7 +2268,7 @@ export default function Dashboard() {
                           <p className="text-xs text-muted-foreground">{guild.memberCount} members</p>
                         </div>
                       </button>
-                      {currentUser?.id && PRIVILEGED_DASHBOARD_USER_IDS.has(currentUser.id) && (
+                      {isOwnerUser && (
                         <Button
                           variant="destructive"
                           size="sm"
