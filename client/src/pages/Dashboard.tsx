@@ -361,6 +361,7 @@ export default function Dashboard() {
   const [postingRosterId, setPostingRosterId] = useState<string | null>(null);
   const [postingRosterEmbedId, setPostingRosterEmbedId] = useState<string | null>(null);
   const [rosterChannelSearch, setRosterChannelSearch] = useState("");
+  const [rosterEmbedChannelSearch, setRosterEmbedChannelSearch] = useState("");
   const [rosterEmbeds, setRosterEmbeds] = useState<SavedRosterEmbedConfig[]>([]);
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
@@ -735,6 +736,7 @@ export default function Dashboard() {
       messageId: null,
       buttons: [],
     });
+    setRosterEmbedChannelSearch("");
     setRosterEmbedModalOpen(true);
   };
 
@@ -755,6 +757,7 @@ export default function Dashboard() {
         emoji: button.emoji || "",
       })),
     });
+    setRosterEmbedChannelSearch("");
     setRosterEmbedModalOpen(true);
   };
 
@@ -2598,19 +2601,37 @@ export default function Dashboard() {
                   </div>
                   <div className="space-y-2 md:col-span-2">
                     <Label>Embed Channel *</Label>
-                    <Select
-                      value={rosterEmbedConfig.channelId || ""}
-                      onValueChange={(value) => setRosterEmbedConfig((prev) => ({ ...prev, channelId: value }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a channel" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {textChannels.map((channel) => (
-                          <SelectItem key={channel.id} value={channel.id}>#{channel.name}</SelectItem>
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={rosterEmbedChannelSearch}
+                        onChange={(event) => setRosterEmbedChannelSearch(event.target.value)}
+                        placeholder="Search embed channel…"
+                        className="h-8 pl-8 text-sm"
+                      />
+                    </div>
+                    <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
+                      {textChannels
+                        .filter((channel) => !rosterEmbedChannelSearch || channel.name.toLowerCase().includes(rosterEmbedChannelSearch.toLowerCase()))
+                        .map((channel) => (
+                          <button
+                            key={channel.id}
+                            type="button"
+                            className={`w-full rounded px-2 py-1 text-left text-sm transition-colors hover:bg-accent ${rosterEmbedConfig.channelId === channel.id ? "bg-accent font-medium" : ""}`}
+                            onClick={() => setRosterEmbedConfig((prev) => ({ ...prev, channelId: channel.id }))}
+                          >
+                            #{channel.name}
+                          </button>
                         ))}
-                      </SelectContent>
-                    </Select>
+                      {textChannels.filter((channel) => !rosterEmbedChannelSearch || channel.name.toLowerCase().includes(rosterEmbedChannelSearch.toLowerCase())).length === 0 && (
+                        <p className="px-2 py-1 text-sm text-muted-foreground">No channels match.</p>
+                      )}
+                    </div>
+                    {rosterEmbedConfig.channelId && (
+                      <p className="text-xs text-muted-foreground">
+                        Selected: #{textChannels.find((channel) => channel.id === rosterEmbedConfig.channelId)?.name || rosterEmbedConfig.channelId}
+                      </p>
+                    )}
                   </div>
                 </div>
 
