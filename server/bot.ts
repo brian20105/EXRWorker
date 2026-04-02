@@ -5836,9 +5836,7 @@ client.on("interactionCreate", async (interaction) => {
             }
           );
 
-              .setEmoji("📝")
-          selectMenu
-        );
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
 
         if (panelChannel && "messages" in panelChannel && "send" in panelChannel) {
           try {
