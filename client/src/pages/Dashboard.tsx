@@ -11,7 +11,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette } from "lucide-react";
+import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useTheme } from "next-themes";
 import { useLocation, useRoute } from "wouter";
 
@@ -83,7 +84,18 @@ interface AuthUser {
 }
 
 type SettingsTabKey = "channels" | "roles" | "embeds" | "advanced";
-type PrimaryTabKey = "settings" | "features";
+type PrimaryTabKey = "settings" | "features" | "rosters";
+
+interface RosterConfig {
+  id: string;
+  guildId: string;
+  name: string;
+  roleIds: string[];
+  channelId: string | null;
+  messageId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 interface DashboardQuickSettings {
   moderationPrefix: string;
@@ -259,6 +271,16 @@ export default function Dashboard() {
   const [moduleSearch, setModuleSearch] = useState("");
   const [activePrimaryTab, setActivePrimaryTab] = useState<PrimaryTabKey>("settings");
   const [activeSettingsTab, setActiveSettingsTab] = useState<SettingsTabKey>("channels");
+  const [rosters, setRosters] = useState<RosterConfig[]>([]);
+  const [rostersLoading, setRostersLoading] = useState(false);
+  const [rosterModalOpen, setRosterModalOpen] = useState(false);
+  const [rosterModalMode, setRosterModalMode] = useState<"create" | "edit">("create");
+  const [rosterModalName, setRosterModalName] = useState("");
+  const [rosterModalRoleIds, setRosterModalRoleIds] = useState<string[]>([]);
+  const [rosterModalChannelId, setRosterModalChannelId] = useState("");
+  const [rosterModalEditingName, setRosterModalEditingName] = useState("");
+  const [rosterSaving, setRosterSaving] = useState(false);
+  const [rosterDeleteConfirm, setRosterDeleteConfirm] = useState<string | null>(null);
   const [moduleEnabledMap, setModuleEnabledMap] = useState<Record<string, boolean>>({});
   const [customCategoryPingsText, setCustomCategoryPingsText] = useState("{}");
   const [customModmailCategoriesText, setCustomModmailCategoriesText] = useState("[]");
@@ -441,6 +463,99 @@ export default function Dashboard() {
         });
       });
   }, [selectedGuild]);
+
+  // Fetch rosters when the rosters tab is active
+  useEffect(() => {
+    if (!selectedGuild || activePrimaryTab !== "rosters") return;
+    setRostersLoading(true);
+    fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/rosters`, undefined, 12000)
+      .then((data) => {
+        setRosters(Array.isArray(data.rosters) ? data.rosters : []);
+        setRostersLoading(false);
+      })
+      .catch(() => setRostersLoading(false));
+  }, [selectedGuild, activePrimaryTab]);
+
+  const openCreateRosterModal = () => {
+    setRosterModalMode("create");
+    setRosterModalName("");
+    setRosterModalRoleIds([]);
+    setRosterModalChannelId("");
+    setRosterModalEditingName("");
+    setRosterModalOpen(true);
+  };
+
+  const openEditRosterModal = (roster: RosterConfig) => {
+    setRosterModalMode("edit");
+    setRosterModalName(roster.name);
+    setRosterModalRoleIds(roster.roleIds || []);
+    setRosterModalChannelId(roster.channelId || "");
+    setRosterModalEditingName(roster.name);
+    setRosterModalOpen(true);
+  };
+
+  const saveRosterModal = async () => {
+    if (!selectedGuild) return;
+    if (!rosterModalName.trim()) {
+      toast({ title: "Name required", description: "Please enter a roster name.", variant: "destructive" });
+      return;
+    }
+    setRosterSaving(true);
+    try {
+      if (rosterModalMode === "create") {
+        const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/rosters`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: rosterModalName.trim(),
+            roleIds: rosterModalRoleIds,
+            channelId: rosterModalChannelId || null,
+          }),
+        });
+        setRosters((prev) => [...prev, data.roster]);
+        toast({ title: "Roster created", description: `"${data.roster.name}" has been created.` });
+      } else {
+        const data = await fetchJsonWithTimeout(
+          `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterModalEditingName)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              roleIds: rosterModalRoleIds,
+              channelId: rosterModalChannelId || null,
+            }),
+          }
+        );
+        setRosters((prev) => prev.map((r) => r.name === rosterModalEditingName ? data.roster : r));
+        toast({ title: "Roster updated", description: `"${data.roster.name}" has been updated.` });
+      }
+      setRosterModalOpen(false);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to save roster.", variant: "destructive" });
+    }
+    setRosterSaving(false);
+  };
+
+  const deleteRoster = async (rosterName: string) => {
+    if (!selectedGuild) return;
+    try {
+      await fetchJsonWithTimeout(
+        `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterName)}`,
+        { method: "DELETE" }
+      );
+      setRosters((prev) => prev.filter((r) => r.name !== rosterName));
+      setRosterDeleteConfirm(null);
+      toast({ title: "Roster deleted", description: `"${rosterName}" has been deleted.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to delete roster.", variant: "destructive" });
+    }
+  };
+
+  const toggleRosterRoleId = (roleId: string) => {
+    setRosterModalRoleIds((prev) =>
+      prev.includes(roleId) ? prev.filter((id) => id !== roleId) : [...prev, roleId]
+    );
+  };
 
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -1625,10 +1740,12 @@ export default function Dashboard() {
             {renderActiveModuleSettings()}
           </div>
         ) : (
+          <>
           <Tabs value={activePrimaryTab} onValueChange={(value) => setActivePrimaryTab(value as PrimaryTabKey)} className="space-y-4">
-            <TabsList className="grid h-auto w-full grid-cols-2 gap-2 p-1 md:w-[420px]">
+            <TabsList className="grid h-auto w-full grid-cols-3 gap-2 p-1 md:w-[540px]">
               <TabsTrigger value="settings" data-testid="tab-settings">Dashboard Settings</TabsTrigger>
               <TabsTrigger value="features" data-testid="tab-bot-features">Bot Features</TabsTrigger>
+              <TabsTrigger value="rosters" data-testid="tab-rosters">Rosters</TabsTrigger>
             </TabsList>
 
             <TabsContent value="settings" className="space-y-6">
@@ -1841,7 +1958,189 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
             </TabsContent>
+
+            <TabsContent value="rosters" className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Rosters</h3>
+                  <p className="mt-1 text-sm text-muted-foreground">Manage rosters and see who is on each one.</p>
+                </div>
+                <Button size="sm" onClick={openCreateRosterModal}>
+                  <Plus className="mr-2 h-4 w-4" /> New Roster
+                </Button>
+              </div>
+
+              {rostersLoading ? (
+                <div className="flex items-center justify-center py-16 text-muted-foreground">
+                  <span>Loading rosters…</span>
+                </div>
+              ) : rosters.length === 0 ? (
+                <Card className="border-border/80 bg-card/90">
+                  <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                    <Users className="mb-3 h-10 w-10 text-muted-foreground" />
+                    <p className="text-muted-foreground">No rosters yet. Create one to get started.</p>
+                    <Button className="mt-4" onClick={openCreateRosterModal}>
+                      <Plus className="mr-2 h-4 w-4" /> New Roster
+                    </Button>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {rosters.map((roster) => {
+                    const rosterRoles = roles.filter((r) => roster.roleIds.includes(r.id));
+                    const postedChannel = textChannels.find((ch) => ch.id === roster.channelId);
+                    return (
+                      <Card key={roster.id} className="border-border/80 bg-card/90">
+                        <CardHeader className="pb-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <Users className="h-4 w-4 text-muted-foreground shrink-0" />
+                              <CardTitle className="text-base">{roster.name}</CardTitle>
+                            </div>
+                            <div className="flex gap-1 shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => openEditRosterModal(roster)}
+                                title="Edit roster"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                              {rosterDeleteConfirm === roster.name ? (
+                                <>
+                                  <Button
+                                    variant="destructive"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    onClick={() => deleteRoster(roster.name)}
+                                    title="Confirm delete"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    onClick={() => setRosterDeleteConfirm(null)}
+                                    title="Cancel"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </Button>
+                                </>
+                              ) : (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7 text-destructive hover:text-destructive"
+                                  onClick={() => setRosterDeleteConfirm(roster.name)}
+                                  title="Delete roster"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                          {postedChannel && (
+                            <p className="text-xs text-muted-foreground ml-6">Posted in #{postedChannel.name}</p>
+                          )}
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                          {rosterRoles.length === 0 ? (
+                            <p className="text-sm text-muted-foreground italic">No roles assigned.</p>
+                          ) : (
+                            <div className="flex flex-wrap gap-1.5">
+                              {rosterRoles.map((role) => (
+                                <Badge
+                                  key={role.id}
+                                  variant="outline"
+                                  style={{
+                                    borderColor: role.color !== "#000000" ? role.color : undefined,
+                                    color: role.color !== "#000000" ? role.color : undefined,
+                                  }}
+                                >
+                                  {role.name}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+            </TabsContent>
           </Tabs>
+
+          {/* Roster create/edit modal */}
+          <Dialog open={rosterModalOpen} onOpenChange={setRosterModalOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>{rosterModalMode === "create" ? "Create Roster" : `Edit Roster – ${rosterModalEditingName}`}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 py-2">
+                {rosterModalMode === "create" && (
+                  <div className="space-y-2">
+                    <Label>Roster Name</Label>
+                    <Input
+                      value={rosterModalName}
+                      onChange={(e) => setRosterModalName(e.target.value)}
+                      placeholder="e.g. Staff, Players, Coaches"
+                    />
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <Label>Roles on this Roster</Label>
+                  <p className="text-xs text-muted-foreground">Members with these roles will appear on the roster.</p>
+                  <div className="max-h-48 overflow-y-auto rounded-md border border-border p-2 space-y-1">
+                    {roles.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No roles available.</p>
+                    ) : (
+                      roles.filter((r) => r.name !== "@everyone").map((role) => (
+                        <label key={role.id} className="flex items-center gap-2 cursor-pointer rounded px-1 py-0.5 hover:bg-accent">
+                          <input
+                            type="checkbox"
+                            className="accent-primary"
+                            checked={rosterModalRoleIds.includes(role.id)}
+                            onChange={() => toggleRosterRoleId(role.id)}
+                          />
+                          <span
+                            className="text-sm font-medium"
+                            style={{ color: role.color !== "#000000" ? role.color : undefined }}
+                          >
+                            {role.name}
+                          </span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Posted Channel (optional)</Label>
+                  <Select
+                    value={rosterModalChannelId || NONE_VALUE}
+                    onValueChange={(v) => setRosterModalChannelId(v === NONE_VALUE ? "" : v)}
+                  >
+                    <SelectTrigger><SelectValue placeholder="Select a channel" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={NONE_VALUE}>None</SelectItem>
+                      {textChannels.map((ch) => (
+                        <SelectItem key={ch.id} value={ch.id}>#{ch.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setRosterModalOpen(false)}>Cancel</Button>
+                <Button onClick={saveRosterModal} disabled={rosterSaving}>
+                  {rosterSaving ? "Saving…" : rosterModalMode === "create" ? "Create" : "Save Changes"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          </>
         )}
       </div>
     </div>

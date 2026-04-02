@@ -1053,5 +1053,79 @@ export async function registerRoutes(
     }
   });
 
+  // ── Roster CRUD ───────────────────────────────────────────────────────────
+
+  // GET all rosters for a guild
+  app.get("/api/guilds/:guildId/rosters", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const rosters = await storage.getAllRosterConfigs(guildId);
+      res.json({ rosters });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST create roster
+  app.post("/api/guilds/:guildId/rosters", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const { name, roleIds, channelId } = req.body || {};
+      if (!name || typeof name !== "string" || !name.trim()) {
+        return res.status(400).json({ error: "Roster name is required." });
+      }
+      const roster = await storage.createRosterConfig({
+        guildId,
+        name: name.trim(),
+        roleIds: Array.isArray(roleIds) ? roleIds.map(String).filter(Boolean) : [],
+        channelId: channelId || null,
+        messageId: null,
+      });
+      res.json({ success: true, roster });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // PUT update roster
+  app.put("/api/guilds/:guildId/rosters/:rosterName", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const { rosterName } = req.params;
+      const { roleIds, channelId, messageId } = req.body || {};
+      const updated = await storage.updateRosterConfig(guildId, rosterName, {
+        roleIds: Array.isArray(roleIds) ? roleIds.map(String).filter(Boolean) : undefined,
+        channelId: channelId !== undefined ? (channelId || null) : undefined,
+        messageId: messageId !== undefined ? (messageId || null) : undefined,
+      });
+      if (!updated) {
+        return res.status(404).json({ error: "Roster not found." });
+      }
+      res.json({ success: true, roster: updated });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // DELETE roster
+  app.delete("/api/guilds/:guildId/rosters/:rosterName", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const { rosterName } = req.params;
+      await storage.deleteRosterConfig(guildId, rosterName);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   return httpServer;
 }
