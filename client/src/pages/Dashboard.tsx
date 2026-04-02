@@ -39,6 +39,10 @@ interface GuildConfig {
   commandPrefix?: string;
   requestChannelId?: string | null;
   logChannelId?: string | null;
+  playerRosterChannelId?: string | null;
+  playerRosterMessageId?: string | null;
+  staffRosterChannelId?: string | null;
+  staffRosterMessageId?: string | null;
   modmailCategoryId?: string | null;
   modmailLogChannelId?: string | null;
   appealCategoryId?: string | null;
@@ -281,6 +285,8 @@ export default function Dashboard() {
   const [rosterModalEditingName, setRosterModalEditingName] = useState("");
   const [rosterSaving, setRosterSaving] = useState(false);
   const [rosterDeleteConfirm, setRosterDeleteConfirm] = useState<string | null>(null);
+  const [postingRosterId, setPostingRosterId] = useState<string | null>(null);
+  const [rosterChannelSearch, setRosterChannelSearch] = useState("");
   const [moduleEnabledMap, setModuleEnabledMap] = useState<Record<string, boolean>>({});
   const [customCategoryPingsText, setCustomCategoryPingsText] = useState("{}");
   const [customModmailCategoriesText, setCustomModmailCategoriesText] = useState("[]");
@@ -482,6 +488,7 @@ export default function Dashboard() {
     setRosterModalRoleIds([]);
     setRosterModalChannelId("");
     setRosterModalEditingName("");
+    setRosterChannelSearch("");
     setRosterModalOpen(true);
   };
 
@@ -491,6 +498,7 @@ export default function Dashboard() {
     setRosterModalRoleIds(roster.roleIds || []);
     setRosterModalChannelId(roster.channelId || "");
     setRosterModalEditingName(roster.name);
+    setRosterChannelSearch("");
     setRosterModalOpen(true);
   };
 
@@ -555,6 +563,22 @@ export default function Dashboard() {
     setRosterModalRoleIds((prev) =>
       prev.includes(roleId) ? prev.filter((id) => id !== roleId) : [...prev, roleId]
     );
+  };
+
+  const postRoster = async (rosterName: string) => {
+    if (!selectedGuild) return;
+    setPostingRosterId(rosterName);
+    try {
+      const data = await fetchJsonWithTimeout(
+        `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterName)}/post`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
+      );
+      setRosters((prev) => prev.map((r) => r.name === rosterName ? data.roster : r));
+      toast({ title: "Roster posted!", description: `"${rosterName}" has been sent to Discord.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to post roster.", variant: "destructive" });
+    }
+    setPostingRosterId(null);
   };
 
   const copyToClipboard = (text: string, label: string) => {
@@ -1970,6 +1994,51 @@ export default function Dashboard() {
                 </Button>
               </div>
 
+              {/* Legacy Player / Staff rosters from guild config */}
+              {(config.playerRosterChannelId || config.staffRosterChannelId) && (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Legacy Rosters</p>
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {config.playerRosterChannelId && (() => {
+                      const ch = textChannels.find((c) => c.id === config.playerRosterChannelId);
+                      return (
+                        <Card className="border-border/80 bg-card/90 opacity-90">
+                          <CardHeader className="pb-2">
+                            <div className="flex items-center gap-2">
+                              <Users className="h-4 w-4 text-muted-foreground" />
+                              <CardTitle className="text-base">Player Roster</CardTitle>
+                              <Badge variant="outline" className="text-xs">Legacy</Badge>
+                            </div>
+                            {ch && <p className="text-xs text-muted-foreground">Posted in #{ch.name}</p>}
+                          </CardHeader>
+                          <CardContent className="pt-0">
+                            <p className="text-xs text-muted-foreground">Managed via <code>/refresh_roster</code> bot command.</p>
+                          </CardContent>
+                        </Card>
+                      );
+                    })()}
+                    {config.staffRosterChannelId && (() => {
+                      const ch = textChannels.find((c) => c.id === config.staffRosterChannelId);
+                      return (
+                        <Card className="border-border/80 bg-card/90 opacity-90">
+                          <CardHeader className="pb-2">
+                            <div className="flex items-center gap-2">
+                              <Users className="h-4 w-4 text-muted-foreground" />
+                              <CardTitle className="text-base">Staff Roster</CardTitle>
+                              <Badge variant="outline" className="text-xs">Legacy</Badge>
+                            </div>
+                            {ch && <p className="text-xs text-muted-foreground">Posted in #{ch.name}</p>}
+                          </CardHeader>
+                          <CardContent className="pt-0">
+                            <p className="text-xs text-muted-foreground">Managed via <code>/refresh_roster</code> bot command.</p>
+                          </CardContent>
+                        </Card>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+
               {rostersLoading ? (
                 <div className="flex items-center justify-center py-16 text-muted-foreground">
                   <span>Loading rosters…</span>
@@ -1978,7 +2047,7 @@ export default function Dashboard() {
                 <Card className="border-border/80 bg-card/90">
                   <CardContent className="flex flex-col items-center justify-center py-16 text-center">
                     <Users className="mb-3 h-10 w-10 text-muted-foreground" />
-                    <p className="text-muted-foreground">No rosters yet. Create one to get started.</p>
+                    <p className="text-muted-foreground">No custom rosters yet. Create one to get started.</p>
                     <Button className="mt-4" onClick={openCreateRosterModal}>
                       <Plus className="mr-2 h-4 w-4" /> New Roster
                     </Button>
@@ -1989,6 +2058,7 @@ export default function Dashboard() {
                   {rosters.map((roster) => {
                     const rosterRoles = roles.filter((r) => roster.roleIds.includes(r.id));
                     const postedChannel = textChannels.find((ch) => ch.id === roster.channelId);
+                    const isPosting = postingRosterId === roster.name;
                     return (
                       <Card key={roster.id} className="border-border/80 bg-card/90">
                         <CardHeader className="pb-3">
@@ -2041,11 +2111,13 @@ export default function Dashboard() {
                               )}
                             </div>
                           </div>
-                          {postedChannel && (
-                            <p className="text-xs text-muted-foreground ml-6">Posted in #{postedChannel.name}</p>
+                          {postedChannel ? (
+                            <p className="text-xs text-muted-foreground ml-6">Channel: #{postedChannel.name}{roster.messageId ? " • posted" : ""}</p>
+                          ) : (
+                            <p className="text-xs text-muted-foreground/60 ml-6 italic">No channel set — edit to add one</p>
                           )}
                         </CardHeader>
-                        <CardContent className="pt-0">
+                        <CardContent className="pt-0 space-y-3">
                           {rosterRoles.length === 0 ? (
                             <p className="text-sm text-muted-foreground italic">No roles assigned.</p>
                           ) : (
@@ -2064,6 +2136,16 @@ export default function Dashboard() {
                               ))}
                             </div>
                           )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full"
+                            disabled={!roster.channelId || isPosting}
+                            onClick={() => postRoster(roster.name)}
+                            title={roster.channelId ? "Post or refresh this roster in Discord" : "Edit the roster and set a channel first"}
+                          >
+                            {isPosting ? "Posting…" : roster.messageId ? "Refresh Roster" : "Post Roster"}
+                          </Button>
                         </CardContent>
                       </Card>
                     );
@@ -2118,18 +2200,44 @@ export default function Dashboard() {
                 </div>
                 <div className="space-y-2">
                   <Label>Posted Channel (optional)</Label>
-                  <Select
-                    value={rosterModalChannelId || NONE_VALUE}
-                    onValueChange={(v) => setRosterModalChannelId(v === NONE_VALUE ? "" : v)}
-                  >
-                    <SelectTrigger><SelectValue placeholder="Select a channel" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE_VALUE}>None</SelectItem>
-                      {textChannels.map((ch) => (
-                        <SelectItem key={ch.id} value={ch.id}>#{ch.name}</SelectItem>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={rosterChannelSearch}
+                      onChange={(e) => setRosterChannelSearch(e.target.value)}
+                      placeholder="Search channels…"
+                      className="pl-8 h-8 text-sm"
+                    />
+                  </div>
+                  <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
+                    <button
+                      type="button"
+                      className={`w-full text-left px-2 py-1 text-sm rounded transition-colors hover:bg-accent ${!rosterModalChannelId ? "bg-accent font-medium" : ""}`}
+                      onClick={() => setRosterModalChannelId("")}
+                    >
+                      None
+                    </button>
+                    {textChannels
+                      .filter((ch) => !rosterChannelSearch || ch.name.toLowerCase().includes(rosterChannelSearch.toLowerCase()))
+                      .map((ch) => (
+                        <button
+                          key={ch.id}
+                          type="button"
+                          className={`w-full text-left px-2 py-1 text-sm rounded transition-colors hover:bg-accent ${rosterModalChannelId === ch.id ? "bg-accent font-medium" : ""}`}
+                          onClick={() => setRosterModalChannelId(ch.id)}
+                        >
+                          #{ch.name}
+                        </button>
                       ))}
-                    </SelectContent>
-                  </Select>
+                    {textChannels.filter((ch) => !rosterChannelSearch || ch.name.toLowerCase().includes(rosterChannelSearch.toLowerCase())).length === 0 && (
+                      <p className="px-2 py-1 text-sm text-muted-foreground">No channels match.</p>
+                    )}
+                  </div>
+                  {rosterModalChannelId && (
+                    <p className="text-xs text-muted-foreground">
+                      Selected: #{textChannels.find((ch) => ch.id === rosterModalChannelId)?.name || rosterModalChannelId}
+                    </p>
+                  )}
                 </div>
               </div>
               <DialogFooter>

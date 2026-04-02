@@ -1127,5 +1127,70 @@ export async function registerRoutes(
     }
   });
 
+  // POST /rosters/:rosterName/post — send/refresh roster message to its channel
+  app.post("/api/guilds/:guildId/rosters/:rosterName/post", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const { rosterName } = req.params;
+      const { channelId: overrideChannelId } = req.body || {};
+
+      const roster = await storage.getRosterConfig(guildId, rosterName);
+      if (!roster) return res.status(404).json({ error: "Roster not found." });
+
+      const channelId = overrideChannelId || roster.channelId;
+      if (!channelId) return res.status(400).json({ error: "No channel configured for this roster. Edit the roster and set a channel first." });
+
+      if (!client.isReady()) return res.status(503).json({ error: "Bot is not online. Start the bot before posting rosters." });
+
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) return res.status(400).json({ error: "Bot is not in this server." });
+
+      // Fetch members so the role member lists are fresh
+      try { await guild.members.fetch({ time: 15000 }); } catch { /* use cached */ }
+
+      // Build roster content
+      const displayName = roster.name.charAt(0).toUpperCase() + roster.name.slice(1);
+      let content = `**${displayName} Roster**\n\n`;
+      for (const roleId of roster.roleIds) {
+        const role = guild.roles.cache.get(roleId);
+        if (!role) continue;
+        content += `<@&${roleId}>\n`;
+        const members = role.members.map((m: any) => `<@${m.id}>`);
+        content += (members.length === 0 ? "N/A" : members.join("\n")) + "\n\n";
+      }
+
+      const channel = await client.channels.fetch(channelId).catch(() => null);
+      if (!channel || !("send" in channel)) return res.status(400).json({ error: "Could not find the channel. Make sure the bot has access to it." });
+
+      let postedMessageId = roster.messageId;
+
+      if (postedMessageId) {
+        try {
+          const existing = await (channel as any).messages.fetch(postedMessageId);
+          await existing.edit({ content });
+        } catch {
+          // old message gone — post fresh
+          const newMsg = await (channel as any).send({ content });
+          postedMessageId = newMsg.id;
+        }
+      } else {
+        const newMsg = await (channel as any).send({ content });
+        postedMessageId = newMsg.id;
+      }
+
+      // Save channelId + messageId back to DB
+      const updated = await storage.updateRosterConfig(guildId, rosterName, {
+        messageId: postedMessageId ?? undefined,
+        channelId,
+      });
+
+      res.json({ success: true, roster: updated });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   return httpServer;
 }
