@@ -645,7 +645,13 @@ type RosterEmbedConfig = {
   buttons: RosterEmbedButtonConfig[];
 };
 
+type SavedRosterEmbedConfig = RosterEmbedConfig & {
+  id: string;
+  name: string;
+};
+
 const ROSTER_EMBED_CONFIGS_KEY = "__rosterEmbedConfigs";
+const ROSTER_EMBEDS_KEY = "__rosterEmbeds";
 
 function parseJsonObject(raw: unknown): Record<string, unknown> {
   if (typeof raw !== "string") return {};
@@ -724,8 +730,58 @@ function writeRosterEmbedConfigs(raw: unknown, nextConfigs: Record<string, Roste
   return JSON.stringify(parsed);
 }
 
+function normalizeSavedRosterEmbedConfig(input: unknown): SavedRosterEmbedConfig | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const value = input as Record<string, unknown>;
+  const id = String(value.id || "").trim();
+  const name = String(value.name || "").trim();
+  const baseConfig = normalizeRosterEmbedConfig(value);
+  if (!id || !name || !baseConfig) return null;
+  return {
+    id,
+    name,
+    ...baseConfig,
+  };
+}
+
+function getSavedRosterEmbeds(raw: unknown): SavedRosterEmbedConfig[] {
+  const parsed = parseJsonObject(raw);
+  const rawEmbeds = parsed[ROSTER_EMBEDS_KEY];
+  if (!Array.isArray(rawEmbeds)) return [];
+  return rawEmbeds
+    .map((entry) => normalizeSavedRosterEmbedConfig(entry))
+    .filter(Boolean) as SavedRosterEmbedConfig[];
+}
+
+function writeSavedRosterEmbeds(raw: unknown, embeds: SavedRosterEmbedConfig[]): string {
+  const parsed = parseJsonObject(raw);
+  parsed[ROSTER_EMBEDS_KEY] = embeds;
+  return JSON.stringify(parsed);
+}
+
+function dedupeRostersByName<T extends { name?: unknown; updatedAt?: unknown; createdAt?: unknown }>(rosters: T[]): T[] {
+  const deduped = new Map<string, T>();
+  for (const roster of rosters) {
+    const key = String(roster.name || "").trim().toLowerCase();
+    if (!key) continue;
+
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, roster);
+      continue;
+    }
+
+    const existingTime = new Date(String(existing.updatedAt || existing.createdAt || 0)).getTime() || 0;
+    const nextTime = new Date(String(roster.updatedAt || roster.createdAt || 0)).getTime() || 0;
+    if (nextTime >= existingTime) {
+      deduped.set(key, roster);
+    }
+  }
+  return Array.from(deduped.values());
+}
+
 async function getRostersWithEmbedConfigs(guildId: string): Promise<Array<Record<string, unknown>>> {
-  const rosters = await storage.getAllRosterConfigs(guildId);
+  const rosters = dedupeRostersByName(await storage.getAllRosterConfigs(guildId));
   const config = await storage.getGuildConfig(guildId);
   const embedConfigs = getRosterEmbedConfigs(config?.customCategoryPings);
 
@@ -733,6 +789,11 @@ async function getRostersWithEmbedConfigs(guildId: string): Promise<Array<Record
     ...roster,
     embedConfig: embedConfigs[String(roster.name || "").toLowerCase()] || null,
   }));
+}
+
+async function getRosterEmbedsForGuild(guildId: string): Promise<SavedRosterEmbedConfig[]> {
+  const config = await storage.getGuildConfig(guildId);
+  return getSavedRosterEmbeds(config?.customCategoryPings);
 }
 
 async function postFeatureUpdateToChannel(guildId: string, channelId: string, featureLabels: string[]): Promise<void> {
@@ -761,6 +822,7 @@ type GuildUpdatePayload = {
   guildId: string;
   config?: unknown;
   rosters?: unknown[];
+  rosterEmbeds?: unknown[];
   editorId?: string;
 };
 
@@ -1254,6 +1316,18 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/guilds/:guildId/roster-embeds", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const rosterEmbeds = await getRosterEmbedsForGuild(guildId);
+      res.json({ rosterEmbeds });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // POST create roster
   app.post("/api/guilds/:guildId/rosters", async (req, res) => {
     try {
@@ -1278,10 +1352,12 @@ export async function registerRoutes(
         messageId: null,
       });
       const rosters = await getRostersWithEmbedConfigs(guildId);
+      const rosterEmbeds = await getRosterEmbedsForGuild(guildId);
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
         rosters,
+        rosterEmbeds,
         editorId: user.id,
       });
       res.json({ success: true, roster });
@@ -1307,10 +1383,12 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Roster not found." });
       }
       const rosters = await getRostersWithEmbedConfigs(guildId);
+      const rosterEmbeds = await getRosterEmbedsForGuild(guildId);
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
         rosters,
+        rosterEmbeds,
         editorId: user.id,
       });
       res.json({ success: true, roster: updated });
@@ -1337,10 +1415,12 @@ export async function registerRoutes(
       });
 
       const rosters = await getRostersWithEmbedConfigs(guildId);
+      const rosterEmbeds = await getRosterEmbedsForGuild(guildId);
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
         rosters,
+        rosterEmbeds,
         editorId: user.id,
       });
       res.json({ success: true });
@@ -1409,10 +1489,12 @@ export async function registerRoutes(
       });
 
       const rosters = await getRostersWithEmbedConfigs(guildId);
+      const rosterEmbeds = await getRosterEmbedsForGuild(guildId);
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
         rosters,
+        rosterEmbeds,
         editorId: user.id,
       });
 
@@ -1422,59 +1504,139 @@ export async function registerRoutes(
     }
   });
 
-  app.put("/api/guilds/:guildId/rosters/:rosterName/embed-config", async (req, res) => {
+  app.post("/api/guilds/:guildId/roster-embeds", async (req, res) => {
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
       const { guildId, user } = auth;
-      const { rosterName } = req.params;
-      const normalizedRosterName = String(rosterName || "").trim().toLowerCase();
-      if (!normalizedRosterName) return res.status(400).json({ error: "Roster name is required." });
-
-      const roster = await storage.getRosterConfig(guildId, normalizedRosterName);
-      if (!roster) return res.status(404).json({ error: "Roster not found." });
 
       const normalizedConfig = normalizeRosterEmbedConfig(req.body || {});
-      if (!normalizedConfig) {
-        return res.status(400).json({ error: "Embed config requires title, description, and at least one valid button." });
+      const name = String(req.body?.name || "").trim();
+      if (!name || !normalizedConfig) {
+        return res.status(400).json({ error: "Embed name, title, description, and at least one valid button are required." });
       }
 
       const existingConfig = await storage.getGuildConfig(guildId);
-      const embedConfigs = getRosterEmbedConfigs(existingConfig?.customCategoryPings);
-      embedConfigs[normalizedRosterName] = {
-        ...normalizedConfig,
-        messageId: embedConfigs[normalizedRosterName]?.messageId || null,
-      };
+      const rosterEmbeds = getSavedRosterEmbeds(existingConfig?.customCategoryPings);
+      const normalizedName = name.toLowerCase();
+      if (rosterEmbeds.some((entry) => entry.name.trim().toLowerCase() === normalizedName)) {
+        return res.status(400).json({ error: "A roster embed with that name already exists." });
+      }
+
+      const created: SavedRosterEmbedConfig = { id: crypto.randomUUID(), name, ...normalizedConfig };
+      const nextEmbeds = [...rosterEmbeds, created];
 
       await storage.upsertGuildConfig({
         guildId,
-        customCategoryPings: writeRosterEmbedConfigs(existingConfig?.customCategoryPings, embedConfigs),
+        customCategoryPings: writeSavedRosterEmbeds(existingConfig?.customCategoryPings, nextEmbeds),
       });
 
       const rosters = await getRostersWithEmbedConfigs(guildId);
-      const updatedRoster = rosters.find((entry) => String((entry as any).name || "").toLowerCase() === normalizedRosterName) || null;
-
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
         rosters,
+        rosterEmbeds: nextEmbeds,
         editorId: user.id,
       });
 
-      res.json({ success: true, roster: updatedRoster });
+      res.json({ success: true, rosterEmbed: created });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
   });
 
-  app.post("/api/guilds/:guildId/rosters/:rosterName/post-embed", async (req, res) => {
+  app.put("/api/guilds/:guildId/roster-embeds/:embedId", async (req, res) => {
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
       const { guildId, user } = auth;
-      const { rosterName } = req.params;
-      const normalizedRosterName = String(rosterName || "").trim().toLowerCase();
-      if (!normalizedRosterName) return res.status(400).json({ error: "Roster name is required." });
+      const embedId = String(req.params.embedId || "").trim();
+      if (!embedId) return res.status(400).json({ error: "Embed id is required." });
+
+      const normalizedConfig = normalizeRosterEmbedConfig(req.body || {});
+      const name = String(req.body?.name || "").trim();
+      if (!name || !normalizedConfig) {
+        return res.status(400).json({ error: "Embed name, title, description, and at least one valid button are required." });
+      }
+
+      const existingConfig = await storage.getGuildConfig(guildId);
+      const rosterEmbeds = getSavedRosterEmbeds(existingConfig?.customCategoryPings);
+      const currentEmbed = rosterEmbeds.find((entry) => entry.id === embedId);
+      if (!currentEmbed) return res.status(404).json({ error: "Roster embed not found." });
+
+      const normalizedName = name.toLowerCase();
+      if (rosterEmbeds.some((entry) => entry.id !== embedId && entry.name.trim().toLowerCase() === normalizedName)) {
+        return res.status(400).json({ error: "A roster embed with that name already exists." });
+      }
+
+      const updated: SavedRosterEmbedConfig = {
+        id: currentEmbed.id,
+        name,
+        ...normalizedConfig,
+        messageId: currentEmbed.messageId || normalizedConfig.messageId || null,
+      };
+
+      const nextEmbeds = rosterEmbeds.map((entry) => entry.id === embedId ? updated : entry);
+      await storage.upsertGuildConfig({
+        guildId,
+        customCategoryPings: writeSavedRosterEmbeds(existingConfig?.customCategoryPings, nextEmbeds),
+      });
+
+      const rosters = await getRostersWithEmbedConfigs(guildId);
+      broadcastGuildUpdate(guildId, {
+        type: "rosters-updated",
+        guildId,
+        rosters,
+        rosterEmbeds: nextEmbeds,
+        editorId: user.id,
+      });
+
+      res.json({ success: true, rosterEmbed: updated });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/roster-embeds/:embedId", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+      const embedId = String(req.params.embedId || "").trim();
+      if (!embedId) return res.status(400).json({ error: "Embed id is required." });
+
+      const existingConfig = await storage.getGuildConfig(guildId);
+      const rosterEmbeds = getSavedRosterEmbeds(existingConfig?.customCategoryPings);
+      const nextEmbeds = rosterEmbeds.filter((entry) => entry.id !== embedId);
+
+      await storage.upsertGuildConfig({
+        guildId,
+        customCategoryPings: writeSavedRosterEmbeds(existingConfig?.customCategoryPings, nextEmbeds),
+      });
+
+      const rosters = await getRostersWithEmbedConfigs(guildId);
+      broadcastGuildUpdate(guildId, {
+        type: "rosters-updated",
+        guildId,
+        rosters,
+        rosterEmbeds: nextEmbeds,
+        editorId: user.id,
+      });
+
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/roster-embeds/:embedId/post", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+      const embedId = String(req.params.embedId || "").trim();
+      if (!embedId) return res.status(400).json({ error: "Embed id is required." });
 
       if (!client.isReady()) return res.status(503).json({ error: "Bot is not online. Start the bot before posting roster embeds." });
 
@@ -1482,24 +1644,22 @@ export async function registerRoutes(
       if (!guild) return res.status(400).json({ error: "Bot is not in this server." });
 
       const existingConfig = await storage.getGuildConfig(guildId);
-      const embedConfigs = getRosterEmbedConfigs(existingConfig?.customCategoryPings);
-      const embedConfig = embedConfigs[normalizedRosterName];
-      if (!embedConfig) return res.status(400).json({ error: "No embed config found for this roster. Save embed config first." });
+      const rosterEmbeds = getSavedRosterEmbeds(existingConfig?.customCategoryPings);
+      const targetEmbed = rosterEmbeds.find((entry) => entry.id === embedId);
+      if (!targetEmbed) return res.status(404).json({ error: "Roster embed not found." });
 
-      const targetChannelId = String(req.body?.channelId || "").trim() || String(embedConfig.channelId || "").trim();
+      const targetChannelId = String(req.body?.channelId || "").trim() || String(targetEmbed.channelId || "").trim();
       if (!targetChannelId) return res.status(400).json({ error: "No channel configured for this roster embed." });
 
       let embedColor = 0x5865f2;
-      if (embedConfig.embedColor) {
-        const parsed = parseInt(embedConfig.embedColor.replace("#", ""), 16);
-        if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 0xffffff) {
-          embedColor = parsed;
-        }
+      if (targetEmbed.embedColor) {
+        const parsed = parseInt(targetEmbed.embedColor.replace("#", ""), 16);
+        if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 0xffffff) embedColor = parsed;
       }
 
       const missingRosters: string[] = [];
       const buttons: ButtonBuilder[] = [];
-      for (const buttonConfig of embedConfig.buttons) {
+      for (const buttonConfig of targetEmbed.buttons) {
         const targetRosterName = String(buttonConfig.rosterName || "").trim().toLowerCase();
         if (!targetRosterName) continue;
         const targetRoster = await storage.getRosterConfig(guildId, targetRosterName);
@@ -1523,36 +1683,23 @@ export async function registerRoutes(
 
         if (buttonConfig.emoji) {
           const customEmojiMatch = buttonConfig.emoji.match(/<a?:(.+):(\d+)>/);
-          if (customEmojiMatch) {
-            button.setEmoji({ name: customEmojiMatch[1], id: customEmojiMatch[2] });
-          } else {
-            button.setEmoji(buttonConfig.emoji);
-          }
+          if (customEmojiMatch) button.setEmoji({ name: customEmojiMatch[1], id: customEmojiMatch[2] });
+          else button.setEmoji(buttonConfig.emoji);
         }
 
         buttons.push(button);
       }
 
-      if (missingRosters.length > 0) {
-        return res.status(400).json({ error: `The following rosters don't exist: ${missingRosters.join(", ")}.` });
-      }
-
-      if (buttons.length === 0) {
-        return res.status(400).json({ error: "No valid embed buttons to post." });
-      }
+      if (missingRosters.length > 0) return res.status(400).json({ error: `The following rosters don't exist: ${missingRosters.join(", ")}.` });
+      if (buttons.length === 0) return res.status(400).json({ error: "No valid embed buttons to post." });
 
       const targetChannel = await client.channels.fetch(targetChannelId).catch(() => null);
-      if (!targetChannel || !("send" in targetChannel)) {
-        return res.status(400).json({ error: "Could not find the embed channel. Make sure the bot has access." });
-      }
+      if (!targetChannel || !("send" in targetChannel)) return res.status(400).json({ error: "Could not find the embed channel. Make sure the bot has access." });
 
-      const embed = new EmbedBuilder()
-        .setTitle(embedConfig.title)
-        .setDescription(embedConfig.description)
-        .setColor(embedColor);
+      const embed = new EmbedBuilder().setTitle(targetEmbed.title).setDescription(targetEmbed.description).setColor(embedColor);
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(0, 5));
 
-      let postedMessageId = String(embedConfig.messageId || "").trim() || null;
+      let postedMessageId = String(targetEmbed.messageId || "").trim() || null;
       if (postedMessageId) {
         try {
           const existing = await (targetChannel as any).messages.fetch(postedMessageId);
@@ -1566,28 +1713,23 @@ export async function registerRoutes(
         postedMessageId = newMessage.id;
       }
 
-      embedConfigs[normalizedRosterName] = {
-        ...embedConfig,
-        channelId: targetChannelId,
-        messageId: postedMessageId,
-      };
-
+      const nextEmbeds = rosterEmbeds.map((entry) => entry.id === embedId ? { ...entry, channelId: targetChannelId, messageId: postedMessageId } : entry);
       await storage.upsertGuildConfig({
         guildId,
-        customCategoryPings: writeRosterEmbedConfigs(existingConfig?.customCategoryPings, embedConfigs),
+        customCategoryPings: writeSavedRosterEmbeds(existingConfig?.customCategoryPings, nextEmbeds),
       });
 
       const rosters = await getRostersWithEmbedConfigs(guildId);
-      const updatedRoster = rosters.find((entry) => String((entry as any).name || "").toLowerCase() === normalizedRosterName) || null;
-
+      const updatedEmbed = nextEmbeds.find((entry) => entry.id === embedId) || null;
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
         rosters,
+        rosterEmbeds: nextEmbeds,
         editorId: user.id,
       });
 
-      res.json({ success: true, roster: updatedRoster });
+      res.json({ success: true, rosterEmbed: updatedEmbed });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

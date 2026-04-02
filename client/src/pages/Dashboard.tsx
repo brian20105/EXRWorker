@@ -120,6 +120,11 @@ interface RosterEmbedConfig {
   buttons: RosterEmbedButtonConfig[];
 }
 
+interface SavedRosterEmbedConfig extends RosterEmbedConfig {
+  id: string;
+  name: string;
+}
+
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
   settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
   features: { label: "Bot Features", icon: Sparkles },
@@ -320,9 +325,13 @@ export default function Dashboard() {
   const [postingRosterId, setPostingRosterId] = useState<string | null>(null);
   const [postingRosterEmbedId, setPostingRosterEmbedId] = useState<string | null>(null);
   const [rosterChannelSearch, setRosterChannelSearch] = useState("");
+  const [rosterEmbeds, setRosterEmbeds] = useState<SavedRosterEmbedConfig[]>([]);
+  const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
+  const [rosterEmbedModalMode, setRosterEmbedModalMode] = useState<"create" | "edit">("create");
   const [rosterEmbedSaving, setRosterEmbedSaving] = useState(false);
-  const [rosterEmbedEditingName, setRosterEmbedEditingName] = useState("");
+  const [rosterEmbedEditingId, setRosterEmbedEditingId] = useState("");
+  const [rosterEmbedName, setRosterEmbedName] = useState("");
   const [rosterEmbedConfig, setRosterEmbedConfig] = useState<RosterEmbedConfig>({
     title: "",
     description: "",
@@ -543,6 +552,7 @@ export default function Dashboard() {
 
         if (payload.type === "rosters-updated") {
           setRosters(Array.isArray(payload.rosters) ? payload.rosters : []);
+          setRosterEmbeds(Array.isArray(payload.rosterEmbeds) ? payload.rosterEmbeds : []);
         }
       } catch {
         // Ignore malformed events.
@@ -558,9 +568,13 @@ export default function Dashboard() {
   useEffect(() => {
     if (!selectedGuild || activePrimaryTab !== "rosters") return;
     setRostersLoading(true);
-    fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/rosters`, undefined, 12000)
-      .then((data) => {
-        setRosters(Array.isArray(data.rosters) ? data.rosters : []);
+    Promise.all([
+      fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/rosters`, undefined, 12000),
+      fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/roster-embeds`, undefined, 12000),
+    ])
+      .then(([rosterData, embedData]) => {
+        setRosters(Array.isArray(rosterData.rosters) ? rosterData.rosters : []);
+        setRosterEmbeds(Array.isArray(embedData.rosterEmbeds) ? embedData.rosterEmbeds : []);
         setRostersLoading(false);
       })
       .catch(() => setRostersLoading(false));
@@ -673,16 +687,32 @@ export default function Dashboard() {
     setPostingRosterId(null);
   };
 
-  const openRosterEmbedModal = (roster: RosterConfig) => {
-    const existing = roster.embedConfig || null;
-    setRosterEmbedEditingName(roster.name);
+  const openCreateRosterEmbedModal = () => {
+    setRosterEmbedModalMode("create");
+    setRosterEmbedEditingId("");
+    setRosterEmbedName("");
     setRosterEmbedConfig({
-      title: existing?.title || `${roster.name} Roster`,
-      description: existing?.description || "Choose a roster below.",
-      embedColor: (existing?.embedColor || "5865f2").replace(/^#/, ""),
-      channelId: existing?.channelId || roster.channelId || "",
-      messageId: existing?.messageId || null,
-      buttons: (existing?.buttons || []).slice(0, 5).map((button) => ({
+      title: "",
+      description: "",
+      embedColor: "5865f2",
+      channelId: "",
+      messageId: null,
+      buttons: [],
+    });
+    setRosterEmbedModalOpen(true);
+  };
+
+  const openEditRosterEmbedModal = (rosterEmbed: SavedRosterEmbedConfig) => {
+    setRosterEmbedModalMode("edit");
+    setRosterEmbedEditingId(rosterEmbed.id);
+    setRosterEmbedName(rosterEmbed.name);
+    setRosterEmbedConfig({
+      title: rosterEmbed.title || "",
+      description: rosterEmbed.description || "",
+      embedColor: (rosterEmbed.embedColor || "5865f2").replace(/^#/, ""),
+      channelId: rosterEmbed.channelId || "",
+      messageId: rosterEmbed.messageId || null,
+      buttons: (rosterEmbed.buttons || []).slice(0, 5).map((button) => ({
         rosterName: button.rosterName || "",
         label: button.label || "",
         color: button.color || "blue",
@@ -717,8 +747,9 @@ export default function Dashboard() {
   };
 
   const saveRosterEmbedConfig = async () => {
-    if (!selectedGuild || !rosterEmbedEditingName) return;
+    if (!selectedGuild) return;
 
+    const name = rosterEmbedName.trim();
     const title = rosterEmbedConfig.title.trim();
     const description = rosterEmbedConfig.description.trim();
     const embedColor = (rosterEmbedConfig.embedColor || "").trim().replace(/^#/, "");
@@ -732,6 +763,10 @@ export default function Dashboard() {
       .filter((button) => button.rosterName && button.label)
       .slice(0, 5);
 
+    if (!name) {
+      toast({ title: "Name required", description: "Enter an embed name.", variant: "destructive" });
+      return;
+    }
     if (!title) {
       toast({ title: "Title required", description: "Enter an embed title.", variant: "destructive" });
       return;
@@ -752,6 +787,7 @@ export default function Dashboard() {
     setRosterEmbedSaving(true);
     try {
       const payload = {
+        name,
         title,
         description,
         embedColor,
@@ -760,37 +796,56 @@ export default function Dashboard() {
       };
 
       const data = await fetchJsonWithTimeout(
-        `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterEmbedEditingName)}/embed-config`,
+        rosterEmbedModalMode === "create"
+          ? `/api/guilds/${selectedGuild}/roster-embeds`
+          : `/api/guilds/${selectedGuild}/roster-embeds/${encodeURIComponent(rosterEmbedEditingId)}`,
         {
-          method: "PUT",
+          method: rosterEmbedModalMode === "create" ? "POST" : "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         }
       );
 
-      if (data?.roster) {
-        setRosters((prev) => prev.map((entry) => entry.name === rosterEmbedEditingName ? data.roster : entry));
+      if (data?.rosterEmbed) {
+        setRosterEmbeds((prev) => rosterEmbedModalMode === "create"
+          ? [...prev, data.rosterEmbed]
+          : prev.map((entry) => entry.id === rosterEmbedEditingId ? data.rosterEmbed : entry));
       }
       setRosterEmbedModalOpen(false);
-      toast({ title: "Embed config saved", description: `Saved embed config for ${rosterEmbedEditingName}.` });
+      toast({ title: "Embed config saved", description: `Saved embed config for ${name}.` });
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to save embed config.", variant: "destructive" });
     }
     setRosterEmbedSaving(false);
   };
 
-  const postRosterEmbed = async (rosterName: string) => {
+  const deleteRosterEmbed = async (embedId: string) => {
     if (!selectedGuild) return;
-    setPostingRosterEmbedId(rosterName);
+    try {
+      await fetchJsonWithTimeout(
+        `/api/guilds/${selectedGuild}/roster-embeds/${encodeURIComponent(embedId)}`,
+        { method: "DELETE" }
+      );
+      setRosterEmbeds((prev) => prev.filter((entry) => entry.id !== embedId));
+      setRosterEmbedDeleteConfirm(null);
+      toast({ title: "Roster embed deleted", description: "The roster embed was deleted." });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to delete roster embed.", variant: "destructive" });
+    }
+  };
+
+  const postRosterEmbed = async (embedId: string) => {
+    if (!selectedGuild) return;
+    setPostingRosterEmbedId(embedId);
     try {
       const data = await fetchJsonWithTimeout(
-        `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterName)}/post-embed`,
+        `/api/guilds/${selectedGuild}/roster-embeds/${encodeURIComponent(embedId)}/post`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
       );
-      if (data?.roster) {
-        setRosters((prev) => prev.map((entry) => entry.name === rosterName ? data.roster : entry));
+      if (data?.rosterEmbed) {
+        setRosterEmbeds((prev) => prev.map((entry) => entry.id === embedId ? data.rosterEmbed : entry));
       }
-      toast({ title: "Roster embed posted", description: `Embed for ${rosterName} was posted to Discord.` });
+      toast({ title: "Roster embed posted", description: "Roster embed was sent to Discord." });
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to post roster embed.", variant: "destructive" });
     }
@@ -2274,6 +2329,76 @@ export default function Dashboard() {
                 </div>
               )}
 
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Roster Embeds</p>
+                    <p className="text-sm text-muted-foreground">Create shared embed panels that link multiple rosters with buttons.</p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={openCreateRosterEmbedModal}>
+                    <Plus className="mr-2 h-4 w-4" /> New Roster Embed
+                  </Button>
+                </div>
+
+                {rosterEmbeds.length === 0 ? (
+                  <Card className="border-border/80 bg-card/90">
+                    <CardContent className="py-6 text-sm text-muted-foreground">
+                      No roster embeds yet. Create one to send a single embed with buttons for multiple rosters.
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {rosterEmbeds.map((rosterEmbed) => {
+                      const embedChannel = textChannels.find((channel) => channel.id === rosterEmbed.channelId);
+                      const isPostingEmbed = postingRosterEmbedId === rosterEmbed.id;
+                      return (
+                        <Card key={rosterEmbed.id} className="border-border/80 bg-card/90">
+                          <CardHeader className="pb-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <CardTitle className="text-base">{rosterEmbed.name}</CardTitle>
+                                <p className="mt-1 text-xs text-muted-foreground">{rosterEmbed.buttons.length} button(s)</p>
+                              </div>
+                              <div className="flex gap-1 shrink-0">
+                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEditRosterEmbedModal(rosterEmbed)}>
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </Button>
+                                {rosterEmbedDeleteConfirm === rosterEmbed.id ? (
+                                  <>
+                                    <Button variant="destructive" size="icon" className="h-7 w-7" onClick={() => deleteRosterEmbed(rosterEmbed.id)}>
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setRosterEmbedDeleteConfirm(null)}>
+                                      <X className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setRosterEmbedDeleteConfirm(rosterEmbed.id)}>
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                            <p className="text-xs text-muted-foreground">{embedChannel ? `Channel: #${embedChannel.name}` : "No channel set"}{rosterEmbed.messageId ? " • posted" : ""}</p>
+                          </CardHeader>
+                          <CardContent className="space-y-3 pt-0">
+                            <p className="line-clamp-2 text-sm text-muted-foreground">{rosterEmbed.description}</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {rosterEmbed.buttons.map((button, index) => (
+                                <Badge key={`${rosterEmbed.id}-${index}`} variant="outline">{button.label}</Badge>
+                              ))}
+                            </div>
+                            <Button className="w-full" size="sm" variant="outline" disabled={isPostingEmbed} onClick={() => postRosterEmbed(rosterEmbed.id)}>
+                              {isPostingEmbed ? "Posting Embed…" : rosterEmbed.messageId ? "Refresh Roster Embed" : "Post Roster Embed"}
+                            </Button>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               {rostersLoading ? (
                 <div className="flex items-center justify-center py-16 text-muted-foreground">
                   <span>Loading rosters…</span>
@@ -2294,8 +2419,6 @@ export default function Dashboard() {
                     const rosterRoles = roles.filter((r) => roster.roleIds.includes(r.id));
                     const postedChannel = textChannels.find((ch) => ch.id === roster.channelId);
                     const isPosting = postingRosterId === roster.name;
-                    const isPostingEmbed = postingRosterEmbedId === roster.name;
-                    const hasEmbedConfig = !!roster.embedConfig;
                     return (
                       <Card key={roster.id} className="border-border/80 bg-card/90">
                         <CardHeader className="pb-3">
@@ -2373,34 +2496,15 @@ export default function Dashboard() {
                               ))}
                             </div>
                           )}
-                          <div className="grid grid-cols-2 gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={!roster.channelId || isPosting}
-                              onClick={() => postRoster(roster.name)}
-                              title={roster.channelId ? "Post or refresh this roster in Discord" : "Edit the roster and set a channel first"}
-                            >
-                              {isPosting ? "Posting…" : roster.messageId ? "Refresh Roster" : "Post Roster"}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => openRosterEmbedModal(roster)}
-                              title="Create or edit this roster embed configuration"
-                            >
-                              Embed Config
-                            </Button>
-                          </div>
                           <Button
                             size="sm"
                             variant="outline"
                             className="w-full"
-                            disabled={!hasEmbedConfig || isPostingEmbed}
-                            onClick={() => postRosterEmbed(roster.name)}
-                            title={hasEmbedConfig ? "Post or refresh roster embed" : "Set embed config first"}
+                            disabled={!roster.channelId || isPosting}
+                            onClick={() => postRoster(roster.name)}
+                            title={roster.channelId ? "Post or refresh this roster in Discord" : "Edit the roster and set a channel first"}
                           >
-                            {isPostingEmbed ? "Posting Embed…" : roster.embedConfig?.messageId ? "Refresh Roster Embed" : "Post Roster Embed"}
+                            {isPosting ? "Posting…" : roster.messageId ? "Refresh Roster" : "Post Roster"}
                           </Button>
                         </CardContent>
                       </Card>
@@ -2415,10 +2519,18 @@ export default function Dashboard() {
           <Dialog open={rosterEmbedModalOpen} onOpenChange={setRosterEmbedModalOpen}>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
-                <DialogTitle>Roster Embed Config – {rosterEmbedEditingName || "Roster"}</DialogTitle>
+                <DialogTitle>{rosterEmbedModalMode === "create" ? "Create Roster Embed" : `Edit Roster Embed – ${rosterEmbedName || "Embed"}`}</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Embed Name *</Label>
+                    <Input
+                      value={rosterEmbedName}
+                      onChange={(event) => setRosterEmbedName(event.target.value)}
+                      placeholder="Main roster selector"
+                    />
+                  </div>
                   <div className="space-y-2">
                     <Label>Embed Title *</Label>
                     <Input
