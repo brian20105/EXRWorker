@@ -827,6 +827,7 @@ type GuildUpdatePayload = {
 };
 
 const guildUpdateSubscribers = new Map<string, Set<Response>>();
+const pendingRosterCreates = new Set<string>();
 
 function subscribeToGuildUpdates(guildId: string, res: Response): () => void {
   const subscribers = guildUpdateSubscribers.get(guildId) || new Set<Response>();
@@ -1339,8 +1340,16 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Roster name is required." });
       }
 
-      const existing = await storage.getRosterConfig(guildId, name.trim());
+      const normalizedName = String(name || "").trim().toLowerCase();
+      const createKey = `${guildId}:${normalizedName}`;
+      if (pendingRosterCreates.has(createKey)) {
+        return res.status(409).json({ error: "That roster is already being created. Please wait a moment." });
+      }
+      pendingRosterCreates.add(createKey);
+
+      const existing = await storage.getRosterConfig(guildId, normalizedName);
       if (existing) {
+        pendingRosterCreates.delete(createKey);
         return res.status(400).json({ error: "A roster with that name already exists." });
       }
 
@@ -1363,6 +1372,12 @@ export async function registerRoutes(
       res.json({ success: true, roster });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    } finally {
+      const pendingName = String(req.body?.name || "").trim().toLowerCase();
+      const guildId = String(req.params.guildId || "").trim();
+      if (guildId && pendingName) {
+        pendingRosterCreates.delete(`${guildId}:${pendingName}`);
+      }
     }
   });
 

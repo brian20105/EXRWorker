@@ -259,6 +259,42 @@ function toRgba(hexColor: string, alpha: number): string {
   return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }
 
+function normalizeRosterKey(name: string | null | undefined): string {
+  return String(name || "").trim().toLowerCase();
+}
+
+function dedupeRosters(list: RosterConfig[]): RosterConfig[] {
+  const deduped = new Map<string, RosterConfig>();
+  for (const roster of list || []) {
+    const key = normalizeRosterKey(roster?.name);
+    if (!key) continue;
+    deduped.set(key, roster);
+  }
+  return Array.from(deduped.values());
+}
+
+function upsertRoster(list: RosterConfig[], roster: RosterConfig): RosterConfig[] {
+  const key = normalizeRosterKey(roster?.name);
+  const next = (list || []).filter((entry) => normalizeRosterKey(entry?.name) !== key);
+  next.push(roster);
+  return dedupeRosters(next);
+}
+
+function dedupeRosterEmbeds(list: SavedRosterEmbedConfig[]): SavedRosterEmbedConfig[] {
+  const deduped = new Map<string, SavedRosterEmbedConfig>();
+  for (const entry of list || []) {
+    if (!entry?.id) continue;
+    deduped.set(entry.id, entry);
+  }
+  return Array.from(deduped.values());
+}
+
+function upsertRosterEmbed(list: SavedRosterEmbedConfig[], rosterEmbed: SavedRosterEmbedConfig): SavedRosterEmbedConfig[] {
+  const next = (list || []).filter((entry) => entry.id !== rosterEmbed.id);
+  next.push(rosterEmbed);
+  return dedupeRosterEmbeds(next);
+}
+
 export default function Dashboard() {
   const fetchJsonWithTimeout = async (url: string, init?: RequestInit, timeoutMs = 12000) => {
     const controller = new AbortController();
@@ -551,8 +587,8 @@ export default function Dashboard() {
         }
 
         if (payload.type === "rosters-updated") {
-          setRosters(Array.isArray(payload.rosters) ? payload.rosters : []);
-          setRosterEmbeds(Array.isArray(payload.rosterEmbeds) ? payload.rosterEmbeds : []);
+          setRosters(dedupeRosters(Array.isArray(payload.rosters) ? payload.rosters : []));
+          setRosterEmbeds(dedupeRosterEmbeds(Array.isArray(payload.rosterEmbeds) ? payload.rosterEmbeds : []));
         }
       } catch {
         // Ignore malformed events.
@@ -573,8 +609,8 @@ export default function Dashboard() {
       fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/roster-embeds`, undefined, 12000),
     ])
       .then(([rosterData, embedData]) => {
-        setRosters(Array.isArray(rosterData.rosters) ? rosterData.rosters : []);
-        setRosterEmbeds(Array.isArray(embedData.rosterEmbeds) ? embedData.rosterEmbeds : []);
+        setRosters(dedupeRosters(Array.isArray(rosterData.rosters) ? rosterData.rosters : []));
+        setRosterEmbeds(dedupeRosterEmbeds(Array.isArray(embedData.rosterEmbeds) ? embedData.rosterEmbeds : []));
         setRostersLoading(false);
       })
       .catch(() => setRostersLoading(false));
@@ -626,7 +662,7 @@ export default function Dashboard() {
             channelId: rosterModalChannelId || null,
           }),
         });
-        setRosters((prev) => [...prev, data.roster]);
+        setRosters((prev) => upsertRoster(prev, data.roster));
         toast({ title: "Roster created", description: `"${data.roster.name}" has been created.` });
       } else {
         const data = await fetchJsonWithTimeout(
@@ -640,7 +676,7 @@ export default function Dashboard() {
             }),
           }
         );
-        setRosters((prev) => prev.map((r) => r.name === rosterModalEditingName ? data.roster : r));
+        setRosters((prev) => upsertRoster(prev, data.roster));
         toast({ title: "Roster updated", description: `"${data.roster.name}" has been updated.` });
       }
       setRosterModalOpen(false);
@@ -657,7 +693,7 @@ export default function Dashboard() {
         `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterName)}`,
         { method: "DELETE" }
       );
-      setRosters((prev) => prev.filter((r) => r.name !== rosterName));
+      setRosters((prev) => dedupeRosters(prev.filter((r) => normalizeRosterKey(r.name) !== normalizeRosterKey(rosterName))));
       setRosterDeleteConfirm(null);
       toast({ title: "Roster deleted", description: `"${rosterName}" has been deleted.` });
     } catch (e: any) {
@@ -679,7 +715,7 @@ export default function Dashboard() {
         `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterName)}/post`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
       );
-      setRosters((prev) => prev.map((r) => r.name === rosterName ? data.roster : r));
+      setRosters((prev) => upsertRoster(prev, data.roster));
       toast({ title: "Roster posted!", description: `"${rosterName}" has been sent to Discord.` });
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to post roster.", variant: "destructive" });
@@ -807,9 +843,7 @@ export default function Dashboard() {
       );
 
       if (data?.rosterEmbed) {
-        setRosterEmbeds((prev) => rosterEmbedModalMode === "create"
-          ? [...prev, data.rosterEmbed]
-          : prev.map((entry) => entry.id === rosterEmbedEditingId ? data.rosterEmbed : entry));
+        setRosterEmbeds((prev) => upsertRosterEmbed(prev, data.rosterEmbed));
       }
       setRosterEmbedModalOpen(false);
       toast({ title: "Embed config saved", description: `Saved embed config for ${name}.` });
@@ -826,7 +860,7 @@ export default function Dashboard() {
         `/api/guilds/${selectedGuild}/roster-embeds/${encodeURIComponent(embedId)}`,
         { method: "DELETE" }
       );
-      setRosterEmbeds((prev) => prev.filter((entry) => entry.id !== embedId));
+      setRosterEmbeds((prev) => dedupeRosterEmbeds(prev.filter((entry) => entry.id !== embedId)));
       setRosterEmbedDeleteConfirm(null);
       toast({ title: "Roster embed deleted", description: "The roster embed was deleted." });
     } catch (e: any) {
@@ -843,7 +877,7 @@ export default function Dashboard() {
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
       );
       if (data?.rosterEmbed) {
-        setRosterEmbeds((prev) => prev.map((entry) => entry.id === embedId ? data.rosterEmbed : entry));
+        setRosterEmbeds((prev) => upsertRosterEmbed(prev, data.rosterEmbed));
       }
       toast({ title: "Roster embed posted", description: "Roster embed was sent to Discord." });
     } catch (e: any) {
