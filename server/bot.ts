@@ -5836,7 +5836,7 @@ client.on("interactionCreate", async (interaction) => {
             }
           );
 
-        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+              .setEmoji("📝")
           selectMenu
         );
 
@@ -7823,7 +7823,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Save message ID for real-time updates
-          try {
+              .setEmoji("📝")
             await storage.upsertGuildConfig({
               guildId: interaction.guildId!,
               modmailEmbedMessageId: sentMessage.id,
@@ -10154,11 +10154,6 @@ client.on("interactionCreate", async (interaction) => {
                       .setStyle(ButtonStyle.Secondary)
                       .setEmoji("📝"),
                     new ButtonBuilder()
-                      .setCustomId(`appeal_logs_${threadId}`)
-                      .setLabel("Appeal Logs")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("⚖️"),
-                    new ButtonBuilder()
                       .setCustomId(`modmail_close_${threadId}`)
                       .setLabel("Close")
                       .setStyle(ButtonStyle.Danger)
@@ -10209,11 +10204,6 @@ client.on("interactionCreate", async (interaction) => {
                         .setLabel("Modmail Logs")
                         .setStyle(ButtonStyle.Secondary)
                         .setEmoji("📝"),
-                      new ButtonBuilder()
-                        .setCustomId(`appeal_logs_${threadId}`)
-                        .setLabel("Appeal Logs")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("⚖️"),
                       new ButtonBuilder()
                         .setCustomId(`modmail_close_${threadId}`)
                         .setLabel("Close")
@@ -10428,11 +10418,6 @@ client.on("interactionCreate", async (interaction) => {
                     .setLabel("Modmail Logs")
                     .setStyle(ButtonStyle.Secondary)
                     .setEmoji("📝"),
-                  new ButtonBuilder()
-                    .setCustomId(`appeal_logs_${thread.id}`)
-                    .setLabel("Appeal Logs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("⚖️"),
                   new ButtonBuilder()
                     .setCustomId(`modmail_close_${thread.id}`)
                     .setLabel("Close")
@@ -11018,18 +11003,6 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("🛡️")
           );
 
-              // Add a compact header action dropdown for ticket-level actions
-              const headerActionMenu = new StringSelectMenuBuilder()
-                .setCustomId(`modmail_action_${thread.id}_0_${thread.userId}`)
-                .setPlaceholder("Ticket actions...")
-                .addOptions(
-                  new StringSelectMenuOptionBuilder().setLabel("Claim Ticket").setDescription("Claim this ticket").setValue("claim_ticket").setEmoji("🙋"),
-                  new StringSelectMenuOptionBuilder().setLabel("Close Ticket").setDescription("Close this ticket").setValue("close_ticket").setEmoji("🔒"),
-                  new StringSelectMenuOptionBuilder().setLabel("Override / Unclaim").setDescription("Admin: unclaim or override this ticket").setValue("override_ticket").setEmoji("🔁")
-                );
-
-              const headerActionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(headerActionMenu);
-
           const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_modlogs_${thread.id}`)
@@ -11040,15 +11013,10 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_logs_${thread.id}`)
               .setLabel("Modmail Logs")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝"),
-            new ButtonBuilder()
-              .setCustomId(`appeal_logs_${thread.id}`)
-              .setLabel("Appeal Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("⚖️")
+              .setEmoji("📝")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -11238,17 +11206,6 @@ client.on("interactionCreate", async (interaction) => {
           );
 
           // Add a compact header action dropdown for ticket-level actions
-          const headerActionMenu = new StringSelectMenuBuilder()
-            .setCustomId(`modmail_action_${thread.id}_0_${thread.userId}`)
-            .setPlaceholder("Ticket actions...")
-            .addOptions(
-              new StringSelectMenuOptionBuilder().setLabel("Claim Ticket").setDescription("Claim this ticket").setValue("claim_ticket").setEmoji("🙋"),
-              new StringSelectMenuOptionBuilder().setLabel("Close Ticket").setDescription("Close this ticket").setValue("close_ticket").setEmoji("🔒"),
-              new StringSelectMenuOptionBuilder().setLabel("Override / Unclaim").setDescription("Admin: unclaim or override this ticket").setValue("override_ticket").setEmoji("🔁")
-            );
-
-          const headerActionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(headerActionMenu);
-
           const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_modlogs_${thread.id}`)
@@ -11259,15 +11216,10 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_logs_${thread.id}`)
               .setLabel("Modmail Logs")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝"),
-            new ButtonBuilder()
-              .setCustomId(`appeal_logs_${thread.id}`)
-              .setLabel("Appeal Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("⚖️")
+              .setEmoji("📝")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -12520,11 +12472,6 @@ client.on("interactionCreate", async (interaction) => {
                   .setStyle(ButtonStyle.Secondary)
                   .setEmoji("📝"),
                 new ButtonBuilder()
-                  .setCustomId(`appeal_logs_${threadId}`)
-                  .setLabel("Appeal Logs")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("⚖️"),
-                new ButtonBuilder()
                   .setCustomId(`modmail_close_${threadId}`)
                   .setLabel("Close")
                   .setStyle(ButtonStyle.Danger)
@@ -12571,11 +12518,6 @@ client.on("interactionCreate", async (interaction) => {
                       .setLabel("Modmail Logs")
                       .setStyle(ButtonStyle.Secondary)
                       .setEmoji("📝"),
-                    new ButtonBuilder()
-                      .setCustomId(`appeal_logs_${threadId}`)
-                      .setLabel("Appeal Logs")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("⚖️"),
                     new ButtonBuilder()
                       .setCustomId(`modmail_close_${threadId}`)
                       .setLabel("Close")
@@ -12689,11 +12631,6 @@ client.on("interactionCreate", async (interaction) => {
                   .setStyle(ButtonStyle.Secondary)
                   .setEmoji("📝"),
                 new ButtonBuilder()
-                  .setCustomId(`appeal_logs_${threadId}`)
-                  .setLabel("Appeal Logs")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("⚖️"),
-                new ButtonBuilder()
                   .setCustomId(`modmail_close_${threadId}`)
                   .setLabel("Close")
                   .setStyle(ButtonStyle.Danger)
@@ -12742,11 +12679,6 @@ client.on("interactionCreate", async (interaction) => {
                         .setLabel("Modmail Logs")
                         .setStyle(ButtonStyle.Secondary)
                         .setEmoji("📝"),
-                      new ButtonBuilder()
-                        .setCustomId(`appeal_logs_${threadId}`)
-                        .setLabel("Appeal Logs")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("⚖️"),
                       new ButtonBuilder()
                         .setCustomId(`modmail_close_${threadId}`)
                         .setLabel("Close")
@@ -15328,18 +15260,6 @@ client.on("interactionCreate", async (interaction) => {
               .setEmoji("🛡️")
           );
 
-          // Add a compact header action dropdown for ticket-level actions
-          const headerActionMenu = new StringSelectMenuBuilder()
-            .setCustomId(`modmail_action_${thread.id}_0_${thread.userId}`)
-            .setPlaceholder("Ticket actions...")
-            .addOptions(
-              new StringSelectMenuOptionBuilder().setLabel("Claim Ticket").setDescription("Claim this ticket").setValue("claim_ticket").setEmoji("🙋"),
-              new StringSelectMenuOptionBuilder().setLabel("Close Ticket").setDescription("Close this ticket").setValue("close_ticket").setEmoji("🔒"),
-              new StringSelectMenuOptionBuilder().setLabel("Override / Unclaim").setDescription("Admin: unclaim or override this ticket").setValue("override_ticket").setEmoji("🔁")
-            );
-
-          const headerActionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(headerActionMenu);
-
           const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`modmail_modlogs_${thread.id}`)
@@ -15350,15 +15270,10 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_logs_${thread.id}`)
               .setLabel("Modmail Logs")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝"),
-            new ButtonBuilder()
-              .setCustomId(`appeal_logs_${thread.id}`)
-              .setLabel("Appeal Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("⚖️")
+              .setEmoji("📝")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -15602,15 +15517,10 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_logs_${thread.id}`)
               .setLabel("Modmail Logs")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝"),
-            new ButtonBuilder()
-              .setCustomId(`appeal_logs_${thread.id}`)
-              .setLabel("Appeal Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("⚖️")
+              .setEmoji("📝")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -15845,15 +15755,10 @@ client.on("interactionCreate", async (interaction) => {
               .setCustomId(`modmail_logs_${thread.id}`)
               .setLabel("Modmail Logs")
               .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝"),
-            new ButtonBuilder()
-              .setCustomId(`appeal_logs_${thread.id}`)
-              .setLabel("Appeal Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("⚖️")
+              .setEmoji("📝")
           );
 
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow, headerActionRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
           await initialTicketMessage.pin().catch(() => {});
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted to **${guild.name}**! Staff will respond shortly. Reply to this DM to communicate with them.` });
@@ -17832,11 +17737,6 @@ client.on("messageCreate", async (message) => {
                     .setStyle(ButtonStyle.Secondary)
                     .setEmoji("📝"),
                   new ButtonBuilder()
-                    .setCustomId(appealLogsButtonId)
-                    .setLabel("Appeal Logs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("⚖️"),
-                  new ButtonBuilder()
                     .setCustomId(closeButtonId)
                     .setLabel("Close")
                     .setStyle(ButtonStyle.Danger)
@@ -17880,12 +17780,8 @@ client.on("messageCreate", async (message) => {
         .addOptions(
           new StringSelectMenuOptionBuilder().setLabel("Toggle Member").setDescription("Add or remove a member from this ticket").setValue("toggle_member").setEmoji("👥"),
           new StringSelectMenuOptionBuilder().setLabel("Request A Role").setDescription("Create a role request from this ticket").setValue("request_role").setEmoji("🛡️"),
-          new StringSelectMenuOptionBuilder().setLabel("Claim Ticket").setDescription("Claim this ticket").setValue("claim_ticket").setEmoji("🙋"),
-          new StringSelectMenuOptionBuilder().setLabel("Close Ticket").setDescription("Close this ticket").setValue("close_ticket").setEmoji("🔒"),
-          new StringSelectMenuOptionBuilder().setLabel("Override / Unclaim").setDescription("Admin: unclaim or override this ticket").setValue("override_ticket").setEmoji("🔁"),
           new StringSelectMenuOptionBuilder().setLabel("User Modlogs").setDescription("Show modlogs for this user").setValue("user_modlogs").setEmoji("📚"),
-          new StringSelectMenuOptionBuilder().setLabel("Modmail Logs").setDescription("Show modmail logs for this user").setValue("user_modmail_logs").setEmoji("📝"),
-          new StringSelectMenuOptionBuilder().setLabel("Appeal Logs").setDescription("Show appeal logs for this user").setValue("user_appeal_logs").setEmoji("⚖️")
+          new StringSelectMenuOptionBuilder().setLabel("Modmail Logs").setDescription("Show modmail logs for this user").setValue("user_modmail_logs").setEmoji("📝")
         );
 
       const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
@@ -19260,11 +19156,6 @@ client.on("messageCreate", async (message) => {
                     .setStyle(ButtonStyle.Secondary)
                     .setEmoji("📝"),
                   new ButtonBuilder()
-                    .setCustomId(appealLogsButtonId)
-                    .setLabel("Appeal Logs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("⚖️"),
-                  new ButtonBuilder()
                     .setCustomId(closeButtonId)
                     .setLabel("Close")
                     .setStyle(ButtonStyle.Danger)
@@ -20321,21 +20212,6 @@ client.on("messageCreate", async (message) => {
                 .setValue("request_role")
                 .setEmoji("🛡️"),
               new StringSelectMenuOptionBuilder()
-                .setLabel("Claim Ticket")
-                .setDescription("Claim this ticket")
-                .setValue("claim_ticket")
-                .setEmoji("🙋"),
-              new StringSelectMenuOptionBuilder()
-                .setLabel("Close Ticket")
-                .setDescription("Close this ticket")
-                .setValue("close_ticket")
-                .setEmoji("🔒"),
-              new StringSelectMenuOptionBuilder()
-                .setLabel("Override / Unclaim")
-                .setDescription("Admin: unclaim or override this ticket")
-                .setValue("override_ticket")
-                .setEmoji("🔁"),
-              new StringSelectMenuOptionBuilder()
                 .setLabel("User Modlogs")
                 .setDescription("Show modlogs for this user")
                 .setValue("user_modlogs")
@@ -20344,12 +20220,7 @@ client.on("messageCreate", async (message) => {
                 .setLabel("Modmail Logs")
                 .setDescription("Show modmail logs for this user")
                 .setValue("user_modmail_logs")
-                .setEmoji("📝"),
-              new StringSelectMenuOptionBuilder()
-                .setLabel("Appeal Logs")
-                .setDescription("Show appeal logs for this user")
-                .setValue("user_appeal_logs")
-                .setEmoji("⚖️")
+                .setEmoji("📝")
             );
 
           const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
