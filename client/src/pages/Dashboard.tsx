@@ -304,7 +304,7 @@ export default function Dashboard() {
     setThemeMounted(true);
 
     const computedStyle = window.getComputedStyle(document.documentElement);
-    const currentBackground = normalizeHexColor(computedStyle.getPropertyValue("--color-discord-blurple"), DEFAULT_TOP_FADE_COLOR);
+    const currentBackground = DEFAULT_TOP_FADE_COLOR;
     const currentButton = normalizeHexColor(computedStyle.getPropertyValue("--color-discord-blurple"), "#5865f2");
 
     const stored = window.localStorage.getItem(DASHBOARD_COLOR_STORAGE_KEY);
@@ -475,11 +475,8 @@ export default function Dashboard() {
 
   const resetDashboardColorsToDefault = () => {
     const defaultBackground = DEFAULT_TOP_FADE_COLOR;
-    const defaultButtons = "#5865f2";
     setBackgroundColor(defaultBackground);
-    setButtonColor(defaultButtons);
-    applyDashboardColorOverrides(defaultBackground, defaultButtons);
-    persistDashboardColors(defaultBackground, defaultButtons);
+    persistDashboardColors(defaultBackground, buttonColor);
   };
 
   const applyBackgroundPresetColor = (hexColor: string) => {
