@@ -88,7 +88,7 @@ interface AuthUser {
 }
 
 type SettingsTabKey = "channels" | "roles" | "embeds" | "advanced";
-type PrimaryTabKey = "settings" | "features" | "rosters";
+type PrimaryTabKey = "settings" | "features" | "rosters" | "miscellaneous";
 
 interface RosterConfig {
   id: string;
@@ -146,6 +146,7 @@ const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof Slid
   settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
   features: { label: "Bot Features", icon: Sparkles },
   rosters: { label: "Rosters", icon: ListTree },
+  miscellaneous: { label: "Miscellaneous", icon: Braces },
 };
 
 interface DashboardQuickSettings {
@@ -630,7 +631,7 @@ export default function Dashboard() {
 
   // Fetch rosters when the rosters tab is active
   useEffect(() => {
-    if (!selectedGuild || activePrimaryTab !== "rosters") return;
+    if (!selectedGuild || (activePrimaryTab !== "rosters" && activePrimaryTab !== "miscellaneous")) return;
     setRostersLoading(true);
     setRoleSyncLoading(true);
     fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/rosters`, undefined, 12000)
@@ -2198,7 +2199,13 @@ export default function Dashboard() {
                     <TabsTrigger
                       key={tabKey}
                       value={tabKey}
-                      data-testid={tabKey === "settings" ? "tab-settings" : tabKey === "features" ? "tab-bot-features" : "tab-rosters"}
+                      data-testid={tabKey === "settings"
+                        ? "tab-settings"
+                        : tabKey === "features"
+                          ? "tab-bot-features"
+                          : tabKey === "rosters"
+                            ? "tab-rosters"
+                            : "tab-miscellaneous"}
                       className="group flex min-h-14 w-full items-center justify-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-muted-foreground transition-all data-[state=active]:border-primary/30 data-[state=active]:bg-primary/15 data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:justify-start"
                     >
                       <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-border/60 bg-background/80 text-primary transition-transform group-data-[state=active]:scale-105 group-data-[state=active]:border-primary/40 group-data-[state=active]:bg-primary/10">
@@ -2548,166 +2555,6 @@ export default function Dashboard() {
                 )}
               </div>
 
-              <div className="space-y-3">
-                <div>
-                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Miscellaneous</p>
-                  <p className="text-sm text-muted-foreground">Manage cross-server role sync from the website.</p>
-                </div>
-
-                <Card className="border-border/80 bg-card/90">
-                  <CardHeader className="space-y-1">
-                    <CardTitle className="text-base">Role Sync</CardTitle>
-                    <CardDescription>
-                      One way keeps the source server authoritative. If the role is manually given in the target server, it gets removed unless the member has the source role.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                      <div className="space-y-2">
-                        <Label>Mode</Label>
-                        <Select value={roleSyncDirection} onValueChange={(value) => setRoleSyncDirection(value as "one-way" | "two-way")}>
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="one-way">One way</SelectItem>
-                            <SelectItem value="two-way">Two way</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Source Server</Label>
-                        <Select value={roleSyncSourceGuildId} onValueChange={(value) => { setRoleSyncSourceGuildId(value); setRoleSyncSourceRoleId(""); }}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select source server" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {guilds.map((guild) => (
-                              <SelectItem key={`role-sync-source-${guild.id}`} value={guild.id}>{guild.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Source Role</Label>
-                        <Select value={roleSyncSourceRoleId} onValueChange={setRoleSyncSourceRoleId}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select source role" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {roleSyncSourceRoles.map((role) => (
-                              <SelectItem key={`role-sync-source-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Target Server</Label>
-                        <Select value={roleSyncTargetGuildId} onValueChange={(value) => { setRoleSyncTargetGuildId(value); setRoleSyncTargetRoleId(""); }}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select target server" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {guilds.map((guild) => (
-                              <SelectItem key={`role-sync-target-${guild.id}`} value={guild.id}>{guild.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label>Target Role</Label>
-                        <Select value={roleSyncTargetRoleId} onValueChange={setRoleSyncTargetRoleId}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select target role" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {roleSyncTargetRoles.map((role) => (
-                              <SelectItem key={`role-sync-target-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-
-                    <Button onClick={createRoleSync} disabled={roleSyncSaving}>
-                      {roleSyncSaving ? "Creating…" : "Create Role Sync"}
-                    </Button>
-
-                    {roleSyncLoading ? (
-                      <p className="text-sm text-muted-foreground">Loading role syncs…</p>
-                    ) : roleSyncs.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No role sync pairs yet.</p>
-                    ) : (
-                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                        {roleSyncs.map((syncItem) => (
-                          <Card key={syncItem.id} className="border-border/70 bg-card/50 overflow-hidden">
-                            <CardContent className="space-y-4 p-4">
-                              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
-                                <div className="text-center">
-                                  <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Source server</p>
-                                  {syncItem.sourceGuildIcon ? (
-                                    <img src={syncItem.sourceGuildIcon} alt={syncItem.sourceGuildName} className="mx-auto mb-3 h-16 w-16 rounded-full object-cover" />
-                                  ) : (
-                                    <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-sm font-semibold">
-                                      {syncItem.sourceGuildName.slice(0, 2).toUpperCase()}
-                                    </div>
-                                  )}
-                                  <p className="text-sm font-medium">{syncItem.sourceGuildName}</p>
-                                  <Badge
-                                    variant="outline"
-                                    className="mt-2"
-                                    style={{
-                                      borderColor: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
-                                      color: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
-                                    }}
-                                  >
-                                    {syncItem.sourceRoleName}
-                                  </Badge>
-                                </div>
-
-                                <div className="text-center">
-                                  <div className="mb-3 text-2xl">→</div>
-                                  <p className="text-sm font-semibold">{syncItem.direction === "two-way" ? "Two way" : "One way"}</p>
-                                </div>
-
-                                <div className="text-center">
-                                  <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Target server</p>
-                                  {syncItem.targetGuildIcon ? (
-                                    <img src={syncItem.targetGuildIcon} alt={syncItem.targetGuildName} className="mx-auto mb-3 h-16 w-16 rounded-full object-cover" />
-                                  ) : (
-                                    <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-sm font-semibold">
-                                      {syncItem.targetGuildName.slice(0, 2).toUpperCase()}
-                                    </div>
-                                  )}
-                                  <p className="text-sm font-medium">{syncItem.targetGuildName}</p>
-                                  <Badge
-                                    variant="outline"
-                                    className="mt-2"
-                                    style={{
-                                      borderColor: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
-                                      color: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
-                                    }}
-                                  >
-                                    {syncItem.targetRoleName}
-                                  </Badge>
-                                </div>
-                              </div>
-                            </CardContent>
-                            <Button variant="destructive" className="w-full rounded-none" onClick={() => deleteRoleSync(syncItem.id)} disabled={deletingRoleSyncId === syncItem.id}>
-                              {deletingRoleSyncId === syncItem.id ? "Deleting…" : "Delete"}
-                            </Button>
-                          </Card>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-
               {rostersLoading ? (
                 <div className="flex items-center justify-center py-16 text-muted-foreground">
                   <span>Loading rosters…</span>
@@ -2821,6 +2668,166 @@ export default function Dashboard() {
                   })}
                 </div>
               )}
+            </TabsContent>
+
+            <TabsContent value="miscellaneous" className="mt-0 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Miscellaneous</h3>
+                <p className="mt-1 text-sm text-muted-foreground">Manage role sync and other cross-server tools.</p>
+              </div>
+
+              <Card className="border-border/80 bg-card/90">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-base">Role Sync</CardTitle>
+                  <CardDescription>
+                    One way keeps the source server authoritative. If the role is manually given in the target server, it gets removed unless the member has the source role.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                    <div className="space-y-2">
+                      <Label>Mode</Label>
+                      <Select value={roleSyncDirection} onValueChange={(value) => setRoleSyncDirection(value as "one-way" | "two-way")}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="one-way">One way</SelectItem>
+                          <SelectItem value="two-way">Two way</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Source Server</Label>
+                      <Select value={roleSyncSourceGuildId} onValueChange={(value) => { setRoleSyncSourceGuildId(value); setRoleSyncSourceRoleId(""); }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select source server" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {guilds.map((guild) => (
+                            <SelectItem key={`role-sync-source-${guild.id}`} value={guild.id}>{guild.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Source Role</Label>
+                      <Select value={roleSyncSourceRoleId} onValueChange={setRoleSyncSourceRoleId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select source role" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {roleSyncSourceRoles.map((role) => (
+                            <SelectItem key={`role-sync-source-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Target Server</Label>
+                      <Select value={roleSyncTargetGuildId} onValueChange={(value) => { setRoleSyncTargetGuildId(value); setRoleSyncTargetRoleId(""); }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select target server" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {guilds.map((guild) => (
+                            <SelectItem key={`role-sync-target-${guild.id}`} value={guild.id}>{guild.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Target Role</Label>
+                      <Select value={roleSyncTargetRoleId} onValueChange={setRoleSyncTargetRoleId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select target role" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {roleSyncTargetRoles.map((role) => (
+                            <SelectItem key={`role-sync-target-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <Button onClick={createRoleSync} disabled={roleSyncSaving}>
+                    {roleSyncSaving ? "Creating…" : "Create Role Sync"}
+                  </Button>
+
+                  {roleSyncLoading ? (
+                    <p className="text-sm text-muted-foreground">Loading role syncs…</p>
+                  ) : roleSyncs.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No role sync pairs yet.</p>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      {roleSyncs.map((syncItem) => (
+                        <Card key={syncItem.id} className="border-border/70 bg-card/50 overflow-hidden">
+                          <CardContent className="space-y-4 p-4">
+                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+                              <div className="text-center">
+                                <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Source server</p>
+                                {syncItem.sourceGuildIcon ? (
+                                  <img src={syncItem.sourceGuildIcon} alt={syncItem.sourceGuildName} className="mx-auto mb-3 h-16 w-16 rounded-full object-cover" />
+                                ) : (
+                                  <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-sm font-semibold">
+                                    {syncItem.sourceGuildName.slice(0, 2).toUpperCase()}
+                                  </div>
+                                )}
+                                <p className="text-sm font-medium">{syncItem.sourceGuildName}</p>
+                                <Badge
+                                  variant="outline"
+                                  className="mt-2"
+                                  style={{
+                                    borderColor: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
+                                    color: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
+                                  }}
+                                >
+                                  {syncItem.sourceRoleName}
+                                </Badge>
+                              </div>
+
+                              <div className="text-center">
+                                <div className="mb-3 text-2xl">→</div>
+                                <p className="text-sm font-semibold">{syncItem.direction === "two-way" ? "Two way" : "One way"}</p>
+                              </div>
+
+                              <div className="text-center">
+                                <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Target server</p>
+                                {syncItem.targetGuildIcon ? (
+                                  <img src={syncItem.targetGuildIcon} alt={syncItem.targetGuildName} className="mx-auto mb-3 h-16 w-16 rounded-full object-cover" />
+                                ) : (
+                                  <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-sm font-semibold">
+                                    {syncItem.targetGuildName.slice(0, 2).toUpperCase()}
+                                  </div>
+                                )}
+                                <p className="text-sm font-medium">{syncItem.targetGuildName}</p>
+                                <Badge
+                                  variant="outline"
+                                  className="mt-2"
+                                  style={{
+                                    borderColor: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
+                                    color: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
+                                  }}
+                                >
+                                  {syncItem.targetRoleName}
+                                </Badge>
+                              </div>
+                            </div>
+                          </CardContent>
+                          <Button variant="destructive" className="w-full rounded-none" onClick={() => deleteRoleSync(syncItem.id)} disabled={deletingRoleSyncId === syncItem.id}>
+                            {deletingRoleSyncId === syncItem.id ? "Deleting…" : "Delete"}
+                          </Button>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             </TabsContent>
             </div>
           </Tabs>
