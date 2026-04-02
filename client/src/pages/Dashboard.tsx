@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X } from "lucide-react";
+import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X, SlidersHorizontal, Sparkles, ListTree } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useTheme } from "next-themes";
 import { useLocation, useRoute } from "wouter";
@@ -100,6 +100,12 @@ interface RosterConfig {
   createdAt: string;
   updatedAt: string;
 }
+
+const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
+  settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
+  features: { label: "Bot Features", icon: Sparkles },
+  rosters: { label: "Rosters", icon: ListTree },
+};
 
 interface DashboardQuickSettings {
   moderationPrefix: string;
@@ -506,6 +512,14 @@ export default function Dashboard() {
     if (!selectedGuild) return;
     if (!rosterModalName.trim()) {
       toast({ title: "Name required", description: "Please enter a roster name.", variant: "destructive" });
+      return;
+    }
+    if (rosterModalRoleIds.length === 0) {
+      toast({ title: "Roles required", description: "Pick at least one role for the roster.", variant: "destructive" });
+      return;
+    }
+    if (!rosterModalChannelId) {
+      toast({ title: "Channel required", description: "Choose a channel where this roster should be posted.", variant: "destructive" });
       return;
     }
     setRosterSaving(true);
@@ -1765,14 +1779,33 @@ export default function Dashboard() {
           </div>
         ) : (
           <>
-          <Tabs value={activePrimaryTab} onValueChange={(value) => setActivePrimaryTab(value as PrimaryTabKey)} className="space-y-4">
-            <TabsList className="grid h-auto w-full grid-cols-3 gap-2 p-1 md:w-[540px]">
-              <TabsTrigger value="settings" data-testid="tab-settings">Dashboard Settings</TabsTrigger>
-              <TabsTrigger value="features" data-testid="tab-bot-features">Bot Features</TabsTrigger>
-              <TabsTrigger value="rosters" data-testid="tab-rosters">Rosters</TabsTrigger>
+          <Tabs
+            value={activePrimaryTab}
+            onValueChange={(value) => setActivePrimaryTab(value as PrimaryTabKey)}
+            className="grid grid-cols-[84px_minmax(0,1fr)] gap-4 sm:grid-cols-[240px_minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-6"
+          >
+            <TabsList className="flex h-fit w-full flex-col gap-2 rounded-2xl border border-border/70 bg-card/85 p-2 shadow-sm backdrop-blur sm:p-3">
+              {(Object.entries(PRIMARY_TAB_META) as Array<[PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }]>)
+                .map(([tabKey, meta]) => {
+                  const Icon = meta.icon;
+                  return (
+                    <TabsTrigger
+                      key={tabKey}
+                      value={tabKey}
+                      data-testid={tabKey === "settings" ? "tab-settings" : tabKey === "features" ? "tab-bot-features" : "tab-rosters"}
+                      className="group flex min-h-14 w-full items-center justify-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-muted-foreground transition-all data-[state=active]:border-primary/30 data-[state=active]:bg-primary/15 data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:justify-start"
+                    >
+                      <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-border/60 bg-background/80 text-primary transition-transform group-data-[state=active]:scale-105 group-data-[state=active]:border-primary/40 group-data-[state=active]:bg-primary/10">
+                        <Icon className="h-4 w-4" />
+                      </span>
+                      <span className="hidden text-sm font-medium sm:inline">{meta.label}</span>
+                    </TabsTrigger>
+                  );
+                })}
             </TabsList>
 
-            <TabsContent value="settings" className="space-y-6">
+            <div className="min-w-0">
+            <TabsContent value="settings" className="mt-0 space-y-6">
               <Card className="border-border/80 bg-card/90" data-testid="card-server-info">
                 <CardHeader>
                   <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Server Info</CardTitle>
@@ -1921,7 +1954,7 @@ export default function Dashboard() {
               </Card>
             </TabsContent>
 
-            <TabsContent value="features" className="space-y-0">
+            <TabsContent value="features" className="mt-0 space-y-0">
               <Card className="border-border/80 bg-card/90" data-testid="card-bot-features">
                 <CardHeader className="space-y-1">
                   <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Features</CardTitle>
@@ -1983,7 +2016,7 @@ export default function Dashboard() {
               </Card>
             </TabsContent>
 
-            <TabsContent value="rosters" className="space-y-4">
+            <TabsContent value="rosters" className="mt-0 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Rosters</h3>
@@ -2153,6 +2186,7 @@ export default function Dashboard() {
                 </div>
               )}
             </TabsContent>
+            </div>
           </Tabs>
 
           {/* Roster create/edit modal */}
@@ -2173,8 +2207,8 @@ export default function Dashboard() {
                   </div>
                 )}
                 <div className="space-y-2">
-                  <Label>Roles on this Roster</Label>
-                  <p className="text-xs text-muted-foreground">Members with these roles will appear on the roster.</p>
+                  <Label>Roles on this Roster *</Label>
+                  <p className="text-xs text-muted-foreground">Members with these roles will appear on the roster. At least one role is required.</p>
                   <div className="max-h-48 overflow-y-auto rounded-md border border-border p-2 space-y-1">
                     {roles.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No roles available.</p>
@@ -2199,24 +2233,17 @@ export default function Dashboard() {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <Label>Posted Channel (optional)</Label>
+                  <Label>Posted Channel *</Label>
                   <div className="relative">
                     <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                     <Input
                       value={rosterChannelSearch}
                       onChange={(e) => setRosterChannelSearch(e.target.value)}
-                      placeholder="Search channels…"
+                      placeholder="Search required channel…"
                       className="pl-8 h-8 text-sm"
                     />
                   </div>
                   <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
-                    <button
-                      type="button"
-                      className={`w-full text-left px-2 py-1 text-sm rounded transition-colors hover:bg-accent ${!rosterModalChannelId ? "bg-accent font-medium" : ""}`}
-                      onClick={() => setRosterModalChannelId("")}
-                    >
-                      None
-                    </button>
                     {textChannels
                       .filter((ch) => !rosterChannelSearch || ch.name.toLowerCase().includes(rosterChannelSearch.toLowerCase()))
                       .map((ch) => (
