@@ -1264,6 +1264,12 @@ export async function registerRoutes(
       if (!name || typeof name !== "string" || !name.trim()) {
         return res.status(400).json({ error: "Roster name is required." });
       }
+
+      const existing = await storage.getRosterConfig(guildId, name.trim());
+      if (existing) {
+        return res.status(400).json({ error: "A roster with that name already exists." });
+      }
+
       const roster = await storage.createRosterConfig({
         guildId,
         name: name.trim(),

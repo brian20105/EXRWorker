@@ -2182,22 +2182,24 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getRosterConfig(guildId: string, name: string): Promise<RosterConfig | undefined> {
+    const normalizedName = String(name || "").trim().toLowerCase();
     const result = await db.select().from(rosterConfigs).where(
       and(
         eq(rosterConfigs.guildId, guildId),
-        eq(rosterConfigs.name, name.toLowerCase())
+        sql`lower(${rosterConfigs.name}) = ${normalizedName}`
       )
     );
     return result[0];
   }
 
   async updateRosterConfig(guildId: string, name: string, updates: { roleIds?: string[]; messageId?: string; channelId?: string }): Promise<RosterConfig | undefined> {
+    const normalizedName = String(name || "").trim().toLowerCase();
     const result = await db.update(rosterConfigs)
       .set({ ...updates, updatedAt: new Date() })
       .where(
         and(
           eq(rosterConfigs.guildId, guildId),
-          eq(rosterConfigs.name, name.toLowerCase())
+          sql`lower(${rosterConfigs.name}) = ${normalizedName}`
         )
       )
       .returning();
@@ -2205,10 +2207,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteRosterConfig(guildId: string, name: string): Promise<void> {
+    const normalizedName = String(name || "").trim().toLowerCase();
     await db.delete(rosterConfigs).where(
       and(
         eq(rosterConfigs.guildId, guildId),
-        eq(rosterConfigs.name, name.toLowerCase())
+        sql`lower(${rosterConfigs.name}) = ${normalizedName}`
       )
     );
   }
