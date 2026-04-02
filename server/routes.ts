@@ -1580,10 +1580,6 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Choose different source and target roles." });
       }
 
-      if (guildId !== sourceGuildId && guildId !== targetGuildId) {
-        return res.status(400).json({ error: "Role sync must involve the currently selected server." });
-      }
-
       const sourceAllowed = await canAccessGuild(user.id, sourceGuildId);
       const targetAllowed = await canAccessGuild(user.id, targetGuildId);
       if (!sourceAllowed || !targetAllowed) {
