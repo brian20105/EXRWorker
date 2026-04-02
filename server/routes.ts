@@ -6,9 +6,12 @@ import { guildConfigs, insertGuildConfigSchema } from "@shared/schema";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
-import { spawn as spawnProcess } from "child_process";
+import { spawn as spawnProcess, execFile as execFileAsync } from "child_process";
 import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits } from "discord.js";
 import { db } from "./sql";
+import { promisify } from "util";
+
+const execFile = promisify(execFileAsync);
 
 type DashboardSessionUser = {
   id: string;
@@ -256,6 +259,50 @@ async function killOwnerBotPid(pid: number): Promise<void> {
   }
 
   process.kill(pid, "SIGTERM");
+}
+
+async function getBotRunnerPids(): Promise<number[]> {
+  try {
+    if (process.platform === "win32") {
+      const psScript = [
+        "$procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*server/run-bot.ts*' } | Select-Object -ExpandProperty ProcessId",
+        "if ($procs) { $procs -join ',' }",
+      ].join("; ");
+
+      const { stdout } = await execFile("powershell", ["-NoProfile", "-Command", psScript]);
+      const output = String(stdout || "").trim();
+      if (!output) return [];
+      return output
+        .split(",")
+        .map((value) => Number(String(value).trim()))
+        .filter((value) => Number.isFinite(value) && value > 0);
+    }
+
+    const { stdout } = await execFile("pgrep", ["-f", "server/run-bot.ts"]);
+    return String(stdout || "")
+      .split(/\s+/)
+      .map((value) => Number(String(value).trim()))
+      .filter((value) => Number.isFinite(value) && value > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function stopAllBotRunnerProcesses(): Promise<number> {
+  const runnerPids = await getBotRunnerPids();
+  const unique = Array.from(new Set(runnerPids));
+  let stopped = 0;
+
+  for (const pid of unique) {
+    try {
+      await killOwnerBotPid(pid);
+      stopped += 1;
+    } catch {
+      // ignore individual kill errors
+    }
+  }
+
+  return stopped;
 }
 
 function requireOwnerAccess(req: Request, res: Response): DashboardSessionUser | null {
@@ -1260,11 +1307,13 @@ export async function registerRoutes(
 
     const pid = readOwnerBotPid();
     const pidRunning = !!pid && isPidRunning(pid);
+    const runnerPids = await getBotRunnerPids();
+    const hasRunnerProcess = runnerPids.length > 0;
     if (pid && !pidRunning) {
       clearOwnerBotPid();
     }
 
-    const status = (client.isReady() || pidRunning) ? "online" : "offline";
+    const status = (client.isReady() || pidRunning || hasRunnerProcess) ? "online" : "offline";
     const guildCount = client.isReady() ? client.guilds.cache.size : cachedGuildSummaries.length;
     res.json({ success: true, status, guildCount, botTag: client.user?.tag || null });
   });
@@ -1274,8 +1323,12 @@ export async function registerRoutes(
 
     try {
       const existingPid = readOwnerBotPid();
+      const runnerPids = await getBotRunnerPids();
       if (existingPid && isPidRunning(existingPid)) {
         return res.json({ success: true, status: "online", message: "Bot process is already running." });
+      }
+      if (runnerPids.length > 0) {
+        return res.json({ success: true, status: "online", message: "Bot runner is already running." });
       }
 
       if (client.isReady()) {
@@ -1311,6 +1364,8 @@ export async function registerRoutes(
         await killOwnerBotPid(pid);
       }
       clearOwnerBotPid();
+
+      await stopAllBotRunnerProcesses();
 
       if (client.isReady()) {
         await client.destroy();
