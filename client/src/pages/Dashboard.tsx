@@ -200,6 +200,14 @@ function getReadableTextColor(backgroundHex: string): string {
   return luminance > 150 ? "#0f172a" : "#ffffff";
 }
 
+function toRgba(hexColor: string, alpha: number): string {
+  const normalized = normalizeHexColor(hexColor, "#000000").slice(1);
+  const red = parseInt(normalized.slice(0, 2), 16);
+  const green = parseInt(normalized.slice(2, 4), 16);
+  const blue = parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
 export default function Dashboard() {
   const fetchJsonWithTimeout = async (url: string, init?: RequestInit, timeoutMs = 12000) => {
     const controller = new AbortController();
@@ -288,6 +296,13 @@ export default function Dashboard() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [moduleRouteMatch, moduleRouteParams] = useRoute<{ moduleId: string }>("/dashboard/module/:moduleId");
+  const dashboardGradientStyle = {
+    backgroundImage: [
+      `radial-gradient(70% 55% at 50% 0%, ${toRgba(buttonColor, 0.28)} 0%, ${toRgba(backgroundColor, 0)} 70%)`,
+      `linear-gradient(180deg, ${toRgba(backgroundColor, 0.96)} 0%, ${toRgba(backgroundColor, 1)} 100%)`,
+    ].join(", "),
+    backgroundColor: backgroundColor,
+  } as const;
 
   useEffect(() => {
     setThemeMounted(true);
@@ -1395,7 +1410,7 @@ export default function Dashboard() {
 
   if (!selectedGuild) {
     return (
-      <div className="min-h-screen bg-background px-6 py-8">
+      <div className="min-h-screen bg-background px-6 py-8" style={dashboardGradientStyle}>
         <div className="mx-auto max-w-6xl space-y-8">
           <Card data-testid="card-bot-status">
             <CardHeader>
@@ -1537,7 +1552,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-background px-6 py-8">
+    <div className="min-h-screen bg-background px-6 py-8" style={dashboardGradientStyle}>
       <div className="mx-auto max-w-7xl space-y-6">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
