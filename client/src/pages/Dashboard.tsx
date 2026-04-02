@@ -334,6 +334,58 @@ export default function Dashboard() {
     ].join(", "),
   } as const;
 
+  const applyGuildConfigData = (data: any, preserveView = false) => {
+    const nextConfig = (data.config || {}) as GuildConfig;
+    const nextChannels = (data.channels || []) as Channel[];
+    const nextRoles = (data.roles || []) as Role[];
+
+    setChannels(nextChannels);
+    setRoles(nextRoles);
+    setGuildName(data.guildName || "");
+
+    const validRoleIds = new Set(nextRoles.map((role) => role.id));
+    const sanitizeRoleIds = (value: unknown) => Array.isArray(value)
+      ? value.map((entry) => String(entry || "")).filter((entry) => validRoleIds.has(entry))
+      : [];
+
+    const sanitizedConfig: GuildConfig = { ...nextConfig };
+    for (const roleKey of GUILD_ROLE_CONFIG_KEYS) {
+      if (roleKey in sanitizedConfig) {
+        (sanitizedConfig as any)[roleKey] = sanitizeRoleIds((sanitizedConfig as any)[roleKey]);
+      }
+    }
+    setConfig(sanitizedConfig);
+
+    const nextMemberCount = typeof data.memberCount === "number" ? data.memberCount : null;
+    setSelectedGuildMemberCount(nextMemberCount);
+    if (selectedGuild && typeof data.memberCount === "number") {
+      setGuilds((previous) => previous.map((guild) => (
+        guild.id === selectedGuild
+          ? { ...guild, memberCount: data.memberCount }
+          : guild
+      )));
+    }
+
+    setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
+    setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
+    setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+    const nextPermissionSettings = getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+    const sanitizedPermissionSettings: DashboardPermissionSettings = { ...nextPermissionSettings };
+    for (const roleKey of PERMISSION_ROLE_KEYS) {
+      sanitizedPermissionSettings[roleKey] = sanitizeRoleIds(nextPermissionSettings[roleKey]);
+    }
+    setPermissionSettings(sanitizedPermissionSettings);
+    setWelcomeEmbedSettings(getWelcomeEmbedSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+    setBotPresenceSettings(getBotPresenceSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+    syncFeatureFlagsState(sanitizedConfig, nextConfig.customCategoryPings || "{}");
+
+    if (!preserveView) {
+      setActivePrimaryTab("settings");
+      setActiveSettingsTab("channels");
+      setModuleSearch("");
+    }
+  };
+
   useEffect(() => {
     setThemeMounted(true);
 
@@ -418,48 +470,7 @@ export default function Dashboard() {
     setLoading(true);
     fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/config`, undefined, 15000)
       .then((data) => {
-        const nextConfig = (data.config || {}) as GuildConfig;
-        setChannels(data.channels || []);
-        setRoles(data.roles || []);
-        setGuildName(data.guildName || "");
-
-        const validRoleIds = new Set(((data.roles || []) as Role[]).map((role) => role.id));
-        const sanitizeRoleIds = (value: unknown) => Array.isArray(value)
-          ? value.map((entry) => String(entry || "")).filter((entry) => validRoleIds.has(entry))
-          : [];
-
-        const sanitizedConfig: GuildConfig = { ...nextConfig };
-        for (const roleKey of GUILD_ROLE_CONFIG_KEYS) {
-          if (roleKey in sanitizedConfig) {
-            (sanitizedConfig as any)[roleKey] = sanitizeRoleIds((sanitizedConfig as any)[roleKey]);
-          }
-        }
-        setConfig(sanitizedConfig);
-
-        const nextMemberCount = typeof data.memberCount === "number" ? data.memberCount : null;
-        setSelectedGuildMemberCount(nextMemberCount);
-        if (typeof data.memberCount === "number") {
-          setGuilds((previous) => previous.map((guild) => (
-            guild.id === selectedGuild
-              ? { ...guild, memberCount: data.memberCount }
-              : guild
-          )));
-        }
-        setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
-        setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
-        setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
-        const nextPermissionSettings = getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
-        const sanitizedPermissionSettings: DashboardPermissionSettings = { ...nextPermissionSettings };
-        for (const roleKey of PERMISSION_ROLE_KEYS) {
-          sanitizedPermissionSettings[roleKey] = sanitizeRoleIds(nextPermissionSettings[roleKey]);
-        }
-        setPermissionSettings(sanitizedPermissionSettings);
-        setWelcomeEmbedSettings(getWelcomeEmbedSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
-        setBotPresenceSettings(getBotPresenceSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
-        setActivePrimaryTab("settings");
-        setActiveSettingsTab("channels");
-        setModuleSearch("");
-        syncFeatureFlagsState(sanitizedConfig, nextConfig.customCategoryPings || "{}");
+        applyGuildConfigData(data);
         setLoading(false);
       })
       .catch((error: any) => {
@@ -474,6 +485,36 @@ export default function Dashboard() {
           variant: "destructive",
         });
       });
+  }, [selectedGuild]);
+
+  useEffect(() => {
+    if (!selectedGuild) return;
+
+    const eventSource = new EventSource(`/api/guilds/${selectedGuild}/stream`);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data || "{}");
+        if (!payload || payload.guildId !== selectedGuild) return;
+
+        if (payload.type === "config-updated") {
+          fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/config`, undefined, 15000)
+            .then((data) => applyGuildConfigData(data, true))
+            .catch(() => undefined);
+          return;
+        }
+
+        if (payload.type === "rosters-updated") {
+          setRosters(Array.isArray(payload.rosters) ? payload.rosters : []);
+        }
+      } catch {
+        // Ignore malformed events.
+      }
+    };
+
+    return () => {
+      eventSource.close();
+    };
   }, [selectedGuild]);
 
   // Fetch rosters when the rosters tab is active

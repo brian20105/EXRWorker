@@ -650,6 +650,45 @@ async function postFeatureUpdateToChannel(guildId: string, channelId: string, fe
   }
 }
 
+type GuildUpdatePayload = {
+  type: "config-updated" | "rosters-updated";
+  guildId: string;
+  config?: unknown;
+  rosters?: unknown[];
+  editorId?: string;
+};
+
+const guildUpdateSubscribers = new Map<string, Set<Response>>();
+
+function subscribeToGuildUpdates(guildId: string, res: Response): () => void {
+  const subscribers = guildUpdateSubscribers.get(guildId) || new Set<Response>();
+  subscribers.add(res);
+  guildUpdateSubscribers.set(guildId, subscribers);
+
+  return () => {
+    const current = guildUpdateSubscribers.get(guildId);
+    if (!current) return;
+    current.delete(res);
+    if (current.size === 0) {
+      guildUpdateSubscribers.delete(guildId);
+    }
+  };
+}
+
+function broadcastGuildUpdate(guildId: string, payload: GuildUpdatePayload): void {
+  const subscribers = guildUpdateSubscribers.get(guildId);
+  if (!subscribers || subscribers.size === 0) return;
+
+  const serialized = `data: ${JSON.stringify(payload)}\n\n`;
+  for (const subscriber of subscribers) {
+    try {
+      subscriber.write(serialized);
+    } catch {
+      // Ignore dead connections; cleanup happens on close.
+    }
+  }
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -926,11 +965,45 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/guilds/:guildId/config", async (req, res) => {
+  app.get("/api/guilds/:guildId/stream", async (req, res) => {
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
       const { guildId } = auth;
+
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+      res.write(`data: ${JSON.stringify({ type: "connected", guildId })}\n\n`);
+
+      const unsubscribe = subscribeToGuildUpdates(guildId, res);
+      const keepAlive = setInterval(() => {
+        try {
+          res.write(": keep-alive\n\n");
+        } catch {
+          // noop
+        }
+      }, 25000);
+
+      req.on("close", () => {
+        clearInterval(keepAlive);
+        unsubscribe();
+        res.end();
+      });
+    } catch (e: any) {
+      if (!res.headersSent) {
+        res.status(500).json({ error: e.message });
+      }
+    }
+  });
+
+  app.post("/api/guilds/:guildId/config", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
       const previousConfig = await storage.getGuildConfig(guildId);
       const rawUpdates = req.body || {};
       const parsed = insertGuildConfigSchema.partial().safeParse({
@@ -1046,6 +1119,13 @@ export async function registerRoutes(
       if (newlyEnabledFeatureLabels.length > 0 && config?.commandLogChannelId) {
         await postFeatureUpdateToChannel(guildId, config.commandLogChannelId, newlyEnabledFeatureLabels);
       }
+
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        guildId,
+        config: config || {},
+        editorId: user.id,
+      });
       
       res.json({ success: true, config });
     } catch (e: any) {
@@ -1073,7 +1153,7 @@ export async function registerRoutes(
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
-      const { guildId } = auth;
+      const { guildId, user } = auth;
       const { name, roleIds, channelId } = req.body || {};
       if (!name || typeof name !== "string" || !name.trim()) {
         return res.status(400).json({ error: "Roster name is required." });
@@ -1084,6 +1164,13 @@ export async function registerRoutes(
         roleIds: Array.isArray(roleIds) ? roleIds.map(String).filter(Boolean) : [],
         channelId: channelId || null,
         messageId: null,
+      });
+      const rosters = await storage.getAllRosterConfigs(guildId);
+      broadcastGuildUpdate(guildId, {
+        type: "rosters-updated",
+        guildId,
+        rosters,
+        editorId: user.id,
       });
       res.json({ success: true, roster });
     } catch (e: any) {
@@ -1096,7 +1183,7 @@ export async function registerRoutes(
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
-      const { guildId } = auth;
+      const { guildId, user } = auth;
       const { rosterName } = req.params;
       const { roleIds, channelId, messageId } = req.body || {};
       const updated = await storage.updateRosterConfig(guildId, rosterName, {
@@ -1107,6 +1194,13 @@ export async function registerRoutes(
       if (!updated) {
         return res.status(404).json({ error: "Roster not found." });
       }
+      const rosters = await storage.getAllRosterConfigs(guildId);
+      broadcastGuildUpdate(guildId, {
+        type: "rosters-updated",
+        guildId,
+        rosters,
+        editorId: user.id,
+      });
       res.json({ success: true, roster: updated });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -1118,9 +1212,16 @@ export async function registerRoutes(
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
-      const { guildId } = auth;
+      const { guildId, user } = auth;
       const { rosterName } = req.params;
       await storage.deleteRosterConfig(guildId, rosterName);
+      const rosters = await storage.getAllRosterConfigs(guildId);
+      broadcastGuildUpdate(guildId, {
+        type: "rosters-updated",
+        guildId,
+        rosters,
+        editorId: user.id,
+      });
       res.json({ success: true });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -1132,7 +1233,7 @@ export async function registerRoutes(
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
-      const { guildId } = auth;
+      const { guildId, user } = auth;
       const { rosterName } = req.params;
       const { channelId: overrideChannelId } = req.body || {};
 
@@ -1184,6 +1285,14 @@ export async function registerRoutes(
       const updated = await storage.updateRosterConfig(guildId, rosterName, {
         messageId: postedMessageId ?? undefined,
         channelId,
+      });
+
+      const rosters = await storage.getAllRosterConfigs(guildId);
+      broadcastGuildUpdate(guildId, {
+        type: "rosters-updated",
+        guildId,
+        rosters,
+        editorId: user.id,
       });
 
       res.json({ success: true, roster: updated });

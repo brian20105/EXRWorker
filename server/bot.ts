@@ -7821,7 +7821,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Save message ID for real-time updates
-              .setEmoji("📝")
+          try {
             await storage.upsertGuildConfig({
               guildId: interaction.guildId!,
               modmailEmbedMessageId: sentMessage.id,
