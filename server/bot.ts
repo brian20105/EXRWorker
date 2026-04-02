@@ -764,17 +764,17 @@ function getDashboardBotPresenceFromGuildConfig(config?: any): {
   const raw = root?.__dashboardBotPresence;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return {
-      hasPresence: false,
+      hasPresence: true,
       status: "online",
-      activityType: "playing",
-      activityText: "",
+      activityType: "listening",
+      activityText: "Make A Ticket To Join!",
       updatedAt: 0,
     };
   }
 
   const status = typeof raw.status === "string" ? raw.status.toLowerCase() : "online";
-  const activityType = typeof raw.activityType === "string" ? raw.activityType.toLowerCase() : "playing";
-  const activityText = typeof raw.activityText === "string" ? raw.activityText : "";
+  const activityType = typeof raw.activityType === "string" ? raw.activityType.toLowerCase() : "listening";
+  const activityText = typeof raw.activityText === "string" ? raw.activityText : "Make A Ticket To Join!";
   const updatedAt = typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0;
 
   return {
@@ -782,7 +782,7 @@ function getDashboardBotPresenceFromGuildConfig(config?: any): {
     status: (status === "online" || status === "idle" || status === "dnd" || status === "invisible") ? status : "online",
     activityType: (activityType === "playing" || activityType === "listening" || activityType === "watching" || activityType === "competing")
       ? activityType
-      : "playing",
+      : "listening",
     activityText,
     updatedAt,
   };

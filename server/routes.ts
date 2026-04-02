@@ -4,7 +4,7 @@ import { storage } from "./storage";
 import { client } from "./bot";
 import { guildConfigs, insertGuildConfigSchema } from "@shared/schema";
 import crypto from "crypto";
-import { ActivityType, PermissionFlagsBits } from "discord.js";
+import { ActivityType, PermissionFlagsBits, EmbedBuilder } from "discord.js";
 import { db } from "./sql";
 
 type DashboardSessionUser = {
@@ -28,6 +28,11 @@ type DiscordRestGuildMember = {
   permissions?: string;
 };
 
+type DiscordRestGuildDetails = {
+  id?: string;
+  owner_id?: string;
+};
+
 type DashboardGuildSummary = {
   id: string;
   name: string;
@@ -37,7 +42,8 @@ type DashboardGuildSummary = {
 
 const AUTH_COOKIE_NAME = "dashboard_auth";
 const OAUTH_STATE_COOKIE = "dashboard_oauth_state";
-const LEAVE_SERVER_OWNER_ID = "948598563359817728";
+const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
+const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -271,9 +277,19 @@ function toRoleHexColor(color: number | undefined): string {
 }
 
 async function canAccessGuild(userId: string, guildId: string): Promise<boolean> {
+  if (PRIVILEGED_DASHBOARD_USER_IDS.has(userId)) {
+    setCachedAccessDecision(userId, guildId, true);
+    return true;
+  }
+
   if (client.isReady()) {
     const guild = client.guilds.cache.get(guildId);
     if (!guild) return false;
+
+    if (guild.ownerId === userId) {
+      setCachedAccessDecision(userId, guildId, true);
+      return true;
+    }
 
     const member = await guild.members.fetch(userId).catch(() => null);
     if (!member) return false;
@@ -293,6 +309,13 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
   }
 
   if (!getBotToken()) return false;
+
+  const guildResponse = await discordApiRequest(`/guilds/${guildId}`);
+  const guild = (await guildResponse.json().catch(() => ({}))) as DiscordRestGuildDetails;
+  if (String(guild.owner_id || "") === userId) {
+    setCachedAccessDecision(userId, guildId, true);
+    return true;
+  }
 
   const memberResponse = await discordApiRequest(`/guilds/${guildId}/members/${userId}`);
   const member = (await memberResponse.json().catch(() => ({}))) as DiscordRestGuildMember;
@@ -418,13 +441,13 @@ function getBotPresenceSettingsFromCustomCategoryPings(raw: unknown): {
   activityText: string;
 } {
   if (typeof raw !== "string") {
-    return { status: "online", activityType: "playing", activityText: "" };
+    return { status: "online", activityType: "listening", activityText: "Make A Ticket To Join!" };
   }
 
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { status: "online", activityType: "playing", activityText: "" };
+      return { status: "online", activityType: "listening", activityText: "Make A Ticket To Join!" };
     }
 
     const presenceRaw = (parsed as Record<string, unknown>).__dashboardBotPresence;
@@ -433,18 +456,18 @@ function getBotPresenceSettingsFromCustomCategoryPings(raw: unknown): {
       : {};
 
     const status = typeof presence.status === "string" ? presence.status.toLowerCase() : "online";
-    const activityType = typeof presence.activityType === "string" ? presence.activityType.toLowerCase() : "playing";
-    const activityText = typeof presence.activityText === "string" ? presence.activityText : "";
+    const activityType = typeof presence.activityType === "string" ? presence.activityType.toLowerCase() : "listening";
+    const activityText = typeof presence.activityText === "string" ? presence.activityText : "Make A Ticket To Join!";
 
     return {
       status: (status === "online" || status === "idle" || status === "dnd" || status === "invisible") ? status : "online",
       activityType: (activityType === "playing" || activityType === "listening" || activityType === "watching" || activityType === "competing")
         ? activityType
-        : "playing",
+        : "listening",
       activityText,
     };
   } catch {
-    return { status: "online", activityType: "playing", activityText: "" };
+    return { status: "online", activityType: "listening", activityText: "Make A Ticket To Join!" };
   }
 }
 
@@ -558,6 +581,72 @@ async function propagateDashboardBotPresenceToAllGuildConfigs(presence: {
     }
   } catch {
     // Best-effort propagation
+  }
+}
+
+function getDashboardFeatureFlags(raw: unknown): Record<string, boolean> {
+  if (typeof raw !== "string") return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+
+    const flagsRaw = (parsed as Record<string, unknown>)[DASHBOARD_FEATURE_FLAGS_KEY];
+    if (!flagsRaw || typeof flagsRaw !== "object" || Array.isArray(flagsRaw)) return {};
+
+    const result: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(flagsRaw as Record<string, unknown>)) {
+      if (typeof value === "boolean") {
+        result[key] = value;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+const FEATURE_LABELS: Record<string, string> = {
+  modmail: "Modmail",
+  appeals: "Appeals",
+  payouts: "Payout Requests",
+  moderation: "Moderation Logs",
+  quiz: "Quiz Tracking",
+  "staff-intro": "Staff Intro",
+  inactivity: "Inactivity",
+  permissions: "Role Permissions",
+  embeds: "Embed Templates",
+  advanced: "Advanced Categories",
+};
+
+function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown): string[] {
+  const previousFlags = getDashboardFeatureFlags(previousRaw);
+  const currentFlags = getDashboardFeatureFlags(currentRaw);
+
+  return Object.entries(currentFlags)
+    .filter(([key, enabled]) => enabled && !previousFlags[key])
+    .map(([key]) => FEATURE_LABELS[key] || key)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+async function postFeatureUpdateToChannel(guildId: string, channelId: string, featureLabels: string[]): Promise<void> {
+  if (!client.isReady() || !client.user) return;
+  if (!channelId || featureLabels.length === 0) return;
+
+  try {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !("send" in channel)) return;
+
+    const embed = new EmbedBuilder()
+      .setTitle("New Bot Features Enabled")
+      .setDescription(featureLabels.map((label) => `• ${label}`).join("\n"))
+      .setColor(0x5865f2)
+      .setFooter({ text: `Server ID: ${guildId}` })
+      .setTimestamp();
+
+    await channel.send({ embeds: [embed] });
+  } catch {
+    // Best-effort announcement
   }
 }
 
@@ -726,8 +815,8 @@ export async function registerRoutes(
         return res.status(401).json({ error: "Unauthorized" });
       }
 
-      if (user.id !== LEAVE_SERVER_OWNER_ID) {
-        return res.status(403).json({ error: "Only the bot owner can use leave server." });
+      if (!PRIVILEGED_DASHBOARD_USER_IDS.has(user.id)) {
+        return res.status(403).json({ error: "Only authorized owner accounts can use leave server." });
       }
 
       const guildId = String(req.params.guildId || "").trim();
@@ -842,6 +931,7 @@ export async function registerRoutes(
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
       const { guildId } = auth;
+      const previousConfig = await storage.getGuildConfig(guildId);
       const rawUpdates = req.body || {};
       const parsed = insertGuildConfigSchema.partial().safeParse({
         ...rawUpdates,
@@ -948,6 +1038,14 @@ export async function registerRoutes(
           ? updates.customCategoryPings
           : config?.customCategoryPings
       );
+
+      const newlyEnabledFeatureLabels = getNewlyEnabledFeatureLabels(
+        previousConfig?.customCategoryPings,
+        config?.customCategoryPings
+      );
+      if (newlyEnabledFeatureLabels.length > 0 && config?.commandLogChannelId) {
+        await postFeatureUpdateToChannel(guildId, config.commandLogChannelId, newlyEnabledFeatureLabels);
+      }
       
       res.json({ success: true, config });
     } catch (e: any) {

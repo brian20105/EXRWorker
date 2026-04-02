@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings } from "lucide-react";
+import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useLocation, useRoute } from "wouter";
 
@@ -158,7 +158,35 @@ const CATEGORY_CHANNEL_TYPE = 4;
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
 const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
-const LEAVE_SERVER_OWNER_ID = "948598563359817728";
+const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
+const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
+
+function normalizeHexColor(input: string | null | undefined, fallback: string): string {
+  const normalized = String(input || "").trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(normalized) ? normalized : fallback;
+}
+
+function shiftHexColor(hex: string, shift: number): string {
+  const parsed = normalizeHexColor(hex, "#5865f2").slice(1);
+  const red = Math.max(0, Math.min(255, parseInt(parsed.slice(0, 2), 16) + shift));
+  const green = Math.max(0, Math.min(255, parseInt(parsed.slice(2, 4), 16) + shift));
+  const blue = Math.max(0, Math.min(255, parseInt(parsed.slice(4, 6), 16) + shift));
+  return `#${red.toString(16).padStart(2, "0")}${green.toString(16).padStart(2, "0")}${blue.toString(16).padStart(2, "0")}`;
+}
+
+function applyDashboardColorOverrides(backgroundHex: string, buttonHex: string) {
+  const rootStyle = document.documentElement.style;
+  const background = normalizeHexColor(backgroundHex, "#313338");
+  const button = normalizeHexColor(buttonHex, "#5865f2");
+  const buttonHover = shiftHexColor(button, -20);
+
+  rootStyle.setProperty("--color-discord-bg", background);
+  rootStyle.setProperty("--color-background", background);
+  rootStyle.setProperty("--color-discord-blurple", button);
+  rootStyle.setProperty("--color-discord-blurple-hover", buttonHover);
+  rootStyle.setProperty("--color-primary", button);
+  rootStyle.setProperty("--color-ring", button);
+}
 
 export default function Dashboard() {
   const fetchJsonWithTimeout = async (url: string, init?: RequestInit, timeoutMs = 12000) => {
@@ -205,6 +233,8 @@ export default function Dashboard() {
   const [botStatus, setBotStatus] = useState<"checking" | "online" | "offline" | "external">("checking");
   const [applicationId, setApplicationId] = useState<string | null>(null);
   const [themeMounted, setThemeMounted] = useState(false);
+  const [backgroundColor, setBackgroundColor] = useState("#313338");
+  const [buttonColor, setButtonColor] = useState("#5865f2");
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [roleSearches, setRoleSearches] = useState<Record<string, string>>({});
   const [channelSearches, setChannelSearches] = useState<Record<string, string>>({});
@@ -239,8 +269,8 @@ export default function Dashboard() {
   });
   const [botPresenceSettings, setBotPresenceSettings] = useState<DashboardBotPresenceSettings>({
     status: "online",
-    activityType: "playing",
-    activityText: "",
+    activityType: "listening",
+    activityText: "Make A Ticket To Join!",
   });
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
@@ -249,6 +279,29 @@ export default function Dashboard() {
 
   useEffect(() => {
     setThemeMounted(true);
+
+    const computedStyle = window.getComputedStyle(document.documentElement);
+    const currentBackground = normalizeHexColor(computedStyle.getPropertyValue("--color-discord-bg"), "#313338");
+    const currentButton = normalizeHexColor(computedStyle.getPropertyValue("--color-discord-blurple"), "#5865f2");
+
+    const stored = window.localStorage.getItem(DASHBOARD_COLOR_STORAGE_KEY);
+    if (!stored) {
+      setBackgroundColor(currentBackground);
+      setButtonColor(currentButton);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(stored) as { background?: string; button?: string };
+      const nextBackground = normalizeHexColor(parsed?.background, currentBackground);
+      const nextButton = normalizeHexColor(parsed?.button, currentButton);
+      setBackgroundColor(nextBackground);
+      setButtonColor(nextButton);
+      applyDashboardColorOverrides(nextBackground, nextButton);
+    } catch {
+      setBackgroundColor(currentBackground);
+      setButtonColor(currentButton);
+    }
   }, []);
 
   useEffect(() => {
@@ -374,6 +427,25 @@ export default function Dashboard() {
   const toggleTheme = () => {
     const isDark = (theme || "dark") === "dark";
     setTheme(isDark ? "light" : "dark");
+  };
+
+  const persistDashboardColors = (nextBackground: string, nextButton: string) => {
+    const payload = { background: nextBackground, button: nextButton };
+    window.localStorage.setItem(DASHBOARD_COLOR_STORAGE_KEY, JSON.stringify(payload));
+  };
+
+  const updateBackgroundColor = (nextValue: string) => {
+    const nextBackground = normalizeHexColor(nextValue, backgroundColor);
+    setBackgroundColor(nextBackground);
+    applyDashboardColorOverrides(nextBackground, buttonColor);
+    persistDashboardColors(nextBackground, buttonColor);
+  };
+
+  const updateButtonColor = (nextValue: string) => {
+    const nextButton = normalizeHexColor(nextValue, buttonColor);
+    setButtonColor(nextButton);
+    applyDashboardColorOverrides(backgroundColor, nextButton);
+    persistDashboardColors(backgroundColor, nextButton);
   };
 
   const beginDiscordLogin = () => {
@@ -565,14 +637,14 @@ export default function Dashboard() {
       : {};
 
     const status = typeof presence.status === "string" ? presence.status.toLowerCase() : "online";
-    const activityType = typeof presence.activityType === "string" ? presence.activityType.toLowerCase() : "playing";
+    const activityType = typeof presence.activityType === "string" ? presence.activityType.toLowerCase() : "listening";
 
     return {
       status: (status === "online" || status === "idle" || status === "dnd" || status === "invisible") ? status : "online",
       activityType: (activityType === "playing" || activityType === "listening" || activityType === "watching" || activityType === "competing")
         ? activityType
-        : "playing",
-      activityText: typeof presence.activityText === "string" ? presence.activityText : "",
+        : "listening",
+      activityText: typeof presence.activityText === "string" ? presence.activityText : "Make A Ticket To Join!",
     };
   };
 
@@ -1293,6 +1365,27 @@ export default function Dashboard() {
                     {themeMounted && theme === "light" ? <Moon className="mr-2 h-4 w-4" /> : <Sun className="mr-2 h-4 w-4" />}
                     {themeMounted && theme === "light" ? "Dark Mode" : "Light Mode"}
                   </Button>
+                  <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1" data-testid="button-color-controls">
+                    <Palette className="h-4 w-4 text-muted-foreground" />
+                    <Label htmlFor="background-color" className="text-xs text-muted-foreground">Background</Label>
+                    <input
+                      id="background-color"
+                      type="color"
+                      value={backgroundColor}
+                      onChange={(event) => updateBackgroundColor(event.target.value)}
+                      className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent p-0"
+                      data-testid="input-background-color"
+                    />
+                    <Label htmlFor="button-color" className="text-xs text-muted-foreground">Buttons</Label>
+                    <input
+                      id="button-color"
+                      type="color"
+                      value={buttonColor}
+                      onChange={(event) => updateButtonColor(event.target.value)}
+                      className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent p-0"
+                      data-testid="input-button-color"
+                    />
+                  </div>
                   {currentUser ? (
                     <Button variant="outline" size="sm" onClick={logout} data-testid="button-logout">
                       Sign Out
@@ -1372,7 +1465,7 @@ export default function Dashboard() {
                           <p className="text-xs text-muted-foreground">{guild.memberCount} members</p>
                         </div>
                       </button>
-                      {currentUser?.id === LEAVE_SERVER_OWNER_ID && (
+                      {currentUser?.id && PRIVILEGED_DASHBOARD_USER_IDS.has(currentUser.id) && (
                         <Button
                           variant="destructive"
                           size="sm"
@@ -1419,6 +1512,27 @@ export default function Dashboard() {
               {themeMounted && theme === "light" ? <Moon className="mr-2 h-4 w-4" /> : <Sun className="mr-2 h-4 w-4" />}
               {themeMounted && theme === "light" ? "Dark Mode" : "Light Mode"}
             </Button>
+            <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1" data-testid="button-color-controls-selected">
+              <Palette className="h-4 w-4 text-muted-foreground" />
+              <Label htmlFor="background-color-selected" className="text-xs text-muted-foreground">Background</Label>
+              <input
+                id="background-color-selected"
+                type="color"
+                value={backgroundColor}
+                onChange={(event) => updateBackgroundColor(event.target.value)}
+                className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent p-0"
+                data-testid="input-background-color-selected"
+              />
+              <Label htmlFor="button-color-selected" className="text-xs text-muted-foreground">Buttons</Label>
+              <input
+                id="button-color-selected"
+                type="color"
+                value={buttonColor}
+                onChange={(event) => updateButtonColor(event.target.value)}
+                className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent p-0"
+                data-testid="input-button-color-selected"
+              />
+            </div>
             <Button onClick={saveConfig} disabled={saving} data-testid="button-save">
               <Save className="mr-2 h-4 w-4" />
               {saving ? "Saving..." : "Save Changes"}
