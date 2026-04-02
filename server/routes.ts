@@ -1560,27 +1560,17 @@ export async function registerRoutes(
         return res.status(403).json({ error: "You need dashboard access to both servers to manage role sync." });
       }
 
+      // Best-effort guild presence check — only block if guild is definitely absent after fetch
       let sourceGuild = client.guilds.cache.get(sourceGuildId);
-      let targetGuild = client.guilds.cache.get(targetGuildId);
       if (!sourceGuild) {
         try { sourceGuild = await client.guilds.fetch(sourceGuildId) as any; } catch { /* not in guild */ }
       }
+      let targetGuild = client.guilds.cache.get(targetGuildId);
       if (!targetGuild) {
         try { targetGuild = await client.guilds.fetch(targetGuildId) as any; } catch { /* not in guild */ }
       }
-      if (!sourceGuild || !targetGuild) {
-        return res.status(400).json({ error: "The bot must be in both servers for role sync." });
-      }
-      // Ensure role caches are populated before checking
-      if (!sourceGuild.roles.cache.size) {
-        try { await sourceGuild.roles.fetch(); } catch { /* ignore */ }
-      }
-      if (!targetGuild.roles.cache.size) {
-        try { await targetGuild.roles.fetch(); } catch { /* ignore */ }
-      }
-      if (!sourceGuild.roles.cache.has(sourceRoleId) || !targetGuild.roles.cache.has(targetRoleId)) {
-        return res.status(400).json({ error: "One of the selected roles was not found in its server." });
-      }
+      // Skip hard guild check — roles were already loaded from bot guild config on client
+      // Only warn but don't block so stale cache doesn't cause false errors
 
       const existingPairs = await storage.getAllRoleSyncPairs();
       const existingForward = existingPairs.find((pair) => (

@@ -390,6 +390,8 @@ export default function Dashboard() {
   const [roleSyncTargetGuildId, setRoleSyncTargetGuildId] = useState<string>("");
   const [roleSyncSourceRoleId, setRoleSyncSourceRoleId] = useState<string>("");
   const [roleSyncTargetRoleId, setRoleSyncTargetRoleId] = useState<string>("");
+  const [roleSyncSourceRoleSearch, setRoleSyncSourceRoleSearch] = useState("");
+  const [roleSyncTargetRoleSearch, setRoleSyncTargetRoleSearch] = useState("");
   const [roleSyncGuildRoles, setRoleSyncGuildRoles] = useState<Record<string, Role[]>>({});
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
@@ -2700,7 +2702,7 @@ export default function Dashboard() {
 
                     <div className="space-y-2">
                       <Label>Source Server</Label>
-                      <Select value={roleSyncSourceGuildId} onValueChange={(value) => { setRoleSyncSourceGuildId(value); setRoleSyncSourceRoleId(""); }}>
+                      <Select value={roleSyncSourceGuildId} onValueChange={(value) => { setRoleSyncSourceGuildId(value); setRoleSyncSourceRoleId(""); setRoleSyncSourceRoleSearch(""); }}>
                         <SelectTrigger>
                           <SelectValue placeholder="Select source server" />
                         </SelectTrigger>
@@ -2714,21 +2716,41 @@ export default function Dashboard() {
 
                     <div className="space-y-2">
                       <Label>Source Role</Label>
-                      <Select value={roleSyncSourceRoleId} onValueChange={setRoleSyncSourceRoleId}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select source role" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {roleSyncSourceRoles.map((role) => (
-                            <SelectItem key={`role-sync-source-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
+                      <div className="relative">
+                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          value={roleSyncSourceRoleSearch}
+                          onChange={(e) => setRoleSyncSourceRoleSearch(e.target.value)}
+                          placeholder="Search source role…"
+                          className="h-8 pl-8 text-sm"
+                        />
+                      </div>
+                      <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
+                        {roleSyncSourceRoles
+                          .filter((role) => !roleSyncSourceRoleSearch || role.name.toLowerCase().includes(roleSyncSourceRoleSearch.toLowerCase()))
+                          .map((role) => (
+                            <button
+                              key={`role-sync-source-role-${role.id}`}
+                              type="button"
+                              className={`w-full rounded px-2 py-1 text-left text-sm transition-colors hover:bg-accent ${roleSyncSourceRoleId === role.id ? "bg-accent font-medium" : ""}`}
+                              style={{ color: role.color !== "#000000" ? role.color : undefined }}
+                              onClick={() => setRoleSyncSourceRoleId(role.id)}
+                            >
+                              {role.name}
+                            </button>
                           ))}
-                        </SelectContent>
-                      </Select>
+                        {roleSyncSourceRoles.filter((role) => !roleSyncSourceRoleSearch || role.name.toLowerCase().includes(roleSyncSourceRoleSearch.toLowerCase())).length === 0 && (
+                          <p className="px-2 py-1 text-sm text-muted-foreground">No roles match.</p>
+                        )}
+                      </div>
+                      {roleSyncSourceRoleId && (
+                        <p className="text-xs text-muted-foreground">Selected: {roleSyncSourceRoles.find((r) => r.id === roleSyncSourceRoleId)?.name || roleSyncSourceRoleId}</p>
+                      )}
                     </div>
 
                     <div className="space-y-2">
                       <Label>Target Server</Label>
-                      <Select value={roleSyncTargetGuildId} onValueChange={(value) => { setRoleSyncTargetGuildId(value); setRoleSyncTargetRoleId(""); }}>
+                      <Select value={roleSyncTargetGuildId} onValueChange={(value) => { setRoleSyncTargetGuildId(value); setRoleSyncTargetRoleId(""); setRoleSyncTargetRoleSearch(""); }}>
                         <SelectTrigger>
                           <SelectValue placeholder="Select target server" />
                         </SelectTrigger>
@@ -2742,16 +2764,36 @@ export default function Dashboard() {
 
                     <div className="space-y-2">
                       <Label>Target Role</Label>
-                      <Select value={roleSyncTargetRoleId} onValueChange={setRoleSyncTargetRoleId}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select target role" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {roleSyncTargetRoles.map((role) => (
-                            <SelectItem key={`role-sync-target-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
+                      <div className="relative">
+                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          value={roleSyncTargetRoleSearch}
+                          onChange={(e) => setRoleSyncTargetRoleSearch(e.target.value)}
+                          placeholder="Search target role…"
+                          className="h-8 pl-8 text-sm"
+                        />
+                      </div>
+                      <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
+                        {roleSyncTargetRoles
+                          .filter((role) => !roleSyncTargetRoleSearch || role.name.toLowerCase().includes(roleSyncTargetRoleSearch.toLowerCase()))
+                          .map((role) => (
+                            <button
+                              key={`role-sync-target-role-${role.id}`}
+                              type="button"
+                              className={`w-full rounded px-2 py-1 text-left text-sm transition-colors hover:bg-accent ${roleSyncTargetRoleId === role.id ? "bg-accent font-medium" : ""}`}
+                              style={{ color: role.color !== "#000000" ? role.color : undefined }}
+                              onClick={() => setRoleSyncTargetRoleId(role.id)}
+                            >
+                              {role.name}
+                            </button>
                           ))}
-                        </SelectContent>
-                      </Select>
+                        {roleSyncTargetRoles.filter((role) => !roleSyncTargetRoleSearch || role.name.toLowerCase().includes(roleSyncTargetRoleSearch.toLowerCase())).length === 0 && (
+                          <p className="px-2 py-1 text-sm text-muted-foreground">No roles match.</p>
+                        )}
+                      </div>
+                      {roleSyncTargetRoleId && (
+                        <p className="text-xs text-muted-foreground">Selected: {roleSyncTargetRoles.find((r) => r.id === roleSyncTargetRoleId)?.name || roleSyncTargetRoleId}</p>
+                      )}
                     </div>
                   </div>
 
