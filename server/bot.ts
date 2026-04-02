@@ -21492,7 +21492,14 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       const targetSyncKey = `${newMember.id}-${pair.targetGuildId}`;
       syncingUsers.add(targetSyncKey);
 
-      const targetGuild = client.guilds.cache.get(pair.targetGuildId);
+      let targetGuild = client.guilds.cache.get(pair.targetGuildId);
+      if (!targetGuild) {
+        try {
+          targetGuild = await client.guilds.fetch(pair.targetGuildId);
+        } catch {
+          targetGuild = null as any;
+        }
+      }
       if (!targetGuild) {
         console.log(`[ROLE SYNC] Target guild ${pair.targetGuildId} not found in cache`);
         continue;
@@ -21523,7 +21530,15 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       }
 
       // Verify target role exists in target guild
-      const targetRoleExists = targetGuild.roles.cache.has(pair.targetRoleId);
+      let targetRoleExists = targetGuild.roles.cache.has(pair.targetRoleId);
+      if (!targetRoleExists) {
+        try {
+          const fetchedRole = await targetGuild.roles.fetch(pair.targetRoleId);
+          targetRoleExists = !!fetchedRole;
+        } catch {
+          targetRoleExists = false;
+        }
+      }
       if (!targetRoleExists) {
         console.log(`[ROLE SYNC] ERROR: Target role ${pair.targetRoleId} does not exist in guild ${targetGuild.name} (${targetGuild.id}). Sync pair ID: ${pair.id} is misconfigured. Please delete this pair and recreate it with valid role IDs.`);
         continue;
@@ -21564,7 +21579,14 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       const sourceSyncKey = `${newMember.id}-${pair.sourceGuildId}`;
       syncingUsers.add(sourceSyncKey);
 
-      const sourceGuild = client.guilds.cache.get(pair.sourceGuildId);
+      let sourceGuild = client.guilds.cache.get(pair.sourceGuildId);
+      if (!sourceGuild) {
+        try {
+          sourceGuild = await client.guilds.fetch(pair.sourceGuildId);
+        } catch {
+          sourceGuild = null as any;
+        }
+      }
       if (!sourceGuild) {
         console.log(`[ROLE SYNC] Source guild ${pair.sourceGuildId} not found in cache for authoritative check`);
         continue;
@@ -21610,7 +21632,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       for (const pair of authoritativeTargetPairs) {
         syncingUsers.delete(`${newMember.id}-${pair.sourceGuildId}`);
       }
-    }, 5000);
+    }, 1000);
   }
 });
 
