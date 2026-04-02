@@ -21458,21 +21458,39 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 
   const allSyncPairs = await storage.getAllRoleSyncPairs();
 
-  const affectedPairs = allSyncPairs.filter((pair) => (
-    pair.sourceGuildId === currentGuildId || pair.targetGuildId === currentGuildId
+  const changedRoleIds = new Set([...addedRoles, ...removedRoles]);
+  const hasReciprocal = (pair: any) => allSyncPairs.some((candidate) => (
+    candidate.id !== pair.id
+    && candidate.sourceGuildId === pair.targetGuildId
+    && candidate.sourceRoleId === pair.targetRoleId
+    && candidate.targetGuildId === pair.sourceGuildId
+    && candidate.targetRoleId === pair.sourceRoleId
   ));
 
-  if (affectedPairs.length === 0) {
-    console.log(`[ROLE SYNC] No sync pairs involve guild ${currentGuildId}, skipping`);
+  const sourceChangedPairs = allSyncPairs.filter((pair) => (
+    pair.sourceGuildId === currentGuildId && changedRoleIds.has(pair.sourceRoleId)
+  ));
+
+  const oneWayTargetChangedPairs = allSyncPairs.filter((pair) => (
+    pair.targetGuildId === currentGuildId
+    && changedRoleIds.has(pair.targetRoleId)
+    && !hasReciprocal(pair)
+  ));
+
+  const pairsToProcess = [...sourceChangedPairs, ...oneWayTargetChangedPairs]
+    .filter((pair, index, list) => list.findIndex((entry) => entry.id === pair.id) === index);
+
+  if (pairsToProcess.length === 0) {
+    console.log(`[ROLE SYNC] No relevant sync pairs for this role change in guild ${currentGuildId}, skipping`);
     return;
   }
 
-  console.log(`[ROLE SYNC] Enforcing ${affectedPairs.length} sync pair(s) for ${newMember.user.tag}`);
+  console.log(`[ROLE SYNC] Processing ${pairsToProcess.length} pair(s) for ${newMember.user.tag}`);
 
   try {
     syncingUsers.add(syncKey);
 
-    for (const pair of affectedPairs) {
+    for (const pair of pairsToProcess) {
       const sourceSyncKey = `${newMember.id}-${pair.sourceGuildId}`;
       const targetSyncKey = `${newMember.id}-${pair.targetGuildId}`;
       syncingUsers.add(sourceSyncKey);
@@ -21565,7 +21583,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   } finally {
     setTimeout(() => {
       syncingUsers.delete(syncKey);
-      for (const pair of affectedPairs) {
+      for (const pair of pairsToProcess) {
         syncingUsers.delete(`${newMember.id}-${pair.sourceGuildId}`);
         syncingUsers.delete(`${newMember.id}-${pair.targetGuildId}`);
       }
