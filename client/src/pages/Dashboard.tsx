@@ -1226,6 +1226,21 @@ export default function Dashboard() {
     setOwnerLeavingAll(false);
   };
 
+  const inviteBotFromOwnerDashboard = () => {
+    if (!isOwnerUser) {
+      toast({ title: "Access denied", description: "Owner dashboard only.", variant: "destructive" });
+      return;
+    }
+
+    if (!applicationId) {
+      toast({ title: "Invite unavailable", description: "Bot application ID is not available yet.", variant: "destructive" });
+      return;
+    }
+
+    const inviteUrl = `https://discord.com/api/oauth2/authorize?client_id=${encodeURIComponent(applicationId)}&permissions=8&scope=bot%20applications.commands`;
+    window.open(inviteUrl, "_blank", "noopener,noreferrer");
+  };
+
   const updateConfig = <K extends keyof GuildConfig>(key: K, value: GuildConfig[K]) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
@@ -2210,6 +2225,14 @@ export default function Dashboard() {
                     </div>
 
                     <div className="flex flex-wrap gap-3">
+                      <Button
+                        onClick={inviteBotFromOwnerDashboard}
+                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || !applicationId}
+                        variant="outline"
+                        data-testid="button-owner-invite-bot"
+                      >
+                        Invite Bot
+                      </Button>
                       <Button
                         onClick={turnBotOn}
                         disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll}
