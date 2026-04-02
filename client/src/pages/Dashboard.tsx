@@ -160,6 +160,7 @@ const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
+const DEFAULT_TOP_FADE_COLOR = "#5865f2";
 const DEFAULT_ENABLED_STATUS_COLOR = "#00ff7b";
 const DEFAULT_DISABLED_STATUS_COLOR = "#ff0000";
 const BACKGROUND_COLOR_PRESETS = ["#ff0000", "#00ff7b", "#0000ff"];
@@ -177,14 +178,11 @@ function shiftHexColor(hex: string, shift: number): string {
   return `#${red.toString(16).padStart(2, "0")}${green.toString(16).padStart(2, "0")}${blue.toString(16).padStart(2, "0")}`;
 }
 
-function applyDashboardColorOverrides(backgroundHex: string, buttonHex: string) {
+function applyDashboardColorOverrides(_backgroundHex: string, buttonHex: string) {
   const rootStyle = document.documentElement.style;
-  const background = normalizeHexColor(backgroundHex, "#313338");
   const button = normalizeHexColor(buttonHex, "#5865f2");
   const buttonHover = shiftHexColor(button, -20);
 
-  rootStyle.setProperty("--color-discord-bg", background);
-  rootStyle.setProperty("--color-background", background);
   rootStyle.setProperty("--color-discord-blurple", button);
   rootStyle.setProperty("--color-discord-blurple-hover", buttonHover);
   rootStyle.setProperty("--color-primary", button);
@@ -253,7 +251,7 @@ export default function Dashboard() {
   const [botStatus, setBotStatus] = useState<"checking" | "online" | "offline" | "external">("checking");
   const [applicationId, setApplicationId] = useState<string | null>(null);
   const [themeMounted, setThemeMounted] = useState(false);
-  const [backgroundColor, setBackgroundColor] = useState("#313338");
+  const [backgroundColor, setBackgroundColor] = useState(DEFAULT_TOP_FADE_COLOR);
   const [buttonColor, setButtonColor] = useState("#5865f2");
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [roleSearches, setRoleSearches] = useState<Record<string, string>>({});
@@ -298,17 +296,15 @@ export default function Dashboard() {
   const [moduleRouteMatch, moduleRouteParams] = useRoute<{ moduleId: string }>("/dashboard/module/:moduleId");
   const dashboardGradientStyle = {
     backgroundImage: [
-      `radial-gradient(70% 55% at 50% 0%, ${toRgba(buttonColor, 0.28)} 0%, ${toRgba(backgroundColor, 0)} 70%)`,
-      `linear-gradient(180deg, ${toRgba(backgroundColor, 0.96)} 0%, ${toRgba(backgroundColor, 1)} 100%)`,
+      `radial-gradient(70% 55% at 50% 0%, ${toRgba(backgroundColor, 0.38)} 0%, ${toRgba(backgroundColor, 0)} 70%)`,
     ].join(", "),
-    backgroundColor: backgroundColor,
   } as const;
 
   useEffect(() => {
     setThemeMounted(true);
 
     const computedStyle = window.getComputedStyle(document.documentElement);
-    const currentBackground = normalizeHexColor(computedStyle.getPropertyValue("--color-discord-bg"), "#313338");
+    const currentBackground = normalizeHexColor(computedStyle.getPropertyValue("--color-discord-blurple"), DEFAULT_TOP_FADE_COLOR);
     const currentButton = normalizeHexColor(computedStyle.getPropertyValue("--color-discord-blurple"), "#5865f2");
 
     const stored = window.localStorage.getItem(DASHBOARD_COLOR_STORAGE_KEY);
@@ -467,7 +463,6 @@ export default function Dashboard() {
   const updateBackgroundColor = (nextValue: string) => {
     const nextBackground = normalizeHexColor(nextValue, backgroundColor);
     setBackgroundColor(nextBackground);
-    applyDashboardColorOverrides(nextBackground, buttonColor);
     persistDashboardColors(nextBackground, buttonColor);
   };
 
@@ -479,7 +474,7 @@ export default function Dashboard() {
   };
 
   const resetDashboardColorsToDefault = () => {
-    const defaultBackground = "#313338";
+    const defaultBackground = DEFAULT_TOP_FADE_COLOR;
     const defaultButtons = "#5865f2";
     setBackgroundColor(defaultBackground);
     setButtonColor(defaultButtons);
@@ -490,9 +485,7 @@ export default function Dashboard() {
   const applyBackgroundPresetColor = (hexColor: string) => {
     const nextColor = normalizeHexColor(hexColor, backgroundColor);
     setBackgroundColor(nextColor);
-    setButtonColor(nextColor);
-    applyDashboardColorOverrides(nextColor, nextColor);
-    persistDashboardColors(nextColor, nextColor);
+    persistDashboardColors(nextColor, buttonColor);
   };
 
   const renderBackgroundPresetControls = (idSuffix: string) => {
