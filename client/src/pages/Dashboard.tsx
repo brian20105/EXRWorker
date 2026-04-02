@@ -679,6 +679,34 @@ export default function Dashboard() {
     });
   }, [roleSyncSourceGuildId, roleSyncTargetGuildId, roleSyncGuildRoles, selectedGuild, roles]);
 
+  useEffect(() => {
+    if (!selectedGuild || roleSyncs.length === 0) return;
+
+    const guildIdsToLoad = new Set<string>();
+    for (const syncItem of roleSyncs) {
+      if (syncItem.sourceGuildId && !roleSyncGuildRoles[syncItem.sourceGuildId]) {
+        guildIdsToLoad.add(syncItem.sourceGuildId);
+      }
+      if (syncItem.targetGuildId && !roleSyncGuildRoles[syncItem.targetGuildId]) {
+        guildIdsToLoad.add(syncItem.targetGuildId);
+      }
+    }
+
+    guildIdsToLoad.forEach((guildId) => {
+      if (guildId === selectedGuild) {
+        setRoleSyncGuildRoles((previous) => ({ ...previous, [guildId]: roles }));
+        return;
+      }
+
+      fetchJsonWithTimeout(`/api/guilds/${guildId}/config`, undefined, 12000)
+        .then((data) => {
+          const nextRoles = Array.isArray(data.roles) ? data.roles as Role[] : [];
+          setRoleSyncGuildRoles((previous) => ({ ...previous, [guildId]: nextRoles }));
+        })
+        .catch(() => undefined);
+    });
+  }, [selectedGuild, roleSyncs, roleSyncGuildRoles, roles]);
+
   const openCreateRosterModal = () => {
     setRosterModalMode("create");
     setRosterModalName("");
@@ -1438,6 +1466,13 @@ export default function Dashboard() {
   const roleSyncTargetRoles = roleSyncTargetGuildId === selectedGuild
     ? roles
     : (roleSyncGuildRoles[roleSyncTargetGuildId] || []);
+
+  const resolveRoleSyncRoleDisplay = (guildId: string, roleId: string, fallbackName: string) => {
+    const guildRoles = guildId === selectedGuild ? roles : (roleSyncGuildRoles[guildId] || []);
+    const matchedRole = guildRoles.find((role) => role.id === roleId);
+    if (matchedRole?.name) return matchedRole.name;
+    return fallbackName || roleId;
+  };
 
   const botFeatureDefinitions: Omit<BotFeatureModule, "enabled">[] = [
     {
@@ -2842,9 +2877,9 @@ export default function Dashboard() {
                                     borderColor: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
                                     color: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
                                   }}
-                                  title={syncItem.sourceRoleName}
+                                  title={resolveRoleSyncRoleDisplay(syncItem.sourceGuildId, syncItem.sourceRoleId, syncItem.sourceRoleName)}
                                 >
-                                  {syncItem.sourceRoleName}
+                                  {resolveRoleSyncRoleDisplay(syncItem.sourceGuildId, syncItem.sourceRoleId, syncItem.sourceRoleName)}
                                 </span>
                               </div>
 
@@ -2871,9 +2906,9 @@ export default function Dashboard() {
                                     borderColor: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
                                     color: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
                                   }}
-                                  title={syncItem.targetRoleName}
+                                  title={resolveRoleSyncRoleDisplay(syncItem.targetGuildId, syncItem.targetRoleId, syncItem.targetRoleName)}
                                 >
-                                  {syncItem.targetRoleName}
+                                  {resolveRoleSyncRoleDisplay(syncItem.targetGuildId, syncItem.targetRoleId, syncItem.targetRoleName)}
                                 </span>
                               </div>
                             </div>
