@@ -7,7 +7,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { spawn as spawnProcess } from "child_process";
-import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
+import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits } from "discord.js";
 import { db } from "./sql";
 
 type DashboardSessionUser = {
@@ -1330,10 +1330,16 @@ export async function registerRoutes(
       const requestedGuildIds = Array.isArray(req.body?.guildIds)
         ? req.body.guildIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
         : [];
+      const guildIds = requestedGuildIds.length > 0
+        ? requestedGuildIds
+        : cachedGuildSummaries.map((guild) => guild.id);
 
-      if (client.isReady() && requestedGuildIds.length === 0) {
-        const guilds = Array.from(client.guilds.cache.values()).map((guild) => guild.id);
-        for (const guildId of guilds) {
+      if (guildIds.length === 0) {
+        return res.json({ success: true, leftCount: 0, failedCount: 0, failed: [] });
+      }
+
+      if (client.isReady()) {
+        for (const guildId of guildIds) {
           try {
             const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
             if (!guild) throw new Error("guild_not_found");
@@ -1344,18 +1350,27 @@ export async function registerRoutes(
           }
         }
       } else {
-        const guildIds = requestedGuildIds.length > 0
-          ? requestedGuildIds
-          : cachedGuildSummaries.map((guild) => guild.id);
+        const token = getBotToken();
+        if (!token) {
+          return res.status(500).json({ error: "DISCORD_BOT_TOKEN is not configured." });
+        }
 
-        for (const guildId of guildIds) {
-          if (!guildId) continue;
-          try {
-            await discordApiRequest(`/users/@me/guilds/${guildId}`, { method: "DELETE" });
-            left.push(guildId);
-          } catch (error: any) {
-            failed.push({ guildId, reason: error?.message || "leave_failed" });
+        const tempClient = new Client({ intents: [GatewayIntentBits.Guilds] });
+        try {
+          await tempClient.login(token);
+
+          for (const guildId of guildIds) {
+            try {
+              const guild = tempClient.guilds.cache.get(guildId) || await tempClient.guilds.fetch(guildId).catch(() => null);
+              if (!guild) throw new Error("guild_not_found");
+              await guild.leave();
+              left.push(guildId);
+            } catch (error: any) {
+              failed.push({ guildId, reason: error?.message || "leave_failed" });
+            }
           }
+        } finally {
+          await tempClient.destroy();
         }
       }
 
