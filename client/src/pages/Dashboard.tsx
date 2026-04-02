@@ -565,12 +565,6 @@ export default function Dashboard() {
   }, [showOwnerDashboard, isOwnerUser]);
 
   useEffect(() => {
-    if (isOwnerUser) {
-      setShowOwnerDashboard(true);
-    }
-  }, [isOwnerUser]);
-
-  useEffect(() => {
     setLoading(true);
     const loadGuilds = async () => {
       let lastError: unknown;
