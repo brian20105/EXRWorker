@@ -288,23 +288,6 @@ async function getBotRunnerPids(): Promise<number[]> {
   }
 }
 
-async function stopAllBotRunnerProcesses(): Promise<number> {
-  const runnerPids = await getBotRunnerPids();
-  const unique = Array.from(new Set(runnerPids));
-  let stopped = 0;
-
-  for (const pid of unique) {
-    try {
-      await killOwnerBotPid(pid);
-      stopped += 1;
-    } catch {
-      // ignore individual kill errors
-    }
-  }
-
-  return stopped;
-}
-
 function requireOwnerAccess(req: Request, res: Response): DashboardSessionUser | null {
   const user = getCurrentUser(req);
   if (!user) {
@@ -1307,14 +1290,12 @@ export async function registerRoutes(
 
     const pid = readOwnerBotPid();
     const pidRunning = !!pid && isPidRunning(pid);
-    const runnerPids = await getBotRunnerPids();
-    const hasRunnerProcess = runnerPids.length > 0;
     if (pid && !pidRunning) {
       clearOwnerBotPid();
     }
 
-    const status = (client.isReady() || pidRunning || hasRunnerProcess) ? "online" : "offline";
-    const guildCount = client.isReady() ? client.guilds.cache.size : cachedGuildSummaries.length;
+    const status = pidRunning ? "online" : "offline";
+    const guildCount = cachedGuildSummaries.length;
     res.json({ success: true, status, guildCount, botTag: client.user?.tag || null });
   });
 
@@ -1328,11 +1309,7 @@ export async function registerRoutes(
         return res.json({ success: true, status: "online", message: "Bot process is already running." });
       }
       if (runnerPids.length > 0) {
-        return res.json({ success: true, status: "online", message: "Bot runner is already running." });
-      }
-
-      if (client.isReady()) {
-        return res.json({ success: true, status: "online", message: "Bot is already online." });
+        return res.status(409).json({ error: "A separate bot runner is already active (outside Owner Dashboard). Stop it first to avoid duplicate sessions." });
       }
 
       const token = getBotToken();
@@ -1341,7 +1318,7 @@ export async function registerRoutes(
       }
 
       const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-      const child = spawnProcess(npmCmd, ["run", "bot"], {
+      const child = spawnProcess(npmCmd, ["run", "bot", "--", "--owner-dashboard-managed"], {
         cwd: process.cwd(),
         detached: true,
         stdio: "ignore",
@@ -1364,8 +1341,6 @@ export async function registerRoutes(
         await killOwnerBotPid(pid);
       }
       clearOwnerBotPid();
-
-      await stopAllBotRunnerProcesses();
 
       if (client.isReady()) {
         await client.destroy();

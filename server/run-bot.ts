@@ -4,14 +4,18 @@ import path from "path";
 import { startBot } from "./bot";
 
 const OWNER_BOT_PID_FILE = path.resolve(process.cwd(), ".owner-bot.pid");
+const ownerManaged = process.argv.includes("--owner-dashboard-managed");
 
-try {
-  fs.writeFileSync(OWNER_BOT_PID_FILE, String(process.pid), "utf8");
-} catch {
-  // ignore pid file write errors
+if (ownerManaged) {
+  try {
+    fs.writeFileSync(OWNER_BOT_PID_FILE, String(process.pid), "utf8");
+  } catch {
+    // ignore pid file write errors
+  }
 }
 
 const cleanupPidFile = () => {
+  if (!ownerManaged) return;
   try {
     const current = fs.readFileSync(OWNER_BOT_PID_FILE, "utf8").trim();
     if (Number(current) === process.pid) {
