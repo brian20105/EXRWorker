@@ -2716,36 +2716,43 @@ export default function Dashboard() {
 
                     <div className="space-y-2">
                       <Label>Source Role</Label>
-                      <div className="relative">
-                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                        <Input
-                          value={roleSyncSourceRoleSearch}
-                          onChange={(e) => setRoleSyncSourceRoleSearch(e.target.value)}
-                          placeholder="Search source role…"
-                          className="h-8 pl-8 text-sm"
-                        />
-                      </div>
-                      <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
-                        {roleSyncSourceRoles
-                          .filter((role) => !roleSyncSourceRoleSearch || role.name.toLowerCase().includes(roleSyncSourceRoleSearch.toLowerCase()))
-                          .map((role) => (
-                            <button
-                              key={`role-sync-source-role-${role.id}`}
-                              type="button"
-                              className={`w-full rounded px-2 py-1 text-left text-sm transition-colors hover:bg-accent ${roleSyncSourceRoleId === role.id ? "bg-accent font-medium" : ""}`}
-                              style={{ color: role.color !== "#000000" ? role.color : undefined }}
-                              onClick={() => setRoleSyncSourceRoleId(role.id)}
-                            >
-                              {role.name}
-                            </button>
-                          ))}
-                        {roleSyncSourceRoles.filter((role) => !roleSyncSourceRoleSearch || role.name.toLowerCase().includes(roleSyncSourceRoleSearch.toLowerCase())).length === 0 && (
-                          <p className="px-2 py-1 text-sm text-muted-foreground">No roles match.</p>
-                        )}
-                      </div>
-                      {roleSyncSourceRoleId && (
-                        <p className="text-xs text-muted-foreground">Selected: {roleSyncSourceRoles.find((r) => r.id === roleSyncSourceRoleId)?.name || roleSyncSourceRoleId}</p>
-                      )}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="outline" className="w-full justify-between">
+                            <span className="truncate text-left">
+                              {roleSyncSourceRoleId
+                                ? (roleSyncSourceRoles.find((r) => r.id === roleSyncSourceRoleId)?.name || roleSyncSourceRoleId)
+                                : "Select source role"}
+                            </span>
+                            <ChevronDown className="h-4 w-4 opacity-70" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="max-h-80 w-72 overflow-y-auto">
+                          <div className="px-1 pb-2">
+                            <Input
+                              value={roleSyncSourceRoleSearch}
+                              onChange={(e) => setRoleSyncSourceRoleSearch(e.target.value)}
+                              placeholder="Search roles…"
+                              className="h-8"
+                            />
+                          </div>
+                          {roleSyncSourceRoles
+                            .filter((role) => !roleSyncSourceRoleSearch || role.name.toLowerCase().includes(roleSyncSourceRoleSearch.toLowerCase()))
+                            .map((role) => (
+                              <DropdownMenuCheckboxItem
+                                key={`role-sync-source-role-${role.id}`}
+                                checked={roleSyncSourceRoleId === role.id}
+                                onCheckedChange={() => setRoleSyncSourceRoleId(role.id)}
+                                onSelect={(e) => e.preventDefault()}
+                              >
+                                {role.name}
+                              </DropdownMenuCheckboxItem>
+                            ))}
+                          {roleSyncSourceRoles.filter((role) => !roleSyncSourceRoleSearch || role.name.toLowerCase().includes(roleSyncSourceRoleSearch.toLowerCase())).length === 0 && (
+                            <p className="px-2 py-1 text-xs text-muted-foreground">No roles found.</p>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
 
                     <div className="space-y-2">
@@ -2764,36 +2771,43 @@ export default function Dashboard() {
 
                     <div className="space-y-2">
                       <Label>Target Role</Label>
-                      <div className="relative">
-                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                        <Input
-                          value={roleSyncTargetRoleSearch}
-                          onChange={(e) => setRoleSyncTargetRoleSearch(e.target.value)}
-                          placeholder="Search target role…"
-                          className="h-8 pl-8 text-sm"
-                        />
-                      </div>
-                      <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
-                        {roleSyncTargetRoles
-                          .filter((role) => !roleSyncTargetRoleSearch || role.name.toLowerCase().includes(roleSyncTargetRoleSearch.toLowerCase()))
-                          .map((role) => (
-                            <button
-                              key={`role-sync-target-role-${role.id}`}
-                              type="button"
-                              className={`w-full rounded px-2 py-1 text-left text-sm transition-colors hover:bg-accent ${roleSyncTargetRoleId === role.id ? "bg-accent font-medium" : ""}`}
-                              style={{ color: role.color !== "#000000" ? role.color : undefined }}
-                              onClick={() => setRoleSyncTargetRoleId(role.id)}
-                            >
-                              {role.name}
-                            </button>
-                          ))}
-                        {roleSyncTargetRoles.filter((role) => !roleSyncTargetRoleSearch || role.name.toLowerCase().includes(roleSyncTargetRoleSearch.toLowerCase())).length === 0 && (
-                          <p className="px-2 py-1 text-sm text-muted-foreground">No roles match.</p>
-                        )}
-                      </div>
-                      {roleSyncTargetRoleId && (
-                        <p className="text-xs text-muted-foreground">Selected: {roleSyncTargetRoles.find((r) => r.id === roleSyncTargetRoleId)?.name || roleSyncTargetRoleId}</p>
-                      )}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="outline" className="w-full justify-between">
+                            <span className="truncate text-left">
+                              {roleSyncTargetRoleId
+                                ? (roleSyncTargetRoles.find((r) => r.id === roleSyncTargetRoleId)?.name || roleSyncTargetRoleId)
+                                : "Select target role"}
+                            </span>
+                            <ChevronDown className="h-4 w-4 opacity-70" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="max-h-80 w-72 overflow-y-auto">
+                          <div className="px-1 pb-2">
+                            <Input
+                              value={roleSyncTargetRoleSearch}
+                              onChange={(e) => setRoleSyncTargetRoleSearch(e.target.value)}
+                              placeholder="Search roles…"
+                              className="h-8"
+                            />
+                          </div>
+                          {roleSyncTargetRoles
+                            .filter((role) => !roleSyncTargetRoleSearch || role.name.toLowerCase().includes(roleSyncTargetRoleSearch.toLowerCase()))
+                            .map((role) => (
+                              <DropdownMenuCheckboxItem
+                                key={`role-sync-target-role-${role.id}`}
+                                checked={roleSyncTargetRoleId === role.id}
+                                onCheckedChange={() => setRoleSyncTargetRoleId(role.id)}
+                                onSelect={(e) => e.preventDefault()}
+                              >
+                                {role.name}
+                              </DropdownMenuCheckboxItem>
+                            ))}
+                          {roleSyncTargetRoles.filter((role) => !roleSyncTargetRoleSearch || role.name.toLowerCase().includes(roleSyncTargetRoleSearch.toLowerCase())).length === 0 && (
+                            <p className="px-2 py-1 text-xs text-muted-foreground">No roles found.</p>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </div>
 
