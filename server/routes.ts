@@ -759,6 +759,15 @@ function writeSavedRosterEmbeds(raw: unknown, embeds: SavedRosterEmbedConfig[]):
   return JSON.stringify(parsed);
 }
 
+function convertLegacyRosterEmbedConfigsToSaved(raw: unknown): SavedRosterEmbedConfig[] {
+  const legacyConfigs = getRosterEmbedConfigs(raw);
+  return Object.entries(legacyConfigs).map(([rosterName, config]) => ({
+    id: `legacy-${rosterName}`,
+    name: `${rosterName.charAt(0).toUpperCase()}${rosterName.slice(1)} Embed`,
+    ...config,
+  }));
+}
+
 function dedupeRostersByName<T extends { name?: unknown; updatedAt?: unknown; createdAt?: unknown }>(rosters: T[]): T[] {
   const deduped = new Map<string, T>();
   for (const roster of rosters) {
@@ -793,7 +802,33 @@ async function getRostersWithEmbedConfigs(guildId: string): Promise<Array<Record
 
 async function getRosterEmbedsForGuild(guildId: string): Promise<SavedRosterEmbedConfig[]> {
   const config = await storage.getGuildConfig(guildId);
-  return getSavedRosterEmbeds(config?.customCategoryPings);
+  const savedEmbeds = getSavedRosterEmbeds(config?.customCategoryPings);
+  const legacyEmbeds = convertLegacyRosterEmbedConfigsToSaved(config?.customCategoryPings);
+
+  if (legacyEmbeds.length === 0) {
+    return savedEmbeds;
+  }
+
+  const merged = [...savedEmbeds];
+  const existingNames = new Set(savedEmbeds.map((entry) => entry.name.trim().toLowerCase()));
+  let changed = false;
+
+  for (const legacyEmbed of legacyEmbeds) {
+    const nameKey = legacyEmbed.name.trim().toLowerCase();
+    if (existingNames.has(nameKey)) continue;
+    merged.push({ ...legacyEmbed, id: crypto.randomUUID() });
+    existingNames.add(nameKey);
+    changed = true;
+  }
+
+  if (changed) {
+    await storage.upsertGuildConfig({
+      guildId,
+      customCategoryPings: writeSavedRosterEmbeds(config?.customCategoryPings, merged),
+    });
+  }
+
+  return merged;
 }
 
 async function postFeatureUpdateToChannel(guildId: string, channelId: string, featureLabels: string[]): Promise<void> {
