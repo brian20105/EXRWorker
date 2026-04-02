@@ -1205,7 +1205,11 @@ export default function Dashboard() {
 
     setOwnerLeavingAll(true);
     try {
-      const data = await fetchJsonWithTimeout("/api/owner/bot-control/leave-all", { method: "POST" }, 60000);
+      const data = await fetchJsonWithTimeout("/api/owner/bot-control/leave-all", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guildIds: guilds.map((guild) => guild.id) }),
+      }, 60000);
       const leftCount = Number(data?.leftCount || 0);
       const failedCount = Number(data?.failedCount || 0);
       toast({

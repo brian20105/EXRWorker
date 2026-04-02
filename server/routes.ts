@@ -4,6 +4,9 @@ import { storage } from "./storage";
 import { client } from "./bot";
 import { guildConfigs, insertGuildConfigSchema } from "@shared/schema";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import { spawn as spawnProcess } from "child_process";
 import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { db } from "./sql";
 
@@ -44,6 +47,7 @@ const AUTH_COOKIE_NAME = "dashboard_auth";
 const GUILD_ACCESS_COOKIE_NAME = "dashboard_guild_access";
 const OAUTH_STATE_COOKIE = "dashboard_oauth_state";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
+const OWNER_BOT_PID_FILE = path.resolve(process.cwd(), ".owner-bot.pid");
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -201,6 +205,57 @@ function getDiscordRedirectUri(req?: Request): string {
 function getCurrentUser(req: Request): DashboardSessionUser | null {
   const token = parseCookie(req, AUTH_COOKIE_NAME);
   return verifySession(token);
+}
+
+function readOwnerBotPid(): number | null {
+  try {
+    const raw = fs.readFileSync(OWNER_BOT_PID_FILE, "utf8").trim();
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeOwnerBotPid(pid: number) {
+  try {
+    fs.writeFileSync(OWNER_BOT_PID_FILE, String(pid), "utf8");
+  } catch {
+    // ignore pid write errors
+  }
+}
+
+function clearOwnerBotPid() {
+  try {
+    fs.unlinkSync(OWNER_BOT_PID_FILE);
+  } catch {
+    // ignore if missing
+  }
+}
+
+function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function killOwnerBotPid(pid: number): Promise<void> {
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve, reject) => {
+      const killer = spawnProcess("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+      killer.on("exit", (code) => {
+        if (code === 0 || code === 128) resolve();
+        else reject(new Error(`taskkill exited with code ${code}`));
+      });
+      killer.on("error", reject);
+    });
+    return;
+  }
+
+  process.kill(pid, "SIGTERM");
 }
 
 function requireOwnerAccess(req: Request, res: Response): DashboardSessionUser | null {
@@ -1203,8 +1258,14 @@ export async function registerRoutes(
   app.get("/api/owner/bot-control/status", async (req, res) => {
     if (!requireOwnerAccess(req, res)) return;
 
-    const status = client.isReady() ? "online" : "offline";
-    const guildCount = client.isReady() ? client.guilds.cache.size : 0;
+    const pid = readOwnerBotPid();
+    const pidRunning = !!pid && isPidRunning(pid);
+    if (pid && !pidRunning) {
+      clearOwnerBotPid();
+    }
+
+    const status = (client.isReady() || pidRunning) ? "online" : "offline";
+    const guildCount = client.isReady() ? client.guilds.cache.size : cachedGuildSummaries.length;
     res.json({ success: true, status, guildCount, botTag: client.user?.tag || null });
   });
 
@@ -1212,6 +1273,11 @@ export async function registerRoutes(
     if (!requireOwnerAccess(req, res)) return;
 
     try {
+      const existingPid = readOwnerBotPid();
+      if (existingPid && isPidRunning(existingPid)) {
+        return res.json({ success: true, status: "online", message: "Bot process is already running." });
+      }
+
       if (client.isReady()) {
         return res.json({ success: true, status: "online", message: "Bot is already online." });
       }
@@ -1221,8 +1287,16 @@ export async function registerRoutes(
         return res.status(500).json({ error: "DISCORD_BOT_TOKEN is not configured." });
       }
 
-      await client.login(token);
-      return res.json({ success: true, status: client.isReady() ? "online" : "offline" });
+      const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+      const child = spawnProcess(npmCmd, ["run", "bot"], {
+        cwd: process.cwd(),
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+      writeOwnerBotPid(child.pid);
+
+      return res.json({ success: true, status: "online", message: "Bot start requested." });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to turn bot on." });
     }
@@ -1232,7 +1306,15 @@ export async function registerRoutes(
     if (!requireOwnerAccess(req, res)) return;
 
     try {
-      await client.destroy();
+      const pid = readOwnerBotPid();
+      if (pid && isPidRunning(pid)) {
+        await killOwnerBotPid(pid);
+      }
+      clearOwnerBotPid();
+
+      if (client.isReady()) {
+        await client.destroy();
+      }
       return res.json({ success: true, status: "offline" });
     } catch (e: any) {
       return res.status(500).json({ error: e?.message || "Failed to turn bot off." });
@@ -1245,22 +1327,28 @@ export async function registerRoutes(
     try {
       const left: string[] = [];
       const failed: Array<{ guildId: string; reason: string }> = [];
+      const requestedGuildIds = Array.isArray(req.body?.guildIds)
+        ? req.body.guildIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+        : [];
 
-      if (client.isReady()) {
-        const guilds = Array.from(client.guilds.cache.values());
-        for (const guild of guilds) {
+      if (client.isReady() && requestedGuildIds.length === 0) {
+        const guilds = Array.from(client.guilds.cache.values()).map((guild) => guild.id);
+        for (const guildId of guilds) {
           try {
+            const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+            if (!guild) throw new Error("guild_not_found");
             await guild.leave();
-            left.push(guild.id);
+            left.push(guildId);
           } catch (error: any) {
-            failed.push({ guildId: guild.id, reason: error?.message || "leave_failed" });
+            failed.push({ guildId, reason: error?.message || "leave_failed" });
           }
         }
       } else {
-        const listResponse = await discordApiRequest("/users/@me/guilds");
-        const guilds = (await listResponse.json().catch(() => [])) as Array<{ id: string }>;
-        for (const guild of guilds) {
-          const guildId = String(guild?.id || "").trim();
+        const guildIds = requestedGuildIds.length > 0
+          ? requestedGuildIds
+          : cachedGuildSummaries.map((guild) => guild.id);
+
+        for (const guildId of guildIds) {
           if (!guildId) continue;
           try {
             await discordApiRequest(`/users/@me/guilds/${guildId}`, { method: "DELETE" });
