@@ -21,6 +21,8 @@ import {
   AuditLogEvent,
   ActivityType,
 } from "discord.js";
+import fs from "fs";
+import path from "path";
 import { storage } from "./storage.ts";
 // Safe wrapper to avoid crashes when storage backend temporarily errors
 async function safeGetModmailThreadByChannel(channelId: string) {
@@ -39,6 +41,52 @@ if (!process.env.DISCORD_BOT_TOKEN) {
 
 const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID;
 const PREFIX_COMMAND_ALLOWED_USER_ID = "948598563359817728";
+const BOT_INSTANCE_LOCK_FILE = path.resolve(process.cwd(), ".discord-bot.lock");
+let botInstanceLockAcquired = false;
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tryAcquireBotInstanceLock(): boolean {
+  try {
+    fs.writeFileSync(BOT_INSTANCE_LOCK_FILE, String(process.pid), { encoding: "utf8", flag: "wx" });
+    botInstanceLockAcquired = true;
+    return true;
+  } catch {
+    try {
+      const existingRaw = fs.readFileSync(BOT_INSTANCE_LOCK_FILE, "utf8").trim();
+      const existingPid = Number(existingRaw);
+      if (Number.isFinite(existingPid) && existingPid > 0 && !isPidAlive(existingPid)) {
+        fs.unlinkSync(BOT_INSTANCE_LOCK_FILE);
+        fs.writeFileSync(BOT_INSTANCE_LOCK_FILE, String(process.pid), { encoding: "utf8", flag: "wx" });
+        botInstanceLockAcquired = true;
+        return true;
+      }
+    } catch {
+      // ignore stale/invalid lock recovery failures
+    }
+    return false;
+  }
+}
+
+function releaseBotInstanceLock(): void {
+  if (!botInstanceLockAcquired) return;
+  try {
+    const existingRaw = fs.readFileSync(BOT_INSTANCE_LOCK_FILE, "utf8").trim();
+    if (Number(existingRaw) === process.pid) {
+      fs.unlinkSync(BOT_INSTANCE_LOCK_FILE);
+    }
+  } catch {
+    // ignore cleanup errors
+  }
+  botInstanceLockAcquired = false;
+}
 
 function canUsePrefixCommand(interaction: any): boolean {
   if (interaction.user?.id === PREFIX_COMMAND_ALLOWED_USER_ID) return true;
@@ -21781,11 +21829,26 @@ export async function startBot() {
     return;
   }
 
+  if (!tryAcquireBotInstanceLock()) {
+    console.log("⏸️  Bot startup skipped - another bot instance is already running.");
+    return;
+  }
+
+  const cleanupAndExit = () => {
+    releaseBotInstanceLock();
+  };
+
+  process.once("exit", cleanupAndExit);
+  process.once("SIGINT", cleanupAndExit);
+  process.once("SIGTERM", cleanupAndExit);
+
   try {
     await client.login(process.env.DISCORD_BOT_TOKEN).catch(err => {
       console.error("❌ Failed to login to Discord:", err);
+      releaseBotInstanceLock();
     });
   } catch (error) {
     console.error("❌ Failed to login to Discord:", error);
+    releaseBotInstanceLock();
   }
 }
