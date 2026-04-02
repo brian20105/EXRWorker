@@ -41,6 +41,7 @@ type DashboardGuildSummary = {
 };
 
 const AUTH_COOKIE_NAME = "dashboard_auth";
+const GUILD_ACCESS_COOKIE_NAME = "dashboard_guild_access";
 const OAUTH_STATE_COOKIE = "dashboard_oauth_state";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
@@ -124,6 +125,56 @@ function setSessionCookie(req: Request, res: Response, token: string) {
 function clearSessionCookie(req: Request, res: Response) {
   const secure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
   const cookie = `${AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`;
+  appendCookie(res, cookie);
+}
+
+type GuildAccessGrant = {
+  userId: string;
+  guildIds: string[];
+  issuedAt: number;
+};
+
+function signGuildAccessGrant(grant: GuildAccessGrant): string {
+  const payload = toBase64Url(JSON.stringify(grant));
+  const signature = crypto.createHmac("sha256", getAuthSecret()).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyGuildAccessGrant(token: string | undefined): GuildAccessGrant | null {
+  if (!token || !token.includes(".")) return null;
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return null;
+
+  const expected = crypto.createHmac("sha256", getAuthSecret()).update(payload).digest("base64url");
+  if (signature !== expected) return null;
+
+  try {
+    const parsed = JSON.parse(fromBase64Url(payload));
+    if (!parsed?.userId || !Array.isArray(parsed?.guildIds) || typeof parsed?.issuedAt !== "number") return null;
+    return {
+      userId: String(parsed.userId),
+      guildIds: parsed.guildIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean),
+      issuedAt: Number(parsed.issuedAt),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getGrantedGuildIds(req: Request, userId: string): string[] {
+  const token = parseCookie(req, GUILD_ACCESS_COOKIE_NAME);
+  const grant = verifyGuildAccessGrant(token);
+  if (!grant || grant.userId !== userId) return [];
+  const maxAgeMs = 12 * 60 * 60 * 1000;
+  if ((Date.now() - grant.issuedAt) > maxAgeMs) return [];
+  return grant.guildIds;
+}
+
+function rememberGuildAccess(req: Request, res: Response, userId: string, guildId: string) {
+  const nextGuildIds = Array.from(new Set([...getGrantedGuildIds(req, userId), guildId]));
+  const token = signGuildAccessGrant({ userId, guildIds: nextGuildIds, issuedAt: Date.now() });
+  const secure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+  const cookie = `${GUILD_ACCESS_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 12}${secure ? "; Secure" : ""}`;
   appendCookie(res, cookie);
 }
 
@@ -348,6 +399,11 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
     return null;
   }
 
+  const grantedGuildIds = getGrantedGuildIds(req, user.id);
+  if (grantedGuildIds.includes(guildId)) {
+    return { user, guildId };
+  }
+
   let allowed = false;
   try {
     allowed = await canAccessGuild(user.id, guildId);
@@ -375,6 +431,8 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
     res.status(403).json({ error: "You do not have manager role access for this server." });
     return null;
   }
+
+  rememberGuildAccess(req, res, user.id, guildId);
 
   return { user, guildId };
 }
@@ -987,6 +1045,8 @@ export async function registerRoutes(
 
   app.post("/api/auth/logout", (req, res) => {
     clearSessionCookie(req, res);
+    const secure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+    appendCookie(res, `${GUILD_ACCESS_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`);
     res.json({ success: true });
   });
 
@@ -1346,7 +1406,8 @@ export async function registerRoutes(
       if (!auth) return;
       const { guildId } = auth;
       const rosters = await getRostersWithEmbedConfigs(guildId);
-      res.json({ rosters });
+      const rosterEmbeds = await getRosterEmbedsForGuild(guildId);
+      res.json({ rosters, rosterEmbeds });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

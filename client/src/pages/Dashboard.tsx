@@ -605,13 +605,10 @@ export default function Dashboard() {
   useEffect(() => {
     if (!selectedGuild || activePrimaryTab !== "rosters") return;
     setRostersLoading(true);
-    Promise.all([
-      fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/rosters`, undefined, 12000),
-      fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/roster-embeds`, undefined, 12000),
-    ])
-      .then(([rosterData, embedData]) => {
+    fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/rosters`, undefined, 12000)
+      .then((rosterData) => {
         setRosters(dedupeRosters(Array.isArray(rosterData.rosters) ? rosterData.rosters : []));
-        setRosterEmbeds(dedupeRosterEmbeds(Array.isArray(embedData.rosterEmbeds) ? embedData.rosterEmbeds : []));
+        setRosterEmbeds(dedupeRosterEmbeds(Array.isArray(rosterData.rosterEmbeds) ? rosterData.rosterEmbeds : []));
         setRostersLoading(false);
       })
       .catch(() => setRostersLoading(false));
