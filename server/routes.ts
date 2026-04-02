@@ -939,17 +939,31 @@ type RoleSyncDashboardItem = {
   reciprocalPairId?: string;
 };
 
-function findGuildAndRoleMeta(guildId: string, roleId: string): {
+async function findGuildAndRoleMeta(guildId: string, roleId: string): Promise<{
   guildName: string;
   guildIcon: string | null;
   roleName: string;
   roleColor: string | null;
-} {
-  const cachedGuild = client.guilds.cache.get(guildId);
+}> {
+  let cachedGuild = client.guilds.cache.get(guildId);
+  if (!cachedGuild) {
+    try {
+      cachedGuild = await client.guilds.fetch(guildId) as any;
+    } catch {
+      cachedGuild = null as any;
+    }
+  }
   const summary = getCachedGuildSummaryById(guildId);
   const guildName = cachedGuild?.name || summary?.name || guildId;
   const guildIcon = cachedGuild?.iconURL() || summary?.icon || null;
-  const cachedRole = cachedGuild?.roles.cache.get(roleId) || null;
+  let cachedRole = cachedGuild?.roles.cache.get(roleId) || null;
+  if (cachedGuild && !cachedRole) {
+    try {
+      cachedRole = await cachedGuild.roles.fetch(roleId) as any;
+    } catch {
+      cachedRole = null;
+    }
+  }
 
   return {
     guildName,
@@ -1004,8 +1018,8 @@ async function getRoleSyncItemsByGuild(guildId: string): Promise<RoleSyncDashboa
     seen.add(pair.id);
     if (reciprocal) seen.add(reciprocal.id);
 
-    const sourceMeta = findGuildAndRoleMeta(displayPair.sourceGuildId, displayPair.sourceRoleId);
-    const targetMeta = findGuildAndRoleMeta(displayPair.targetGuildId, displayPair.targetRoleId);
+    const sourceMeta = await findGuildAndRoleMeta(displayPair.sourceGuildId, displayPair.sourceRoleId);
+    const targetMeta = await findGuildAndRoleMeta(displayPair.targetGuildId, displayPair.targetRoleId);
 
     result.push({
       id: displayPair.id,
