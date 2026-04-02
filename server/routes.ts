@@ -4,7 +4,7 @@ import { storage } from "./storage";
 import { client } from "./bot";
 import { guildConfigs, insertGuildConfigSchema } from "@shared/schema";
 import crypto from "crypto";
-import { ActivityType, PermissionFlagsBits, EmbedBuilder } from "discord.js";
+import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from "discord.js";
 import { db } from "./sql";
 
 type DashboardSessionUser = {
@@ -629,6 +629,112 @@ function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown)
     .sort((a, b) => a.localeCompare(b));
 }
 
+type RosterEmbedButtonConfig = {
+  rosterName: string;
+  label: string;
+  color: "blue" | "green" | "red" | "grey";
+  emoji?: string;
+};
+
+type RosterEmbedConfig = {
+  title: string;
+  description: string;
+  embedColor?: string;
+  channelId?: string | null;
+  messageId?: string | null;
+  buttons: RosterEmbedButtonConfig[];
+};
+
+const ROSTER_EMBED_CONFIGS_KEY = "__rosterEmbedConfigs";
+
+function parseJsonObject(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string") return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function normalizeRosterEmbedButton(input: unknown): RosterEmbedButtonConfig | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const value = input as Record<string, unknown>;
+  const rosterName = String(value.rosterName || "").trim().toLowerCase();
+  const label = String(value.label || "").trim();
+  const rawColor = String(value.color || "").toLowerCase();
+  const color = rawColor === "green" || rawColor === "red" || rawColor === "grey" || rawColor === "blue"
+    ? rawColor
+    : "blue";
+  const emoji = typeof value.emoji === "string" ? value.emoji.trim() : "";
+
+  if (!rosterName || !label) return null;
+  return {
+    rosterName,
+    label,
+    color,
+    emoji: emoji || undefined,
+  };
+}
+
+function normalizeRosterEmbedConfig(input: unknown): RosterEmbedConfig | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const value = input as Record<string, unknown>;
+  const title = String(value.title || "").trim();
+  const description = String(value.description || "").trim();
+  const embedColor = String(value.embedColor || "").trim().replace(/^#/, "").slice(0, 6);
+  const channelId = typeof value.channelId === "string" ? value.channelId.trim() : "";
+  const messageId = typeof value.messageId === "string" ? value.messageId.trim() : "";
+  const rawButtons = Array.isArray(value.buttons) ? value.buttons : [];
+  const buttons = rawButtons
+    .map((entry) => normalizeRosterEmbedButton(entry))
+    .filter(Boolean)
+    .slice(0, 5) as RosterEmbedButtonConfig[];
+
+  if (!title || !description || buttons.length === 0) return null;
+  return {
+    title,
+    description,
+    embedColor: embedColor || undefined,
+    channelId: channelId || null,
+    messageId: messageId || null,
+    buttons,
+  };
+}
+
+function getRosterEmbedConfigs(raw: unknown): Record<string, RosterEmbedConfig> {
+  const parsed = parseJsonObject(raw);
+  const rawConfigs = parsed[ROSTER_EMBED_CONFIGS_KEY];
+  if (!rawConfigs || typeof rawConfigs !== "object" || Array.isArray(rawConfigs)) return {};
+
+  const result: Record<string, RosterEmbedConfig> = {};
+  for (const [key, value] of Object.entries(rawConfigs as Record<string, unknown>)) {
+    const normalized = normalizeRosterEmbedConfig(value);
+    if (normalized) {
+      result[String(key || "").toLowerCase()] = normalized;
+    }
+  }
+  return result;
+}
+
+function writeRosterEmbedConfigs(raw: unknown, nextConfigs: Record<string, RosterEmbedConfig>): string {
+  const parsed = parseJsonObject(raw);
+  parsed[ROSTER_EMBED_CONFIGS_KEY] = nextConfigs;
+  return JSON.stringify(parsed);
+}
+
+async function getRostersWithEmbedConfigs(guildId: string): Promise<Array<Record<string, unknown>>> {
+  const rosters = await storage.getAllRosterConfigs(guildId);
+  const config = await storage.getGuildConfig(guildId);
+  const embedConfigs = getRosterEmbedConfigs(config?.customCategoryPings);
+
+  return rosters.map((roster) => ({
+    ...roster,
+    embedConfig: embedConfigs[String(roster.name || "").toLowerCase()] || null,
+  }));
+}
+
 async function postFeatureUpdateToChannel(guildId: string, channelId: string, featureLabels: string[]): Promise<void> {
   if (!client.isReady() || !client.user) return;
   if (!channelId || featureLabels.length === 0) return;
@@ -1141,7 +1247,7 @@ export async function registerRoutes(
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
       const { guildId } = auth;
-      const rosters = await storage.getAllRosterConfigs(guildId);
+      const rosters = await getRostersWithEmbedConfigs(guildId);
       res.json({ rosters });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -1165,7 +1271,7 @@ export async function registerRoutes(
         channelId: channelId || null,
         messageId: null,
       });
-      const rosters = await storage.getAllRosterConfigs(guildId);
+      const rosters = await getRostersWithEmbedConfigs(guildId);
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
@@ -1194,7 +1300,7 @@ export async function registerRoutes(
       if (!updated) {
         return res.status(404).json({ error: "Roster not found." });
       }
-      const rosters = await storage.getAllRosterConfigs(guildId);
+      const rosters = await getRostersWithEmbedConfigs(guildId);
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
@@ -1215,7 +1321,16 @@ export async function registerRoutes(
       const { guildId, user } = auth;
       const { rosterName } = req.params;
       await storage.deleteRosterConfig(guildId, rosterName);
-      const rosters = await storage.getAllRosterConfigs(guildId);
+
+      const existingConfig = await storage.getGuildConfig(guildId);
+      const embedConfigs = getRosterEmbedConfigs(existingConfig?.customCategoryPings);
+      delete embedConfigs[String(rosterName || "").toLowerCase()];
+      await storage.upsertGuildConfig({
+        guildId,
+        customCategoryPings: writeRosterEmbedConfigs(existingConfig?.customCategoryPings, embedConfigs),
+      });
+
+      const rosters = await getRostersWithEmbedConfigs(guildId);
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
@@ -1287,7 +1402,7 @@ export async function registerRoutes(
         channelId,
       });
 
-      const rosters = await storage.getAllRosterConfigs(guildId);
+      const rosters = await getRostersWithEmbedConfigs(guildId);
       broadcastGuildUpdate(guildId, {
         type: "rosters-updated",
         guildId,
@@ -1296,6 +1411,177 @@ export async function registerRoutes(
       });
 
       res.json({ success: true, roster: updated });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.put("/api/guilds/:guildId/rosters/:rosterName/embed-config", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+      const { rosterName } = req.params;
+      const normalizedRosterName = String(rosterName || "").trim().toLowerCase();
+      if (!normalizedRosterName) return res.status(400).json({ error: "Roster name is required." });
+
+      const roster = await storage.getRosterConfig(guildId, normalizedRosterName);
+      if (!roster) return res.status(404).json({ error: "Roster not found." });
+
+      const normalizedConfig = normalizeRosterEmbedConfig(req.body || {});
+      if (!normalizedConfig) {
+        return res.status(400).json({ error: "Embed config requires title, description, and at least one valid button." });
+      }
+
+      const existingConfig = await storage.getGuildConfig(guildId);
+      const embedConfigs = getRosterEmbedConfigs(existingConfig?.customCategoryPings);
+      embedConfigs[normalizedRosterName] = {
+        ...normalizedConfig,
+        messageId: embedConfigs[normalizedRosterName]?.messageId || null,
+      };
+
+      await storage.upsertGuildConfig({
+        guildId,
+        customCategoryPings: writeRosterEmbedConfigs(existingConfig?.customCategoryPings, embedConfigs),
+      });
+
+      const rosters = await getRostersWithEmbedConfigs(guildId);
+      const updatedRoster = rosters.find((entry) => String((entry as any).name || "").toLowerCase() === normalizedRosterName) || null;
+
+      broadcastGuildUpdate(guildId, {
+        type: "rosters-updated",
+        guildId,
+        rosters,
+        editorId: user.id,
+      });
+
+      res.json({ success: true, roster: updatedRoster });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/rosters/:rosterName/post-embed", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+      const { rosterName } = req.params;
+      const normalizedRosterName = String(rosterName || "").trim().toLowerCase();
+      if (!normalizedRosterName) return res.status(400).json({ error: "Roster name is required." });
+
+      if (!client.isReady()) return res.status(503).json({ error: "Bot is not online. Start the bot before posting roster embeds." });
+
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) return res.status(400).json({ error: "Bot is not in this server." });
+
+      const existingConfig = await storage.getGuildConfig(guildId);
+      const embedConfigs = getRosterEmbedConfigs(existingConfig?.customCategoryPings);
+      const embedConfig = embedConfigs[normalizedRosterName];
+      if (!embedConfig) return res.status(400).json({ error: "No embed config found for this roster. Save embed config first." });
+
+      const targetChannelId = String(req.body?.channelId || "").trim() || String(embedConfig.channelId || "").trim();
+      if (!targetChannelId) return res.status(400).json({ error: "No channel configured for this roster embed." });
+
+      let embedColor = 0x5865f2;
+      if (embedConfig.embedColor) {
+        const parsed = parseInt(embedConfig.embedColor.replace("#", ""), 16);
+        if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 0xffffff) {
+          embedColor = parsed;
+        }
+      }
+
+      const missingRosters: string[] = [];
+      const buttons: ButtonBuilder[] = [];
+      for (const buttonConfig of embedConfig.buttons) {
+        const targetRosterName = String(buttonConfig.rosterName || "").trim().toLowerCase();
+        if (!targetRosterName) continue;
+        const targetRoster = await storage.getRosterConfig(guildId, targetRosterName);
+        if (!targetRoster) {
+          missingRosters.push(targetRosterName);
+          continue;
+        }
+
+        const style = buttonConfig.color === "green"
+          ? ButtonStyle.Success
+          : buttonConfig.color === "red"
+            ? ButtonStyle.Danger
+            : buttonConfig.color === "grey"
+              ? ButtonStyle.Secondary
+              : ButtonStyle.Primary;
+
+        const button = new ButtonBuilder()
+          .setCustomId(`roster_btn_${targetRosterName}`)
+          .setLabel(buttonConfig.label)
+          .setStyle(style);
+
+        if (buttonConfig.emoji) {
+          const customEmojiMatch = buttonConfig.emoji.match(/<a?:(.+):(\d+)>/);
+          if (customEmojiMatch) {
+            button.setEmoji({ name: customEmojiMatch[1], id: customEmojiMatch[2] });
+          } else {
+            button.setEmoji(buttonConfig.emoji);
+          }
+        }
+
+        buttons.push(button);
+      }
+
+      if (missingRosters.length > 0) {
+        return res.status(400).json({ error: `The following rosters don't exist: ${missingRosters.join(", ")}.` });
+      }
+
+      if (buttons.length === 0) {
+        return res.status(400).json({ error: "No valid embed buttons to post." });
+      }
+
+      const targetChannel = await client.channels.fetch(targetChannelId).catch(() => null);
+      if (!targetChannel || !("send" in targetChannel)) {
+        return res.status(400).json({ error: "Could not find the embed channel. Make sure the bot has access." });
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle(embedConfig.title)
+        .setDescription(embedConfig.description)
+        .setColor(embedColor);
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(0, 5));
+
+      let postedMessageId = String(embedConfig.messageId || "").trim() || null;
+      if (postedMessageId) {
+        try {
+          const existing = await (targetChannel as any).messages.fetch(postedMessageId);
+          await existing.edit({ embeds: [embed], components: [row] });
+        } catch {
+          const newMessage = await (targetChannel as any).send({ embeds: [embed], components: [row] });
+          postedMessageId = newMessage.id;
+        }
+      } else {
+        const newMessage = await (targetChannel as any).send({ embeds: [embed], components: [row] });
+        postedMessageId = newMessage.id;
+      }
+
+      embedConfigs[normalizedRosterName] = {
+        ...embedConfig,
+        channelId: targetChannelId,
+        messageId: postedMessageId,
+      };
+
+      await storage.upsertGuildConfig({
+        guildId,
+        customCategoryPings: writeRosterEmbedConfigs(existingConfig?.customCategoryPings, embedConfigs),
+      });
+
+      const rosters = await getRostersWithEmbedConfigs(guildId);
+      const updatedRoster = rosters.find((entry) => String((entry as any).name || "").toLowerCase() === normalizedRosterName) || null;
+
+      broadcastGuildUpdate(guildId, {
+        type: "rosters-updated",
+        guildId,
+        rosters,
+        editorId: user.id,
+      });
+
+      res.json({ success: true, roster: updatedRoster });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

@@ -97,8 +97,27 @@ interface RosterConfig {
   roleIds: string[];
   channelId: string | null;
   messageId: string | null;
+  embedConfig?: RosterEmbedConfig | null;
   createdAt: string;
   updatedAt: string;
+}
+
+type RosterEmbedButtonColor = "blue" | "green" | "red" | "grey";
+
+interface RosterEmbedButtonConfig {
+  rosterName: string;
+  label: string;
+  color: RosterEmbedButtonColor;
+  emoji?: string;
+}
+
+interface RosterEmbedConfig {
+  title: string;
+  description: string;
+  embedColor?: string;
+  channelId?: string | null;
+  messageId?: string | null;
+  buttons: RosterEmbedButtonConfig[];
 }
 
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
@@ -186,6 +205,13 @@ const DEFAULT_TOP_FADE_COLOR = "#5865f2";
 const DEFAULT_ENABLED_STATUS_COLOR = "#00ff7b";
 const DEFAULT_DISABLED_STATUS_COLOR = "#ff0000";
 const BACKGROUND_COLOR_PRESETS = ["#ff0000", "#00ff7b", "#0000ff"];
+
+const ROSTER_EMBED_BUTTON_COLORS: Array<{ value: RosterEmbedButtonColor; label: string }> = [
+  { value: "blue", label: "Blue" },
+  { value: "green", label: "Green" },
+  { value: "red", label: "Red" },
+  { value: "grey", label: "Grey" },
+];
 
 function normalizeHexColor(input: string | null | undefined, fallback: string): string {
   const normalized = String(input || "").trim().toLowerCase();
@@ -292,7 +318,18 @@ export default function Dashboard() {
   const [rosterSaving, setRosterSaving] = useState(false);
   const [rosterDeleteConfirm, setRosterDeleteConfirm] = useState<string | null>(null);
   const [postingRosterId, setPostingRosterId] = useState<string | null>(null);
+  const [postingRosterEmbedId, setPostingRosterEmbedId] = useState<string | null>(null);
   const [rosterChannelSearch, setRosterChannelSearch] = useState("");
+  const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
+  const [rosterEmbedSaving, setRosterEmbedSaving] = useState(false);
+  const [rosterEmbedEditingName, setRosterEmbedEditingName] = useState("");
+  const [rosterEmbedConfig, setRosterEmbedConfig] = useState<RosterEmbedConfig>({
+    title: "",
+    description: "",
+    embedColor: "5865f2",
+    channelId: "",
+    buttons: [],
+  });
   const [moduleEnabledMap, setModuleEnabledMap] = useState<Record<string, boolean>>({});
   const [customCategoryPingsText, setCustomCategoryPingsText] = useState("{}");
   const [customModmailCategoriesText, setCustomModmailCategoriesText] = useState("[]");
@@ -634,6 +671,130 @@ export default function Dashboard() {
       toast({ title: "Error", description: e.message || "Failed to post roster.", variant: "destructive" });
     }
     setPostingRosterId(null);
+  };
+
+  const openRosterEmbedModal = (roster: RosterConfig) => {
+    const existing = roster.embedConfig || null;
+    setRosterEmbedEditingName(roster.name);
+    setRosterEmbedConfig({
+      title: existing?.title || `${roster.name} Roster`,
+      description: existing?.description || "Choose a roster below.",
+      embedColor: (existing?.embedColor || "5865f2").replace(/^#/, ""),
+      channelId: existing?.channelId || roster.channelId || "",
+      messageId: existing?.messageId || null,
+      buttons: (existing?.buttons || []).slice(0, 5).map((button) => ({
+        rosterName: button.rosterName || "",
+        label: button.label || "",
+        color: button.color || "blue",
+        emoji: button.emoji || "",
+      })),
+    });
+    setRosterEmbedModalOpen(true);
+  };
+
+  const addRosterEmbedButton = () => {
+    setRosterEmbedConfig((prev) => {
+      if ((prev.buttons || []).length >= 5) return prev;
+      return {
+        ...prev,
+        buttons: [...(prev.buttons || []), { rosterName: "", label: "", color: "blue", emoji: "" }],
+      };
+    });
+  };
+
+  const updateRosterEmbedButton = (index: number, next: Partial<RosterEmbedButtonConfig>) => {
+    setRosterEmbedConfig((prev) => ({
+      ...prev,
+      buttons: (prev.buttons || []).map((button, buttonIndex) => buttonIndex === index ? { ...button, ...next } : button),
+    }));
+  };
+
+  const removeRosterEmbedButton = (index: number) => {
+    setRosterEmbedConfig((prev) => ({
+      ...prev,
+      buttons: (prev.buttons || []).filter((_, buttonIndex) => buttonIndex !== index),
+    }));
+  };
+
+  const saveRosterEmbedConfig = async () => {
+    if (!selectedGuild || !rosterEmbedEditingName) return;
+
+    const title = rosterEmbedConfig.title.trim();
+    const description = rosterEmbedConfig.description.trim();
+    const embedColor = (rosterEmbedConfig.embedColor || "").trim().replace(/^#/, "");
+    const buttons = (rosterEmbedConfig.buttons || [])
+      .map((button) => ({
+        rosterName: String(button.rosterName || "").trim(),
+        label: String(button.label || "").trim(),
+        color: (button.color || "blue") as RosterEmbedButtonColor,
+        emoji: String(button.emoji || "").trim(),
+      }))
+      .filter((button) => button.rosterName && button.label)
+      .slice(0, 5);
+
+    if (!title) {
+      toast({ title: "Title required", description: "Enter an embed title.", variant: "destructive" });
+      return;
+    }
+    if (!description) {
+      toast({ title: "Description required", description: "Enter an embed description.", variant: "destructive" });
+      return;
+    }
+    if (!rosterEmbedConfig.channelId) {
+      toast({ title: "Channel required", description: "Choose a channel for the embed message.", variant: "destructive" });
+      return;
+    }
+    if (buttons.length === 0) {
+      toast({ title: "Button required", description: "Add at least one valid embed button.", variant: "destructive" });
+      return;
+    }
+
+    setRosterEmbedSaving(true);
+    try {
+      const payload = {
+        title,
+        description,
+        embedColor,
+        channelId: rosterEmbedConfig.channelId,
+        buttons,
+      };
+
+      const data = await fetchJsonWithTimeout(
+        `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterEmbedEditingName)}/embed-config`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      if (data?.roster) {
+        setRosters((prev) => prev.map((entry) => entry.name === rosterEmbedEditingName ? data.roster : entry));
+      }
+      setRosterEmbedModalOpen(false);
+      toast({ title: "Embed config saved", description: `Saved embed config for ${rosterEmbedEditingName}.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to save embed config.", variant: "destructive" });
+    }
+    setRosterEmbedSaving(false);
+  };
+
+  const postRosterEmbed = async (rosterName: string) => {
+    if (!selectedGuild) return;
+    setPostingRosterEmbedId(rosterName);
+    try {
+      const data = await fetchJsonWithTimeout(
+        `/api/guilds/${selectedGuild}/rosters/${encodeURIComponent(rosterName)}/post-embed`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
+      );
+      if (data?.roster) {
+        setRosters((prev) => prev.map((entry) => entry.name === rosterName ? data.roster : entry));
+      }
+      toast({ title: "Roster embed posted", description: `Embed for ${rosterName} was posted to Discord.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to post roster embed.", variant: "destructive" });
+    }
+    setPostingRosterEmbedId(null);
   };
 
   const copyToClipboard = (text: string, label: string) => {
@@ -2133,6 +2294,8 @@ export default function Dashboard() {
                     const rosterRoles = roles.filter((r) => roster.roleIds.includes(r.id));
                     const postedChannel = textChannels.find((ch) => ch.id === roster.channelId);
                     const isPosting = postingRosterId === roster.name;
+                    const isPostingEmbed = postingRosterEmbedId === roster.name;
+                    const hasEmbedConfig = !!roster.embedConfig;
                     return (
                       <Card key={roster.id} className="border-border/80 bg-card/90">
                         <CardHeader className="pb-3">
@@ -2210,15 +2373,34 @@ export default function Dashboard() {
                               ))}
                             </div>
                           )}
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={!roster.channelId || isPosting}
+                              onClick={() => postRoster(roster.name)}
+                              title={roster.channelId ? "Post or refresh this roster in Discord" : "Edit the roster and set a channel first"}
+                            >
+                              {isPosting ? "Posting…" : roster.messageId ? "Refresh Roster" : "Post Roster"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openRosterEmbedModal(roster)}
+                              title="Create or edit this roster embed configuration"
+                            >
+                              Embed Config
+                            </Button>
+                          </div>
                           <Button
                             size="sm"
                             variant="outline"
                             className="w-full"
-                            disabled={!roster.channelId || isPosting}
-                            onClick={() => postRoster(roster.name)}
-                            title={roster.channelId ? "Post or refresh this roster in Discord" : "Edit the roster and set a channel first"}
+                            disabled={!hasEmbedConfig || isPostingEmbed}
+                            onClick={() => postRosterEmbed(roster.name)}
+                            title={hasEmbedConfig ? "Post or refresh roster embed" : "Set embed config first"}
                           >
-                            {isPosting ? "Posting…" : roster.messageId ? "Refresh Roster" : "Post Roster"}
+                            {isPostingEmbed ? "Posting Embed…" : roster.embedConfig?.messageId ? "Refresh Roster Embed" : "Post Roster Embed"}
                           </Button>
                         </CardContent>
                       </Card>
@@ -2229,6 +2411,149 @@ export default function Dashboard() {
             </TabsContent>
             </div>
           </Tabs>
+
+          <Dialog open={rosterEmbedModalOpen} onOpenChange={setRosterEmbedModalOpen}>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Roster Embed Config – {rosterEmbedEditingName || "Roster"}</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Embed Title *</Label>
+                    <Input
+                      value={rosterEmbedConfig.title}
+                      onChange={(event) => setRosterEmbedConfig((prev) => ({ ...prev, title: event.target.value }))}
+                      placeholder="Roster Selection"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Embed Color (hex)</Label>
+                    <Input
+                      value={rosterEmbedConfig.embedColor || ""}
+                      onChange={(event) => setRosterEmbedConfig((prev) => ({
+                        ...prev,
+                        embedColor: event.target.value.replace(/[^0-9a-fA-F]/g, "").slice(0, 6),
+                      }))}
+                      placeholder="5865f2"
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Description *</Label>
+                    <Textarea
+                      value={rosterEmbedConfig.description}
+                      onChange={(event) => setRosterEmbedConfig((prev) => ({ ...prev, description: event.target.value }))}
+                      placeholder="Pick a roster button below."
+                      className="min-h-[90px]"
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Embed Channel *</Label>
+                    <Select
+                      value={rosterEmbedConfig.channelId || ""}
+                      onValueChange={(value) => setRosterEmbedConfig((prev) => ({ ...prev, channelId: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a channel" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {textChannels.map((channel) => (
+                          <SelectItem key={channel.id} value={channel.id}>#{channel.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="space-y-3 rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Embed Buttons (max 5)</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={addRosterEmbedButton}
+                      disabled={(rosterEmbedConfig.buttons || []).length >= 5}
+                    >
+                      <Plus className="mr-2 h-4 w-4" /> Add Button
+                    </Button>
+                  </div>
+
+                  {(rosterEmbedConfig.buttons || []).length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No buttons yet. Add at least one button.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {(rosterEmbedConfig.buttons || []).map((button, buttonIndex) => (
+                        <div key={`embed-btn-${buttonIndex}`} className="rounded-md border border-border p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Button {buttonIndex + 1}</p>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => removeRosterEmbedButton(buttonIndex)}>
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                            <div className="space-y-1">
+                              <Label>Target Roster *</Label>
+                              <Select
+                                value={button.rosterName || ""}
+                                onValueChange={(value) => updateRosterEmbedButton(buttonIndex, { rosterName: value })}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select roster" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {rosters.map((roster) => (
+                                    <SelectItem key={`embed-target-${roster.id}`} value={roster.name.toLowerCase()}>{roster.name}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Button Label *</Label>
+                              <Input
+                                value={button.label || ""}
+                                onChange={(event) => updateRosterEmbedButton(buttonIndex, { label: event.target.value })}
+                                placeholder="View Staff"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Button Color *</Label>
+                              <Select
+                                value={button.color || "blue"}
+                                onValueChange={(value) => updateRosterEmbedButton(buttonIndex, { color: value as RosterEmbedButtonColor })}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select color" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {ROSTER_EMBED_BUTTON_COLORS.map((colorOption) => (
+                                    <SelectItem key={colorOption.value} value={colorOption.value}>{colorOption.label}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-1">
+                              <Label>Emoji (optional)</Label>
+                              <Input
+                                value={button.emoji || ""}
+                                onChange={(event) => updateRosterEmbedButton(buttonIndex, { emoji: event.target.value })}
+                                placeholder="📝 or <:name:id>"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setRosterEmbedModalOpen(false)}>Cancel</Button>
+                <Button onClick={saveRosterEmbedConfig} disabled={rosterEmbedSaving}>
+                  {rosterEmbedSaving ? "Saving…" : "Save Embed Config"}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {/* Roster create/edit modal */}
           <Dialog open={rosterModalOpen} onOpenChange={setRosterModalOpen}>
