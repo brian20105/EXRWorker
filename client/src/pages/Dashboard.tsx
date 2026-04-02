@@ -565,6 +565,12 @@ export default function Dashboard() {
   }, [showOwnerDashboard, isOwnerUser]);
 
   useEffect(() => {
+    if (isOwnerUser) {
+      setShowOwnerDashboard(true);
+    }
+  }, [isOwnerUser]);
+
+  useEffect(() => {
     setLoading(true);
     const loadGuilds = async () => {
       let lastError: unknown;
@@ -2190,6 +2196,7 @@ export default function Dashboard() {
                 isOwnerUser ? (
                   <div className="space-y-4">
                     <div className="rounded-lg border border-border/70 bg-card/70 p-4">
+                      <p className="text-base font-semibold">Owner's Dashboard</p>
                       <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Owner Controls</p>
                       <p className="mt-1 text-sm text-muted-foreground">Only authorized owner IDs can access this panel.</p>
                       <p className="mt-2 text-sm">
