@@ -919,6 +919,100 @@ type GuildUpdatePayload = {
   editorId?: string;
 };
 
+type RoleSyncDirection = "one-way" | "two-way";
+
+type RoleSyncDashboardItem = {
+  id: string;
+  direction: RoleSyncDirection;
+  sourceGuildId: string;
+  sourceGuildName: string;
+  sourceGuildIcon: string | null;
+  sourceRoleId: string;
+  sourceRoleName: string;
+  sourceRoleColor: string | null;
+  targetGuildId: string;
+  targetGuildName: string;
+  targetGuildIcon: string | null;
+  targetRoleId: string;
+  targetRoleName: string;
+  targetRoleColor: string | null;
+  reciprocalPairId?: string;
+};
+
+function findGuildAndRoleMeta(guildId: string, roleId: string): {
+  guildName: string;
+  guildIcon: string | null;
+  roleName: string;
+  roleColor: string | null;
+} {
+  const cachedGuild = client.guilds.cache.get(guildId);
+  const summary = getCachedGuildSummaryById(guildId);
+  const guildName = cachedGuild?.name || summary?.name || guildId;
+  const guildIcon = cachedGuild?.iconURL() || summary?.icon || null;
+  const cachedRole = cachedGuild?.roles.cache.get(roleId) || null;
+
+  return {
+    guildName,
+    guildIcon,
+    roleName: cachedRole?.name || roleId,
+    roleColor: cachedRole?.hexColor || null,
+  };
+}
+
+async function getRoleSyncItemsByGuild(guildId: string): Promise<RoleSyncDashboardItem[]> {
+  const pairs = await storage.getRoleSyncPairsByGuild(guildId);
+  const pairMap = new Map<string, typeof pairs[number]>();
+  for (const pair of pairs) {
+    pairMap.set(pair.id, pair);
+  }
+
+  const seen = new Set<string>();
+  const result: RoleSyncDashboardItem[] = [];
+
+  for (const pair of pairs) {
+    if (seen.has(pair.id)) continue;
+
+    const reciprocal = pairs.find((candidate) => (
+      candidate.id !== pair.id
+      && candidate.sourceGuildId === pair.targetGuildId
+      && candidate.sourceRoleId === pair.targetRoleId
+      && candidate.targetGuildId === pair.sourceGuildId
+      && candidate.targetRoleId === pair.sourceRoleId
+    ));
+
+    let displayPair = pair;
+    if (reciprocal && pair.sourceGuildId !== guildId && reciprocal.sourceGuildId === guildId) {
+      displayPair = reciprocal;
+    }
+
+    seen.add(pair.id);
+    if (reciprocal) seen.add(reciprocal.id);
+
+    const sourceMeta = findGuildAndRoleMeta(displayPair.sourceGuildId, displayPair.sourceRoleId);
+    const targetMeta = findGuildAndRoleMeta(displayPair.targetGuildId, displayPair.targetRoleId);
+
+    result.push({
+      id: displayPair.id,
+      direction: reciprocal ? "two-way" : "one-way",
+      sourceGuildId: displayPair.sourceGuildId,
+      sourceGuildName: sourceMeta.guildName,
+      sourceGuildIcon: sourceMeta.guildIcon,
+      sourceRoleId: displayPair.sourceRoleId,
+      sourceRoleName: sourceMeta.roleName,
+      sourceRoleColor: sourceMeta.roleColor,
+      targetGuildId: displayPair.targetGuildId,
+      targetGuildName: targetMeta.guildName,
+      targetGuildIcon: targetMeta.guildIcon,
+      targetRoleId: displayPair.targetRoleId,
+      targetRoleName: targetMeta.roleName,
+      targetRoleColor: targetMeta.roleColor,
+      reciprocalPairId: reciprocal?.id,
+    });
+  }
+
+  return result;
+}
+
 const guildUpdateSubscribers = new Map<string, Set<Response>>();
 const pendingRosterCreates = new Set<string>();
 
@@ -1420,6 +1514,118 @@ export async function registerRoutes(
       const { guildId } = auth;
       const rosterEmbeds = await getRosterEmbedsForGuild(guildId);
       res.json({ rosterEmbeds });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/guilds/:guildId/role-syncs", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const roleSyncs = await getRoleSyncItemsByGuild(guildId);
+      res.json({ roleSyncs });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/role-syncs", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { user, guildId } = auth;
+      const direction = String(req.body?.direction || "one-way").trim().toLowerCase() === "two-way" ? "two-way" : "one-way";
+      const sourceGuildId = String(req.body?.sourceGuildId || "").trim();
+      const sourceRoleId = String(req.body?.sourceRoleId || "").trim();
+      const targetGuildId = String(req.body?.targetGuildId || "").trim();
+      const targetRoleId = String(req.body?.targetRoleId || "").trim();
+
+      const snowflakeRegex = /^\d{17,19}$/;
+      if (![sourceGuildId, sourceRoleId, targetGuildId, targetRoleId].every((value) => snowflakeRegex.test(value))) {
+        return res.status(400).json({ error: "All server and role IDs must be valid Discord snowflakes." });
+      }
+      if (sourceGuildId === targetGuildId && sourceRoleId === targetRoleId) {
+        return res.status(400).json({ error: "Choose different source and target roles." });
+      }
+
+      if (guildId !== sourceGuildId && guildId !== targetGuildId) {
+        return res.status(400).json({ error: "Role sync must involve the currently selected server." });
+      }
+
+      const sourceAllowed = await canAccessGuild(user.id, sourceGuildId);
+      const targetAllowed = await canAccessGuild(user.id, targetGuildId);
+      if (!sourceAllowed || !targetAllowed) {
+        return res.status(403).json({ error: "You need dashboard access to both servers to manage role sync." });
+      }
+
+      const sourceGuild = client.guilds.cache.get(sourceGuildId);
+      const targetGuild = client.guilds.cache.get(targetGuildId);
+      if (!sourceGuild || !targetGuild) {
+        return res.status(400).json({ error: "The bot must be in both servers for role sync." });
+      }
+      if (!sourceGuild.roles.cache.has(sourceRoleId) || !targetGuild.roles.cache.has(targetRoleId)) {
+        return res.status(400).json({ error: "One of the selected roles was not found in its server." });
+      }
+
+      const existingPairs = await storage.getAllRoleSyncPairs();
+      const existingForward = existingPairs.find((pair) => (
+        pair.sourceGuildId === sourceGuildId
+        && pair.sourceRoleId === sourceRoleId
+        && pair.targetGuildId === targetGuildId
+        && pair.targetRoleId === targetRoleId
+      ));
+      if (existingForward) {
+        return res.status(400).json({ error: "That role sync already exists." });
+      }
+
+      await storage.addRoleSyncPair({ sourceGuildId, sourceRoleId, targetGuildId, targetRoleId });
+      if (direction === "two-way") {
+        const existingReverse = existingPairs.find((pair) => (
+          pair.sourceGuildId === targetGuildId
+          && pair.sourceRoleId === targetRoleId
+          && pair.targetGuildId === sourceGuildId
+          && pair.targetRoleId === sourceRoleId
+        ));
+        if (!existingReverse) {
+          await storage.addRoleSyncPair({ sourceGuildId: targetGuildId, sourceRoleId: targetRoleId, targetGuildId: sourceGuildId, targetRoleId: sourceRoleId });
+        }
+      }
+
+      const roleSyncs = await getRoleSyncItemsByGuild(guildId);
+      res.json({ success: true, roleSyncs });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/role-syncs/:syncId", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const syncId = String(req.params.syncId || "").trim();
+      if (!syncId) return res.status(400).json({ error: "Sync id is required." });
+
+      const allPairs = await storage.getAllRoleSyncPairs();
+      const pair = allPairs.find((entry) => entry.id === syncId);
+      if (!pair) return res.status(404).json({ error: "Role sync not found." });
+
+      await storage.removeRoleSyncPair(pair.id);
+      const reciprocal = allPairs.find((candidate) => (
+        candidate.id !== pair.id
+        && candidate.sourceGuildId === pair.targetGuildId
+        && candidate.sourceRoleId === pair.targetRoleId
+        && candidate.targetGuildId === pair.sourceGuildId
+        && candidate.targetRoleId === pair.sourceRoleId
+      ));
+      if (reciprocal) {
+        await storage.removeRoleSyncPair(reciprocal.id);
+      }
+
+      const roleSyncs = await getRoleSyncItemsByGuild(guildId);
+      res.json({ success: true, roleSyncs });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

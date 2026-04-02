@@ -21463,12 +21463,27 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
     (addedRoles.includes(pair.sourceRoleId) || removedRoles.includes(pair.sourceRoleId))
   );
 
-  if (relevantPairs.length === 0) {
+  const authoritativeTargetPairs = allSyncPairs.filter((pair) => {
+    if (pair.targetGuildId !== currentGuildId) return false;
+    if (!addedRoles.includes(pair.targetRoleId) && !removedRoles.includes(pair.targetRoleId)) return false;
+
+    const hasReciprocal = allSyncPairs.some((candidate) => (
+      candidate.id !== pair.id
+      && candidate.sourceGuildId === pair.targetGuildId
+      && candidate.sourceRoleId === pair.targetRoleId
+      && candidate.targetGuildId === pair.sourceGuildId
+      && candidate.targetRoleId === pair.sourceRoleId
+    ));
+
+    return !hasReciprocal;
+  });
+
+  if (relevantPairs.length === 0 && authoritativeTargetPairs.length === 0) {
     console.log(`[ROLE SYNC] No syncable roles changed, skipping`);
     return;
   }
 
-  console.log(`[ROLE SYNC] Found ${relevantPairs.length} relevant sync pairs`);
+  console.log(`[ROLE SYNC] Found ${relevantPairs.length} forward sync pair(s) and ${authoritativeTargetPairs.length} authoritative target pair(s)`);
 
   try {
     syncingUsers.add(syncKey);
@@ -21544,6 +21559,46 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         }
       }
     }
+
+    for (const pair of authoritativeTargetPairs) {
+      const sourceSyncKey = `${newMember.id}-${pair.sourceGuildId}`;
+      syncingUsers.add(sourceSyncKey);
+
+      const sourceGuild = client.guilds.cache.get(pair.sourceGuildId);
+      if (!sourceGuild) {
+        console.log(`[ROLE SYNC] Source guild ${pair.sourceGuildId} not found in cache for authoritative check`);
+        continue;
+      }
+
+      let sourceMember;
+      try {
+        sourceMember = await sourceGuild.members.fetch(newMember.id);
+      } catch (error: any) {
+        console.log(`[ROLE SYNC] Could not fetch ${newMember.user.tag} in source guild ${sourceGuild.name}: ${error?.message || 'unknown'}`);
+        continue;
+      }
+
+      const sourceHasRole = sourceMember.roles.cache.has(pair.sourceRoleId);
+      const targetHasRole = newMember.roles.cache.has(pair.targetRoleId);
+
+      if (addedRoles.includes(pair.targetRoleId) && !sourceHasRole && targetHasRole) {
+        try {
+          await newMember.roles.remove(pair.targetRoleId);
+          console.log(`[ROLE SYNC] Removed unauthorized target role ${pair.targetRoleId} from ${newMember.user.tag} in ${newMember.guild.name}`);
+        } catch (error) {
+          console.log(`[ROLE SYNC] Failed to remove unauthorized target role ${pair.targetRoleId}:`, error);
+        }
+      }
+
+      if (removedRoles.includes(pair.targetRoleId) && sourceHasRole && !targetHasRole) {
+        try {
+          await newMember.roles.add(pair.targetRoleId);
+          console.log(`[ROLE SYNC] Restored target role ${pair.targetRoleId} for ${newMember.user.tag} in ${newMember.guild.name} because source still has the role`);
+        } catch (error) {
+          console.log(`[ROLE SYNC] Failed to restore target role ${pair.targetRoleId}:`, error);
+        }
+      }
+    }
   } catch (error) {
     console.error("Error syncing roles:", error);
   } finally {
@@ -21551,6 +21606,9 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       syncingUsers.delete(syncKey);
       for (const pair of relevantPairs) {
         syncingUsers.delete(`${newMember.id}-${pair.targetGuildId}`);
+      }
+      for (const pair of authoritativeTargetPairs) {
+        syncingUsers.delete(`${newMember.id}-${pair.sourceGuildId}`);
       }
     }, 5000);
   }

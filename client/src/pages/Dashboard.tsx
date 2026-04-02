@@ -125,6 +125,23 @@ interface SavedRosterEmbedConfig extends RosterEmbedConfig {
   name: string;
 }
 
+interface RoleSyncItem {
+  id: string;
+  direction: "one-way" | "two-way";
+  sourceGuildId: string;
+  sourceGuildName: string;
+  sourceGuildIcon: string | null;
+  sourceRoleId: string;
+  sourceRoleName: string;
+  sourceRoleColor: string | null;
+  targetGuildId: string;
+  targetGuildName: string;
+  targetGuildIcon: string | null;
+  targetRoleId: string;
+  targetRoleName: string;
+  targetRoleColor: string | null;
+}
+
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
   settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
   features: { label: "Bot Features", icon: Sparkles },
@@ -363,6 +380,16 @@ export default function Dashboard() {
   const [rosterChannelSearch, setRosterChannelSearch] = useState("");
   const [rosterEmbedChannelSearch, setRosterEmbedChannelSearch] = useState("");
   const [rosterEmbeds, setRosterEmbeds] = useState<SavedRosterEmbedConfig[]>([]);
+  const [roleSyncs, setRoleSyncs] = useState<RoleSyncItem[]>([]);
+  const [roleSyncLoading, setRoleSyncLoading] = useState(false);
+  const [roleSyncSaving, setRoleSyncSaving] = useState(false);
+  const [deletingRoleSyncId, setDeletingRoleSyncId] = useState<string | null>(null);
+  const [roleSyncDirection, setRoleSyncDirection] = useState<"one-way" | "two-way">("one-way");
+  const [roleSyncSourceGuildId, setRoleSyncSourceGuildId] = useState<string>("");
+  const [roleSyncTargetGuildId, setRoleSyncTargetGuildId] = useState<string>("");
+  const [roleSyncSourceRoleId, setRoleSyncSourceRoleId] = useState<string>("");
+  const [roleSyncTargetRoleId, setRoleSyncTargetRoleId] = useState<string>("");
+  const [roleSyncGuildRoles, setRoleSyncGuildRoles] = useState<Record<string, Role[]>>({});
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
   const [rosterEmbedModalMode, setRosterEmbedModalMode] = useState<"create" | "edit">("create");
@@ -605,6 +632,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (!selectedGuild || activePrimaryTab !== "rosters") return;
     setRostersLoading(true);
+    setRoleSyncLoading(true);
     fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/rosters`, undefined, 12000)
       .then((rosterData) => {
         setRosters(dedupeRosters(Array.isArray(rosterData.rosters) ? rosterData.rosters : []));
@@ -612,7 +640,41 @@ export default function Dashboard() {
         setRostersLoading(false);
       })
       .catch(() => setRostersLoading(false));
+
+    fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/role-syncs`, undefined, 12000)
+      .then((data) => {
+        setRoleSyncs(Array.isArray(data.roleSyncs) ? data.roleSyncs : []);
+        setRoleSyncLoading(false);
+      })
+      .catch(() => setRoleSyncLoading(false));
   }, [selectedGuild, activePrimaryTab]);
+
+  useEffect(() => {
+    if (!selectedGuild) return;
+    setRoleSyncSourceGuildId((previous) => previous || selectedGuild);
+    setRoleSyncTargetGuildId((previous) => {
+      if (previous) return previous;
+      return guilds.find((guild) => guild.id !== selectedGuild)?.id || selectedGuild;
+    });
+  }, [selectedGuild, guilds]);
+
+  useEffect(() => {
+    const guildIdsToLoad = [roleSyncSourceGuildId, roleSyncTargetGuildId].filter(Boolean);
+    guildIdsToLoad.forEach((guildId) => {
+      if (roleSyncGuildRoles[guildId]) return;
+      if (guildId === selectedGuild) {
+        setRoleSyncGuildRoles((previous) => ({ ...previous, [guildId]: roles }));
+        return;
+      }
+
+      fetchJsonWithTimeout(`/api/guilds/${guildId}/config`, undefined, 12000)
+        .then((data) => {
+          const nextRoles = Array.isArray(data.roles) ? data.roles as Role[] : [];
+          setRoleSyncGuildRoles((previous) => ({ ...previous, [guildId]: nextRoles }));
+        })
+        .catch(() => undefined);
+    });
+  }, [roleSyncSourceGuildId, roleSyncTargetGuildId, roleSyncGuildRoles, selectedGuild, roles]);
 
   const openCreateRosterModal = () => {
     setRosterModalMode("create");
@@ -884,6 +946,50 @@ export default function Dashboard() {
       toast({ title: "Error", description: e.message || "Failed to post roster embed.", variant: "destructive" });
     }
     setPostingRosterEmbedId(null);
+  };
+
+  const createRoleSync = async () => {
+    if (!selectedGuild) return;
+    if (!roleSyncSourceGuildId || !roleSyncTargetGuildId || !roleSyncSourceRoleId || !roleSyncTargetRoleId) {
+      toast({ title: "Missing fields", description: "Choose both servers and both roles.", variant: "destructive" });
+      return;
+    }
+
+    setRoleSyncSaving(true);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/role-syncs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          direction: roleSyncDirection,
+          sourceGuildId: roleSyncSourceGuildId,
+          sourceRoleId: roleSyncSourceRoleId,
+          targetGuildId: roleSyncTargetGuildId,
+          targetRoleId: roleSyncTargetRoleId,
+        }),
+      });
+
+      setRoleSyncs(Array.isArray(data.roleSyncs) ? data.roleSyncs : []);
+      toast({ title: "Role sync created", description: `Created ${roleSyncDirection} role sync.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to create role sync.", variant: "destructive" });
+    }
+    setRoleSyncSaving(false);
+  };
+
+  const deleteRoleSync = async (syncId: string) => {
+    if (!selectedGuild) return;
+    setDeletingRoleSyncId(syncId);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/role-syncs/${encodeURIComponent(syncId)}`, {
+        method: "DELETE",
+      });
+      setRoleSyncs(Array.isArray(data.roleSyncs) ? data.roleSyncs : []);
+      toast({ title: "Role sync removed", description: "The role sync has been deleted." });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to delete role sync.", variant: "destructive" });
+    }
+    setDeletingRoleSyncId(null);
   };
 
   const copyToClipboard = (text: string, label: string) => {
@@ -1323,6 +1429,12 @@ export default function Dashboard() {
   const textChannels = channels.filter((c) => TEXT_CHANNEL_TYPES.has(c.type));
   const voiceChannels = channels.filter((c) => c.type === 2 || c.type === 13);
   const selectedGuildSummary = guilds.find((guild) => guild.id === selectedGuild) || null;
+  const roleSyncSourceRoles = roleSyncSourceGuildId === selectedGuild
+    ? roles
+    : (roleSyncGuildRoles[roleSyncSourceGuildId] || []);
+  const roleSyncTargetRoles = roleSyncTargetGuildId === selectedGuild
+    ? roles
+    : (roleSyncGuildRoles[roleSyncTargetGuildId] || []);
 
   const botFeatureDefinitions: Omit<BotFeatureModule, "enabled">[] = [
     {
@@ -2434,6 +2546,166 @@ export default function Dashboard() {
                     })}
                   </div>
                 )}
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Miscellaneous</p>
+                  <p className="text-sm text-muted-foreground">Manage cross-server role sync from the website.</p>
+                </div>
+
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader className="space-y-1">
+                    <CardTitle className="text-base">Role Sync</CardTitle>
+                    <CardDescription>
+                      One way keeps the source server authoritative. If the role is manually given in the target server, it gets removed unless the member has the source role.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                      <div className="space-y-2">
+                        <Label>Mode</Label>
+                        <Select value={roleSyncDirection} onValueChange={(value) => setRoleSyncDirection(value as "one-way" | "two-way")}>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="one-way">One way</SelectItem>
+                            <SelectItem value="two-way">Two way</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Source Server</Label>
+                        <Select value={roleSyncSourceGuildId} onValueChange={(value) => { setRoleSyncSourceGuildId(value); setRoleSyncSourceRoleId(""); }}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select source server" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {guilds.map((guild) => (
+                              <SelectItem key={`role-sync-source-${guild.id}`} value={guild.id}>{guild.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Source Role</Label>
+                        <Select value={roleSyncSourceRoleId} onValueChange={setRoleSyncSourceRoleId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select source role" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {roleSyncSourceRoles.map((role) => (
+                              <SelectItem key={`role-sync-source-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Target Server</Label>
+                        <Select value={roleSyncTargetGuildId} onValueChange={(value) => { setRoleSyncTargetGuildId(value); setRoleSyncTargetRoleId(""); }}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select target server" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {guilds.map((guild) => (
+                              <SelectItem key={`role-sync-target-${guild.id}`} value={guild.id}>{guild.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Target Role</Label>
+                        <Select value={roleSyncTargetRoleId} onValueChange={setRoleSyncTargetRoleId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select target role" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {roleSyncTargetRoles.map((role) => (
+                              <SelectItem key={`role-sync-target-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <Button onClick={createRoleSync} disabled={roleSyncSaving}>
+                      {roleSyncSaving ? "Creating…" : "Create Role Sync"}
+                    </Button>
+
+                    {roleSyncLoading ? (
+                      <p className="text-sm text-muted-foreground">Loading role syncs…</p>
+                    ) : roleSyncs.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No role sync pairs yet.</p>
+                    ) : (
+                      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        {roleSyncs.map((syncItem) => (
+                          <Card key={syncItem.id} className="border-border/70 bg-card/50 overflow-hidden">
+                            <CardContent className="space-y-4 p-4">
+                              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+                                <div className="text-center">
+                                  <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Source server</p>
+                                  {syncItem.sourceGuildIcon ? (
+                                    <img src={syncItem.sourceGuildIcon} alt={syncItem.sourceGuildName} className="mx-auto mb-3 h-16 w-16 rounded-full object-cover" />
+                                  ) : (
+                                    <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-sm font-semibold">
+                                      {syncItem.sourceGuildName.slice(0, 2).toUpperCase()}
+                                    </div>
+                                  )}
+                                  <p className="text-sm font-medium">{syncItem.sourceGuildName}</p>
+                                  <Badge
+                                    variant="outline"
+                                    className="mt-2"
+                                    style={{
+                                      borderColor: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
+                                      color: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
+                                    }}
+                                  >
+                                    {syncItem.sourceRoleName}
+                                  </Badge>
+                                </div>
+
+                                <div className="text-center">
+                                  <div className="mb-3 text-2xl">→</div>
+                                  <p className="text-sm font-semibold">{syncItem.direction === "two-way" ? "Two way" : "One way"}</p>
+                                </div>
+
+                                <div className="text-center">
+                                  <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Target server</p>
+                                  {syncItem.targetGuildIcon ? (
+                                    <img src={syncItem.targetGuildIcon} alt={syncItem.targetGuildName} className="mx-auto mb-3 h-16 w-16 rounded-full object-cover" />
+                                  ) : (
+                                    <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-sm font-semibold">
+                                      {syncItem.targetGuildName.slice(0, 2).toUpperCase()}
+                                    </div>
+                                  )}
+                                  <p className="text-sm font-medium">{syncItem.targetGuildName}</p>
+                                  <Badge
+                                    variant="outline"
+                                    className="mt-2"
+                                    style={{
+                                      borderColor: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
+                                      color: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
+                                    }}
+                                  >
+                                    {syncItem.targetRoleName}
+                                  </Badge>
+                                </div>
+                              </div>
+                            </CardContent>
+                            <Button variant="destructive" className="w-full rounded-none" onClick={() => deleteRoleSync(syncItem.id)} disabled={deletingRoleSyncId === syncItem.id}>
+                              {deletingRoleSyncId === syncItem.id ? "Deleting…" : "Delete"}
+                            </Button>
+                          </Card>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
 
               {rostersLoading ? (
