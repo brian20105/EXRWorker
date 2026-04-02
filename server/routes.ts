@@ -966,6 +966,22 @@ async function getRoleSyncItemsByGuild(guildId: string): Promise<RoleSyncDashboa
     pairMap.set(pair.id, pair);
   }
 
+  // Ensure role caches are populated for all involved guilds
+  const involvedGuildIds = new Set<string>();
+  for (const pair of pairs) {
+    involvedGuildIds.add(pair.sourceGuildId);
+    involvedGuildIds.add(pair.targetGuildId);
+  }
+  await Promise.all(Array.from(involvedGuildIds).map(async (gid) => {
+    let g = client.guilds.cache.get(gid);
+    if (!g) {
+      try { g = await client.guilds.fetch(gid) as any; } catch { return; }
+    }
+    if (g && !g.roles.cache.size) {
+      try { await g.roles.fetch(); } catch { /* ignore */ }
+    }
+  }));
+
   const seen = new Set<string>();
   const result: RoleSyncDashboardItem[] = [];
 

@@ -2820,58 +2820,61 @@ export default function Dashboard() {
                   ) : roleSyncs.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No role sync pairs yet.</p>
                   ) : (
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    <div className="grid gap-4 md:grid-cols-2">
                       {roleSyncs.map((syncItem) => (
                         <Card key={syncItem.id} className="border-border/70 bg-card/50 overflow-hidden">
-                          <CardContent className="space-y-4 p-4">
-                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
-                              <div className="text-center">
-                                <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Source server</p>
+                          <CardContent className="p-4">
+                            <div className="flex items-center gap-3">
+                              {/* Source */}
+                              <div className="flex min-w-0 flex-1 flex-col items-center text-center">
+                                <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Source</p>
                                 {syncItem.sourceGuildIcon ? (
-                                  <img src={syncItem.sourceGuildIcon} alt={syncItem.sourceGuildName} className="mx-auto mb-3 h-16 w-16 rounded-full object-cover" />
+                                  <img src={syncItem.sourceGuildIcon} alt={syncItem.sourceGuildName} className="mb-2 h-12 w-12 rounded-full object-cover" />
                                 ) : (
-                                  <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-sm font-semibold">
+                                  <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-muted text-xs font-semibold">
                                     {syncItem.sourceGuildName.slice(0, 2).toUpperCase()}
                                   </div>
                                 )}
-                                <p className="text-sm font-medium">{syncItem.sourceGuildName}</p>
-                                <Badge
-                                  variant="outline"
-                                  className="mt-2"
+                                <p className="w-full break-words text-xs font-medium leading-tight">{syncItem.sourceGuildName}</p>
+                                <span
+                                  className="mt-1.5 inline-block max-w-full truncate rounded border px-1.5 py-0.5 text-xs"
                                   style={{
                                     borderColor: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
                                     color: syncItem.sourceRoleColor && syncItem.sourceRoleColor !== "#000000" ? syncItem.sourceRoleColor : undefined,
                                   }}
+                                  title={syncItem.sourceRoleName}
                                 >
                                   {syncItem.sourceRoleName}
-                                </Badge>
+                                </span>
                               </div>
 
-                              <div className="text-center">
-                                <div className="mb-3 text-2xl">→</div>
-                                <p className="text-sm font-semibold">{syncItem.direction === "two-way" ? "Two way" : "One way"}</p>
+                              {/* Arrow */}
+                              <div className="shrink-0 text-center">
+                                <div className="text-lg">{syncItem.direction === "two-way" ? "⇄" : "→"}</div>
+                                <p className="mt-1 text-xs font-semibold text-muted-foreground">{syncItem.direction === "two-way" ? "Two way" : "One way"}</p>
                               </div>
 
-                              <div className="text-center">
-                                <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Target server</p>
+                              {/* Target */}
+                              <div className="flex min-w-0 flex-1 flex-col items-center text-center">
+                                <p className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">Target</p>
                                 {syncItem.targetGuildIcon ? (
-                                  <img src={syncItem.targetGuildIcon} alt={syncItem.targetGuildName} className="mx-auto mb-3 h-16 w-16 rounded-full object-cover" />
+                                  <img src={syncItem.targetGuildIcon} alt={syncItem.targetGuildName} className="mb-2 h-12 w-12 rounded-full object-cover" />
                                 ) : (
-                                  <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-full bg-muted text-sm font-semibold">
+                                  <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-muted text-xs font-semibold">
                                     {syncItem.targetGuildName.slice(0, 2).toUpperCase()}
                                   </div>
                                 )}
-                                <p className="text-sm font-medium">{syncItem.targetGuildName}</p>
-                                <Badge
-                                  variant="outline"
-                                  className="mt-2"
+                                <p className="w-full break-words text-xs font-medium leading-tight">{syncItem.targetGuildName}</p>
+                                <span
+                                  className="mt-1.5 inline-block max-w-full truncate rounded border px-1.5 py-0.5 text-xs"
                                   style={{
                                     borderColor: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
                                     color: syncItem.targetRoleColor && syncItem.targetRoleColor !== "#000000" ? syncItem.targetRoleColor : undefined,
                                   }}
+                                  title={syncItem.targetRoleName}
                                 >
                                   {syncItem.targetRoleName}
-                                </Badge>
+                                </span>
                               </div>
                             </div>
                           </CardContent>
