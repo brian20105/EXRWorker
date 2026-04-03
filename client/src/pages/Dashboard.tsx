@@ -491,6 +491,8 @@ export default function Dashboard() {
   const [miscActivity, setMiscActivity] = useState<MiscActivityItem[]>([]);
   const [miscOverviewLoading, setMiscOverviewLoading] = useState(false);
   const [miscOverviewError, setMiscOverviewError] = useState<string | null>(null);
+  const [unbanningUserId, setUnbanningUserId] = useState<string | null>(null);
+  const [unbanningAllBans, setUnbanningAllBans] = useState(false);
   const [snippetItems, setSnippetItems] = useState<SnippetItem[]>([]);
   const [snippetLoading, setSnippetLoading] = useState(false);
   const [snippetSaving, setSnippetSaving] = useState(false);
@@ -1113,6 +1115,39 @@ export default function Dashboard() {
       setMiscOverviewError(e.message || "Failed to load server activity.");
     }
     setMiscOverviewLoading(false);
+  };
+
+  const unbanUser = async (userId: string, username: string) => {
+    if (!selectedGuild) return;
+    if (!window.confirm(`Unban ${username}?`)) return;
+
+    setUnbanningUserId(userId);
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/bans/${encodeURIComponent(userId)}`, { method: "DELETE" }, 15000);
+      setMiscBans((prev) => prev.filter((ban) => ban.userId !== userId));
+      toast({ title: "User unbanned", description: `${username} has been unbanned.` });
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to unban this user.", variant: "destructive" });
+    }
+    setUnbanningUserId(null);
+  };
+
+  const unbanAllUsers = async () => {
+    if (!selectedGuild || miscBans.length === 0) return;
+    if (!window.confirm(`Unban all ${miscBans.length} banned user(s) in this server?`)) return;
+
+    setUnbanningAllBans(true);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/bans`, { method: "DELETE" }, 30000);
+      const removedCount = Number(data?.count || miscBans.length);
+      setMiscBans([]);
+      toast({ title: "All users unbanned", description: `Removed ${removedCount} ban(s).` });
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to unban all users.", variant: "destructive" });
+    }
+    setUnbanningAllBans(false);
   };
 
   const loadSnippets = async (guildId: string | null = selectedGuild) => {
@@ -4313,9 +4348,14 @@ export default function Dashboard() {
                       <CardTitle className="text-base">Banned Members</CardTitle>
                       <CardDescription>All users currently banned in the selected server.</CardDescription>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => loadMiscOverview()} disabled={miscOverviewLoading}>
-                      {miscOverviewLoading ? "Refreshing…" : "Refresh"}
-                    </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button variant="destructive" size="sm" onClick={unbanAllUsers} disabled={miscOverviewLoading || unbanningAllBans || miscBans.length === 0}>
+                        {unbanningAllBans ? "Unbanning All…" : "Unban All"}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => loadMiscOverview()} disabled={miscOverviewLoading || unbanningAllBans}>
+                        {miscOverviewLoading ? "Refreshing…" : "Refresh"}
+                      </Button>
+                    </div>
                   </CardHeader>
                   <CardContent>
                     {miscOverviewError && (
@@ -4331,19 +4371,30 @@ export default function Dashboard() {
                     ) : (
                       <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
                         {miscBans.map((ban) => (
-                          <div key={ban.userId} className="flex items-start gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                            {ban.avatarUrl ? (
-                              <img src={ban.avatarUrl} alt={ban.username} className="h-9 w-9 rounded-full object-cover" />
-                            ) : (
-                              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
-                                {ban.username.slice(0, 2).toUpperCase()}
+                          <div key={ban.userId} className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                            <div className="flex min-w-0 flex-1 items-start gap-3">
+                              {ban.avatarUrl ? (
+                                <img src={ban.avatarUrl} alt={ban.username} className="h-9 w-9 rounded-full object-cover" />
+                              ) : (
+                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                                  {ban.username.slice(0, 2).toUpperCase()}
+                                </div>
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium">{ban.username}</p>
+                                <p className="text-[11px] text-muted-foreground">ID: {ban.userId}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{ban.reason || "No ban reason provided."}</p>
                               </div>
-                            )}
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-medium">{ban.username}</p>
-                              <p className="text-[11px] text-muted-foreground">ID: {ban.userId}</p>
-                              <p className="mt-1 text-xs text-muted-foreground">{ban.reason || "No ban reason provided."}</p>
                             </div>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="shrink-0"
+                              disabled={unbanningAllBans || unbanningUserId === ban.userId}
+                              onClick={() => unbanUser(ban.userId, ban.username)}
+                            >
+                              {unbanningUserId === ban.userId ? "Unbanning…" : "Unban"}
+                            </Button>
                           </div>
                         ))}
                       </div>

@@ -1834,53 +1834,124 @@ export async function registerRoutes(
         return "server settings";
       };
 
+      const summarizeAuditChanges = (entry: any) => {
+        const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+        if (changes.length === 0) return "";
+
+        const changeLabelMap: Record<string, string> = {
+          name: "name",
+          nick: "nickname",
+          topic: "topic",
+          permissions: "permissions",
+          color: "color",
+          hoist: "display setting",
+          mentionable: "mentionable setting",
+          rate_limit_per_user: "slowmode",
+          nsfw: "NSFW setting",
+          bitrate: "bitrate",
+          user_limit: "user limit",
+          icon_hash: "icon",
+          banner_hash: "banner",
+          description: "description",
+          rules_channel_id: "rules channel",
+          public_updates_channel_id: "updates channel",
+          preferred_locale: "locale",
+          verification_level: "verification level",
+          explicit_content_filter: "content filter",
+          default_message_notifications: "message notifications",
+          afk_channel_id: "AFK channel",
+          afk_timeout: "AFK timeout",
+          owner_id: "owner",
+          mfa_level: "2FA requirement",
+          code: "invite code",
+          channel_id: "channel",
+          max_age: "max age",
+          max_uses: "max uses",
+          temporary: "temporary invite",
+        };
+
+        return changes.slice(0, 3).map((change: any) => {
+          const key = String(change?.key || "").trim();
+          if (key === "$add" || key === "$remove") {
+            const roles = Array.isArray(change?.new_value)
+              ? change.new_value.map((role: any) => String(role?.name || "")).filter(Boolean).join(", ")
+              : "roles";
+            return key === "$add" ? `added ${roles}` : `removed ${roles}`;
+          }
+
+          const label = changeLabelMap[key] || key.replace(/_/g, " ");
+          const oldValue = cleanText(change?.old_value ?? "");
+          const newValue = cleanText(change?.new_value ?? "");
+          if (oldValue || newValue) {
+            return `${label}: ${oldValue || "none"} → ${newValue || "none"}`;
+          }
+          return `updated ${label}`;
+        }).join(" • ");
+      };
+
       const formatAuditAction = (entry: any) => {
         const targetName = formatTargetName(entry?.target);
+        const details = summarizeAuditChanges(entry);
+        const withDetails = (text: string) => details ? `${text} — ${details}` : text;
+
         switch (entry?.action) {
           case AuditLogEvent.MemberBanAdd:
-            return `Banned ${targetName}`;
+            return withDetails(`Banned ${targetName}`);
           case AuditLogEvent.MemberBanRemove:
             return `Unbanned ${targetName}`;
           case AuditLogEvent.MemberKick:
-            return `Kicked ${targetName}`;
+            return withDetails(`Kicked ${targetName}`);
           case AuditLogEvent.MemberRoleUpdate:
-            return `Updated roles for ${targetName}`;
+            return withDetails(`Updated roles for ${targetName}`);
           case AuditLogEvent.MemberUpdate:
-            return `Updated member ${targetName}`;
+            return withDetails(`Updated member ${targetName}`);
           case AuditLogEvent.ChannelCreate:
-            return `Created channel ${targetName}`;
+            return withDetails(`Created channel ${targetName}`);
           case AuditLogEvent.ChannelUpdate:
-            return `Updated channel ${targetName}`;
+            return withDetails(`Updated channel ${targetName}`);
           case AuditLogEvent.ChannelDelete:
             return `Deleted channel ${targetName}`;
+          case AuditLogEvent.ChannelOverwriteCreate:
+            return withDetails(`Created channel permissions for ${targetName}`);
+          case AuditLogEvent.ChannelOverwriteUpdate:
+            return withDetails(`Updated channel permissions for ${targetName}`);
+          case AuditLogEvent.ChannelOverwriteDelete:
+            return `Deleted channel permissions for ${targetName}`;
           case AuditLogEvent.RoleCreate:
-            return `Created role ${targetName}`;
+            return withDetails(`Created role ${targetName}`);
           case AuditLogEvent.RoleUpdate:
-            return `Updated role ${targetName}`;
+            return withDetails(`Updated role ${targetName}`);
           case AuditLogEvent.RoleDelete:
             return `Deleted role ${targetName}`;
           case AuditLogEvent.InviteCreate:
-            return `Created invite ${targetName}`;
+            return withDetails(`Created invite ${targetName}`);
           case AuditLogEvent.InviteUpdate:
-            return `Updated invite ${targetName}`;
+            return withDetails(`Updated invite ${targetName}`);
           case AuditLogEvent.InviteDelete:
             return `Deleted invite ${targetName}`;
           case AuditLogEvent.EmojiCreate:
-            return `Created emoji ${targetName}`;
+            return withDetails(`Created emoji ${targetName}`);
           case AuditLogEvent.EmojiUpdate:
-            return `Updated emoji ${targetName}`;
+            return withDetails(`Updated emoji ${targetName}`);
           case AuditLogEvent.EmojiDelete:
             return `Deleted emoji ${targetName}`;
+          case AuditLogEvent.MessageDelete:
+          case AuditLogEvent.MessageBulkDelete:
+            return withDetails(`Deleted messages in ${targetName}`);
+          case AuditLogEvent.MessagePin:
+            return `Pinned a message in ${targetName}`;
+          case AuditLogEvent.MessageUnpin:
+            return `Unpinned a message in ${targetName}`;
           case AuditLogEvent.GuildUpdate:
-            return "Updated server settings";
+            return withDetails("Updated server settings");
           case AuditLogEvent.WebhookCreate:
             return `Created webhook ${targetName}`;
           case AuditLogEvent.WebhookUpdate:
-            return `Updated webhook ${targetName}`;
+            return withDetails(`Updated webhook ${targetName}`);
           case AuditLogEvent.WebhookDelete:
             return `Deleted webhook ${targetName}`;
           default:
-            return `Performed a server action on ${targetName}`;
+            return details ? `Updated ${targetName} — ${details}` : `Audit action on ${targetName}`;
         }
       };
 
@@ -1985,6 +2056,79 @@ export async function registerRoutes(
       res.json({ bans, activity });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/bans/:userId", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const userId = String(req.params.userId || "").trim();
+
+      if (!/^\d{17,20}$/.test(userId)) {
+        return res.status(400).json({ error: "A valid user ID is required." });
+      }
+
+      if (getBotToken()) {
+        await discordApiRequest(`/guilds/${guildId}/bans/${userId}`, { method: "DELETE" });
+      } else if (client.isReady()) {
+        const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+        if (!guild) return res.status(404).json({ error: "Server not found." });
+        await guild.bans.remove(userId, "Unbanned from dashboard");
+      } else {
+        return res.status(503).json({ error: "Bot is offline right now." });
+      }
+
+      res.json({ success: true, userId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to unban user." });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/bans", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      if (!getBotToken() && !client.isReady()) {
+        return res.status(503).json({ error: "Bot is offline right now." });
+      }
+
+      let banUserIds: string[] = [];
+      if (getBotToken()) {
+        const bans = await discordBotApiRequest<any[]>(`/guilds/${guildId}/bans?limit=1000`).catch(() => []);
+        banUserIds = Array.isArray(bans)
+          ? bans.map((ban: any) => String(ban?.user?.id || "")).filter(Boolean)
+          : [];
+      } else {
+        const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+        if (!guild) return res.status(404).json({ error: "Server not found." });
+        const bans = await guild.bans.fetch().catch(() => null);
+        banUserIds = bans ? Array.from(bans.keys()) : [];
+      }
+
+      let count = 0;
+      const failed: string[] = [];
+      for (const userId of banUserIds) {
+        try {
+          if (getBotToken()) {
+            await discordApiRequest(`/guilds/${guildId}/bans/${userId}`, { method: "DELETE" });
+          } else {
+            const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+            if (!guild) throw new Error("Server not found.");
+            await guild.bans.remove(userId, "Bulk unban from dashboard");
+          }
+          count += 1;
+        } catch {
+          failed.push(userId);
+        }
+      }
+
+      res.json({ success: failed.length === 0, count, failed });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to unban all users." });
     }
   });
 
