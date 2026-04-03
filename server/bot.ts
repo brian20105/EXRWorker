@@ -58,9 +58,9 @@ const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
   setup_moderation_logs: "moderation",
   setup_moderation_command_logs: "moderation",
   setup_command_logs: "moderation",
-  setup_role_requests: "permissions",
-  set_pro_roles: "permissions",
-  setup_pro_role_requests: "permissions",
+  setup_role_requests: "role-requests",
+  set_pro_roles: "role-requests",
+  setup_pro_role_requests: "role-requests",
   permissions: "permissions",
   setup_staff_intro: "staff-intro",
   setup_staff_intro_submissions: "staff-intro",
@@ -89,6 +89,32 @@ const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
   message_role: "modmail",
   setup_appeal: "appeals",
   config_appeal: "appeals",
+  // Ban / Unban / Kick request system
+  setup_ban: "ban-requests",
+  setup_unban: "ban-requests",
+  setup_kick: "ban-requests",
+  setup_ban_log: "ban-requests",
+  setup_unban_log: "ban-requests",
+  // Activity tracking
+  activity: "activity",
+  leaderboard: "activity",
+  add_activity: "activity",
+  remove_activity: "activity",
+  reset_activity: "activity",
+  // Roster management
+  roster: "roster",
+  create_roster: "roster",
+  delete_roster: "roster",
+  setup_player_roster: "roster",
+  setup_staff_roster: "roster",
+  // Snippets
+  snippet: "snippets",
+  add_snippet: "snippets",
+  delete_snippet: "snippets",
+  list_snippets: "snippets",
+  // Sticky messages
+  sticky: "sticky",
+  unsticky: "sticky",
 };
 
 function isPidAlive(pid: number): boolean {
@@ -180,25 +206,24 @@ function getDashboardFeatureFlagOverrides(config?: any): Record<string, boolean>
   return result;
 }
 
-function getDashboardDefaultFeatureEnabledMap(config?: any): Record<string, boolean> {
+function getDashboardDefaultFeatureEnabledMap(_config?: any): Record<string, boolean> {
   return {
-    modmail: !!(config?.modmailCategoryId || config?.modmailLogChannelId),
-    appeals: !!(config?.appealCategoryId || config?.appealLogChannelId),
-    payouts: !!(config?.requestChannelId || config?.logChannelId),
-    moderation: !!(config?.modLogChannelId || config?.commandLogChannelId),
-    quiz: !!config?.quizLogChannelId,
-    "staff-intro": !!(config?.staffIntroChannelId || config?.staffIntroSubmissionsChannelId),
-    inactivity: !!(config?.inactivityChannelId || config?.inactivitySubmissionsChannelId || config?.inactivityLogChannelId),
-    permissions: !!(
-      (config?.modRoleIds?.length || 0)
-      || (config?.modmailStaffRoleIds?.length || 0)
-      || (config?.appealStaffRoleIds?.length || 0)
-    ),
-    embeds: !!(config?.modmailEmbedTitle || config?.modmailEmbedDescription || config?.appealEmbedTitle || config?.appealEmbedDescription),
-    advanced: !!(
-      (String(config?.customCategoryPings || "").trim().length > 0 && String(config?.customCategoryPings || "").trim() !== "{}")
-      || (String(config?.customModmailCategories || "").trim().length > 0 && String(config?.customModmailCategories || "").trim() !== "[]")
-    ),
+    modmail: true,
+    appeals: true,
+    payouts: true,
+    moderation: true,
+    quiz: true,
+    "staff-intro": true,
+    inactivity: true,
+    permissions: true,
+    embeds: true,
+    advanced: true,
+    "role-requests": true,
+    "ban-requests": true,
+    activity: true,
+    roster: true,
+    snippets: true,
+    sticky: true,
   };
 }
 
@@ -238,12 +263,12 @@ function getRequiredDashboardFeatureForCustomId(customId: string | null | undefi
   const exactMatches: Record<string, string> = {
     request_payout: "payouts",
     payout_modal: "payouts",
-    submit_ban_request: "moderation",
-    submit_unban_request: "moderation",
-    submit_kick_request: "moderation",
-    ban_request_modal: "moderation",
-    unban_request_modal: "moderation",
-    kick_request_modal: "moderation",
+    submit_ban_request: "ban-requests",
+    submit_unban_request: "ban-requests",
+    submit_kick_request: "ban-requests",
+    ban_request_modal: "ban-requests",
+    unban_request_modal: "ban-requests",
+    kick_request_modal: "ban-requests",
   };
 
   if (exactMatches[normalized]) {
@@ -280,14 +305,17 @@ function getRequiredDashboardFeatureForCustomId(customId: string | null | undefi
     ["approve_", "payouts"],
     ["deny_", "payouts"],
     ["action_reason_", "payouts"],
-    ["role_request_review_", "permissions"],
-    ["role_request_reviewer_", "permissions"],
-    ["ban_approve_", "moderation"],
-    ["ban_deny_", "moderation"],
-    ["kick_approve_", "moderation"],
-    ["kick_deny_", "moderation"],
-    ["unban_approve_", "moderation"],
-    ["unban_deny_", "moderation"],
+    ["role_request_review_", "role-requests"],
+    ["role_request_reviewer_", "role-requests"],
+    ["role_request_action_", "role-requests"],
+    ["role_request_approve_", "role-requests"],
+    ["role_request_deny_", "role-requests"],
+    ["ban_approve_", "ban-requests"],
+    ["ban_deny_", "ban-requests"],
+    ["kick_approve_", "ban-requests"],
+    ["kick_deny_", "ban-requests"],
+    ["unban_approve_", "ban-requests"],
+    ["unban_deny_", "ban-requests"],
     ["config_modmail_modal_", "modmail"],
     ["config_welcome_modal_", "embeds"],
     ["send_embed_modal_", "embeds"],

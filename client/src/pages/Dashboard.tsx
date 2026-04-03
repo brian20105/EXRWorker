@@ -1351,33 +1351,23 @@ export default function Dashboard() {
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
-  const getDefaultFeatureEnabledMap = (guildConfig: GuildConfig): Record<string, boolean> => ({
-    modmail: !!(guildConfig.modmailCategoryId || guildConfig.modmailLogChannelId),
-    appeals: !!(guildConfig.appealCategoryId || guildConfig.appealLogChannelId),
-    payouts: !!(guildConfig.requestChannelId || guildConfig.logChannelId),
-    moderation: !!(guildConfig.modLogChannelId || guildConfig.commandLogChannelId),
-    quiz: !!guildConfig.quizLogChannelId,
-    "staff-intro": !!(guildConfig.staffIntroChannelId || guildConfig.staffIntroSubmissionsChannelId),
-    inactivity: !!(
-      guildConfig.inactivityChannelId
-      || guildConfig.inactivitySubmissionsChannelId
-      || guildConfig.inactivityLogChannelId
-    ),
-    permissions: !!(
-      (guildConfig.modRoleIds?.length || 0)
-      || (guildConfig.modmailStaffRoleIds?.length || 0)
-      || (guildConfig.appealStaffRoleIds?.length || 0)
-    ),
-    embeds: !!(
-      guildConfig.modmailEmbedTitle
-      || guildConfig.modmailEmbedDescription
-      || guildConfig.appealEmbedTitle
-      || guildConfig.appealEmbedDescription
-    ),
-    advanced: !!(
-      ((guildConfig.customCategoryPings || "").trim().length > 0 && (guildConfig.customCategoryPings || "").trim() !== "{}")
-      || ((guildConfig.customModmailCategories || "").trim().length > 0 && (guildConfig.customModmailCategories || "").trim() !== "[]")
-    ),
+  const getDefaultFeatureEnabledMap = (_guildConfig: GuildConfig): Record<string, boolean> => ({
+    modmail: true,
+    appeals: true,
+    payouts: true,
+    moderation: true,
+    quiz: true,
+    "staff-intro": true,
+    inactivity: true,
+    permissions: true,
+    embeds: true,
+    advanced: true,
+    "role-requests": true,
+    "ban-requests": true,
+    activity: true,
+    roster: true,
+    snippets: true,
+    sticky: true,
   });
 
   const parseJsonObjectSafely = (raw: string | null | undefined) => {
@@ -1771,6 +1761,54 @@ export default function Dashboard() {
       includes: ["Custom categories", "Category ping JSON", "Modmail routing JSON"],
       tab: "advanced",
     },
+    {
+      id: "role-requests",
+      name: "Role Requests",
+      description: "Player role review, approval, and onboarding pipeline.",
+      area: "operations",
+      includes: ["Role review", "Approve/Deny", "Pro role setup", "Player announcements"],
+      tab: "roles",
+    },
+    {
+      id: "ban-requests",
+      name: "Ban & Unban Requests",
+      description: "Ban, unban, and kick request approval workflow.",
+      area: "operations",
+      includes: ["Ban requests", "Unban requests", "Kick requests", "Approval buttons"],
+      tab: "channels",
+    },
+    {
+      id: "activity",
+      name: "Activity Tracking",
+      description: "Track member activity, invites, and leaderboards.",
+      area: "logging",
+      includes: ["Activity stats", "Invite tracking", "Leaderboards", "Role tracking"],
+      tab: "roles",
+    },
+    {
+      id: "roster",
+      name: "Roster Management",
+      description: "Create and manage member rosters with role-based embeds.",
+      area: "operations",
+      includes: ["Roster creation", "Role-based lists", "Embed posting"],
+      tab: "channels",
+    },
+    {
+      id: "snippets",
+      name: "Snippets",
+      description: "Save and use text snippets for quick modmail replies.",
+      area: "support",
+      includes: ["Custom snippets", "Quick replies", "Alias lookup"],
+      tab: "roles",
+    },
+    {
+      id: "sticky",
+      name: "Sticky Messages",
+      description: "Pin sticky messages that re-post after new messages.",
+      area: "messaging",
+      includes: ["Sticky setup", "Auto re-post", "Channel stickies"],
+      tab: "roles",
+    },
   ];
 
   const featureDefaults = getDefaultFeatureEnabledMap(config);
@@ -2099,6 +2137,55 @@ export default function Dashboard() {
                   data-testid="textarea-module-custom-modmail-categories"
                 />
               </div>
+            </div>
+          )}
+
+          {moduleId === "ban-requests" && (
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Ban Request Channel", "banChannelId", textChannels, "select-module-ban-channel")}
+                {renderChannelSelect("Unban Request Channel", "unbanChannelId", textChannels, "select-module-unban-channel")}
+                {renderChannelSelect("Ban Log Channel", "banLogChannelId", textChannels, "select-module-ban-log")}
+                {renderChannelSelect("Unban Log Channel", "unbanLogChannelId", textChannels, "select-module-unban-log")}
+              </div>
+              {renderRoleSection("Ban/Unban + Kick Approval Roles", "modRoleIds", "module-settings-ban-mod-role")}
+            </div>
+          )}
+
+          {moduleId === "role-requests" && (
+            <div className="space-y-5">
+              {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "module-settings-role-command-role")}
+              {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "module-settings-role-request-command-role")}
+            </div>
+          )}
+
+          {moduleId === "activity" && (
+            <div className="space-y-5">
+              {renderRoleSection("Activity Command Roles", "activityRoleIds", "module-settings-activity-role")}
+              {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "module-settings-activity-reset-role")}
+              {renderRoleSection("Activity Tracked Roles", "activityTrackedRoleIds", "module-settings-activity-tracked-role")}
+            </div>
+          )}
+
+          {moduleId === "roster" && (
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Player Roster Channel", "playerRosterChannelId", textChannels, "select-module-player-roster")}
+                {renderChannelSelect("Staff Roster Channel", "staffRosterChannelId", textChannels, "select-module-staff-roster")}
+              </div>
+              {renderRoleSection("Roster Command Roles", "rosterCommandRoleIds", "module-settings-roster-command-role")}
+            </div>
+          )}
+
+          {moduleId === "snippets" && (
+            <div className="space-y-5">
+              {renderRoleSection("Snippet Roles", "snippetRoleIds", "module-settings-snippet-role")}
+            </div>
+          )}
+
+          {moduleId === "sticky" && (
+            <div className="space-y-5">
+              {renderPermissionRoleSection("Sticky Command Roles", "stickyCommandRoleIds", "module-settings-sticky-command-role")}
             </div>
           )}
         </CardContent>
