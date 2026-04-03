@@ -1949,28 +1949,7 @@ export default function Dashboard() {
           )}
 
           {moduleId === "permissions" && (
-            <div className="space-y-5">
-              {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "module-payout-approval-role")}
-              {renderRoleSection("Ban/Unban + Kick Approval Roles", "modRoleIds", "module-moderation-approval-role")}
-              {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "module-modmail-staff-role")}
-              {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "module-modmail-block-role")}
-              {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "module-modmail-claim-role")}
-              {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "module-appeal-staff-role")}
-              {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "module-activity-reset-role")}
-              {renderRoleSection("Snippet Roles", "snippetRoleIds", "module-snippet-role")}
-              {renderRoleSection("Activity Command Roles", "activityRoleIds", "module-activity-role")}
-              {renderRoleSection("Message Command Roles", "messageCommandRoleIds", "module-message-command-role")}
-              {renderRoleSection("Roster Command Roles", "rosterCommandRoleIds", "module-roster-command-role")}
-              {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "module-role-command-role")}
-              {renderPermissionRoleSection("Sticky Command Roles", "stickyCommandRoleIds", "module-sticky-command-role")}
-              {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "module-role-request-command-role")}
-              {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "module-prefix-ban-role")}
-              {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "module-prefix-mute-role")}
-              {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "module-prefix-kick-role")}
-              {renderPermissionRoleSection("Prefix Modlogs/Clean Roles", "prefixModlogsRoleIds", "module-prefix-modlogs-role")}
-              {renderPermissionRoleSection("Prefix Reason Roles", "prefixReasonRoleIds", "module-prefix-reason-role")}
-              {renderPermissionRoleSection("Prefix Retime Roles", "prefixRetimeRoleIds", "module-prefix-retime-role")}
-            </div>
+            renderBotPermissionSections()
           )}
 
           {moduleId === "embeds" && (
@@ -2126,6 +2105,31 @@ export default function Dashboard() {
       </Card>
     );
   };
+
+  const renderBotPermissionSections = () => (
+    <div className="space-y-5">
+      {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "module-payout-approval-role")}
+      {renderRoleSection("Ban/Unban + Kick Approval Roles", "modRoleIds", "module-moderation-approval-role")}
+      {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "module-modmail-staff-role")}
+      {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "module-modmail-block-role")}
+      {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "module-modmail-claim-role")}
+      {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "module-appeal-staff-role")}
+      {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "module-activity-reset-role")}
+      {renderRoleSection("Snippet Roles", "snippetRoleIds", "module-snippet-role")}
+      {renderRoleSection("Activity Command Roles", "activityRoleIds", "module-activity-role")}
+      {renderRoleSection("Message Command Roles", "messageCommandRoleIds", "module-message-command-role")}
+      {renderRoleSection("Roster Command Roles", "rosterCommandRoleIds", "module-roster-command-role")}
+      {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "module-role-command-role")}
+      {renderPermissionRoleSection("Sticky Command Roles", "stickyCommandRoleIds", "module-sticky-command-role")}
+      {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "module-role-request-command-role")}
+      {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "module-prefix-ban-role")}
+      {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "module-prefix-mute-role")}
+      {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "module-prefix-kick-role")}
+      {renderPermissionRoleSection("Prefix Modlogs/Clean Roles", "prefixModlogsRoleIds", "module-prefix-modlogs-role")}
+      {renderPermissionRoleSection("Prefix Reason Roles", "prefixReasonRoleIds", "module-prefix-reason-role")}
+      {renderPermissionRoleSection("Prefix Retime Roles", "prefixRetimeRoleIds", "module-prefix-retime-role")}
+    </div>
+  );
 
   const renderChannelSelect = (
     label: string,
@@ -2903,6 +2907,18 @@ export default function Dashboard() {
                       />
                     </div>
                   </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-border/80 bg-card/90">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-base">Bot Permissions</CardTitle>
+                  <CardDescription>
+                    Configure the same bot permission roles here as well, directly under Misc alongside role sync.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {renderBotPermissionSections()}
                 </CardContent>
               </Card>
             </TabsContent>

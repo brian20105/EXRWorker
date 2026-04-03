@@ -227,6 +227,77 @@ function getRequiredDashboardFeatureForCommand(commandName: string, subcommand: 
   return DASHBOARD_FEATURE_COMMAND_MAP[commandName] || null;
 }
 
+function getRequiredDashboardFeatureForCustomId(customId: string | null | undefined): string | null {
+  const normalized = String(customId || "").trim();
+  if (!normalized) return null;
+
+  const exactMatches: Record<string, string> = {
+    request_payout: "payouts",
+    payout_modal: "payouts",
+    submit_ban_request: "moderation",
+    submit_unban_request: "moderation",
+    submit_kick_request: "moderation",
+    ban_request_modal: "moderation",
+    unban_request_modal: "moderation",
+    kick_request_modal: "moderation",
+  };
+
+  if (exactMatches[normalized]) {
+    return exactMatches[normalized];
+  }
+
+  const prefixMatches: Array<[string, string]> = [
+    ["ticket_custom_modal::", "modmail"],
+    ["dm_ticket_modal_", "modmail"],
+    ["ticket_select_", "modmail"],
+    ["ticket_modal_", "modmail"],
+    ["ticket_", "modmail"],
+    ["appeal_start_", "appeals"],
+    ["config_appeal_modal_", "appeals"],
+    ["start_staff_application_", "staff-intro"],
+    ["staff_app_terminate_", "staff-intro"],
+    ["staff_app_approve_", "staff-intro"],
+    ["staff_app_deny_", "staff-intro"],
+    ["staff_app_modlogs_", "staff-intro"],
+    ["config_staffintro_modal_", "staff-intro"],
+    ["config_staffapplications_modal_", "staff-intro"],
+    ["start_quiz_", "quiz"],
+    ["terminate_quizzes_", "quiz"],
+    ["quiz_terminate_", "quiz"],
+    ["quiz_approve_", "quiz"],
+    ["quiz_deny_", "quiz"],
+    ["quiz_review_", "quiz"],
+    ["request_inactivity_", "inactivity"],
+    ["inactivity_submit_", "inactivity"],
+    ["inactivity_approve_", "inactivity"],
+    ["inactivity_deny_", "inactivity"],
+    ["inactivity_review_", "inactivity"],
+    ["config_inactivity_modal_", "inactivity"],
+    ["approve_", "payouts"],
+    ["deny_", "payouts"],
+    ["action_reason_", "payouts"],
+    ["role_request_review_", "permissions"],
+    ["role_request_reviewer_", "permissions"],
+    ["ban_approve_", "moderation"],
+    ["ban_deny_", "moderation"],
+    ["kick_approve_", "moderation"],
+    ["kick_deny_", "moderation"],
+    ["unban_approve_", "moderation"],
+    ["unban_deny_", "moderation"],
+    ["config_modmail_modal_", "modmail"],
+    ["config_welcome_modal_", "embeds"],
+    ["send_embed_modal_", "embeds"],
+  ];
+
+  for (const [prefix, featureId] of prefixMatches) {
+    if (normalized.startsWith(prefix)) {
+      return featureId;
+    }
+  }
+
+  return null;
+}
+
 async function isGuildCurrentlyDisabled(guildId: string | null | undefined): Promise<boolean> {
   const normalizedGuildId = String(guildId || "").trim();
   if (!normalizedGuildId) return false;
@@ -5393,6 +5464,17 @@ client.on("interactionCreate", async (interaction) => {
     if (targetGuildId && await isGuildCurrentlyDisabled(targetGuildId)) {
       await respondInteractionDisabled(interaction);
       return;
+    }
+
+    if (targetGuildId && "customId" in interaction && typeof interaction.customId === "string") {
+      const requiredFeature = getRequiredDashboardFeatureForCustomId(interaction.customId);
+      if (requiredFeature) {
+        const config = await storage.getGuildConfig(targetGuildId).catch(() => undefined);
+        if (!isDashboardFeatureEnabled(config, requiredFeature)) {
+          await respondInteractionDisabled(interaction);
+          return;
+        }
+      }
     }
 
     if (interaction.isChatInputCommand()) {
