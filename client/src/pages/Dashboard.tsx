@@ -1243,7 +1243,8 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channelId: selectedChannelId }),
       }, 15000);
-      toast({ title: "Embed posted", description: `Posted in <#${data.channelId}>.` });
+      const postedChannelId = String(data?.channelId || selectedChannelId).trim();
+      toast({ title: "Embed posted", description: `Posted in <#${postedChannelId}>.` });
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to post embed.", variant: "destructive" });
     }
@@ -1266,7 +1267,8 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ channelId }),
       }, 15000);
-      toast({ title: "Latest update posted", description: `Posted in <#${data.channelId}>.` });
+      const postedChannelId = String(data?.channelId || channelId).trim();
+      toast({ title: "Latest update posted", description: `Posted in <#${postedChannelId}>.` });
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to post the latest update.", variant: "destructive" });
     }

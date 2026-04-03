@@ -855,6 +855,13 @@ const FEATURE_LABELS: Record<string, string> = {
   sticky: "Sticky Messages",
 };
 
+const LATEST_BOT_UPDATE_HIGHLIGHTS = [
+  "New command: `/announce message:<text>` sends a quick announcement in the channel where you run it.",
+  "Dashboard cleanup: the duplicate Bot Permissions section in Settings has been removed.",
+  "New control: the Updates Channel now has its own `Post Latest Update` button for quick testing.",
+  "Update posts now announce dashboard changes and newly enabled features more reliably.",
+];
+
 function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown): string[] {
   const previousFlags = getDashboardFeatureFlags(previousRaw);
   const currentFlags = getDashboardFeatureFlags(currentRaw);
@@ -1207,12 +1214,18 @@ async function postFeatureUpdateToChannel(guildId: string, channelId: string, fe
   return await sendEmbedToChannel(channelId, embed);
 }
 
-async function postDashboardUpdateToChannel(guildId: string, channelId: string, editorId: string, changes: string[]): Promise<boolean> {
+async function postDashboardUpdateToChannel(
+  guildId: string,
+  channelId: string,
+  editorId: string,
+  changes: string[],
+  options?: { title?: string; description?: string }
+): Promise<boolean> {
   if (!channelId || changes.length === 0) return false;
 
   const embed = new EmbedBuilder()
-    .setTitle("Dashboard Updated")
-    .setDescription(`Updated by <@${editorId}>`)
+    .setTitle(options?.title || "Dashboard Updated")
+    .setDescription(options?.description || `Updated by <@${editorId}>`)
     .addFields({
       name: "Changes",
       value: changes.map((change) => `• ${change}`).join("\n").slice(0, 1024) || "No detailed changes provided.",
@@ -2498,21 +2511,15 @@ export async function registerRoutes(
       }
 
       const enabledFeatures = getEnabledFeatureLabels(config?.customCategoryPings);
-      const quickSettings = getDashboardQuickSettingsSummary(config?.customCategoryPings);
-      const presence = parseDashboardBotPresenceForPropagation(config?.customCategoryPings);
-
       const summaryLines = [
-        "Manual latest update post requested from the dashboard.",
-        `Enabled features: ${enabledFeatures.length > 0 ? `${enabledFeatures.slice(0, 6).join(", ")}${enabledFeatures.length > 6 ? ` +${enabledFeatures.length - 6} more` : ""}` : "None"}`,
-        `Moderation prefix: ${quickSettings.moderationPrefix || "default"}`,
-        `Modmail prefix: ${quickSettings.modmailPrefix || "default"}`,
-        `Bot nickname: ${quickSettings.botNickname || "not set"}`,
-        presence
-          ? `Bot presence: ${presence.status} • ${presence.activityType} ${presence.activityText || "no activity text"}`
-          : "Bot presence: default",
+        ...LATEST_BOT_UPDATE_HIGHLIGHTS,
+        `Enabled modules right now: ${enabledFeatures.length > 0 ? `${enabledFeatures.slice(0, 6).join(", ")}${enabledFeatures.length > 6 ? ` +${enabledFeatures.length - 6} more` : ""}` : "None"}`,
       ];
 
-      const posted = await postDashboardUpdateToChannel(guildId, targetChannelId, user.id, summaryLines);
+      const posted = await postDashboardUpdateToChannel(guildId, targetChannelId, user.id, summaryLines, {
+        title: "Latest Bot Update",
+        description: `Posted by <@${user.id}>`,
+      });
       if (!posted) {
         return res.status(500).json({ error: "Failed to post the latest update to that channel." });
       }
