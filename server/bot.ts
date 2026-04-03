@@ -231,6 +231,10 @@ function getRequiredDashboardFeatureForCustomId(customId: string | null | undefi
   const normalized = String(customId || "").trim();
   if (!normalized) return null;
 
+  if (normalized.startsWith("ticket_invite_accept_") || normalized.startsWith("ticket_invite_deny_")) {
+    return null;
+  }
+
   const exactMatches: Record<string, string> = {
     request_payout: "payouts",
     payout_modal: "payouts",
@@ -319,6 +323,10 @@ function persistCurrentGuildSnapshot(): void {
 function extractGuildIdFromInteractionCustomId(customId: string | null | undefined): string | null {
   const normalized = String(customId || "").trim();
   if (!normalized) return null;
+
+  if (normalized.startsWith("ticket_invite_accept_") || normalized.startsWith("ticket_invite_deny_")) {
+    return null;
+  }
 
   if (normalized.startsWith("ticket_custom_modal::")) {
     try {
