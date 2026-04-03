@@ -1684,11 +1684,12 @@ export async function registerRoutes(
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
-      const { guildId } = auth;
+      const { guildId, user } = auth;
       const config = await storage.getGuildConfig(guildId);
 
       if (client.isReady()) {
         const guild = client.guilds.cache.get(guildId);
+        const member = guild ? await guild.members.fetch(user.id).catch(() => null) : null;
         const channels = guild?.channels.cache
           .map(c => ({ id: c.id, name: c.name, type: c.type })) || [];
         const roles = guild?.roles.cache
@@ -1701,18 +1702,22 @@ export async function registerRoutes(
           roles,
           guildName: guild?.name || "Unknown",
           memberCount: guild?.memberCount ?? 0,
+          viewerRoleIds: member ? Array.from(member.roles.cache.keys()) : [],
+          viewerIsAdmin: member ? member.permissions.has(PermissionFlagsBits.Administrator) : false,
         });
       }
 
       let guildResponse: globalThis.Response;
       let channelsResponse: globalThis.Response;
       let rolesResponse: globalThis.Response;
+      let memberResponse: globalThis.Response;
 
       try {
-        [guildResponse, channelsResponse, rolesResponse] = await Promise.all([
+        [guildResponse, channelsResponse, rolesResponse, memberResponse] = await Promise.all([
           discordApiRequest(`/guilds/${guildId}?with_counts=true`),
           discordApiRequest(`/guilds/${guildId}/channels`),
           discordApiRequest(`/guilds/${guildId}/roles`),
+          discordApiRequest(`/guilds/${guildId}/members/${user.id}`),
         ]);
       } catch (error: any) {
         const isRateLimited = error?.status === 429 || String(error?.message || "").includes("1015") || String(error?.message || "").includes("rate_limited");
@@ -1733,6 +1738,7 @@ export async function registerRoutes(
       const guild = await guildResponse.json().catch(() => ({}));
       const channelsRaw = await channelsResponse.json().catch(() => []);
       const rolesRaw = await rolesResponse.json().catch(() => []);
+      const memberRaw = await memberResponse.json().catch(() => ({} as DiscordRestGuildMember));
 
       const channels = Array.isArray(channelsRaw)
         ? channelsRaw.map((channel: any) => ({
@@ -1759,6 +1765,8 @@ export async function registerRoutes(
         roles,
         guildName: String((guild as any)?.name || "Unknown"),
         memberCount: Number((guild as any)?.approximate_member_count ?? (guild as any)?.member_count ?? 0),
+        viewerRoleIds: Array.isArray(memberRaw?.roles) ? memberRaw.roles.map((entry: unknown) => String(entry || "")).filter(Boolean) : [],
+        viewerIsAdmin: hasAdministratorPermission(memberRaw?.permissions),
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2094,6 +2102,69 @@ export async function registerRoutes(
 
         const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
         messagePayload = { embeds: [ticketEmbed], components: [row] };
+      } else if (featureKey === "appeals") {
+        if (!targetChannelId) {
+          return res.status(400).json({ error: "Choose an appeal embed channel first." });
+        }
+
+        const appealEmbed = new EmbedBuilder()
+          .setTitle(config?.appealEmbedTitle || "Ban Appeals")
+          .setDescription(config?.appealEmbedDescription || "Click the button below to submit a ban appeal.")
+          .setColor(0x2f3136);
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`appeal_start_${guildId}`)
+            .setLabel("Submit Ban Appeal")
+            .setStyle(ButtonStyle.Primary)
+            .setEmoji("📝")
+        );
+        messagePayload = { embeds: [appealEmbed], components: [row] };
+      } else if (featureKey === "staff-intro") {
+        if (!targetChannelId) {
+          return res.status(400).json({ error: "Choose a staff intro embed channel first." });
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle(config?.staffIntroEmbedTitle || "Staff Introduction Quiz")
+          .setDescription(config?.staffIntroEmbedDescription || "Welcome to the staff introduction quiz! This quiz will help you understand our policies and procedures.")
+          .setColor(0x5865f2)
+          .setFooter({ text: "Make sure your DMs are open!" });
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setCustomId(`start_quiz_${guildId}`).setLabel("Start Quiz").setStyle(ButtonStyle.Primary).setEmoji("📝"),
+          new ButtonBuilder().setCustomId(`terminate_quizzes_${guildId}`).setLabel("Terminate Quiz").setStyle(ButtonStyle.Danger).setEmoji("✖️")
+        );
+        messagePayload = { embeds: [embed], components: [row] };
+      } else if (featureKey === "inactivity") {
+        if (!targetChannelId) {
+          return res.status(400).json({ error: "Choose an inactivity embed channel first." });
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle(config?.inactivityEmbedTitle || "Inactivity Request")
+          .setDescription(config?.inactivityEmbedDescription || "Need to take a break? Click the button below to submit an inactivity request.")
+          .setColor(0x5865f2)
+          .setFooter({ text: "All requests require approval" });
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setCustomId(`request_inactivity_${guildId}`).setLabel("Request Inactivity").setStyle(ButtonStyle.Primary).setEmoji("📋")
+        );
+        messagePayload = { embeds: [embed], components: [row] };
+      } else if (featureKey === "payouts") {
+        if (!targetChannelId) {
+          return res.status(400).json({ error: "Choose a payout embed channel first." });
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle("Payout Request System")
+          .setDescription("Click the button below to request a payout.")
+          .setColor(0x5865f2);
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setCustomId("request_payout").setLabel("Request Payout").setStyle(ButtonStyle.Primary)
+        );
+        messagePayload = { embeds: [embed], components: [row] };
       } else {
         return res.status(400).json({ error: "That embed type is not supported yet from the dashboard." });
       }

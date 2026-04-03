@@ -175,6 +175,9 @@ interface SnippetItem {
   updatedAt: string;
 }
 
+type FeaturePostChannelKey = "modmail" | "appeals" | "staff-intro" | "inactivity" | "payouts";
+type DashboardFeaturePostChannels = Partial<Record<FeaturePostChannelKey, string>>;
+
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
   settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
   features: { label: "Bot Features", icon: Sparkles },
@@ -298,6 +301,7 @@ const CATEGORY_CHANNEL_TYPE = 4;
 const TEXT_CHANNEL_TYPES = new Set([0, 5]);
 const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
+const FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
 const DEFAULT_TOP_FADE_COLOR = "#5865f2";
@@ -437,6 +441,9 @@ export default function Dashboard() {
   const [backgroundColor, setBackgroundColor] = useState(DEFAULT_TOP_FADE_COLOR);
   const [buttonColor, setButtonColor] = useState("#5865f2");
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [viewerRoleIds, setViewerRoleIds] = useState<string[]>([]);
+  const [viewerIsAdmin, setViewerIsAdmin] = useState(false);
+  const [featurePostChannels, setFeaturePostChannels] = useState<DashboardFeaturePostChannels>({});
   const isOwnerUser = !!currentUser?.id && PRIVILEGED_DASHBOARD_USER_IDS.has(currentUser.id);
   const [showOwnerDashboard, setShowOwnerDashboard] = useState(false);
   const [ownerBotStatus, setOwnerBotStatus] = useState<"online" | "offline" | "checking">("checking");
@@ -557,6 +564,8 @@ export default function Dashboard() {
     setChannels(nextChannels);
     setRoles(nextRoles);
     setGuildName(data.guildName || "");
+    setViewerRoleIds(Array.isArray(data.viewerRoleIds) ? data.viewerRoleIds.map((entry: unknown) => String(entry || "")).filter(Boolean) : []);
+    setViewerIsAdmin(data.viewerIsAdmin === true);
 
     const validRoleIds = new Set(nextRoles.map((role) => role.id));
     const sanitizeRoleIds = (value: unknown) => Array.isArray(value)
@@ -583,6 +592,7 @@ export default function Dashboard() {
 
     setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
     setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
+    setFeaturePostChannels(getFeaturePostChannelsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     const nextPermissionSettings = getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     const sanitizedPermissionSettings: DashboardPermissionSettings = { ...nextPermissionSettings };
@@ -1173,14 +1183,29 @@ export default function Dashboard() {
     }
   };
 
-  const postFeatureEmbed = async (featureKey: "modmail") => {
+  const postFeatureEmbed = async (featureKey: FeaturePostChannelKey) => {
     if (!selectedGuild) return;
+
+    const selectedChannelId = (() => {
+      if (featurePostChannels[featureKey]) return String(featurePostChannels[featureKey]);
+      if (featureKey === "modmail") return String(config.modmailEmbedChannelId || "");
+      if (featureKey === "staff-intro") return String(config.staffIntroChannelId || "");
+      if (featureKey === "inactivity") return String(config.inactivityChannelId || "");
+      if (featureKey === "payouts") return String(config.requestChannelId || "");
+      return "";
+    })().trim();
+
+    if (!selectedChannelId) {
+      toast({ title: "Channel required", description: "Select a channel for this embed first.", variant: "destructive" });
+      return;
+    }
+
     setPostingFeatureEmbed(featureKey);
     try {
       const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/feature-embeds/${featureKey}/post`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ channelId: selectedChannelId }),
       }, 15000);
       toast({ title: "Embed posted", description: `Posted in <#${data.channelId}>.` });
     } catch (e: any) {
@@ -1577,6 +1602,23 @@ export default function Dashboard() {
     };
   };
 
+  const getFeaturePostChannelsFromCustomCategoryPings = (raw: string | null | undefined): DashboardFeaturePostChannels => {
+    const parsed = parseJsonObjectSafely(raw);
+    const value = parsed[FEATURE_POST_CHANNELS_KEY];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+
+    const next: DashboardFeaturePostChannels = {};
+    for (const key of ["modmail", "appeals", "staff-intro", "inactivity", "payouts"] as FeaturePostChannelKey[]) {
+      const channelId = (value as Record<string, unknown>)[key];
+      if (typeof channelId === "string" && channelId.trim()) {
+        next[key] = channelId.trim();
+      }
+    }
+    return next;
+  };
+
   const normalizeStringArray = (value: unknown): string[] => {
     if (!Array.isArray(value)) return [];
     return value
@@ -1683,6 +1725,21 @@ export default function Dashboard() {
     });
   };
 
+  const updateFeaturePostChannel = (featureKey: FeaturePostChannelKey, channelId: string) => {
+    const normalized = channelId === NONE_VALUE ? "" : channelId;
+    setFeaturePostChannels((prev) => {
+      const next = normalized ? { ...prev, [featureKey]: normalized } : Object.fromEntries(Object.entries(prev).filter(([key]) => key !== featureKey));
+      setCustomCategoryPingsText((previousText) => {
+        const parsed = parseJsonObjectSafely(previousText || config.customCategoryPings || "{}");
+        parsed[FEATURE_POST_CHANNELS_KEY] = next;
+        const nextText = JSON.stringify(parsed, null, 2);
+        updateConfig("customCategoryPings", nextText);
+        return nextText;
+      });
+      return next as DashboardFeaturePostChannels;
+    });
+  };
+
   const togglePermissionRole = (key: keyof DashboardPermissionSettings, roleId: string) => {
     const validRoleIds = new Set(roles.map((role) => role.id));
     setPermissionSettings((prev) => {
@@ -1730,6 +1787,7 @@ export default function Dashboard() {
       modmailPrefix: quickSettings.modmailPrefix.trim(),
       botNickname: quickSettings.botNickname.trim(),
     };
+    categoryPingsObject[FEATURE_POST_CHANNELS_KEY] = featurePostChannels;
 
     const currentModerationSetupRaw = categoryPingsObject.__moderationSetup;
     const currentModerationSetup = currentModerationSetupRaw && typeof currentModerationSetupRaw === "object" && !Array.isArray(currentModerationSetupRaw)
@@ -1838,6 +1896,85 @@ export default function Dashboard() {
     const matchedRole = guildRoles.find((role) => role.id === roleId);
     if (matchedRole?.name) return matchedRole.name;
     return fallbackName || roleId;
+  };
+
+  const getModuleAccessRoleIds = (moduleId: string): string[] => {
+    const dedupe = (roleIds: string[]) => Array.from(new Set(filterToCurrentServerRoleIds(roleIds)));
+
+    switch (moduleId) {
+      case "modmail":
+        return dedupe([...(config.modmailStaffRoleIds || []), ...(config.modmailClaimRoleIds || []), ...(config.modmailBlockRoleIds || [])]);
+      case "appeals":
+        return dedupe(config.appealStaffRoleIds || []);
+      case "payouts":
+        return dedupe(config.allowedRoleIds || []);
+      case "moderation":
+      case "ban-requests":
+        return dedupe([...(config.modRoleIds || []), ...permissionSettings.prefixBanRoleIds, ...permissionSettings.prefixMuteRoleIds, ...permissionSettings.prefixKickRoleIds]);
+      case "role-requests":
+        return dedupe([...(config.roleCommandRoleIds || []), ...permissionSettings.roleRequestCommandRoleIds]);
+      case "activity":
+        return dedupe([...(config.activityRoleIds || []), ...(config.activityResetRoleIds || [])]);
+      case "roster":
+        return dedupe(config.rosterCommandRoleIds || []);
+      case "snippets":
+        return dedupe(config.snippetRoleIds || []);
+      case "sticky":
+        return dedupe(permissionSettings.stickyCommandRoleIds || []);
+      default:
+        return [];
+    }
+  };
+
+  const hasFeatureAccess = (moduleId: string) => {
+    if (viewerIsAdmin || isOwnerUser) return true;
+    const requiredRoleIds = getModuleAccessRoleIds(moduleId);
+    if (requiredRoleIds.length === 0) return true;
+    return requiredRoleIds.some((roleId) => viewerRoleIds.includes(roleId));
+  };
+
+  const renderFeaturePostSection = (
+    featureKey: FeaturePostChannelKey,
+    label: string,
+    description: string,
+    buttonLabel: string,
+  ) => {
+    const currentChannelId = (
+      featurePostChannels[featureKey]
+      || (featureKey === "modmail" ? config.modmailEmbedChannelId : null)
+      || (featureKey === "staff-intro" ? config.staffIntroChannelId : null)
+      || (featureKey === "inactivity" ? config.inactivityChannelId : null)
+      || (featureKey === "payouts" ? config.requestChannelId : null)
+      || ""
+    ) as string;
+
+    return (
+      <div className="rounded-md border border-border/60 bg-muted/10 p-3 space-y-3">
+        <div>
+          <h4 className="text-sm font-medium">{label}</h4>
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+          <div className="space-y-2">
+            <Label>Post Channel</Label>
+            <Select value={currentChannelId || NONE_VALUE} onValueChange={(value) => updateFeaturePostChannel(featureKey, value)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select a channel" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NONE_VALUE}>No channel selected</SelectItem>
+                {textChannels.map((channel) => (
+                  <SelectItem key={`${featureKey}-post-${channel.id}`} value={channel.id}>#{channel.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Button size="sm" variant="outline" disabled={postingFeatureEmbed === featureKey} onClick={() => postFeatureEmbed(featureKey)}>
+            {postingFeatureEmbed === featureKey ? "Posting…" : buttonLabel}
+          </Button>
+        </div>
+      </div>
+    );
   };
 
   const botFeatureDefinitions: Omit<BotFeatureModule, "enabled">[] = [
@@ -2008,6 +2145,38 @@ export default function Dashboard() {
     if (!activeModule) return null;
 
     const moduleId = activeModule.id;
+    if (!hasFeatureAccess(moduleId)) {
+      const requiredRoleIds = getModuleAccessRoleIds(moduleId);
+      const requiredRoleNames = roles.filter((role) => requiredRoleIds.includes(role.id)).map((role) => role.name);
+
+      return (
+        <Card className="border-border/80 bg-card/90" data-testid={`card-module-settings-${moduleId}`}>
+          <CardHeader className="space-y-1">
+            <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">{activeModule.name} Settings</CardTitle>
+            <CardDescription>{activeModule.description}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="mt-0.5 h-5 w-5 text-destructive" />
+                <div>
+                  <p className="font-medium text-destructive">Access denied</p>
+                  <p className="mt-1 text-sm text-muted-foreground">You do not have permission to manage this bot feature from the dashboard.</p>
+                  {requiredRoleNames.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {requiredRoleNames.map((roleName) => (
+                        <Badge key={`${moduleId}-${roleName}`} variant="outline">{roleName}</Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
+
     return (
       <Card className="border-border/80 bg-card/90" data-testid={`card-module-settings-${moduleId}`}>
         <CardHeader className="space-y-1">
@@ -2058,7 +2227,9 @@ export default function Dashboard() {
                     <Textarea value={config.modmailEmbedDescription || ""} onChange={(event) => updateConfig("modmailEmbedDescription", event.target.value)} />
                   </div>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground">Uses the last saved modmail embed channel from setup and refreshes it with your current dashboard settings.</p>
+                <div className="mt-3">
+                  {renderFeaturePostSection("modmail", "Post Ticket Embed", "Choose the channel where the modmail embed should be posted or refreshed.", "Post Modmail Embed")}
+                </div>
               </div>
               <Separator />
               <div className="space-y-3">
@@ -2185,6 +2356,9 @@ export default function Dashboard() {
                     <Textarea value={config.appealEmbedDescription || ""} onChange={(event) => updateConfig("appealEmbedDescription", event.target.value)} />
                   </div>
                 </div>
+                <div className="mt-3">
+                  {renderFeaturePostSection("appeals", "Post Appeal Embed", "Choose where to post the ban appeal embed using these settings.", "Post Appeal Embed")}
+                </div>
               </div>
             </div>
           )}
@@ -2209,6 +2383,7 @@ export default function Dashboard() {
                 {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-module-payout-command-log")}
               </div>
               {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "module-settings-payout-approval-role")}
+              {renderFeaturePostSection("payouts", "Post Payout Embed", "Choose the channel where the payout request embed should be sent.", "Post Payout Embed")}
             </div>
           )}
 
@@ -2286,6 +2461,9 @@ export default function Dashboard() {
                     <Textarea value={config.staffIntroEmbedDescription || ""} onChange={(event) => updateConfig("staffIntroEmbedDescription", event.target.value)} />
                   </div>
                 </div>
+                <div className="mt-3">
+                  {renderFeaturePostSection("staff-intro", "Post Staff Intro Embed", "Choose where to post the staff intro quiz embed.", "Post Staff Intro Embed")}
+                </div>
               </div>
             </div>
           )}
@@ -2319,6 +2497,9 @@ export default function Dashboard() {
                     <Label>Inactivity Embed Description</Label>
                     <Textarea value={config.inactivityEmbedDescription || ""} onChange={(event) => updateConfig("inactivityEmbedDescription", event.target.value)} />
                   </div>
+                </div>
+                <div className="mt-3">
+                  {renderFeaturePostSection("inactivity", "Post Inactivity Embed", "Choose where to post the inactivity request embed.", "Post Inactivity Embed")}
                 </div>
               </div>
             </div>
@@ -3552,7 +3733,9 @@ export default function Dashboard() {
                         </div>
 
                         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                          {group.modules.map((module) => (
+                          {group.modules.map((module) => {
+                            const canManageModule = hasFeatureAccess(module.id);
+                            return (
                             <div key={module.id} className="rounded-lg border border-border/70 bg-card/40 p-4">
                               <div className="mb-3 flex items-start justify-between gap-3">
                                 <div>
@@ -3561,6 +3744,7 @@ export default function Dashboard() {
                                 </div>
                                 <Switch
                                   checked={module.enabled}
+                                  disabled={!canManageModule}
                                   onCheckedChange={(nextChecked) => setFeatureEnabled(module.id, nextChecked)}
                                   data-testid={`switch-module-${module.id}`}
                                 />
@@ -3584,12 +3768,19 @@ export default function Dashboard() {
                               >
                                 {module.enabled ? "Enabled" : "Disabled"}
                               </Badge>
+                              {!canManageModule && (
+                                <Badge variant="destructive" className="ml-2">Access denied</Badge>
+                              )}
                               <Button
                                 variant="outline"
                                 size="sm"
                                 className="ml-2"
                                 onClick={() => {
                                   if (!selectedGuild) return;
+                                  if (!canManageModule) {
+                                    toast({ title: "Access denied", description: `You do not have permission to manage ${module.name}.`, variant: "destructive" });
+                                    return;
+                                  }
                                   setLocation(`/dashboard/module/${module.id}?guild=${selectedGuild}`);
                                 }}
                                 data-testid={`button-module-settings-${module.id}`}
@@ -3598,7 +3789,7 @@ export default function Dashboard() {
                                 Settings
                               </Button>
                             </div>
-                          ))}
+                          );})}
                         </div>
                       </div>
                     ))}
