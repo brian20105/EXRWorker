@@ -10461,32 +10461,35 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           if (group === "administration") {
-            const [roleRequestsReviewed, kickRequestsReviewed, staffAccepted] = await Promise.all([
+            const [modmailCount, inviteCount, roleRequestsReviewed, kickRequestsReviewed, staffAccepted] = await Promise.all([
+              storage.getModmailStatsForUserAllGuilds(userId, fromDays, toDays),
+              storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", userId, true),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", userId, true),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", userId, true),
             ]);
             const banUnbanKickReviewed = (banMap.get(userId) || 0) + (unbanMap.get(userId) || 0) + kickRequestsReviewed;
-            const total = roleRequestsReviewed + banUnbanKickReviewed + staffAccepted + modBanCount + modKickCount;
+            const total = modmailCount + inviteCount + roleRequestsReviewed + banUnbanKickReviewed + staffAccepted + modBanCount + modKickCount;
 
             rows.push({
               userId,
               total,
-              line: `<@${userId}> | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount} | ${total}`,
+              line: `<@${userId}> | ${modmailCount} | ${inviteCount} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount} | ${total}`,
             });
             continue;
           }
 
-          const [partnerships, acceptedSemiProsPros] = await Promise.all([
+          const [inviteCount, partnerships, acceptedSemiProsPros] = await Promise.all([
+            storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
             getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", userId, true),
             getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", userId, true),
           ]);
-          const total = partnerships + acceptedSemiProsPros + modBanCount + modKickCount;
+          const total = inviteCount + partnerships + acceptedSemiProsPros + modBanCount + modKickCount;
 
           rows.push({
             userId,
             total,
-            line: `<@${userId}> | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount} | ${total}`,
+            line: `<@${userId}> | ${inviteCount} | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount} | ${total}`,
           });
         }
 
@@ -10505,8 +10508,8 @@ client.on("interactionCreate", async (interaction) => {
           group === "staff"
             ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Mutes | Invites | Staff Reports | Appeals | Total`
             : group === "administration"
-              ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Role Requests | Ban/Unban/Kick Reviews | Staff Accepted | Mod Bans | Mod Kicks | Total`
-              : `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Partnerships | Accepted Semi Pros & Pros | Mod Bans | Mod Kicks | Total`;
+              ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Invites | Role Requests | Ban/Unban/Kick Reviews | Staff Accepted | Mod Bans | Mod Kicks | Total`
+              : `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Invites | Partnerships | Accepted Semi Pros & Pros | Mod Bans | Mod Kicks | Total`;
 
         const body = rows.map((entry, index) => `${index + 1}. ${entry.line}`).join("\n") || "No entries found.";
         const content = `\`\`\`\n${header}\n\n${body}\n\`\`\``;
