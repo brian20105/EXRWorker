@@ -411,6 +411,7 @@ export const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.DirectMessageTyping,
     GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel, Partials.Message],
@@ -438,6 +439,15 @@ interface CachedDMMessage {
 }
 const dmMessageCache = new Map<string, CachedDMMessage[]>();
 const MAX_CACHED_MESSAGES_PER_USER = 50;
+
+type PendingModmailTypingNotice = {
+  channelId: string;
+  messageId: string;
+  timeout: NodeJS.Timeout;
+};
+
+const pendingModmailTypingNotices = new Map<string, PendingModmailTypingNotice>();
+const MODMAIL_TYPING_NOTICE_TTL_MS = 12000;
 
 // Cache for modmail copy button content (message ID -> content + attachments)
 interface ModmailCopyData {
@@ -809,6 +819,138 @@ function getCachedDMMessage(userId: string, messageId: string): CachedDMMessage 
   if (!userCache) return undefined;
   return userCache.find(m => m.id === messageId);
 }
+
+function getPendingModmailTypingNoticeKey(threadId: string, userId: string): string {
+  return `${threadId}:${userId}`;
+}
+
+async function getOpenModmailThreadForParticipant(userId: string): Promise<{ thread: any; isAddedMember: boolean }> {
+  const directThread = await storage.getOpenModmailThreadByUserId(userId).catch(() => undefined);
+  if (directThread && directThread.channelId && directThread.status === "open") {
+    return { thread: directThread, isAddedMember: false };
+  }
+
+  const addedMemberThread = await storage.getOpenModmailThreadByAddedMember(userId).catch(() => undefined);
+  if (addedMemberThread && addedMemberThread.channelId && addedMemberThread.status === "open") {
+    return { thread: addedMemberThread, isAddedMember: true };
+  }
+
+  return { thread: undefined, isAddedMember: false };
+}
+
+function clearPendingModmailTypingNotice(key: string): void {
+  const existing = pendingModmailTypingNotices.get(key);
+  if (!existing) return;
+  clearTimeout(existing.timeout);
+  pendingModmailTypingNotices.delete(key);
+}
+
+function schedulePendingModmailTypingNoticeCleanup(key: string, channelId: string, messageId: string): NodeJS.Timeout {
+  return setTimeout(async () => {
+    const current = pendingModmailTypingNotices.get(key);
+    if (!current || current.messageId !== messageId) return;
+
+    pendingModmailTypingNotices.delete(key);
+    try {
+      const staffChannel = await client.channels.fetch(channelId).catch(() => null);
+      if (staffChannel && "messages" in staffChannel) {
+        const typingMessage = await (staffChannel as any).messages.fetch(messageId).catch(() => null);
+        await typingMessage?.delete().catch(() => undefined);
+      }
+    } catch {
+      // ignore stale typing notice cleanup failures
+    }
+  }, MODMAIL_TYPING_NOTICE_TTL_MS);
+}
+
+function buildModmailActionRow(threadId: string, dmMessageId: string, authorId: string) {
+  const actionMenu = new StringSelectMenuBuilder()
+    .setCustomId(`modmail_action_${threadId}_${dmMessageId}_${authorId}`)
+    .setPlaceholder("Select an action...")
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Send Message")
+        .setDescription("Show this message content for copy/paste")
+        .setValue("send_message")
+        .setEmoji("📋"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Send Message In DMs")
+        .setDescription("DM this message content to yourself")
+        .setValue("send_message_dm")
+        .setEmoji("✉️"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Toggle Member")
+        .setDescription("Add or remove a member from this ticket")
+        .setValue("toggle_member")
+        .setEmoji("👥"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Request A Role")
+        .setDescription("Create a role request from this ticket")
+        .setValue("request_role")
+        .setEmoji("🛡️"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("User Modlogs")
+        .setDescription("Show modlogs for this user")
+        .setValue("user_modlogs")
+        .setEmoji("📚"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Modmail Logs")
+        .setDescription("Show modmail logs for this user")
+        .setValue("user_modmail_logs")
+        .setEmoji("📝")
+    );
+
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
+}
+
+client.on("typingStart", async (typing) => {
+  if (!typing || typing.channel?.type !== ChannelType.DM) return;
+  if (typing.user?.bot) return;
+
+  try {
+    const userId = String(typing.user.id || "").trim();
+    if (!userId) return;
+
+    const { thread, isAddedMember } = await getOpenModmailThreadForParticipant(userId);
+    if (!thread || !thread.channelId || thread.status !== "open") return;
+
+    const staffChannel = await client.channels.fetch(thread.channelId).catch(() => null);
+    if (!staffChannel || !("send" in staffChannel)) return;
+
+    const noticeKey = getPendingModmailTypingNoticeKey(thread.id, userId);
+    const existingNotice = pendingModmailTypingNotices.get(noticeKey);
+    if (existingNotice) {
+      clearTimeout(existingNotice.timeout);
+      existingNotice.timeout = schedulePendingModmailTypingNoticeCleanup(noticeKey, existingNotice.channelId, existingNotice.messageId);
+      pendingModmailTypingNotices.set(noticeKey, existingNotice);
+      return;
+    }
+
+    const typingEmbed = new EmbedBuilder()
+      .setColor(0xf0b232)
+      .setAuthor({
+        name: typing.user.tag || typing.user.username || "Unknown User",
+        ...(typing.user.displayAvatarURL() ? { iconURL: typing.user.displayAvatarURL() || undefined } : {}),
+      })
+      .setDescription("The user is typing... ✍️")
+      .setTimestamp();
+
+    if (isAddedMember) {
+      typingEmbed.setFooter({ text: "Added Member" });
+    }
+
+    const typingMessage = await (staffChannel as any).send({ embeds: [typingEmbed] }).catch(() => null);
+    if (!typingMessage?.id) return;
+
+    pendingModmailTypingNotices.set(noticeKey, {
+      channelId: thread.channelId,
+      messageId: typingMessage.id,
+      timeout: schedulePendingModmailTypingNoticeCleanup(noticeKey, thread.channelId, typingMessage.id),
+    });
+  } catch {
+    // ignore DM typing relay failures
+  }
+});
 
 // Cache for pending ticket invites (inviteId -> invite data)
 interface PendingTicketInvite {
@@ -17921,7 +18063,7 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
   const userId = newMessage.author.id;
   
   // Only process if user has an active modmail thread
-  const thread = await storage.getOpenModmailThreadByUserId(userId);
+  const { thread } = await getOpenModmailThreadForParticipant(userId);
   if (!thread || !thread.channelId) return;
   
   console.log(`[DM EDIT] Processing edit from user ${userId}`);
@@ -18012,7 +18154,7 @@ client.on("messageDelete", async (message) => {
   if (message.author?.bot) return;
   if (!isDM) return;
 
-  const thread = await storage.getOpenModmailThreadByUserId(authorId);
+  const { thread } = await getOpenModmailThreadForParticipant(authorId);
   if (!thread || !thread.channelId) return;
   
   console.log(`[DM DELETE] Processing delete from user ${authorId}`);
@@ -20796,46 +20938,11 @@ client.on("messageCreate", async (message) => {
             userEmbed.setDescription(`${embedBodyText}\n\n(${message.author.tag}) has sent attachment(s).`);
           }
 
-          // Add action dropdown (replaces old Send Message button)
-          const actionMenu = new StringSelectMenuBuilder()
-            .setCustomId(`modmail_action_${targetThread.id}_${message.id}_${message.author.id}`)
-            .setPlaceholder("Select an action...")
-            .addOptions(
-              new StringSelectMenuOptionBuilder()
-                .setLabel("Send Message")
-                .setDescription("Show this message content for copy/paste")
-                .setValue("send_message")
-                .setEmoji("📋"),
-              new StringSelectMenuOptionBuilder()
-                .setLabel("Send Message In DMs")
-                .setDescription("DM this message content to yourself")
-                .setValue("send_message_dm")
-                .setEmoji("✉️"),
-              new StringSelectMenuOptionBuilder()
-                .setLabel("Toggle Member")
-                .setDescription("Add or remove a member from this ticket")
-                .setValue("toggle_member")
-                .setEmoji("👥"),
-              new StringSelectMenuOptionBuilder()
-                .setLabel("Request A Role")
-                .setDescription("Create a role request from this ticket")
-                .setValue("request_role")
-                .setEmoji("🛡️"),
-              new StringSelectMenuOptionBuilder()
-                .setLabel("User Modlogs")
-                .setDescription("Show modlogs for this user")
-                .setValue("user_modlogs")
-                .setEmoji("📚"),
-              new StringSelectMenuOptionBuilder()
-                .setLabel("Modmail Logs")
-                .setDescription("Show modmail logs for this user")
-                .setValue("user_modmail_logs")
-                .setEmoji("📝")
-            );
-
-          const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
+          const actionRow = buildModmailActionRow(targetThread.id, message.id, message.author.id);
           // Dedupe: avoid sending the same relay embed multiple times in quick succession
           let channelMsg: any = null;
+          const typingNoticeKey = getPendingModmailTypingNoticeKey(targetThread.id, message.author.id);
+          const pendingTypingNotice = pendingModmailTypingNotices.get(typingNoticeKey);
           try {
             const recent = await (modmailChannel as any).messages.fetch({ limit: 5 });
             const duplicate = recent.find((m: any) => {
@@ -20849,16 +20956,37 @@ client.on("messageCreate", async (message) => {
               if (uploadedFiles.length > 0) {
                 await modmailChannel.send({ files: uploadedFiles });
               }
-              channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+              if (pendingTypingNotice) {
+                const typingMsg = await (modmailChannel as any).messages.fetch(pendingTypingNotice.messageId).catch(() => null);
+                if (typingMsg && typingMsg.editable) {
+                  await typingMsg.edit({ embeds: [userEmbed], components: [actionRow] });
+                  clearPendingModmailTypingNotice(typingNoticeKey);
+                  channelMsg = typingMsg;
+                }
+              }
+              if (!channelMsg) {
+                channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+              }
             } else {
               channelMsg = duplicate;
+              clearPendingModmailTypingNotice(typingNoticeKey);
             }
           } catch (e) {
             // fallback to sending if fetch fails
             if (uploadedFiles.length > 0) {
               await modmailChannel.send({ files: uploadedFiles });
             }
-            channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+            if (pendingTypingNotice) {
+              const typingMsg = await (modmailChannel as any).messages.fetch(pendingTypingNotice.messageId).catch(() => null);
+              if (typingMsg && typingMsg.editable) {
+                await typingMsg.edit({ embeds: [userEmbed], components: [actionRow] });
+                clearPendingModmailTypingNotice(typingNoticeKey);
+                channelMsg = typingMsg;
+              }
+            }
+            if (!channelMsg) {
+              channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+            }
           }
 
           // Store the message content and attachments for the copy button
