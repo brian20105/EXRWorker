@@ -44,7 +44,7 @@ const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID;
 const PREFIX_COMMAND_ALLOWED_USER_ID = "948598563359817728";
 const BOT_INSTANCE_LOCK_FILE = path.resolve(process.cwd(), ".discord-bot.lock");
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
-const DISABLED_MESSAGE = "This is currently disabled";
+const DISABLED_MESSAGE = "This is currently disabled, please contact the server owner to resolve the issue.";
 let botInstanceLockAcquired = false;
 
 function isPidAlive(pid: number): boolean {

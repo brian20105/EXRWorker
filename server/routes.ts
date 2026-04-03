@@ -531,7 +531,7 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
 
   const config = await storage.getGuildConfig(guildId).catch(() => undefined);
   if (isGuildDisabledFromCustomCategoryPings(config?.customCategoryPings)) {
-    res.status(423).json({ error: "This server is currently disabled and can only be re-enabled from the owner's dashboard." });
+    res.status(423).json({ error: "This is current disabled, please contact the server owner to resolve the issue." });
     return null;
   }
 
