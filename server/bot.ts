@@ -4637,6 +4637,18 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("announce")
+    .setDescription("Send a test message to the configured Updates Channel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption((option) =>
+      option
+        .setName("message")
+        .setDescription("The message to send")
+        .setRequired(true)
+        .setMinLength(1)
+        .setMaxLength(2000)
+    ),
+  new SlashCommandBuilder()
     .setName("setup_moderation_command_logs")
     .setDescription("Set the channel for prefix moderation command logs")
     .setDefaultMemberPermissions(0)
@@ -9763,6 +9775,41 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Command logs will be sent to <#${channel.id}>!`,
         });
+      } else if (commandName === "announce") {
+        if (!await safeDeferReply(interaction)) return;
+
+        if (!interaction.guildId) {
+          await interaction.editReply({ content: "❌ This command must be used in a server." });
+          return;
+        }
+
+        const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+        const permBits = typeof memberPermissions === "string"
+          ? BigInt(memberPermissions)
+          : BigInt(memberPermissions ?? 0);
+        const hasPermission =
+          (permBits & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator ||
+          (permBits & PermissionFlagsBits.ManageGuild) === PermissionFlagsBits.ManageGuild;
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You need Manage Server permission to use this command." });
+          return;
+        }
+
+        const message = interaction.options.getString("message", true).trim();
+
+        if (!interaction.channel || !("send" in interaction.channel)) {
+          await interaction.editReply({ content: "❌ I couldn't send a message in this channel." });
+          return;
+        }
+
+        try {
+          await interaction.channel.send({ content: message });
+          await interaction.editReply({ content: "✅ Announcement sent." });
+        } catch (error: any) {
+          console.log("Error in announce:", error?.message || error);
+          await interaction.editReply({ content: "❌ Failed to send the announcement." }).catch(() => {});
+        }
       } else if (commandName === "setup_moderation_command_logs") {
         if (!await safeDeferReply(interaction)) return;
 

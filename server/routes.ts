@@ -865,6 +865,15 @@ function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown)
     .sort((a, b) => a.localeCompare(b));
 }
 
+function getEnabledFeatureLabels(raw: unknown): string[] {
+  const flags = getDashboardFeatureFlags(raw);
+
+  return Object.entries(FEATURE_LABELS)
+    .filter(([key]) => flags[key] !== false)
+    .map(([, label]) => label)
+    .sort((a, b) => a.localeCompare(b));
+}
+
 function getFeatureToggleChanges(previousRaw: unknown, currentRaw: unknown): { enabled: string[]; disabled: string[] } {
   const previousFlags = getDashboardFeatureFlags(previousRaw);
   const currentFlags = getDashboardFeatureFlags(currentRaw);
@@ -880,7 +889,7 @@ function getFeatureToggleChanges(previousRaw: unknown, currentRaw: unknown): { e
 
 function getDashboardQuickSettingsSummary(raw: unknown): { moderationPrefix: string; modmailPrefix: string; botNickname: string } {
   const parsed = parseDashboardConfigObject(raw);
-  const value = parsed[DASHBOARD_QUICK_SETTINGS_KEY];
+  const value = parsed["__dashboardQuickSettings"];
   const quickSettings = value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
@@ -1162,8 +1171,8 @@ async function getRosterEmbedsForGuild(guildId: string): Promise<SavedRosterEmbe
   return merged;
 }
 
-async function sendEmbedToChannel(channelId: string, embed: EmbedBuilder): Promise<void> {
-  if (!channelId) return;
+async function sendEmbedToChannel(channelId: string, embed: EmbedBuilder): Promise<boolean> {
+  if (!channelId) return false;
 
   try {
     if (getBotToken()) {
@@ -1171,20 +1180,22 @@ async function sendEmbedToChannel(channelId: string, embed: EmbedBuilder): Promi
         method: "POST",
         body: JSON.stringify({ embeds: [embed.toJSON()] }),
       });
-      return;
+      return true;
     }
 
-    if (!client.isReady()) return;
+    if (!client.isReady()) return false;
     const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !("send" in channel)) return;
+    if (!channel || !("send" in channel)) return false;
     await channel.send({ embeds: [embed] });
+    return true;
   } catch {
     // Best-effort announcement
+    return false;
   }
 }
 
-async function postFeatureUpdateToChannel(guildId: string, channelId: string, featureLabels: string[]): Promise<void> {
-  if (!channelId || featureLabels.length === 0) return;
+async function postFeatureUpdateToChannel(guildId: string, channelId: string, featureLabels: string[]): Promise<boolean> {
+  if (!channelId || featureLabels.length === 0) return false;
 
   const embed = new EmbedBuilder()
     .setTitle("New Bot Features Enabled")
@@ -1193,11 +1204,11 @@ async function postFeatureUpdateToChannel(guildId: string, channelId: string, fe
     .setFooter({ text: `Server ID: ${guildId}` })
     .setTimestamp();
 
-  await sendEmbedToChannel(channelId, embed);
+  return await sendEmbedToChannel(channelId, embed);
 }
 
-async function postDashboardUpdateToChannel(guildId: string, channelId: string, editorId: string, changes: string[]): Promise<void> {
-  if (!channelId || changes.length === 0) return;
+async function postDashboardUpdateToChannel(guildId: string, channelId: string, editorId: string, changes: string[]): Promise<boolean> {
+  if (!channelId || changes.length === 0) return false;
 
   const embed = new EmbedBuilder()
     .setTitle("Dashboard Updated")
@@ -1210,7 +1221,7 @@ async function postDashboardUpdateToChannel(guildId: string, channelId: string, 
     .setFooter({ text: `Server ID: ${guildId}` })
     .setTimestamp();
 
-  await sendEmbedToChannel(channelId, embed);
+  return await sendEmbedToChannel(channelId, embed);
 }
 
 type GuildUpdatePayload = {
@@ -2471,6 +2482,44 @@ export async function registerRoutes(
       res.json({ success: true, channelId: targetChannelId, messageId: sentMessage.id });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/updates/post-latest", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+
+      const config = await storage.getGuildConfig(guildId);
+      const targetChannelId = String(req.body?.channelId || config?.commandLogChannelId || "").trim();
+      if (!targetChannelId) {
+        return res.status(400).json({ error: "Choose an Updates Channel first." });
+      }
+
+      const enabledFeatures = getEnabledFeatureLabels(config?.customCategoryPings);
+      const quickSettings = getDashboardQuickSettingsSummary(config?.customCategoryPings);
+      const presence = parseDashboardBotPresenceForPropagation(config?.customCategoryPings);
+
+      const summaryLines = [
+        "Manual latest update post requested from the dashboard.",
+        `Enabled features: ${enabledFeatures.length > 0 ? `${enabledFeatures.slice(0, 6).join(", ")}${enabledFeatures.length > 6 ? ` +${enabledFeatures.length - 6} more` : ""}` : "None"}`,
+        `Moderation prefix: ${quickSettings.moderationPrefix || "default"}`,
+        `Modmail prefix: ${quickSettings.modmailPrefix || "default"}`,
+        `Bot nickname: ${quickSettings.botNickname || "not set"}`,
+        presence
+          ? `Bot presence: ${presence.status} • ${presence.activityType} ${presence.activityText || "no activity text"}`
+          : "Bot presence: default",
+      ];
+
+      const posted = await postDashboardUpdateToChannel(guildId, targetChannelId, user.id, summaryLines);
+      if (!posted) {
+        return res.status(500).json({ error: "Failed to post the latest update to that channel." });
+      }
+
+      res.json({ success: true, channelId: targetChannelId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to post the latest update." });
     }
   });
 

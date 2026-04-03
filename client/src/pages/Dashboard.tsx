@@ -501,6 +501,7 @@ export default function Dashboard() {
   const [snippetContentInput, setSnippetContentInput] = useState("");
   const [snippetEditingAlias, setSnippetEditingAlias] = useState<string | null>(null);
   const [postingFeatureEmbed, setPostingFeatureEmbed] = useState<string | null>(null);
+  const [postingLatestUpdate, setPostingLatestUpdate] = useState(false);
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
   const [rosterEmbedModalMode, setRosterEmbedModalMode] = useState<"create" | "edit">("create");
@@ -1247,6 +1248,29 @@ export default function Dashboard() {
       toast({ title: "Error", description: e.message || "Failed to post embed.", variant: "destructive" });
     }
     setPostingFeatureEmbed(null);
+  };
+
+  const postLatestUpdate = async () => {
+    if (!selectedGuild) return;
+
+    const channelId = String(config.commandLogChannelId || "").trim();
+    if (!channelId) {
+      toast({ title: "Channel required", description: "Select an Updates Channel first.", variant: "destructive" });
+      return;
+    }
+
+    setPostingLatestUpdate(true);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/updates/post-latest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channelId }),
+      }, 15000);
+      toast({ title: "Latest update posted", description: `Posted in <#${data.channelId}>.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to post the latest update.", variant: "destructive" });
+    }
+    setPostingLatestUpdate(false);
   };
 
   useEffect(() => {
@@ -3635,7 +3659,7 @@ export default function Dashboard() {
               <Card className="border-border/80 bg-card/90" data-testid="card-bot-settings-simple">
                 <CardHeader className="space-y-1">
                   <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Settings</CardTitle>
-                  <CardDescription>Configure moderation commands, modmail commands, nickname, update channel, and bot status.</CardDescription>
+                  <CardDescription>Configure moderation commands, modmail commands, nickname, and bot status.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="grid gap-4 md:grid-cols-2">
@@ -3659,19 +3683,14 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label>Bot Nickname</Label>
-                      <Input
-                        value={quickSettings.botNickname}
-                        onChange={(event) => setQuickSettings((prev) => ({ ...prev, botNickname: event.target.value }))}
-                        placeholder="Expert Helper Bot"
-                        data-testid="input-bot-nickname"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      {renderChannelSelect("Updates Channel", "commandLogChannelId", textChannels, "select-updates-channel")}
-                    </div>
+                  <div className="max-w-xl space-y-2">
+                    <Label>Bot Nickname</Label>
+                    <Input
+                      value={quickSettings.botNickname}
+                      onChange={(event) => setQuickSettings((prev) => ({ ...prev, botNickname: event.target.value }))}
+                      placeholder="Expert Helper Bot"
+                      data-testid="input-bot-nickname"
+                    />
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-3">
@@ -3728,15 +3747,30 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
 
-              <Card className="border-border/80 bg-card/90">
+              <Card className="border-border/80 bg-card/90" data-testid="card-updates-channel-settings">
                 <CardHeader className="space-y-1">
-                  <CardTitle className="text-base">Bot Permissions</CardTitle>
+                  <CardTitle className="text-base">Updates Channel</CardTitle>
                   <CardDescription>
-                    Configure the same bot permission roles here as well, directly under Misc alongside role sync.
+                    Choose where dashboard update notices are sent and use the button below to post the latest update manually.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-5">
-                  {renderBotPermissionSections()}
+                <CardContent className="space-y-4">
+                  <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+                    <div>
+                      {renderChannelSelect("Updates Channel", "commandLogChannelId", textChannels, "select-updates-channel")}
+                    </div>
+                    <Button
+                      onClick={postLatestUpdate}
+                      disabled={postingLatestUpdate || !String(config.commandLogChannelId || "").trim()}
+                      data-testid="button-post-latest-update"
+                    >
+                      <Sparkles className="mr-2 h-4 w-4" />
+                      {postingLatestUpdate ? "Posting..." : "Post Latest Update"}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    This replaces the duplicate permissions card here and lets you test the updates feed directly.
+                  </p>
                 </CardContent>
               </Card>
             </TabsContent>
