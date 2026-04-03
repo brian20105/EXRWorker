@@ -847,6 +847,12 @@ const FEATURE_LABELS: Record<string, string> = {
   permissions: "Role Permissions",
   embeds: "Embed Templates",
   advanced: "Advanced Categories",
+  "role-requests": "Role Requests",
+  "ban-requests": "Ban & Unban Requests",
+  activity: "Activity Tracking",
+  roster: "Roster Management",
+  snippets: "Snippets",
+  sticky: "Sticky Messages",
 };
 
 function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown): string[] {
@@ -857,6 +863,101 @@ function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown)
     .filter(([key, enabled]) => enabled && !previousFlags[key])
     .map(([key]) => FEATURE_LABELS[key] || key)
     .sort((a, b) => a.localeCompare(b));
+}
+
+function getFeatureToggleChanges(previousRaw: unknown, currentRaw: unknown): { enabled: string[]; disabled: string[] } {
+  const previousFlags = getDashboardFeatureFlags(previousRaw);
+  const currentFlags = getDashboardFeatureFlags(currentRaw);
+
+  const enabled = getNewlyEnabledFeatureLabels(previousRaw, currentRaw);
+  const disabled = Object.entries(currentFlags)
+    .filter(([key, enabled]) => !enabled && previousFlags[key] === true)
+    .map(([key]) => FEATURE_LABELS[key] || key)
+    .sort((a, b) => a.localeCompare(b));
+
+  return { enabled, disabled };
+}
+
+function getDashboardQuickSettingsSummary(raw: unknown): { moderationPrefix: string; modmailPrefix: string; botNickname: string } {
+  const parsed = parseDashboardConfigObject(raw);
+  const value = parsed[DASHBOARD_QUICK_SETTINGS_KEY];
+  const quickSettings = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+
+  return {
+    moderationPrefix: typeof quickSettings.moderationPrefix === "string" ? quickSettings.moderationPrefix.trim() : "",
+    modmailPrefix: typeof quickSettings.modmailPrefix === "string" ? quickSettings.modmailPrefix.trim() : "",
+    botNickname: typeof quickSettings.botNickname === "string" ? quickSettings.botNickname.trim() : "",
+  };
+}
+
+function normalizeComparableStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => String(entry || "").trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+}
+
+function getDashboardConfigChangeSummary(previousConfig: any, nextConfig: any): string[] {
+  const previous = previousConfig || {};
+  const next = nextConfig || {};
+  const changes: string[] = [];
+
+  const pushStringChange = (label: string, previousValue: unknown, nextValue: unknown, formatter?: (value: unknown) => string) => {
+    const format = formatter || ((value: unknown) => String(value || "").trim());
+    const before = format(previousValue);
+    const after = format(nextValue);
+    if (before === after) return;
+    changes.push(`${label}: ${after || "cleared"}`);
+  };
+
+  const pushArrayChange = (label: string, previousValue: unknown, nextValue: unknown) => {
+    const before = normalizeComparableStringArray(previousValue);
+    const after = normalizeComparableStringArray(nextValue);
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    changes.push(`${label}: ${after.length} role${after.length === 1 ? "" : "s"} selected`);
+  };
+
+  const channelFormatter = (value: unknown) => {
+    const channelId = String(value || "").trim();
+    return channelId ? `<#${channelId}>` : "cleared";
+  };
+
+  pushStringChange("Updates channel", previous.commandLogChannelId, next.commandLogChannelId, channelFormatter);
+  pushStringChange("Payout request channel", previous.requestChannelId, next.requestChannelId, channelFormatter);
+  pushStringChange("Payout log channel", previous.logChannelId, next.logChannelId, channelFormatter);
+  pushStringChange("Modmail category", previous.modmailCategoryId, next.modmailCategoryId, channelFormatter);
+  pushStringChange("Modmail log channel", previous.modmailLogChannelId, next.modmailLogChannelId, channelFormatter);
+  pushStringChange("Appeal category", previous.appealCategoryId, next.appealCategoryId, channelFormatter);
+  pushStringChange("Appeal log channel", previous.appealLogChannelId, next.appealLogChannelId, channelFormatter);
+  pushStringChange("Quiz log channel", previous.quizLogChannelId, next.quizLogChannelId, channelFormatter);
+  pushStringChange("Moderation log channel", previous.modLogChannelId, next.modLogChannelId, channelFormatter);
+  pushStringChange("Staff intro channel", previous.staffIntroChannelId, next.staffIntroChannelId, channelFormatter);
+  pushStringChange("Staff intro submissions", previous.staffIntroSubmissionsChannelId, next.staffIntroSubmissionsChannelId, channelFormatter);
+  pushStringChange("Inactivity channel", previous.inactivityChannelId, next.inactivityChannelId, channelFormatter);
+  pushStringChange("Inactivity submissions", previous.inactivitySubmissionsChannelId, next.inactivitySubmissionsChannelId, channelFormatter);
+  pushStringChange("Inactivity logs", previous.inactivityLogChannelId, next.inactivityLogChannelId, channelFormatter);
+  pushStringChange("Command prefix", previous.commandPrefix, next.commandPrefix, (value) => String(value || ".").trim() || ".");
+
+  pushArrayChange("Manager roles", previous.modRoleIds, next.modRoleIds);
+  pushArrayChange("Payout approval roles", previous.allowedRoleIds, next.allowedRoleIds);
+  pushArrayChange("Modmail staff roles", previous.modmailStaffRoleIds, next.modmailStaffRoleIds);
+  pushArrayChange("Appeal staff roles", previous.appealStaffRoleIds, next.appealStaffRoleIds);
+
+  const previousQuickSettings = getDashboardQuickSettingsSummary(previous.customCategoryPings);
+  const nextQuickSettings = getDashboardQuickSettingsSummary(next.customCategoryPings);
+  pushStringChange("Moderation prefix", previousQuickSettings.moderationPrefix, nextQuickSettings.moderationPrefix, (value) => String(value || "default").trim() || "default");
+  pushStringChange("Modmail prefix", previousQuickSettings.modmailPrefix, nextQuickSettings.modmailPrefix, (value) => String(value || "default").trim() || "default");
+  pushStringChange("Bot nickname", previousQuickSettings.botNickname, nextQuickSettings.botNickname, (value) => String(value || "cleared").trim() || "cleared");
+
+  const featureChanges = getFeatureToggleChanges(previous.customCategoryPings, next.customCategoryPings);
+  if (featureChanges.enabled.length > 0) {
+    changes.push(`Enabled features: ${featureChanges.enabled.join(", ")}`);
+  }
+  if (featureChanges.disabled.length > 0) {
+    changes.push(`Disabled features: ${featureChanges.disabled.join(", ")}`);
+  }
+
+  return changes.slice(0, 12);
 }
 
 type RosterEmbedButtonConfig = {
@@ -1061,25 +1162,55 @@ async function getRosterEmbedsForGuild(guildId: string): Promise<SavedRosterEmbe
   return merged;
 }
 
-async function postFeatureUpdateToChannel(guildId: string, channelId: string, featureLabels: string[]): Promise<void> {
-  if (!client.isReady() || !client.user) return;
-  if (!channelId || featureLabels.length === 0) return;
+async function sendEmbedToChannel(channelId: string, embed: EmbedBuilder): Promise<void> {
+  if (!channelId) return;
 
   try {
+    if (getBotToken()) {
+      await discordBotApiRequest(`/channels/${channelId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({ embeds: [embed.toJSON()] }),
+      });
+      return;
+    }
+
+    if (!client.isReady()) return;
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel || !("send" in channel)) return;
-
-    const embed = new EmbedBuilder()
-      .setTitle("New Bot Features Enabled")
-      .setDescription(featureLabels.map((label) => `• ${label}`).join("\n"))
-      .setColor(0x5865f2)
-      .setFooter({ text: `Server ID: ${guildId}` })
-      .setTimestamp();
-
     await channel.send({ embeds: [embed] });
   } catch {
     // Best-effort announcement
   }
+}
+
+async function postFeatureUpdateToChannel(guildId: string, channelId: string, featureLabels: string[]): Promise<void> {
+  if (!channelId || featureLabels.length === 0) return;
+
+  const embed = new EmbedBuilder()
+    .setTitle("New Bot Features Enabled")
+    .setDescription(featureLabels.map((label) => `• ${label}`).join("\n"))
+    .setColor(0x5865f2)
+    .setFooter({ text: `Server ID: ${guildId}` })
+    .setTimestamp();
+
+  await sendEmbedToChannel(channelId, embed);
+}
+
+async function postDashboardUpdateToChannel(guildId: string, channelId: string, editorId: string, changes: string[]): Promise<void> {
+  if (!channelId || changes.length === 0) return;
+
+  const embed = new EmbedBuilder()
+    .setTitle("Dashboard Updated")
+    .setDescription(`Updated by <@${editorId}>`)
+    .addFields({
+      name: "Changes",
+      value: changes.map((change) => `• ${change}`).join("\n").slice(0, 1024) || "No detailed changes provided.",
+    })
+    .setColor(0x5865f2)
+    .setFooter({ text: `Server ID: ${guildId}` })
+    .setTimestamp();
+
+  await sendEmbedToChannel(channelId, embed);
 }
 
 type GuildUpdatePayload = {
@@ -2456,12 +2587,9 @@ export async function registerRoutes(
           : config?.customCategoryPings
       );
 
-      const newlyEnabledFeatureLabels = getNewlyEnabledFeatureLabels(
-        previousConfig?.customCategoryPings,
-        config?.customCategoryPings
-      );
-      if (newlyEnabledFeatureLabels.length > 0 && config?.commandLogChannelId) {
-        await postFeatureUpdateToChannel(guildId, config.commandLogChannelId, newlyEnabledFeatureLabels);
+      const configChangeSummary = getDashboardConfigChangeSummary(previousConfig, config);
+      if (configChangeSummary.length > 0 && config?.commandLogChannelId) {
+        await postDashboardUpdateToChannel(guildId, config.commandLogChannelId, user.id, configChangeSummary);
       }
 
       broadcastGuildUpdate(guildId, {
