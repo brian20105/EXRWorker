@@ -7,7 +7,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { spawn as spawnProcess, execFile as execFileAsync } from "child_process";
-import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits } from "discord.js";
+import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, AuditLogEvent } from "discord.js";
 import { db } from "./sql";
 import { promisify } from "util";
 import { readOwnerGuildSnapshot } from "./owner-guild-snapshot";
@@ -1760,6 +1760,174 @@ export async function registerRoutes(
       if (!res.headersSent) {
         res.status(500).json({ error: e.message });
       }
+    }
+  });
+
+  app.get("/api/guilds/:guildId/misc-overview", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      if (!client.isReady()) {
+        return res.json({ bans: [], activity: [], unavailableReason: "Bot is offline right now." });
+      }
+
+      const guild = await client.guilds.fetch(guildId).catch(() => null);
+      if (!guild) {
+        return res.json({ bans: [], activity: [], unavailableReason: "Bot is not in this server or cannot access it." });
+      }
+
+      const config = await storage.getGuildConfig(guildId);
+      const cleanText = (value: unknown) => String(value || "")
+        .replace(/`/g, "")
+        .replace(/\*\*/g, "")
+        .replace(/\n+/g, ", ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const formatTargetName = (target: any) => {
+        if (!target) return "server settings";
+        if (typeof target?.username === "string") return `@${target.username}`;
+        if (typeof target?.name === "string" && target.name.trim()) return target.name;
+        if (typeof target?.id === "string" && target.id.trim()) return target.id;
+        return "server settings";
+      };
+
+      const formatAuditAction = (entry: any) => {
+        const targetName = formatTargetName(entry?.target);
+        switch (entry?.action) {
+          case AuditLogEvent.MemberBanAdd:
+            return `Banned ${targetName}`;
+          case AuditLogEvent.MemberBanRemove:
+            return `Unbanned ${targetName}`;
+          case AuditLogEvent.MemberKick:
+            return `Kicked ${targetName}`;
+          case AuditLogEvent.MemberRoleUpdate:
+            return `Updated roles for ${targetName}`;
+          case AuditLogEvent.MemberUpdate:
+            return `Updated member ${targetName}`;
+          case AuditLogEvent.ChannelCreate:
+            return `Created channel ${targetName}`;
+          case AuditLogEvent.ChannelUpdate:
+            return `Updated channel ${targetName}`;
+          case AuditLogEvent.ChannelDelete:
+            return `Deleted channel ${targetName}`;
+          case AuditLogEvent.RoleCreate:
+            return `Created role ${targetName}`;
+          case AuditLogEvent.RoleUpdate:
+            return `Updated role ${targetName}`;
+          case AuditLogEvent.RoleDelete:
+            return `Deleted role ${targetName}`;
+          case AuditLogEvent.InviteCreate:
+            return `Created invite ${targetName}`;
+          case AuditLogEvent.InviteUpdate:
+            return `Updated invite ${targetName}`;
+          case AuditLogEvent.InviteDelete:
+            return `Deleted invite ${targetName}`;
+          case AuditLogEvent.EmojiCreate:
+            return `Created emoji ${targetName}`;
+          case AuditLogEvent.EmojiUpdate:
+            return `Updated emoji ${targetName}`;
+          case AuditLogEvent.EmojiDelete:
+            return `Deleted emoji ${targetName}`;
+          case AuditLogEvent.GuildUpdate:
+            return "Updated server settings";
+          case AuditLogEvent.WebhookCreate:
+            return `Created webhook ${targetName}`;
+          case AuditLogEvent.WebhookUpdate:
+            return `Updated webhook ${targetName}`;
+          case AuditLogEvent.WebhookDelete:
+            return `Deleted webhook ${targetName}`;
+          default:
+            return `Performed a server action on ${targetName}`;
+        }
+      };
+
+      const collectChannelActivity = async (channelId: string | null | undefined, source: "commands" | "moderation") => {
+        if (!channelId) return [] as Array<{ id: string; timestamp: string; userId: string | null; username: string; avatarUrl: string | null; action: string; source: "commands" | "moderation" }>;
+
+        const channel = await client.channels.fetch(channelId).catch(() => null);
+        if (!channel || !("messages" in channel)) return [] as Array<{ id: string; timestamp: string; userId: string | null; username: string; avatarUrl: string | null; action: string; source: "commands" | "moderation" }>;
+
+        const messages = await (channel as any).messages.fetch({ limit: 20 }).catch(() => null);
+        if (!messages) return [] as Array<{ id: string; timestamp: string; userId: string | null; username: string; avatarUrl: string | null; action: string; source: "commands" | "moderation" }>;
+
+        const items = [] as Array<{ id: string; timestamp: string; userId: string | null; username: string; avatarUrl: string | null; action: string; source: "commands" | "moderation" }>;
+        for (const message of Array.from(messages.values())) {
+          const embed = message.embeds?.[0];
+          const userField = embed?.fields?.find((field: any) => /^(user|moderator)$/i.test(String(field?.name || "")));
+          const commandField = embed?.fields?.find((field: any) => /^command$/i.test(String(field?.name || "")));
+          const optionsField = embed?.fields?.find((field: any) => /^options$/i.test(String(field?.name || "")));
+
+          const userFieldValue = String(userField?.value || "");
+          const userId = userFieldValue.match(/<@!?(\d+)>/)?.[1] || null;
+          const username = userFieldValue.match(/\(([^)]+)\)/)?.[1] || cleanText(userFieldValue.replace(/<@!?(\d+)>/g, "")) || "Unknown";
+          const cachedUser = userId ? client.users.cache.get(userId) : null;
+          const avatarUrl = cachedUser?.displayAvatarURL?.({ size: 64 }) || null;
+
+          let action = cleanText(embed?.title || embed?.description || message.content || "Logged activity");
+          if (commandField) {
+            action = `Used ${cleanText(commandField.value)}`;
+            const optionText = cleanText(optionsField?.value || "");
+            if (optionText && optionText.toLowerCase() !== "none") {
+              action = `${action} — ${optionText}`.slice(0, 220);
+            }
+          }
+
+          items.push({
+            id: `${source}-${message.id}`,
+            timestamp: message.createdAt?.toISOString?.() || new Date().toISOString(),
+            userId,
+            username,
+            avatarUrl,
+            action,
+            source,
+          });
+        }
+
+        return items;
+      };
+
+      const [banCollection, auditLogs, commandActivity, moderationActivity] = await Promise.all([
+        guild.bans.fetch().catch(() => null),
+        guild.fetchAuditLogs({ limit: 20 }).catch(() => null),
+        collectChannelActivity(config?.commandLogChannelId, "commands"),
+        collectChannelActivity(config?.modLogChannelId, "moderation"),
+      ]);
+
+      const bans = banCollection
+        ? Array.from(banCollection.values())
+            .map((ban: any) => ({
+              userId: String(ban.user?.id || ""),
+              username: String(ban.user?.username || ban.user?.tag || "Unknown User"),
+              avatarUrl: ban.user?.displayAvatarURL?.({ size: 64 }) || null,
+              reason: ban.reason ? String(ban.reason) : null,
+            }))
+            .filter((ban) => ban.userId)
+            .sort((a, b) => a.username.localeCompare(b.username))
+        : [];
+
+      const auditActivity = auditLogs
+        ? Array.from(auditLogs.entries.values()).map((entry: any) => ({
+            id: `audit-${entry.id}`,
+            timestamp: new Date(entry.createdTimestamp || Date.now()).toISOString(),
+            userId: entry.executor?.id ? String(entry.executor.id) : null,
+            username: entry.executor?.username ? String(entry.executor.username) : "Unknown",
+            avatarUrl: entry.executor?.displayAvatarURL?.({ size: 64 }) || null,
+            action: formatAuditAction(entry),
+            source: "audit" as const,
+          }))
+        : [];
+
+      const activity = [...auditActivity, ...commandActivity, ...moderationActivity]
+        .filter((entry) => String(entry.action || "").trim().length > 0)
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 40);
+
+      res.json({ bans, activity });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
   });
 

@@ -143,6 +143,23 @@ interface RoleSyncItem {
   targetRoleColor: string | null;
 }
 
+interface MiscBanItem {
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+  reason: string | null;
+}
+
+interface MiscActivityItem {
+  id: string;
+  timestamp: string;
+  userId: string | null;
+  username: string;
+  avatarUrl: string | null;
+  action: string;
+  source: "audit" | "commands" | "moderation";
+}
+
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
   settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
   features: { label: "Bot Features", icon: Sparkles },
@@ -448,6 +465,10 @@ export default function Dashboard() {
   const [roleSyncSourceRoleSearch, setRoleSyncSourceRoleSearch] = useState("");
   const [roleSyncTargetRoleSearch, setRoleSyncTargetRoleSearch] = useState("");
   const [roleSyncGuildRoles, setRoleSyncGuildRoles] = useState<Record<string, Role[]>>({});
+  const [miscBans, setMiscBans] = useState<MiscBanItem[]>([]);
+  const [miscActivity, setMiscActivity] = useState<MiscActivityItem[]>([]);
+  const [miscOverviewLoading, setMiscOverviewLoading] = useState(false);
+  const [miscOverviewError, setMiscOverviewError] = useState<string | null>(null);
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
   const [rosterEmbedModalMode, setRosterEmbedModalMode] = useState<"create" | "edit">("create");
@@ -1042,6 +1063,29 @@ export default function Dashboard() {
     }
     setPostingRosterEmbedId(null);
   };
+
+  const loadMiscOverview = async (guildId: string | null = selectedGuild) => {
+    if (!guildId) return;
+
+    setMiscOverviewLoading(true);
+    setMiscOverviewError(null);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview`, undefined, 15000);
+      setMiscBans(Array.isArray(data?.bans) ? data.bans : []);
+      setMiscActivity(Array.isArray(data?.activity) ? data.activity : []);
+      setMiscOverviewError(data?.unavailableReason ? String(data.unavailableReason) : null);
+    } catch (e: any) {
+      setMiscBans([]);
+      setMiscActivity([]);
+      setMiscOverviewError(e.message || "Failed to load server activity.");
+    }
+    setMiscOverviewLoading(false);
+  };
+
+  useEffect(() => {
+    if (!selectedGuild || activePrimaryTab !== "miscellaneous") return;
+    loadMiscOverview(selectedGuild);
+  }, [selectedGuild, activePrimaryTab]);
 
   const createRoleSync = async () => {
     if (!selectedGuild) return;
@@ -1740,14 +1784,6 @@ export default function Dashboard() {
       area: "operations",
       includes: ["Request channel", "Submissions", "Inactivity logs", "Approval workflow"],
       tab: "channels",
-    },
-    {
-      id: "permissions",
-      name: "Role Permissions",
-      description: "Grant feature access with role-based permissions.",
-      area: "permissions",
-      includes: ["Manager roles", "Prefix command roles", "Feature role gates"],
-      tab: "roles",
     },
     {
       id: "embeds",
@@ -3639,7 +3675,7 @@ export default function Dashboard() {
             <TabsContent value="miscellaneous" className="mt-0 space-y-4">
               <div>
                 <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Miscellaneous</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Manage role sync and other cross-server tools.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Manage role sync, review banned members, and inspect recent server activity.</p>
               </div>
 
               <Card className="border-border/80 bg-card/90">
@@ -3851,6 +3887,102 @@ export default function Dashboard() {
                   )}
                 </CardContent>
               </Card>
+
+              <div className="grid gap-4 xl:grid-cols-[0.9fr,1.35fr]">
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-3">
+                    <div className="space-y-1">
+                      <CardTitle className="text-base">Banned Members</CardTitle>
+                      <CardDescription>All users currently banned in the selected server.</CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => loadMiscOverview()} disabled={miscOverviewLoading}>
+                      {miscOverviewLoading ? "Refreshing…" : "Refresh"}
+                    </Button>
+                  </CardHeader>
+                  <CardContent>
+                    {miscOverviewError && (
+                      <p className="mb-3 text-xs text-muted-foreground">{miscOverviewError}</p>
+                    )}
+
+                    {miscOverviewLoading ? (
+                      <p className="text-sm text-muted-foreground">Loading banned members…</p>
+                    ) : miscBans.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No banned members found for this server.</p>
+                    ) : (
+                      <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                        {miscBans.map((ban) => (
+                          <div key={ban.userId} className="flex items-start gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                            {ban.avatarUrl ? (
+                              <img src={ban.avatarUrl} alt={ban.username} className="h-9 w-9 rounded-full object-cover" />
+                            ) : (
+                              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                                {ban.username.slice(0, 2).toUpperCase()}
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium">{ban.username}</p>
+                              <p className="text-[11px] text-muted-foreground">ID: {ban.userId}</p>
+                              <p className="mt-1 text-xs text-muted-foreground">{ban.reason || "No ban reason provided."}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader className="space-y-1">
+                    <CardTitle className="text-base">Recent Activity</CardTitle>
+                    <CardDescription>Recent audit log events plus command and moderation activity from this server.</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {miscOverviewLoading ? (
+                      <p className="text-sm text-muted-foreground">Loading recent activity…</p>
+                    ) : miscActivity.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No recent activity was found yet.</p>
+                    ) : (
+                      <div className="overflow-hidden rounded-md border border-border/60">
+                        <div className="hidden grid-cols-[190px,190px,1fr] bg-muted/30 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.15em] text-muted-foreground md:grid">
+                          <span>Date</span>
+                          <span>User</span>
+                          <span>Action</span>
+                        </div>
+                        <div className="max-h-[420px] overflow-y-auto">
+                          {miscActivity.map((entry) => (
+                            <div key={entry.id} className="grid gap-2 border-t border-border/50 px-3 py-3 text-sm first:border-t-0 md:grid-cols-[190px,190px,1fr] md:items-center">
+                              <div className="text-xs text-muted-foreground">
+                                {new Date(entry.timestamp).toLocaleString()}
+                              </div>
+                              <div className="flex items-center gap-2 min-w-0">
+                                {entry.avatarUrl ? (
+                                  <img src={entry.avatarUrl} alt={entry.username} className="h-8 w-8 rounded-full object-cover" />
+                                ) : (
+                                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted text-[10px] font-semibold">
+                                    {entry.username.slice(0, 2).toUpperCase()}
+                                  </div>
+                                )}
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium">{entry.username}</p>
+                                  <p className="text-[11px] text-muted-foreground">{entry.userId || "Unknown user"}</p>
+                                </div>
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="text-sm">{entry.action}</span>
+                                  <Badge variant="outline" className="text-[10px] uppercase">
+                                    {entry.source === "commands" ? "Command" : entry.source}
+                                  </Badge>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
             </TabsContent>
             </div>
           </Tabs>
