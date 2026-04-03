@@ -1865,6 +1865,20 @@ export default function Dashboard() {
         <CardContent className="space-y-6">
           {moduleId === "modmail" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Run these slash commands in Discord to post the ticket embed and configure modmail:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_modmail</Badge>
+                  <Badge variant="outline">/config_modmail</Badge>
+                  <Badge variant="outline">/modmail-category add</Badge>
+                  <Badge variant="outline">/modmail-category remove</Badge>
+                  <Badge variant="outline">/modmail-category list</Badge>
+                  <Badge variant="outline">/block</Badge>
+                  <Badge variant="outline">/unblock</Badge>
+                  <Badge variant="outline">/block_list</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Modmail Category", "modmailCategoryId", categoryChannels, "select-module-modmail-category")}
                 {renderChannelSelect("Modmail Log Channel", "modmailLogChannelId", textChannels, "select-module-modmail-log")}
@@ -1874,14 +1888,18 @@ export default function Dashboard() {
                 {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "module-settings-modmail-block-role")}
                 {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "module-settings-modmail-claim-role")}
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Modmail Embed Title</Label>
-                  <Input value={config.modmailEmbedTitle || ""} onChange={(event) => updateConfig("modmailEmbedTitle", event.target.value)} />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Modmail Embed Description</Label>
-                  <Textarea value={config.modmailEmbedDescription || ""} onChange={(event) => updateConfig("modmailEmbedDescription", event.target.value)} />
+              <Separator />
+              <div>
+                <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Ticket Embed</h3>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Modmail Embed Title</Label>
+                    <Input value={config.modmailEmbedTitle || ""} onChange={(event) => updateConfig("modmailEmbedTitle", event.target.value)} />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Modmail Embed Description</Label>
+                    <Textarea value={config.modmailEmbedDescription || ""} onChange={(event) => updateConfig("modmailEmbedDescription", event.target.value)} />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1889,19 +1907,31 @@ export default function Dashboard() {
 
           {moduleId === "appeals" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Run these slash commands in Discord to post the appeal embed and configure appeals:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_appeal</Badge>
+                  <Badge variant="outline">/config_appeal</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Appeal Category", "appealCategoryId", categoryChannels, "select-module-appeal-category")}
                 {renderChannelSelect("Appeal Log Channel", "appealLogChannelId", textChannels, "select-module-appeal-log")}
               </div>
               {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "module-settings-appeal-staff-role")}
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Appeal Embed Title</Label>
-                  <Input value={config.appealEmbedTitle || ""} onChange={(event) => updateConfig("appealEmbedTitle", event.target.value)} />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Appeal Embed Description</Label>
-                  <Textarea value={config.appealEmbedDescription || ""} onChange={(event) => updateConfig("appealEmbedDescription", event.target.value)} />
+              <Separator />
+              <div>
+                <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Appeal Embed</h3>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Appeal Embed Title</Label>
+                    <Input value={config.appealEmbedTitle || ""} onChange={(event) => updateConfig("appealEmbedTitle", event.target.value)} />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Appeal Embed Description</Label>
+                    <Textarea value={config.appealEmbedDescription || ""} onChange={(event) => updateConfig("appealEmbedDescription", event.target.value)} />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1909,6 +1939,18 @@ export default function Dashboard() {
 
           {moduleId === "payouts" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Run these slash commands in Discord to post the payout request embed and configure channels:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_pay_request</Badge>
+                  <Badge variant="outline">/setup_payment_logs</Badge>
+                  <Badge variant="outline">/payout</Badge>
+                  <Badge variant="outline">/list_payouts</Badge>
+                  <Badge variant="outline">/message_all</Badge>
+                  <Badge variant="outline">/message_role</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Payout Request Channel", "requestChannelId", textChannels, "select-module-payout-request")}
                 {renderChannelSelect("Payout Log Channel", "logChannelId", textChannels, "select-module-payout-log")}
@@ -1920,6 +1962,15 @@ export default function Dashboard() {
 
           {moduleId === "moderation" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Configure moderation logs and prefix command permissions:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_moderation_logs</Badge>
+                  <Badge variant="outline">/setup_command_logs</Badge>
+                  <Badge variant="outline">/setup_moderation</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Moderation Log Channel", "modLogChannelId", textChannels, "select-module-mod-log")}
                 {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-module-command-log")}
@@ -1936,30 +1987,52 @@ export default function Dashboard() {
 
           {moduleId === "quiz" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Quizzes are started and reviewed directly from Discord. Configure the log channel below, then use these commands:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_quiz_log</Badge>
+                  <Badge variant="outline">/terminate_quizzes</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Quiz Log Channel", "quizLogChannelId", textChannels, "select-module-quiz-log")}
                 {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-module-quiz-command-log")}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Tip: set a command log channel to track quiz start, review, and termination actions.
-              </p>
             </div>
           )}
 
           {moduleId === "staff-intro" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Post the intro/application embeds in a channel, then set where submissions go:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_staff_intro</Badge>
+                  <Badge variant="outline">/setup_staff_intro_submissions</Badge>
+                  <Badge variant="outline">/setup_intro_questions</Badge>
+                  <Badge variant="outline">/setup_staff_applications</Badge>
+                  <Badge variant="outline">/setup_staff_app_submissions</Badge>
+                  <Badge variant="outline">/setup_staff_app_questions</Badge>
+                  <Badge variant="outline">/config_staff_intro</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Staff Intro Channel", "staffIntroChannelId", textChannels, "select-module-staff-intro")}
                 {renderChannelSelect("Staff Intro Submissions", "staffIntroSubmissionsChannelId", textChannels, "select-module-staff-intro-submissions")}
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Staff Intro Embed Title</Label>
-                  <Input value={config.staffIntroEmbedTitle || ""} onChange={(event) => updateConfig("staffIntroEmbedTitle", event.target.value)} />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Staff Intro Embed Description</Label>
-                  <Textarea value={config.staffIntroEmbedDescription || ""} onChange={(event) => updateConfig("staffIntroEmbedDescription", event.target.value)} />
+              <Separator />
+              <div>
+                <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Intro Embed</h3>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Staff Intro Embed Title</Label>
+                    <Input value={config.staffIntroEmbedTitle || ""} onChange={(event) => updateConfig("staffIntroEmbedTitle", event.target.value)} />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Staff Intro Embed Description</Label>
+                    <Textarea value={config.staffIntroEmbedDescription || ""} onChange={(event) => updateConfig("staffIntroEmbedDescription", event.target.value)} />
+                  </div>
                 </div>
               </div>
             </div>
@@ -1967,20 +2040,33 @@ export default function Dashboard() {
 
           {moduleId === "inactivity" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Post the inactivity request embed in a channel, then configure where submissions and logs go:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_inactivity</Badge>
+                  <Badge variant="outline">/setup_inactivity_submissions</Badge>
+                  <Badge variant="outline">/setup_inactivity_logs</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Inactivity Channel", "inactivityChannelId", textChannels, "select-module-inactivity")}
                 {renderChannelSelect("Inactivity Submissions", "inactivitySubmissionsChannelId", textChannels, "select-module-inactivity-submissions")}
                 {renderChannelSelect("Inactivity Log Channel", "inactivityLogChannelId", textChannels, "select-module-inactivity-log")}
               </div>
               {renderRoleSection("Inactivity Ping Roles", "inactivityPingRoleIds", "module-settings-inactivity-ping-role")}
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Inactivity Embed Title</Label>
-                  <Input value={config.inactivityEmbedTitle || ""} onChange={(event) => updateConfig("inactivityEmbedTitle", event.target.value)} />
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Inactivity Embed Description</Label>
-                  <Textarea value={config.inactivityEmbedDescription || ""} onChange={(event) => updateConfig("inactivityEmbedDescription", event.target.value)} />
+              <Separator />
+              <div>
+                <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Request Embed</h3>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Inactivity Embed Title</Label>
+                    <Input value={config.inactivityEmbedTitle || ""} onChange={(event) => updateConfig("inactivityEmbedTitle", event.target.value)} />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Inactivity Embed Description</Label>
+                    <Textarea value={config.inactivityEmbedDescription || ""} onChange={(event) => updateConfig("inactivityEmbedDescription", event.target.value)} />
+                  </div>
                 </div>
               </div>
             </div>
@@ -2142,6 +2228,17 @@ export default function Dashboard() {
 
           {moduleId === "ban-requests" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Post the ban/unban/kick request embeds in their respective channels:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_ban</Badge>
+                  <Badge variant="outline">/setup_unban</Badge>
+                  <Badge variant="outline">/setup_kick</Badge>
+                  <Badge variant="outline">/setup_ban_log</Badge>
+                  <Badge variant="outline">/setup_unban_log</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Ban Request Channel", "banChannelId", textChannels, "select-module-ban-channel")}
                 {renderChannelSelect("Unban Request Channel", "unbanChannelId", textChannels, "select-module-unban-channel")}
@@ -2153,22 +2250,61 @@ export default function Dashboard() {
           )}
 
           {moduleId === "role-requests" && (
-            <div className="space-y-5">
-              {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "module-settings-role-command-role")}
-              {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "module-settings-role-request-command-role")}
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Use these commands to post role request embeds and configure the pro role pipeline:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_role_requests</Badge>
+                  <Badge variant="outline">/setup_pro_role_requests</Badge>
+                  <Badge variant="outline">/set_pro_roles</Badge>
+                </div>
+              </div>
+              <div className="space-y-5">
+                {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "module-settings-role-command-role")}
+                {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "module-settings-role-request-command-role")}
+              </div>
             </div>
           )}
 
           {moduleId === "activity" && (
-            <div className="space-y-5">
-              {renderRoleSection("Activity Command Roles", "activityRoleIds", "module-settings-activity-role")}
-              {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "module-settings-activity-reset-role")}
-              {renderRoleSection("Activity Tracked Roles", "activityTrackedRoleIds", "module-settings-activity-tracked-role")}
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Configure activity tracking, leaderboard roles, group assignments, and partnership tracking:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/activity_role</Badge>
+                  <Badge variant="outline">/activity leaderboard</Badge>
+                  <Badge variant="outline">/activity check</Badge>
+                  <Badge variant="outline">/pick roles</Badge>
+                  <Badge variant="outline">/partnership_channel</Badge>
+                  <Badge variant="outline">/add_activity</Badge>
+                  <Badge variant="outline">/remove_activity</Badge>
+                  <Badge variant="outline">/reset_activity</Badge>
+                  <Badge variant="outline">/restore_activity</Badge>
+                </div>
+              </div>
+              <div className="space-y-5">
+                {renderRoleSection("Activity Command Roles", "activityRoleIds", "module-settings-activity-role")}
+                {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "module-settings-activity-reset-role")}
+                {renderRoleSection("Activity Tracked Roles", "activityTrackedRoleIds", "module-settings-activity-tracked-role")}
+              </div>
             </div>
           )}
 
           {moduleId === "roster" && (
             <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Create rosters and post them to the configured channels:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/setup_player_roster</Badge>
+                  <Badge variant="outline">/setup_staff_roster</Badge>
+                  <Badge variant="outline">/create_roster</Badge>
+                  <Badge variant="outline">/delete_roster</Badge>
+                  <Badge variant="outline">/roster</Badge>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 {renderChannelSelect("Player Roster Channel", "playerRosterChannelId", textChannels, "select-module-player-roster")}
                 {renderChannelSelect("Staff Roster Channel", "staffRosterChannelId", textChannels, "select-module-staff-roster")}
@@ -2178,13 +2314,31 @@ export default function Dashboard() {
           )}
 
           {moduleId === "snippets" && (
-            <div className="space-y-5">
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Snippets are managed entirely from Discord. Roles with snippet access can create and use them in modmail:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/add_snippet</Badge>
+                  <Badge variant="outline">/delete_snippet</Badge>
+                  <Badge variant="outline">/list_snippets</Badge>
+                  <Badge variant="outline">/snippet</Badge>
+                </div>
+              </div>
               {renderRoleSection("Snippet Roles", "snippetRoleIds", "module-settings-snippet-role")}
             </div>
           )}
 
           {moduleId === "sticky" && (
-            <div className="space-y-5">
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Run these in any channel to pin a sticky message that re-posts itself after new messages:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/sticky</Badge>
+                  <Badge variant="outline">/unsticky</Badge>
+                </div>
+              </div>
               {renderPermissionRoleSection("Sticky Command Roles", "stickyCommandRoleIds", "module-settings-sticky-command-role")}
             </div>
           )}
