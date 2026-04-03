@@ -89,7 +89,7 @@ interface AuthUser {
 }
 
 type SettingsTabKey = "channels" | "roles" | "embeds" | "advanced";
-type PrimaryTabKey = "settings" | "features" | "rosters" | "miscellaneous";
+type PrimaryTabKey = "settings" | "features" | "permissions" | "rosters" | "miscellaneous";
 
 interface RosterConfig {
   id: string;
@@ -146,6 +146,7 @@ interface RoleSyncItem {
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
   settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
   features: { label: "Bot Features", icon: Sparkles },
+  permissions: { label: "Bot Role Permissions", icon: Shield },
   rosters: { label: "Rosters", icon: ListTree },
   miscellaneous: { label: "Miscellaneous", icon: Braces },
 };
@@ -463,6 +464,9 @@ export default function Dashboard() {
   const [moduleEnabledMap, setModuleEnabledMap] = useState<Record<string, boolean>>({});
   const [customCategoryPingsText, setCustomCategoryPingsText] = useState("{}");
   const [customModmailCategoriesText, setCustomModmailCategoriesText] = useState("[]");
+  const [newCatLabel, setNewCatLabel] = useState("");
+  const [newCatDescription, setNewCatDescription] = useState("");
+  const [newCatEmoji, setNewCatEmoji] = useState("");
   const [quickSettings, setQuickSettings] = useState<DashboardQuickSettings>({
     moderationPrefix: "",
     modmailPrefix: "",
@@ -1902,6 +1906,100 @@ export default function Dashboard() {
                   </div>
                 </div>
               </div>
+              <Separator />
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Modmail Categories</h3>
+                <p className="text-xs text-muted-foreground">Categories appear as buttons when a user opens a new ticket.</p>
+                {(() => {
+                  let cats: { id: string; label: string; description?: string; emoji?: string }[] = [];
+                  try { cats = JSON.parse(customModmailCategoriesText || "[]"); } catch { cats = []; }
+                  return (
+                    <div className="space-y-2">
+                      {cats.length === 0 && (
+                        <p className="text-xs italic text-muted-foreground">No categories yet — tickets open into a single thread.</p>
+                      )}
+                      {cats.map((cat) => (
+                        <div key={cat.id} className="flex items-center gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2">
+                          {cat.emoji && <span className="text-base">{cat.emoji}</span>}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium leading-none">{cat.label}</p>
+                            {cat.description && <p className="mt-0.5 text-xs text-muted-foreground truncate">{cat.description}</p>}
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
+                            onClick={() => {
+                              const next = cats.filter((c) => c.id !== cat.id);
+                              const json = JSON.stringify(next);
+                              setCustomModmailCategoriesText(json);
+                              updateConfig("customModmailCategories", json);
+                            }}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+                <div className="rounded-md border border-border/60 bg-muted/10 p-3 space-y-3">
+                  <p className="text-xs font-medium text-muted-foreground">Add New Category</p>
+                  <div className="grid gap-2 sm:grid-cols-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Label *</Label>
+                      <Input
+                        placeholder="e.g. General Support"
+                        value={newCatLabel}
+                        onChange={(e) => setNewCatLabel(e.target.value)}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Description</Label>
+                      <Input
+                        placeholder="e.g. Questions & help"
+                        value={newCatDescription}
+                        onChange={(e) => setNewCatDescription(e.target.value)}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Emoji</Label>
+                      <Input
+                        placeholder="e.g. 📩"
+                        value={newCatEmoji}
+                        onChange={(e) => setNewCatEmoji(e.target.value)}
+                        className="h-8 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    disabled={!newCatLabel.trim()}
+                    onClick={() => {
+                      let cats: { id: string; label: string; description?: string; emoji?: string }[] = [];
+                      try { cats = JSON.parse(customModmailCategoriesText || "[]"); } catch { cats = []; }
+                      const newCat: { id: string; label: string; description?: string; emoji?: string } = {
+                        id: `cat_${Date.now()}`,
+                        label: newCatLabel.trim(),
+                      };
+                      if (newCatDescription.trim()) newCat.description = newCatDescription.trim();
+                      if (newCatEmoji.trim()) newCat.emoji = newCatEmoji.trim();
+                      const next = [...cats, newCat];
+                      const json = JSON.stringify(next);
+                      setCustomModmailCategoriesText(json);
+                      updateConfig("customModmailCategories", json);
+                      setNewCatLabel("");
+                      setNewCatDescription("");
+                      setNewCatEmoji("");
+                    }}
+                  >
+                    <Plus className="mr-1.5 h-3.5 w-3.5" />
+                    Add Category
+                  </Button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -3242,6 +3340,57 @@ export default function Dashboard() {
                       </div>
                     ))}
                   </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="permissions" className="mt-0 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Role Permissions</h3>
+                <p className="mt-1 text-sm text-muted-foreground">Configure which roles can use each bot feature or prefix command.</p>
+              </div>
+              <Card className="border-border/80 bg-card/90">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-base">Approval & Staff Roles</CardTitle>
+                  <CardDescription>Roles that can approve actions, handle tickets, or access staff features.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "perm-tab-payout-approval-role")}
+                  {renderRoleSection("Ban/Unban + Kick Approval Roles", "modRoleIds", "perm-tab-moderation-approval-role")}
+                  {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "perm-tab-modmail-staff-role")}
+                  {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "perm-tab-modmail-block-role")}
+                  {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "perm-tab-modmail-claim-role")}
+                  {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "perm-tab-appeal-staff-role")}
+                </CardContent>
+              </Card>
+              <Card className="border-border/80 bg-card/90">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-base">Command Access Roles</CardTitle>
+                  <CardDescription>Roles that can run slash or prefix commands for specific features.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {renderRoleSection("Activity Command Roles", "activityRoleIds", "perm-tab-activity-role")}
+                  {renderRoleSection("Activity Reset Roles", "activityResetRoleIds", "perm-tab-activity-reset-role")}
+                  {renderRoleSection("Snippet Roles", "snippetRoleIds", "perm-tab-snippet-role")}
+                  {renderRoleSection("Message Command Roles", "messageCommandRoleIds", "perm-tab-message-command-role")}
+                  {renderRoleSection("Roster Command Roles", "rosterCommandRoleIds", "perm-tab-roster-command-role")}
+                  {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "perm-tab-role-command-role")}
+                  {renderPermissionRoleSection("Sticky Command Roles", "stickyCommandRoleIds", "perm-tab-sticky-command-role")}
+                  {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "perm-tab-role-request-command-role")}
+                </CardContent>
+              </Card>
+              <Card className="border-border/80 bg-card/90">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-base">Prefix Command Roles</CardTitle>
+                  <CardDescription>Roles that can use prefix-based moderation commands (ban, mute, kick, etc.).</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "perm-tab-prefix-ban-role")}
+                  {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "perm-tab-prefix-mute-role")}
+                  {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "perm-tab-prefix-kick-role")}
+                  {renderPermissionRoleSection("Prefix Modlogs/Clean Roles", "prefixModlogsRoleIds", "perm-tab-prefix-modlogs-role")}
+                  {renderPermissionRoleSection("Prefix Reason Roles", "prefixReasonRoleIds", "perm-tab-prefix-reason-role")}
+                  {renderPermissionRoleSection("Prefix Retime Roles", "prefixRetimeRoleIds", "perm-tab-prefix-retime-role")}
                 </CardContent>
               </Card>
             </TabsContent>
