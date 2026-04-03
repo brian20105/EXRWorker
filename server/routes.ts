@@ -1964,26 +1964,43 @@ export async function registerRoutes(
       // Only warn but don't block so stale cache doesn't cause false errors
 
       const existingPairs = await storage.getAllRoleSyncPairs();
-      const existingForward = existingPairs.find((pair) => (
+      let existingForward = existingPairs.find((pair) => (
         pair.sourceGuildId === sourceGuildId
         && pair.sourceRoleId === sourceRoleId
         && pair.targetGuildId === targetGuildId
         && pair.targetRoleId === targetRoleId
       ));
-      if (existingForward) {
-        return res.status(400).json({ error: "That role sync already exists." });
+      let existingReverse = existingPairs.find((pair) => (
+        pair.sourceGuildId === targetGuildId
+        && pair.sourceRoleId === targetRoleId
+        && pair.targetGuildId === sourceGuildId
+        && pair.targetRoleId === sourceRoleId
+      ));
+
+      // Idempotent + self-healing: create only missing directions and avoid
+      // returning "already exists" for partially created historical state.
+      let createdForwardId: string | null = null;
+      if (!existingForward) {
+        const created = await storage.addRoleSyncPair({ sourceGuildId, sourceRoleId, targetGuildId, targetRoleId });
+        createdForwardId = created.id;
+        existingForward = created;
       }
 
-      await storage.addRoleSyncPair({ sourceGuildId, sourceRoleId, targetGuildId, targetRoleId });
-      if (direction === "two-way") {
-        const existingReverse = existingPairs.find((pair) => (
-          pair.sourceGuildId === targetGuildId
-          && pair.sourceRoleId === targetRoleId
-          && pair.targetGuildId === sourceGuildId
-          && pair.targetRoleId === sourceRoleId
-        ));
-        if (!existingReverse) {
-          await storage.addRoleSyncPair({ sourceGuildId: targetGuildId, sourceRoleId: targetRoleId, targetGuildId: sourceGuildId, targetRoleId: sourceRoleId });
+      if (direction === "two-way" && !existingReverse) {
+        try {
+          const createdReverse = await storage.addRoleSyncPair({
+            sourceGuildId: targetGuildId,
+            sourceRoleId: targetRoleId,
+            targetGuildId: sourceGuildId,
+            targetRoleId: sourceRoleId,
+          });
+          existingReverse = createdReverse;
+        } catch (error) {
+          // Roll back forward insert so the operation is all-or-nothing.
+          if (createdForwardId) {
+            await storage.removeRoleSyncPair(createdForwardId).catch(() => undefined);
+          }
+          throw error;
         }
       }
 

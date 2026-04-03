@@ -44,8 +44,51 @@ const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID;
 const PREFIX_COMMAND_ALLOWED_USER_ID = "948598563359817728";
 const BOT_INSTANCE_LOCK_FILE = path.resolve(process.cwd(), ".discord-bot.lock");
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
+const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DISABLED_MESSAGE = "This is currently disabled, please contact the server owner to resolve the issue.";
 let botInstanceLockAcquired = false;
+
+const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
+  setup_pay_request: "payouts",
+  setup_payment_logs: "payouts",
+  list_payouts: "payouts",
+  user_payouts: "payouts",
+  payout: "payouts",
+  setup_moderation: "moderation",
+  setup_moderation_logs: "moderation",
+  setup_moderation_command_logs: "moderation",
+  setup_role_requests: "permissions",
+  set_pro_roles: "permissions",
+  setup_pro_role_requests: "permissions",
+  permissions: "permissions",
+  setup_staff_intro: "staff-intro",
+  setup_staff_intro_submissions: "staff-intro",
+  config_staff_intro: "staff-intro",
+  setup_intro_questions: "staff-intro",
+  setup_staff_applications: "staff-intro",
+  setup_staff_app_submissions: "staff-intro",
+  setup_staff_app_questions: "staff-intro",
+  setup_quiz_log: "quiz",
+  terminate_quizzes: "quiz",
+  setup_inactivity: "inactivity",
+  setup_inactivity_submissions: "inactivity",
+  setup_inactivity_logs: "inactivity",
+  setup_welcome: "embeds",
+  setup_welcome_message: "embeds",
+  setup_modmail: "modmail",
+  config_modmail: "modmail",
+  "modmail-category": "modmail",
+  close_all_tickets: "modmail",
+  block: "modmail",
+  unblock: "modmail",
+  block_list: "modmail",
+  message: "modmail",
+  send: "modmail",
+  message_all: "modmail",
+  message_role: "modmail",
+  setup_appeal: "appeals",
+  config_appeal: "appeals",
+};
 
 function isPidAlive(pid: number): boolean {
   try {
@@ -118,6 +161,69 @@ function parseDashboardConfigObject(raw: unknown): Record<string, unknown> {
 function isGuildConfigDisabled(config?: any): boolean {
   const parsed = parseDashboardConfigObject(config?.customCategoryPings);
   return parsed[DASHBOARD_BOT_DISABLED_KEY] === true;
+}
+
+function getDashboardFeatureFlagOverrides(config?: any): Record<string, boolean> {
+  const parsed = parseDashboardConfigObject(config?.customCategoryPings);
+  const rawFlags = parsed[DASHBOARD_FEATURE_FLAGS_KEY];
+  if (!rawFlags || typeof rawFlags !== "object" || Array.isArray(rawFlags)) {
+    return {};
+  }
+
+  const result: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(rawFlags as Record<string, unknown>)) {
+    if (typeof value === "boolean") {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function getDashboardDefaultFeatureEnabledMap(config?: any): Record<string, boolean> {
+  return {
+    modmail: !!(config?.modmailCategoryId || config?.modmailLogChannelId),
+    appeals: !!(config?.appealCategoryId || config?.appealLogChannelId),
+    payouts: !!(config?.requestChannelId || config?.logChannelId),
+    moderation: !!config?.modLogChannelId,
+    quiz: !!config?.quizLogChannelId,
+    "staff-intro": !!(config?.staffIntroChannelId || config?.staffIntroSubmissionsChannelId),
+    inactivity: !!(config?.inactivityChannelId || config?.inactivitySubmissionsChannelId || config?.inactivityLogChannelId),
+    permissions: !!(
+      (config?.modRoleIds?.length || 0)
+      || (config?.modmailStaffRoleIds?.length || 0)
+      || (config?.appealStaffRoleIds?.length || 0)
+    ),
+    embeds: !!(config?.modmailEmbedTitle || config?.modmailEmbedDescription || config?.appealEmbedTitle || config?.appealEmbedDescription),
+    advanced: !!(
+      (String(config?.customCategoryPings || "").trim().length > 0 && String(config?.customCategoryPings || "").trim() !== "{}")
+      || (String(config?.customModmailCategories || "").trim().length > 0 && String(config?.customModmailCategories || "").trim() !== "[]")
+    ),
+  };
+}
+
+function isDashboardFeatureEnabled(config: any, featureId: string): boolean {
+  const normalizedFeatureId = String(featureId || "").trim();
+  if (!normalizedFeatureId) return true;
+
+  const overrides = getDashboardFeatureFlagOverrides(config);
+  if (typeof overrides[normalizedFeatureId] === "boolean") {
+    return overrides[normalizedFeatureId];
+  }
+
+  const defaults = getDashboardDefaultFeatureEnabledMap(config);
+  if (typeof defaults[normalizedFeatureId] === "boolean") {
+    return defaults[normalizedFeatureId];
+  }
+
+  return true;
+}
+
+function getRequiredDashboardFeatureForCommand(commandName: string, subcommand: string | null): string | null {
+  if (commandName === "edit" && subcommand === "embed") {
+    return "embeds";
+  }
+
+  return DASHBOARD_FEATURE_COMMAND_MAP[commandName] || null;
 }
 
 async function isGuildCurrentlyDisabled(guildId: string | null | undefined): Promise<boolean> {
@@ -5247,6 +5353,18 @@ client.on("interactionCreate", async (interaction) => {
 
     if (interaction.isChatInputCommand()) {
       const { commandName } = interaction;
+      const subcommand = interaction.options.getSubcommand(false);
+
+      if (interaction.guildId) {
+        const requiredFeature = getRequiredDashboardFeatureForCommand(commandName, subcommand);
+        if (requiredFeature) {
+          const config = await storage.getGuildConfig(interaction.guildId).catch(() => undefined);
+          if (!isDashboardFeatureEnabled(config, requiredFeature)) {
+            await respondInteractionDisabled(interaction);
+            return;
+          }
+        }
+      }
 
       // Log command usage (fire-and-forget, no await)
       if (interaction.guildId) {
@@ -5890,22 +6008,51 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const pair1 = await storage.addRoleSyncPair({
-            sourceGuildId,
-            sourceRoleId,
-            targetGuildId,
-            targetRoleId,
-          });
+          const allPairs = await storage.getAllRoleSyncPairs();
+          let forward = allPairs.find((pair) => (
+            pair.sourceGuildId === sourceGuildId
+            && pair.sourceRoleId === sourceRoleId
+            && pair.targetGuildId === targetGuildId
+            && pair.targetRoleId === targetRoleId
+          ));
+          let reverse = allPairs.find((pair) => (
+            pair.sourceGuildId === targetGuildId
+            && pair.sourceRoleId === targetRoleId
+            && pair.targetGuildId === sourceGuildId
+            && pair.targetRoleId === sourceRoleId
+          ));
 
-          const pair2 = await storage.addRoleSyncPair({
-            sourceGuildId: targetGuildId,
-            sourceRoleId: targetRoleId,
-            targetGuildId: sourceGuildId,
-            targetRoleId: sourceRoleId,
-          });
+          let createdForwardId: string | null = null;
+          if (!forward) {
+            const createdForward = await storage.addRoleSyncPair({
+              sourceGuildId,
+              sourceRoleId,
+              targetGuildId,
+              targetRoleId,
+            });
+            createdForwardId = createdForward.id;
+            forward = createdForward;
+          }
+
+          if (!reverse) {
+            try {
+              const createdReverse = await storage.addRoleSyncPair({
+                sourceGuildId: targetGuildId,
+                sourceRoleId: targetRoleId,
+                targetGuildId: sourceGuildId,
+                targetRoleId: sourceRoleId,
+              });
+              reverse = createdReverse;
+            } catch (error) {
+              if (createdForwardId) {
+                await storage.removeRoleSyncPair(createdForwardId).catch(() => undefined);
+              }
+              throw error;
+            }
+          }
 
           await interaction.editReply({
-            content: `✅ Role sync pair added!\n**Source:** ${sourceRole.name} (<@&${sourceRoleId}>) in ${sourceGuild.name}\n**Target:** ${targetRole.name} (<@&${targetRoleId}>) in ${targetGuild.name}\n\nPair IDs: \`${pair1.id}\`, \`${pair2.id}\``,
+            content: `✅ Role sync pair is active!\n**Source:** ${sourceRole.name} (<@&${sourceRoleId}>) in ${sourceGuild.name}\n**Target:** ${targetRole.name} (<@&${targetRoleId}>) in ${targetGuild.name}\n\nPair IDs: \`${forward.id}\`, \`${reverse.id}\``,
           });
         } else if (action === "remove") {
           const pairId = interaction.options.getString("pair_id");
@@ -5917,10 +6064,29 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          await storage.removeRoleSyncPair(pairId);
+          const allPairs = await storage.getAllRoleSyncPairs();
+          const pair = allPairs.find((entry) => entry.id === pairId);
+          if (!pair) {
+            await interaction.editReply({ content: `ℹ️ Role sync pair \`${pairId}\` was already removed.` });
+            return;
+          }
+
+          await storage.removeRoleSyncPair(pair.id);
+          const reciprocal = allPairs.find((candidate) => (
+            candidate.id !== pair.id
+            && candidate.sourceGuildId === pair.targetGuildId
+            && candidate.sourceRoleId === pair.targetRoleId
+            && candidate.targetGuildId === pair.sourceGuildId
+            && candidate.targetRoleId === pair.sourceRoleId
+          ));
+          if (reciprocal) {
+            await storage.removeRoleSyncPair(reciprocal.id);
+          }
 
           await interaction.editReply({
-            content: `✅ Removed role sync pair \`${pairId}\`.`,
+            content: reciprocal
+              ? `✅ Removed role sync pair \`${pairId}\` and reciprocal \`${reciprocal.id}\`.`
+              : `✅ Removed role sync pair \`${pairId}\`.`,
           });
         }
       } else if (commandName === "members") {
