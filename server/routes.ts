@@ -1371,10 +1371,21 @@ export async function registerRoutes(
         // Ignore - other sources will cover it
       }
 
+      const primarySummaries = apiBotGuilds.length > 0
+        ? apiBotGuilds
+        : (liveSummaries.length > 0 ? liveSummaries : []);
+      const fallbackSummaries = primarySummaries.length > 0
+        ? [...persistedSummaries, ...cachedGuildSummaries]
+        : [...liveSummaries, ...persistedSummaries, ...cachedGuildSummaries, ...storedSummaries];
+
       const mergedSummaryMap = new Map<string, DashboardGuildSummary>();
-      for (const guild of [...liveSummaries, ...persistedSummaries, ...cachedGuildSummaries, ...apiBotGuilds, ...storedSummaries]) {
+      for (const guild of [...primarySummaries, ...fallbackSummaries]) {
         const guildId = String(guild?.id || "").trim();
         if (!guildId) continue;
+
+        if (primarySummaries.length > 0 && !primarySummaries.some((entry) => entry.id === guildId)) {
+          continue;
+        }
 
         mergedSummaryMap.set(guildId, {
           id: guildId,
