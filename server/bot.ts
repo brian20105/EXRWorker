@@ -13843,20 +13843,29 @@ client.on("interactionCreate", async (interaction) => {
         const userId = interaction.user.id;
         const guildId = interaction.customId.replace("quiz_terminate_", "");
         const quizState = activeQuizzes.get(userId);
+        const terminatedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`quiz_terminated_${guildId}`)
+            .setLabel("❌ Terminated")
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(true)
+        );
 
         if (!quizState || quizState.guildId !== guildId) {
-          await interaction.reply({
+          await interaction.update({ components: [terminatedRow] }).catch(() => undefined);
+          await interaction.followUp({
             content: "⚠️ There is no active quiz to terminate.",
             flags: 64,
-          });
+          }).catch(() => undefined);
           return;
         }
 
         activeQuizzes.delete(userId);
-        await interaction.reply({
+        await interaction.update({ components: [terminatedRow] }).catch(() => undefined);
+        await interaction.followUp({
           content: "❌ Your quiz has been terminated. You may start a new quiz at any time.",
           flags: 64,
-        });
+        }).catch(() => undefined);
         return;
       } else if (interaction.customId.startsWith("terminate_quizzes_")) {
         try {
