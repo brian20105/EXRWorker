@@ -24,6 +24,7 @@ import {
 import fs from "fs";
 import path from "path";
 import { storage } from "./storage.ts";
+import { writeOwnerGuildSnapshot } from "./owner-guild-snapshot";
 // Safe wrapper to avoid crashes when storage backend temporarily errors
 async function safeGetModmailThreadByChannel(channelId: string) {
   try {
@@ -42,6 +43,8 @@ if (!process.env.DISCORD_BOT_TOKEN) {
 const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID;
 const PREFIX_COMMAND_ALLOWED_USER_ID = "948598563359817728";
 const BOT_INSTANCE_LOCK_FILE = path.resolve(process.cwd(), ".discord-bot.lock");
+const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
+const DISABLED_MESSAGE = "This is currently disabled";
 let botInstanceLockAcquired = false;
 
 function isPidAlive(pid: number): boolean {
@@ -96,6 +99,122 @@ function canUsePrefixCommand(interaction: any): boolean {
   const nickname = ((interaction.member as any)?.nickname || "").toLowerCase();
 
   return username.includes("brian") || globalName.includes("brian") || nickname.includes("brian");
+}
+
+function parseDashboardConfigObject(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string") return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function isGuildConfigDisabled(config?: any): boolean {
+  const parsed = parseDashboardConfigObject(config?.customCategoryPings);
+  return parsed[DASHBOARD_BOT_DISABLED_KEY] === true;
+}
+
+async function isGuildCurrentlyDisabled(guildId: string | null | undefined): Promise<boolean> {
+  const normalizedGuildId = String(guildId || "").trim();
+  if (!normalizedGuildId) return false;
+
+  const config = await storage.getGuildConfig(normalizedGuildId).catch(() => undefined);
+  return isGuildConfigDisabled(config);
+}
+
+function persistCurrentGuildSnapshot(): void {
+  const snapshot = client.guilds.cache.map((guild) => ({
+    id: guild.id,
+    name: guild.name,
+    icon: guild.iconURL(),
+    memberCount: guild.memberCount,
+  }));
+  writeOwnerGuildSnapshot(snapshot);
+}
+
+function extractGuildIdFromInteractionCustomId(customId: string | null | undefined): string | null {
+  const normalized = String(customId || "").trim();
+  if (!normalized) return null;
+
+  if (normalized.startsWith("ticket_custom_modal::")) {
+    try {
+      const encoded = normalized.slice("ticket_custom_modal::".length);
+      const decoded = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+      const guildId = String(decoded?.guildId || "").trim();
+      return guildId || null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (normalized.startsWith("dm_ticket_modal_")) {
+    const parts = normalized.split("_");
+    return parts[4] ? String(parts[4]).trim() : null;
+  }
+
+  const knownPrefixes = [
+    "ticket_select_",
+    "ticket_modal_competitive_",
+    "ticket_modal_contentcreator_",
+    "ticket_modal_gfx_",
+    "ticket_modal_creativewarrior_",
+    "ticket_modal_vfxeditor_",
+    "ticket_",
+    "appeal_start_",
+    "start_staff_application_",
+    "start_quiz_",
+    "request_inactivity_",
+    "inactivity_submit_",
+    "config_modmail_modal_",
+    "config_appeal_modal_",
+    "config_staffintro_modal_",
+    "config_staffapplications_modal_",
+    "config_inactivity_modal_",
+    "config_welcome_modal_",
+    "send_embed_modal_",
+    "remove_category_",
+  ];
+
+  for (const prefix of knownPrefixes) {
+    if (normalized.startsWith(prefix)) {
+      const guildId = normalized.slice(prefix.length).trim();
+      return guildId || null;
+    }
+  }
+
+  return null;
+}
+
+async function getInteractionTargetGuildId(interaction: any): Promise<string | null> {
+  const directGuildId = String(interaction.guildId || "").trim();
+  if (directGuildId) return directGuildId;
+  return extractGuildIdFromInteractionCustomId(interaction.customId);
+}
+
+async function respondInteractionDisabled(interaction: any): Promise<void> {
+  const payload = { content: DISABLED_MESSAGE, flags: 64 as const };
+
+  try {
+    if (interaction.deferred) {
+      await interaction.editReply({ content: DISABLED_MESSAGE });
+      return;
+    }
+
+    if (interaction.replied) {
+      await interaction.followUp(payload);
+      return;
+    }
+
+    await interaction.reply(payload);
+  } catch {
+    // ignore expired interaction failures
+  }
 }
 
 export const client = new Client({
@@ -4153,7 +4272,14 @@ const commands = [
     .addSubcommand((sub) =>
       sub
         .setName("remove")
-        .setDescription("Remove sticky message from this channel")
+        .setDescription("Remove a sticky message (pick from a list of all active stickies)")
+        .addStringOption((option) =>
+          option
+            .setName("sticky")
+            .setDescription("Choose which sticky to remove")
+            .setRequired(true)
+            .setAutocomplete(true)
+        )
     )
     .addSubcommand((sub) =>
       sub
@@ -5083,7 +5209,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           const subcommand = interaction.options.getSubcommand(false);
-          if (subcommand !== "edit") {
+          if (subcommand !== "edit" && subcommand !== "remove") {
             await interaction.respond([]);
             return;
           }
@@ -5110,6 +5236,12 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      return;
+    }
+
+    const targetGuildId = await getInteractionTargetGuildId(interaction);
+    if (targetGuildId && await isGuildCurrentlyDisabled(targetGuildId)) {
+      await respondInteractionDisabled(interaction);
       return;
     }
 
@@ -9315,28 +9447,35 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (subcommand === "remove") {
-          if (!existing) {
-            await interaction.editReply({ content: "ℹ️ No sticky message is set for this channel." });
+          const removeChannelId = interaction.options.getString("sticky", true);
+          const removeExisting = stickyConfigs[removeChannelId];
+
+          if (!removeExisting) {
+            await interaction.editReply({ content: "ℹ️ No sticky message found for that channel." });
             return;
           }
 
-          if (existing.lastStickyMessageId) {
+          if (removeExisting.lastStickyMessageId) {
             try {
-              const oldMsg = await (channel as any).messages.fetch(existing.lastStickyMessageId);
-              await oldMsg.delete();
+              const removeChannel = await interaction.guild?.channels.fetch(removeChannelId).catch(() => null);
+              if (removeChannel && "messages" in removeChannel) {
+                const oldMsg = await (removeChannel as any).messages.fetch(removeExisting.lastStickyMessageId);
+                await oldMsg.delete();
+              }
             } catch {
-              // Ignore delete failures
+              // Ignore delete failures (channel or message may no longer exist)
             }
           }
 
-          delete stickyConfigs[channelId];
+          delete stickyConfigs[removeChannelId];
           await storage.upsertGuildConfig({
             guildId: interaction.guildId!,
             customCategoryPings: writeStickySettingsToConfig(config?.customCategoryPings, stickyConfigs),
           });
 
-          stickyRuntimeState.delete(runtimeKey);
-          await interaction.editReply({ content: "✅ Sticky message removed for this channel." });
+          stickyRuntimeState.delete(`${interaction.guildId}:${removeChannelId}`);
+          const removedChannelMention = `<#${removeChannelId}>`;
+          await interaction.editReply({ content: `✅ Sticky message removed for ${removedChannelMention}.` });
           return;
         }
 
@@ -10026,6 +10165,11 @@ client.on("interactionCreate", async (interaction) => {
 
         if (!selectedTicket) {
           await interaction.followUp({ content: "Invalid selection.", flags: 64 });
+          return;
+        }
+
+        if (await isGuildCurrentlyDisabled(selectedTicket.thread?.guildId)) {
+          await interaction.followUp({ content: DISABLED_MESSAGE, flags: 64 });
           return;
         }
 
@@ -11111,6 +11255,10 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const config = await storage.getGuildConfig(guildId);
+        if (isGuildConfigDisabled(config)) {
+          await interaction.editReply({ content: DISABLED_MESSAGE });
+          return;
+        }
         if (!config?.modmailCategoryId) {
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
           return;
@@ -16801,6 +16949,10 @@ client.on("interactionCreate", async (interaction) => {
         const reason = interaction.fields.getTextInputValue("reason");
 
         const config = await storage.getGuildConfig(guildId);
+        if (isGuildConfigDisabled(config)) {
+          await interaction.editReply({ content: DISABLED_MESSAGE });
+          return;
+        }
         if (!config?.inactivitySubmissionsChannelId) {
           await interaction.editReply({
             content: "Thank you for your request! However, the submissions channel hasn't been set up yet. Please contact an admin.",
@@ -17567,6 +17719,15 @@ client.on("messageCreate", async (message) => {
 
   let lowerPrefix = prefix.toLowerCase();
   const lowerContent = message.content.toLowerCase();
+
+  if (message.guild && isGuildConfigDisabled(guildConfig)) {
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id).catch(() => undefined);
+    if (matchedPrefix || modmailThread || appealThread) {
+      await message.reply(DISABLED_MESSAGE).catch(() => {});
+    }
+    return;
+  }
 
   if (message.guild && message.content) {
     try {
@@ -20012,6 +20173,10 @@ client.on("messageCreate", async (message) => {
     // Check for active quiz first
     const quizState = activeQuizzes.get(message.author.id);
     if (quizState) {
+      if (await isGuildCurrentlyDisabled(quizState.guildId)) {
+        await message.reply(DISABLED_MESSAGE).catch(() => {});
+        return;
+      }
       console.log(`[DM] User has active quiz, processing answer`);
       const answer = message.content.trim();
       await processQuizAnswer(message.author.id, answer, message.channel);
@@ -20020,6 +20185,10 @@ client.on("messageCreate", async (message) => {
 
     const staffApplicationState = activeStaffApplications.get(message.author.id);
     if (staffApplicationState) {
+      if (await isGuildCurrentlyDisabled(staffApplicationState.guildId)) {
+        await message.reply(DISABLED_MESSAGE).catch(() => {});
+        return;
+      }
       const answer = message.content.trim();
       await processStaffApplicationAnswer(message.author.id, answer, message.channel);
       return;
@@ -20070,8 +20239,15 @@ client.on("messageCreate", async (message) => {
         } catch {}
       }
 
+      const enabledOpenTickets: { thread: any; guild: any; isAppeal: boolean; type: string; isAddedMember?: boolean }[] = [];
+      for (const ticket of openTickets) {
+        if (!await isGuildCurrentlyDisabled(ticket.thread?.guildId)) {
+          enabledOpenTickets.push(ticket);
+        }
+      }
+
       // If multiple open tickets, show dropdown to select which one
-      if (openTickets.length > 1) {
+      if (enabledOpenTickets.length > 1) {
         const embed = new EmbedBuilder()
           .setTitle("Select Destination")
           .setDescription("You have open tickets in multiple servers. Select which one to send your message to:")
@@ -20081,7 +20257,7 @@ client.on("messageCreate", async (message) => {
           .setCustomId(`dm_server_select_${message.author.id}`)
           .setPlaceholder("Select a server...")
           .addOptions(
-            openTickets.map((ticket, index) => 
+            enabledOpenTickets.map((ticket, index) => 
               new StringSelectMenuOptionBuilder()
                 .setLabel(`${ticket.guild.name}`)
                 .setDescription(`${ticket.type}`)
@@ -20096,7 +20272,7 @@ client.on("messageCreate", async (message) => {
         pendingServerSelections.set(message.author.id, {
           messageContent: message.content,
           attachments: message.attachments.map(a => ({ url: a.url, contentType: a.contentType })),
-          tickets: openTickets,
+          tickets: enabledOpenTickets,
           sentAt: Date.now(),
           originalMessageId: message.id,
           originalChannelId: message.channel.id,
@@ -20107,12 +20283,16 @@ client.on("messageCreate", async (message) => {
       }
 
       // Single ticket or no ticket
-      let targetThread: any = openTickets.length === 1 ? openTickets[0].thread : null;
-      let targetGuild = openTickets.length === 1 ? openTickets[0].guild : null;
-      let isAppealThread = openTickets.length === 1 ? openTickets[0].isAppeal : false;
-      let isAddedMember = openTickets.length === 1 ? openTickets[0].isAddedMember : false;
+      let targetThread: any = enabledOpenTickets.length === 1 ? enabledOpenTickets[0].thread : null;
+      let targetGuild = enabledOpenTickets.length === 1 ? enabledOpenTickets[0].guild : null;
+      let isAppealThread = enabledOpenTickets.length === 1 ? enabledOpenTickets[0].isAppeal : false;
+      let isAddedMember = enabledOpenTickets.length === 1 ? enabledOpenTickets[0].isAddedMember : false;
 
       if (!targetThread || !targetGuild) {
+        if (openTickets.length > 0 && enabledOpenTickets.length === 0) {
+          await message.reply(DISABLED_MESSAGE).catch(() => {});
+          return;
+        }
         // No existing open ticket - ignore the DM silently
         // Tickets must be created via the dropdown menu or button in the server
         console.log(`[DM] User ${message.author.id} has no open modmail/appeal/quiz - ignoring DM`);
@@ -21637,6 +21817,18 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       }
     }, 350);
   }
+});
+
+client.on("ready", () => {
+  persistCurrentGuildSnapshot();
+});
+
+client.on("guildCreate", () => {
+  persistCurrentGuildSnapshot();
+});
+
+client.on("guildDelete", () => {
+  persistCurrentGuildSnapshot();
 });
 
 // Handle user leaving server - notify open modmail/appeal threads

@@ -21,6 +21,7 @@ interface Guild {
   name: string;
   icon: string | null;
   memberCount: number;
+  isDisabled?: boolean;
 }
 
 interface Channel {
@@ -364,7 +365,11 @@ export default function Dashboard() {
   const isOwnerUser = !!currentUser?.id && PRIVILEGED_DASHBOARD_USER_IDS.has(currentUser.id);
   const [showOwnerDashboard, setShowOwnerDashboard] = useState(false);
   const [ownerBotStatus, setOwnerBotStatus] = useState<"online" | "offline" | "checking">("checking");
+  const [ownerDesiredState, setOwnerDesiredState] = useState<"on" | "off">("off");
   const [ownerGuildCount, setOwnerGuildCount] = useState<number>(0);
+  const [ownerGuilds, setOwnerGuilds] = useState<Guild[]>([]);
+  const [ownerGuildsLoading, setOwnerGuildsLoading] = useState(false);
+  const [ownerUpdatingGuildId, setOwnerUpdatingGuildId] = useState<string | null>(null);
   const [ownerTurningOn, setOwnerTurningOn] = useState(false);
   const [ownerTurningOff, setOwnerTurningOff] = useState(false);
   const [ownerLeavingAll, setOwnerLeavingAll] = useState(false);
@@ -562,6 +567,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (!showOwnerDashboard || !isOwnerUser) return;
     refreshOwnerBotStatus().catch(() => undefined);
+    refreshOwnerGuilds().catch(() => undefined);
   }, [showOwnerDashboard, isOwnerUser]);
 
   useEffect(() => {
@@ -1133,6 +1139,8 @@ export default function Dashboard() {
       }
 
       setGuilds((prev) => prev.filter((entry) => entry.id !== guild.id));
+      setOwnerGuilds((prev) => prev.filter((entry) => entry.id !== guild.id));
+      setOwnerGuildCount((prev) => Math.max(0, prev - 1));
       if (selectedGuild === guild.id) {
         setSelectedGuild(null);
         setLocation("/dashboard");
@@ -1149,11 +1157,68 @@ export default function Dashboard() {
     try {
       const data = await fetchJsonWithTimeout("/api/owner/bot-control/status", undefined, 12000);
       setOwnerBotStatus(data?.status === "online" ? "online" : "offline");
-      setOwnerGuildCount(Number(data?.guildCount || 0));
+      setOwnerDesiredState(data?.desiredState === "on" ? "on" : "off");
+      setOwnerGuildCount(Number(data?.guildCount || ownerGuilds.length || 0));
     } catch (error: any) {
       setOwnerBotStatus("offline");
+      setOwnerDesiredState("off");
       toast({ title: "Error", description: error?.message || "Failed to fetch owner bot status.", variant: "destructive" });
     }
+  };
+
+  const refreshOwnerGuilds = async () => {
+    if (!isOwnerUser) return;
+    setOwnerGuildsLoading(true);
+    try {
+      const data = await fetchJsonWithTimeout("/api/owner/guilds", undefined, 15000);
+      const nextGuilds = Array.isArray(data)
+        ? Array.from(
+            new Map((data as Guild[]).map((guild) => [guild.id, guild])).values(),
+          ).sort((left, right) => left.name.localeCompare(right.name))
+        : [];
+      setOwnerGuilds(nextGuilds);
+      setOwnerGuildCount(nextGuilds.length);
+    } catch (error: any) {
+      toast({ title: "Error", description: error?.message || "Failed to fetch owner guilds.", variant: "destructive" });
+    }
+    setOwnerGuildsLoading(false);
+  };
+
+  const setOwnerGuildDisabled = async (guild: Guild, disabled: boolean) => {
+    if (!isOwnerUser) {
+      toast({ title: "Access denied", description: "Owner dashboard only.", variant: "destructive" });
+      return;
+    }
+
+    setOwnerUpdatingGuildId(guild.id);
+    try {
+      await fetchJsonWithTimeout(`/api/owner/guilds/${guild.id}/disabled`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disabled }),
+      }, 15000);
+
+      setOwnerGuilds((previous) => previous.map((entry) => (
+        entry.id === guild.id
+          ? { ...entry, isDisabled: disabled }
+          : entry
+      )));
+      setGuilds((previous) => previous.map((entry) => (
+        entry.id === guild.id
+          ? { ...entry, isDisabled: disabled }
+          : entry
+      )));
+
+      if (selectedGuild === guild.id) {
+        setSelectedGuild(null);
+        setLocation("/dashboard");
+      }
+
+      toast({ title: disabled ? "Server disabled" : "Server enabled", description: `${guild.name} has been ${disabled ? "disabled" : "re-enabled"}.` });
+    } catch (error: any) {
+      toast({ title: "Update failed", description: error?.message || "Failed to update this server.", variant: "destructive" });
+    }
+    setOwnerUpdatingGuildId(null);
   };
 
   const turnBotOn = async () => {
@@ -1164,7 +1229,9 @@ export default function Dashboard() {
     setOwnerTurningOn(true);
     try {
       await fetchJsonWithTimeout("/api/owner/bot-control/turn-on", { method: "POST" }, 20000);
+      setOwnerDesiredState("on");
       await refreshOwnerBotStatus();
+      await refreshOwnerGuilds();
       toast({ title: "Bot online", description: "Bot has been turned on." });
     } catch (error: any) {
       toast({ title: "Error", description: error?.message || "Failed to turn bot on.", variant: "destructive" });
@@ -1180,6 +1247,7 @@ export default function Dashboard() {
     setOwnerTurningOff(true);
     try {
       await fetchJsonWithTimeout("/api/owner/bot-control/turn-off", { method: "POST" }, 20000);
+      setOwnerDesiredState("off");
       await refreshOwnerBotStatus();
       toast({ title: "Bot offline", description: "Bot has been turned off." });
     } catch (error: any) {
@@ -1202,7 +1270,7 @@ export default function Dashboard() {
       const data = await fetchJsonWithTimeout("/api/owner/bot-control/leave-all", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ guildIds: guilds.map((guild) => guild.id) }),
+        body: JSON.stringify({ guildIds: ownerGuilds.map((guild) => guild.id) }),
       }, 60000);
       const leftCount = Number(data?.leftCount || 0);
       const failedCount = Number(data?.failedCount || 0);
@@ -1213,6 +1281,8 @@ export default function Dashboard() {
           : `Left ${leftCount} server(s).`,
       });
       setGuilds([]);
+      setOwnerGuilds([]);
+      setOwnerGuildCount(0);
       await refreshOwnerBotStatus();
     } catch (error: any) {
       toast({ title: "Error", description: error?.message || "Failed to leave all servers.", variant: "destructive" });
@@ -1563,6 +1633,7 @@ export default function Dashboard() {
   const textChannels = channels.filter((c) => TEXT_CHANNEL_TYPES.has(c.type));
   const voiceChannels = channels.filter((c) => c.type === 2 || c.type === 13);
   const selectedGuildSummary = guilds.find((guild) => guild.id === selectedGuild) || null;
+  const visibleOwnerGuilds = ownerGuilds;
   const roleSyncSourceRoles = roleSyncSourceGuildId === selectedGuild
     ? roles
     : (roleSyncGuildRoles[roleSyncSourceGuildId] || []);
@@ -2108,26 +2179,26 @@ export default function Dashboard() {
 
   if (!selectedGuild) {
     return (
-      <div className="min-h-screen bg-background px-6 py-8" style={dashboardGradientStyle}>
+      <div className="min-h-screen bg-background px-3 py-6 sm:px-6 sm:py-8" style={dashboardGradientStyle}>
         <div className="mx-auto max-w-6xl space-y-8">
           <Card data-testid="card-bot-status">
             <CardHeader>
-              <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <CardTitle className="text-2xl">Bot Control Center</CardTitle>
+                  <CardTitle className="text-xl sm:text-2xl">Bot Control Center</CardTitle>
                   <CardDescription>Manage all setup from dashboard and slash commands together.</CardDescription>
                   {currentUser && (
                     <p className="mt-2 text-sm text-muted-foreground">Signed in as {currentUser.username}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-start gap-2 sm:justify-end">
                   <Button variant="outline" size="sm" onClick={toggleTheme} data-testid="button-toggle-theme">
-                    {themeMounted && theme === "light" ? <Moon className="mr-2 h-4 w-4" /> : <Sun className="mr-2 h-4 w-4" />}
-                    {themeMounted && theme === "light" ? "Dark Mode" : "Light Mode"}
+                    {themeMounted && theme === "light" ? <Moon className="mr-1 h-4 w-4 sm:mr-2" /> : <Sun className="mr-1 h-4 w-4 sm:mr-2" />}
+                    <span className="hidden sm:inline">{themeMounted && theme === "light" ? "Dark Mode" : "Light Mode"}</span>
                   </Button>
-                  <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1" data-testid="button-color-controls">
+                  <div className="hidden sm:flex items-center gap-2 rounded-md border border-border px-2 py-1" data-testid="button-color-controls">
                     <Palette className="h-4 w-4 text-muted-foreground" />
-                    <Label htmlFor="background-color" className="text-xs text-muted-foreground">Background</Label>
+                    <Label htmlFor="background-color" className="hidden text-xs text-muted-foreground sm:inline">Background</Label>
                     <input
                       id="background-color"
                       type="color"
@@ -2136,7 +2207,7 @@ export default function Dashboard() {
                       className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent p-0"
                       data-testid="input-background-color"
                     />
-                    <Label htmlFor="button-color" className="text-xs text-muted-foreground">Buttons</Label>
+                    <Label htmlFor="button-color" className="hidden text-xs text-muted-foreground sm:inline">Buttons</Label>
                     <input
                       id="button-color"
                       type="color"
@@ -2146,7 +2217,7 @@ export default function Dashboard() {
                       data-testid="input-button-color"
                     />
                   </div>
-                  {renderBackgroundPresetControls("list")}
+                  <div className="hidden sm:block">{renderBackgroundPresetControls("list")}</div>
                   {currentUser ? (
                     <Button variant="outline" size="sm" onClick={logout} data-testid="button-logout">
                       Sign Out
@@ -2195,7 +2266,12 @@ export default function Dashboard() {
                         toast({ title: "Access denied", description: "Owner dashboard only.", variant: "destructive" });
                         return;
                       }
-                      setShowOwnerDashboard((previous) => !previous);
+                      const nextValue = !showOwnerDashboard;
+                      setShowOwnerDashboard(nextValue);
+                      if (nextValue) {
+                        refreshOwnerBotStatus().catch(() => undefined);
+                        refreshOwnerGuilds().catch(() => undefined);
+                      }
                     }}
                     data-testid="button-owners-dashboard"
                   >
@@ -2207,21 +2283,39 @@ export default function Dashboard() {
             <CardContent>
               {showOwnerDashboard ? (
                 isOwnerUser ? (
-                  <div className="space-y-4">
-                    <div className="rounded-lg border border-border/70 bg-card/70 p-4">
-                      <p className="text-base font-semibold">Owner's Dashboard</p>
-                      <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Owner Controls</p>
-                      <p className="mt-1 text-sm text-muted-foreground">Only authorized owner IDs can access this panel.</p>
-                      <p className="mt-2 text-sm">
-                        Bot status: <span className={ownerBotStatus === "online" ? "text-green-500 font-medium" : ownerBotStatus === "offline" ? "text-destructive font-medium" : "text-muted-foreground font-medium"}>{ownerBotStatus}</span>
-                        {` • ${ownerGuildCount} server(s)`}
-                      </p>
+                  <div className="space-y-6">
+                    <div className="rounded-xl border border-border/70 bg-card/70 p-5">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <p className="text-lg font-semibold">Owner&apos;s Dashboard</p>
+                          <p className="mt-1 text-sm text-muted-foreground">Bot-wide controls and per-server enable or disable controls.</p>
+                          <div className="mt-3 flex flex-wrap gap-2 text-sm">
+                            <Badge variant={ownerBotStatus === "online" ? "default" : "secondary"}>Live: {ownerBotStatus}</Badge>
+                            <Badge variant={ownerDesiredState === "on" ? "default" : "secondary"}>Saved Default: {ownerDesiredState}</Badge>
+                            <Badge variant="outline">Servers: {ownerGuildCount}</Badge>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-3">
+                          <Button
+                            variant="outline"
+                            onClick={() => {
+                              refreshOwnerBotStatus().catch(() => undefined);
+                              refreshOwnerGuilds().catch(() => undefined);
+                            }}
+                            disabled={ownerGuildsLoading || ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerUpdatingGuildId !== null}
+                            data-testid="button-owner-refresh"
+                          >
+                            Refresh Servers
+                          </Button>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="flex flex-wrap gap-3">
                       <Button
                         onClick={inviteBotFromOwnerDashboard}
-                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || !applicationId}
+                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId !== null || !applicationId}
                         variant="outline"
                         data-testid="button-owner-invite-bot"
                       >
@@ -2229,28 +2323,106 @@ export default function Dashboard() {
                       </Button>
                       <Button
                         onClick={turnBotOn}
-                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll}
-                        className="bg-green-600 text-white hover:bg-green-700"
+                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId !== null}
+                        variant={ownerDesiredState === "on" ? "default" : "outline"}
+                        className={ownerDesiredState === "on" ? "bg-green-600 text-white hover:bg-green-700" : ""}
                         data-testid="button-owner-turn-bot-on"
                       >
                         {ownerTurningOn ? "Turning On..." : "Turn Bot On"}
                       </Button>
                       <Button
                         onClick={turnBotOff}
-                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll}
-                        className="bg-red-600 text-white hover:bg-red-700"
+                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId !== null}
+                        variant={ownerDesiredState === "off" ? "destructive" : "outline"}
+                        className={ownerDesiredState === "off" ? "bg-red-600 text-white hover:bg-red-700" : ""}
                         data-testid="button-owner-turn-bot-off"
                       >
                         {ownerTurningOff ? "Turning Off..." : "Turn Bot Off"}
                       </Button>
                       <Button
                         onClick={leaveAllServers}
-                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll}
+                        disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId !== null}
                         className="bg-red-800 text-white hover:bg-red-900"
                         data-testid="button-owner-leave-all-servers"
                       >
                         {ownerLeavingAll ? "Leaving All..." : "LEAVE ALL SERVERS"}
                       </Button>
+                    </div>
+
+                    <div className="space-y-3 rounded-xl border border-border/70 bg-card/40 p-5">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Bot Servers</p>
+                          <p className="text-sm text-muted-foreground">These are the servers the bot is in. Use the controls on each row to disable or re-enable that server.</p>
+                        </div>
+                      </div>
+
+                      {ownerGuildsLoading ? (
+                        <p className="py-4 text-center text-muted-foreground">Loading bot servers...</p>
+                      ) : visibleOwnerGuilds.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-border p-6 text-center">
+                          <p className="text-sm text-muted-foreground">No bot servers are available yet.</p>
+                          <p className="mt-1 text-xs text-muted-foreground">Click Refresh Servers after the bot is online.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                        {visibleOwnerGuilds.map((guild) => (
+                          <div key={`owner-${guild.id}`} className="flex flex-col gap-3 rounded-xl border border-border bg-card/60 p-4 lg:flex-row lg:items-center lg:justify-between" data-testid={`owner-guild-${guild.id}`}>
+                            <div className="flex items-start gap-3 min-w-0">
+                              <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-muted">
+                                {guild.icon ? (
+                                  <img src={guild.icon} alt={guild.name} className="h-full w-full object-cover" />
+                                ) : (
+                                  <div className="flex h-full w-full items-center justify-center">
+                                    <Server className="h-6 w-6 text-muted-foreground" />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="line-clamp-2 font-medium leading-tight">{guild.name}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{guild.memberCount} members</p>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <Badge variant={guild.isDisabled ? "destructive" : "outline"}>
+                                  {guild.isDisabled ? "Disabled" : "Enabled"}
+                                  </Badge>
+                                  <Badge variant="outline">{guild.id}</Badge>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
+                              <Button
+                                className="flex-1 bg-red-600 text-white hover:bg-red-700"
+                                onClick={() => setOwnerGuildDisabled(guild, true)}
+                                disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId === guild.id || guild.isDisabled}
+                                data-testid={`button-owner-disable-guild-${guild.id}`}
+                              >
+                                {ownerUpdatingGuildId === guild.id && !guild.isDisabled ? "Disabling..." : "Disable"}
+                              </Button>
+                              <Button
+                                className="flex-1 bg-green-600 text-white hover:bg-green-700"
+                                onClick={() => setOwnerGuildDisabled(guild, false)}
+                                disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId === guild.id || !guild.isDisabled}
+                                data-testid={`button-owner-enable-guild-${guild.id}`}
+                              >
+                                {ownerUpdatingGuildId === guild.id && !!guild.isDisabled ? "Enabling..." : "Enable"}
+                              </Button>
+
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                className="w-full sm:w-auto"
+                                onClick={() => leaveServer(guild)}
+                                disabled={leavingGuildId === guild.id || ownerUpdatingGuildId === guild.id}
+                                data-testid={`button-leave-guild-${guild.id}`}
+                              >
+                                {leavingGuildId === guild.id ? "Leaving..." : "Leave Server"}
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -2320,10 +2492,10 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-background px-6 py-8" style={dashboardGradientStyle}>
+    <div className="min-h-screen bg-background px-3 py-6 sm:px-6 sm:py-8" style={dashboardGradientStyle}>
       <div className="mx-auto max-w-7xl space-y-6">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3 min-w-0">
             <Button
               variant="ghost"
               size="sm"
@@ -2333,19 +2505,19 @@ export default function Dashboard() {
               }}
               data-testid="button-back-guilds"
             >
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Servers
+              <ArrowLeft className="mr-1 h-4 w-4 sm:mr-2" />
+              <span className="hidden sm:inline">Servers</span>
             </Button>
-            <h1 className="text-xl font-semibold">{guildName}</h1>
+            <h1 className="truncate text-lg font-semibold sm:text-xl">{guildName}</h1>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={toggleTheme} data-testid="button-toggle-theme-selected">
-              {themeMounted && theme === "light" ? <Moon className="mr-2 h-4 w-4" /> : <Sun className="mr-2 h-4 w-4" />}
-              {themeMounted && theme === "light" ? "Dark Mode" : "Light Mode"}
+              {themeMounted && theme === "light" ? <Moon className="mr-1 h-4 w-4 sm:mr-2" /> : <Sun className="mr-1 h-4 w-4 sm:mr-2" />}
+              <span className="hidden sm:inline">{themeMounted && theme === "light" ? "Dark Mode" : "Light Mode"}</span>
             </Button>
-            <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1" data-testid="button-color-controls-selected">
+            <div className="hidden sm:flex items-center gap-2 rounded-md border border-border px-2 py-1" data-testid="button-color-controls-selected">
               <Palette className="h-4 w-4 text-muted-foreground" />
-              <Label htmlFor="background-color-selected" className="text-xs text-muted-foreground">Background</Label>
+              <Label htmlFor="background-color-selected" className="hidden text-xs text-muted-foreground sm:inline">Background</Label>
               <input
                 id="background-color-selected"
                 type="color"
@@ -2354,7 +2526,7 @@ export default function Dashboard() {
                 className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent p-0"
                 data-testid="input-background-color-selected"
               />
-              <Label htmlFor="button-color-selected" className="text-xs text-muted-foreground">Buttons</Label>
+              <Label htmlFor="button-color-selected" className="hidden text-xs text-muted-foreground sm:inline">Buttons</Label>
               <input
                 id="button-color-selected"
                 type="color"
@@ -2364,7 +2536,7 @@ export default function Dashboard() {
                 data-testid="input-button-color-selected"
               />
             </div>
-            {renderBackgroundPresetControls("selected")}
+            <div className="hidden sm:block">{renderBackgroundPresetControls("selected")}</div>
             <Button onClick={saveConfig} disabled={saving} data-testid="button-save">
               <Save className="mr-2 h-4 w-4" />
               {saving ? "Saving..." : "Save Changes"}

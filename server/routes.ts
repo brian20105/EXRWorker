@@ -10,6 +10,8 @@ import { spawn as spawnProcess, execFile as execFileAsync } from "child_process"
 import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits } from "discord.js";
 import { db } from "./sql";
 import { promisify } from "util";
+import { readOwnerGuildSnapshot } from "./owner-guild-snapshot";
+import { readOwnerBotDesiredState, writeOwnerBotDesiredState } from "./owner-bot-state";
 
 const execFile = promisify(execFileAsync);
 
@@ -52,6 +54,7 @@ const OAUTH_STATE_COOKIE = "dashboard_oauth_state";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const OWNER_BOT_PID_FILE = path.resolve(process.cwd(), ".owner-bot.pid");
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
+const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -374,7 +377,11 @@ function setCachedGuildSummaries(value: DashboardGuildSummary[]) {
 async function getGuildSummariesFromStoredConfigs(): Promise<DashboardGuildSummary[]> {
   try {
     const configRows = await db.select({ guildId: guildConfigs.guildId }).from(guildConfigs);
-    const uniqueGuildIds = Array.from(new Set(configRows.map((row) => String(row.guildId || "").trim()).filter(Boolean)));
+    const uniqueGuildIds: string[] = Array.from(new Set(
+      configRows
+        .map((row: { guildId: string | null }) => String(row.guildId || "").trim())
+        .filter(Boolean),
+    ));
     if (uniqueGuildIds.length === 0) {
       return [];
     }
@@ -423,6 +430,31 @@ function toGuildIconUrl(guildId: string, icon: string | null | undefined): strin
 function toRoleHexColor(color: number | undefined): string {
   const normalized = Number.isFinite(color) ? Math.max(0, Math.min(0xffffff, Number(color))) : 0;
   return `#${normalized.toString(16).padStart(6, "0")}`;
+}
+
+function parseDashboardConfigObject(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string") return {};
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function isGuildDisabledFromCustomCategoryPings(raw: unknown): boolean {
+  const parsed = parseDashboardConfigObject(raw);
+  return parsed[DASHBOARD_BOT_DISABLED_KEY] === true;
+}
+
+function writeGuildDisabledToCustomCategoryPings(raw: unknown, disabled: boolean): string {
+  const parsed = parseDashboardConfigObject(raw);
+  parsed[DASHBOARD_BOT_DISABLED_KEY] = disabled;
+  return JSON.stringify(parsed, null, 2);
 }
 
 async function canAccessGuild(userId: string, guildId: string): Promise<boolean> {
@@ -494,6 +526,12 @@ async function requireGuildAccess(req: Request, res: Response): Promise<{ user: 
   const guildId = String(req.params.guildId || "").trim();
   if (!guildId) {
     res.status(400).json({ error: "Missing guildId" });
+    return null;
+  }
+
+  const config = await storage.getGuildConfig(guildId).catch(() => undefined);
+  if (isGuildDisabledFromCustomCategoryPings(config?.customCategoryPings)) {
+    res.status(423).json({ error: "This server is currently disabled and can only be re-enabled from the owner's dashboard." });
     return null;
   }
 
@@ -1295,8 +1333,108 @@ export async function registerRoutes(
     }
 
     const status = pidRunning ? "online" : "offline";
-    const guildCount = cachedGuildSummaries.length;
-    res.json({ success: true, status, guildCount, botTag: client.user?.tag || null });
+    const persistedGuilds = readOwnerGuildSnapshot();
+    const guildCount = client.isReady()
+      ? client.guilds.cache.size
+      : (persistedGuilds.length || cachedGuildSummaries.length);
+    res.json({ success: true, status, desiredState: readOwnerBotDesiredState(), guildCount, botTag: client.user?.tag || null });
+  });
+
+  app.get("/api/owner/guilds", async (req, res) => {
+    if (!requireOwnerAccess(req, res)) return;
+
+    try {
+      const liveSummaries = client.isReady()
+        ? client.guilds.cache.map((guild) => ({
+            id: guild.id,
+            name: guild.name,
+            icon: guild.iconURL(),
+            memberCount: guild.memberCount,
+          }))
+        : [];
+      const persistedSummaries = readOwnerGuildSnapshot();
+      const storedSummaries = await getGuildSummariesFromStoredConfigs();
+
+      // Always fetch the full bot guild list from Discord so the owner dashboard
+      // shows all servers even when the bot process is not running in-process.
+      let apiBotGuilds: DashboardGuildSummary[] = [];
+      try {
+        const guildsResponse = await discordApiRequest("/users/@me/guilds?with_counts=true");
+        const guildsJson = (await guildsResponse.json().catch(() => [])) as DiscordRestGuild[];
+        apiBotGuilds = guildsJson.map((g) => ({
+          id: String(g.id),
+          name: String(g.name || `Server ${g.id}`),
+          icon: toGuildIconUrl(String(g.id), g.icon),
+          memberCount: Number(g.approximate_member_count || 0),
+        }));
+      } catch {
+        // Ignore - other sources will cover it
+      }
+
+      const mergedSummaryMap = new Map<string, DashboardGuildSummary>();
+      for (const guild of [...liveSummaries, ...persistedSummaries, ...cachedGuildSummaries, ...apiBotGuilds, ...storedSummaries]) {
+        const guildId = String(guild?.id || "").trim();
+        if (!guildId) continue;
+
+        mergedSummaryMap.set(guildId, {
+          id: guildId,
+          name: String(guild?.name || `Server ${guildId}`),
+          icon: guild?.icon ? String(guild.icon) : null,
+          memberCount: Number(guild?.memberCount || 0),
+        });
+      }
+
+      const resolvedSummaries = Array.from(mergedSummaryMap.values());
+
+      const guilds = await Promise.all(
+        resolvedSummaries.map(async (guild) => {
+          const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+          return {
+            ...guild,
+            isDisabled: isGuildDisabledFromCustomCategoryPings(config?.customCategoryPings),
+          };
+        }),
+      );
+
+      setCachedGuildSummaries(guilds.map(({ id, name, icon, memberCount }) => ({ id, name, icon, memberCount })));
+      res.json(guilds);
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to load owner guilds." });
+    }
+  });
+
+  app.post("/api/owner/guilds/:guildId/disabled", async (req, res) => {
+    const user = requireOwnerAccess(req, res);
+    if (!user) return;
+
+    try {
+      const guildId = String(req.params.guildId || "").trim();
+      if (!guildId) {
+        return res.status(400).json({ error: "Missing guildId" });
+      }
+
+      const disabled = req.body?.disabled === true;
+      const currentConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
+      const customCategoryPings = writeGuildDisabledToCustomCategoryPings(currentConfig?.customCategoryPings, disabled);
+      await storage.upsertGuildConfig({ guildId, customCategoryPings });
+      const updatedConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
+
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        guildId,
+        config: updatedConfig || { guildId, customCategoryPings },
+        editorId: user.id,
+      });
+
+      res.json({
+        success: true,
+        guildId,
+        disabled,
+        config: updatedConfig || { guildId, customCategoryPings },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || "Failed to update disabled state." });
+    }
   });
 
   app.post("/api/owner/bot-control/turn-on", async (req, res) => {
@@ -1324,7 +1462,10 @@ export async function registerRoutes(
         stdio: "ignore",
       });
       child.unref();
-      writeOwnerBotPid(child.pid);
+      if (typeof child.pid === "number") {
+        writeOwnerBotPid(child.pid);
+      }
+      writeOwnerBotDesiredState("on");
 
       return res.json({ success: true, status: "online", message: "Bot start requested." });
     } catch (e: any) {
@@ -1336,6 +1477,7 @@ export async function registerRoutes(
     if (!requireOwnerAccess(req, res)) return;
 
     try {
+      writeOwnerBotDesiredState("off");
       const pid = readOwnerBotPid();
       if (pid && isPidRunning(pid)) {
         await killOwnerBotPid(pid);
@@ -1515,9 +1657,9 @@ export async function registerRoutes(
         });
       }
 
-      let guildResponse: Response;
-      let channelsResponse: Response;
-      let rolesResponse: Response;
+      let guildResponse: globalThis.Response;
+      let channelsResponse: globalThis.Response;
+      let rolesResponse: globalThis.Response;
 
       try {
         [guildResponse, channelsResponse, rolesResponse] = await Promise.all([

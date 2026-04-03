@@ -8,3 +8,6 @@ vite.config.ts.*
 .env.*
 !.env.example
 .config/
+.owner-guilds.json
+.owner-bot.state
+.owner-bot.pid

@@ -5,6 +5,10 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { readOwnerBotDesiredState } from "./owner-bot-state";
+import fs from "fs";
+import path from "path";
+import { spawn as spawnProcess } from "child_process";
 
 // Import keep_alive side effect (runs on startup)
 // @ts-ignore - keep_alive.js is a plain JS file with no exports
@@ -12,6 +16,7 @@ import("../keep_alive.js").catch(() => {});
 
 const app = express();
 const httpServer = createServer(app);
+const OWNER_BOT_PID_FILE = path.resolve(process.cwd(), ".owner-bot.pid");
 
 declare module "http" {
   interface IncomingMessage {
@@ -38,6 +43,45 @@ export function log(message: string, source = "express") {
   });
 
   console.log(`${formattedTime} [${source}] ${message}`);
+}
+
+function readOwnerBotPid(): number | null {
+  try {
+    const raw = fs.readFileSync(OWNER_BOT_PID_FILE, "utf8").trim();
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startSavedOwnerBotIfNeeded(): void {
+  if (readOwnerBotDesiredState() !== "on") return;
+
+  const existingPid = readOwnerBotPid();
+  if (existingPid && isPidRunning(existingPid)) return;
+
+  try {
+    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+    const child = spawnProcess(npmCmd, ["run", "bot", "--", "--owner-dashboard-managed"], {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    log("restored owner-managed bot state: on", "server");
+  } catch (error: any) {
+    log(`failed to restore owner-managed bot state: ${error?.message || error}`, "server");
+  }
 }
 
 app.use((req, res, next) => {
@@ -121,5 +165,6 @@ app.use((req, res, next) => {
     await startBot();
   } else {
     log("RUN_BOT is not true, skipping Discord bot startup", "server");
+    startSavedOwnerBotIfNeeded();
   }
 })();
