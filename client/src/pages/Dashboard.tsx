@@ -44,8 +44,14 @@ interface GuildConfig {
   playerRosterMessageId?: string | null;
   staffRosterChannelId?: string | null;
   staffRosterMessageId?: string | null;
+  banChannelId?: string | null;
+  unbanChannelId?: string | null;
+  banLogChannelId?: string | null;
+  unbanLogChannelId?: string | null;
   modmailCategoryId?: string | null;
   modmailLogChannelId?: string | null;
+  modmailEmbedMessageId?: string | null;
+  modmailEmbedChannelId?: string | null;
   appealCategoryId?: string | null;
   appealLogChannelId?: string | null;
   quizLogChannelId?: string | null;
@@ -158,6 +164,15 @@ interface MiscActivityItem {
   avatarUrl: string | null;
   action: string;
   source: "audit" | "commands" | "moderation";
+}
+
+interface SnippetItem {
+  id: string;
+  alias: string;
+  content: string;
+  createdById: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
@@ -469,6 +484,14 @@ export default function Dashboard() {
   const [miscActivity, setMiscActivity] = useState<MiscActivityItem[]>([]);
   const [miscOverviewLoading, setMiscOverviewLoading] = useState(false);
   const [miscOverviewError, setMiscOverviewError] = useState<string | null>(null);
+  const [snippetItems, setSnippetItems] = useState<SnippetItem[]>([]);
+  const [snippetLoading, setSnippetLoading] = useState(false);
+  const [snippetSaving, setSnippetSaving] = useState(false);
+  const [snippetDeleteConfirm, setSnippetDeleteConfirm] = useState<string | null>(null);
+  const [snippetAliasInput, setSnippetAliasInput] = useState("");
+  const [snippetContentInput, setSnippetContentInput] = useState("");
+  const [snippetEditingAlias, setSnippetEditingAlias] = useState<string | null>(null);
+  const [postingFeatureEmbed, setPostingFeatureEmbed] = useState<string | null>(null);
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
   const [rosterEmbedModalMode, setRosterEmbedModalMode] = useState<"create" | "edit">("create");
@@ -1082,10 +1105,99 @@ export default function Dashboard() {
     setMiscOverviewLoading(false);
   };
 
+  const loadSnippets = async (guildId: string | null = selectedGuild) => {
+    if (!guildId) return;
+    setSnippetLoading(true);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/snippets`, undefined, 12000);
+      setSnippetItems(
+        (Array.isArray(data?.snippets) ? data.snippets : [])
+          .slice()
+          .sort((a: SnippetItem, b: SnippetItem) => a.alias.localeCompare(b.alias))
+      );
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to load snippets.", variant: "destructive" });
+    }
+    setSnippetLoading(false);
+  };
+
+  const saveSnippet = async () => {
+    if (!selectedGuild) return;
+    const alias = snippetAliasInput.trim().toLowerCase().replace(/\s+/g, "-");
+    const content = snippetContentInput.trim();
+
+    if (!alias) {
+      toast({ title: "Alias required", description: "Enter a snippet alias.", variant: "destructive" });
+      return;
+    }
+    if (!content) {
+      toast({ title: "Content required", description: "Enter snippet content.", variant: "destructive" });
+      return;
+    }
+
+    setSnippetSaving(true);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/snippets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alias, content }),
+      });
+      setSnippetItems((prev) => {
+        const next = [...prev.filter((item) => item.alias !== alias), data.snippet];
+        return next.sort((a, b) => a.alias.localeCompare(b.alias));
+      });
+      setSnippetAliasInput("");
+      setSnippetContentInput("");
+      setSnippetEditingAlias(null);
+      toast({ title: snippetEditingAlias ? "Snippet updated" : "Snippet created", description: `/${alias} is ready to use.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to save snippet.", variant: "destructive" });
+    }
+    setSnippetSaving(false);
+  };
+
+  const deleteSnippet = async (alias: string) => {
+    if (!selectedGuild) return;
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/snippets/${encodeURIComponent(alias)}`, { method: "DELETE" });
+      setSnippetItems((prev) => prev.filter((item) => item.alias !== alias));
+      setSnippetDeleteConfirm(null);
+      if (snippetEditingAlias === alias) {
+        setSnippetEditingAlias(null);
+        setSnippetAliasInput("");
+        setSnippetContentInput("");
+      }
+      toast({ title: "Snippet deleted", description: `/${alias} was removed.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to delete snippet.", variant: "destructive" });
+    }
+  };
+
+  const postFeatureEmbed = async (featureKey: "modmail") => {
+    if (!selectedGuild) return;
+    setPostingFeatureEmbed(featureKey);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/feature-embeds/${featureKey}/post`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }, 15000);
+      toast({ title: "Embed posted", description: `Posted in <#${data.channelId}>.` });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to post embed.", variant: "destructive" });
+    }
+    setPostingFeatureEmbed(null);
+  };
+
   useEffect(() => {
     if (!selectedGuild || activePrimaryTab !== "miscellaneous") return;
     loadMiscOverview(selectedGuild);
   }, [selectedGuild, activePrimaryTab]);
+
+  useEffect(() => {
+    if (!selectedGuild || moduleRouteParams?.moduleId !== "snippets") return;
+    loadSnippets(selectedGuild);
+  }, [selectedGuild, moduleRouteParams?.moduleId]);
 
   const createRoleSync = async () => {
     if (!selectedGuild) return;
@@ -1930,7 +2042,12 @@ export default function Dashboard() {
               </div>
               <Separator />
               <div>
-                <h3 className="mb-3 text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Ticket Embed</h3>
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Ticket Embed</h3>
+                  <Button size="sm" variant="outline" disabled={postingFeatureEmbed === "modmail"} onClick={() => postFeatureEmbed("modmail")}>
+                    {postingFeatureEmbed === "modmail" ? "Posting…" : "Post Configured Embed"}
+                  </Button>
+                </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label>Modmail Embed Title</Label>
@@ -1941,6 +2058,7 @@ export default function Dashboard() {
                     <Textarea value={config.modmailEmbedDescription || ""} onChange={(event) => updateConfig("modmailEmbedDescription", event.target.value)} />
                   </div>
                 </div>
+                <p className="mt-2 text-xs text-muted-foreground">Uses the last saved modmail embed channel from setup and refreshes it with your current dashboard settings.</p>
               </div>
               <Separator />
               <div className="space-y-3">
@@ -2451,7 +2569,7 @@ export default function Dashboard() {
             <div className="space-y-6">
               <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
                 <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
-                <p className="mt-2 text-xs text-muted-foreground">Snippets are managed entirely from Discord. Roles with snippet access can create and use them in modmail:</p>
+                <p className="mt-2 text-xs text-muted-foreground">You can now manage snippets here in the dashboard too. Discord commands still work as backups:</p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Badge variant="outline">/add_snippet</Badge>
                   <Badge variant="outline">/delete_snippet</Badge>
@@ -2460,6 +2578,115 @@ export default function Dashboard() {
                 </div>
               </div>
               {renderRoleSection("Snippet Roles", "snippetRoleIds", "module-settings-snippet-role")}
+              <Separator />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Snippet Manager</h3>
+                    <p className="mt-1 text-xs text-muted-foreground">Create, edit, and delete quick replies used in modmail.</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => loadSnippets()} disabled={snippetLoading}>
+                    {snippetLoading ? "Refreshing…" : "Refresh"}
+                  </Button>
+                </div>
+
+                <div className="rounded-md border border-border/60 bg-muted/10 p-3 space-y-3">
+                  <p className="text-xs font-medium text-muted-foreground">{snippetEditingAlias ? `Editing /${snippetEditingAlias}` : "Add New Snippet"}</p>
+                  <div className="grid gap-3 md:grid-cols-[220px,1fr]">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Alias</Label>
+                      <Input
+                        placeholder="e.g. rules"
+                        value={snippetAliasInput}
+                        onChange={(event) => setSnippetAliasInput(event.target.value.toLowerCase())}
+                        disabled={!!snippetEditingAlias}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Snippet Content</Label>
+                      <Textarea
+                        placeholder="Type the quick reply message here..."
+                        value={snippetContentInput}
+                        onChange={(event) => setSnippetContentInput(event.target.value)}
+                        className="min-h-[96px]"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" onClick={saveSnippet} disabled={snippetSaving}>
+                      {snippetSaving ? "Saving…" : snippetEditingAlias ? "Update Snippet" : "Create Snippet"}
+                    </Button>
+                    {snippetEditingAlias && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setSnippetEditingAlias(null);
+                          setSnippetAliasInput("");
+                          setSnippetContentInput("");
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                {snippetLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading snippets…</p>
+                ) : snippetItems.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No snippets yet. Create one above to get started.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {snippetItems.map((snippet) => (
+                      <div key={snippet.id} className="rounded-md border border-border/60 bg-muted/20 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline">/{snippet.alias}</Badge>
+                              <span className="text-[11px] text-muted-foreground">Updated {new Date(snippet.updatedAt).toLocaleString()}</span>
+                            </div>
+                            <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{snippet.content}</p>
+                          </div>
+                          <div className="flex gap-1 shrink-0">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => {
+                                setSnippetEditingAlias(snippet.alias);
+                                setSnippetAliasInput(snippet.alias);
+                                setSnippetContentInput(snippet.content);
+                              }}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            {snippetDeleteConfirm === snippet.alias ? (
+                              <>
+                                <Button variant="destructive" size="icon" className="h-7 w-7" onClick={() => deleteSnippet(snippet.alias)}>
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSnippetDeleteConfirm(null)}>
+                                  <X className="h-3.5 w-3.5" />
+                                </Button>
+                              </>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-destructive hover:text-destructive"
+                                onClick={() => setSnippetDeleteConfirm(snippet.alias)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -3906,6 +4133,8 @@ export default function Dashboard() {
 
                     {miscOverviewLoading ? (
                       <p className="text-sm text-muted-foreground">Loading banned members…</p>
+                    ) : miscOverviewError ? (
+                      <p className="text-sm text-muted-foreground">Start the bot to load the live ban list for this server.</p>
                     ) : miscBans.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No banned members found for this server.</p>
                     ) : (
@@ -3939,6 +4168,8 @@ export default function Dashboard() {
                   <CardContent>
                     {miscOverviewLoading ? (
                       <p className="text-sm text-muted-foreground">Loading recent activity…</p>
+                    ) : miscOverviewError ? (
+                      <p className="text-sm text-muted-foreground">Start the bot to view live audit and command activity here.</p>
                     ) : miscActivity.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No recent activity was found yet.</p>
                     ) : (

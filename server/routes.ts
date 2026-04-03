@@ -7,7 +7,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { spawn as spawnProcess, execFile as execFileAsync } from "child_process";
-import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, AuditLogEvent } from "discord.js";
+import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, AuditLogEvent, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } from "discord.js";
 import { db } from "./sql";
 import { promisify } from "util";
 import { readOwnerGuildSnapshot } from "./owner-guild-snapshot";
@@ -211,6 +211,42 @@ function getDiscordRedirectUri(req?: Request): string {
 function getCurrentUser(req: Request): DashboardSessionUser | null {
   const token = parseCookie(req, AUTH_COOKIE_NAME);
   return verifySession(token);
+}
+
+function getDiscordBotToken(): string | null {
+  const token = String(process.env.DISCORD_BOT_TOKEN || "").trim();
+  return token || null;
+}
+
+async function discordBotApiRequest<T = any>(pathname: string, init?: RequestInit): Promise<T> {
+  const token = getDiscordBotToken();
+  if (!token) {
+    throw new Error("DISCORD_BOT_TOKEN is not configured.");
+  }
+
+  const response = await fetch(`https://discord.com/api/v10${pathname}`, {
+    method: init?.method || "GET",
+    headers: {
+      Authorization: `Bot ${token}`,
+      "Content-Type": "application/json",
+      ...(init?.headers || {}),
+    },
+    body: init?.body,
+  });
+
+  const rawText = await response.text().catch(() => "");
+  const payload = rawText ? JSON.parse(rawText) : null;
+  if (!response.ok) {
+    throw new Error(String((payload as any)?.message || `Discord API request failed (HTTP ${response.status})`));
+  }
+
+  return payload as T;
+}
+
+function buildDiscordAvatarUrl(userId: string | null | undefined, avatarHash: string | null | undefined): string | null {
+  if (!userId || !avatarHash) return null;
+  const extension = avatarHash.startsWith("a_") ? "gif" : "png";
+  return `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.${extension}?size=64`;
 }
 
 function readOwnerBotPid(): number | null {
@@ -1769,16 +1805,12 @@ export async function registerRoutes(
       if (!auth) return;
       const { guildId } = auth;
 
-      if (!client.isReady()) {
+      const config = await storage.getGuildConfig(guildId);
+      const hasBotToken = !!getDiscordBotToken();
+      const canUseGatewayClient = client.isReady();
+      if (!hasBotToken && !canUseGatewayClient) {
         return res.json({ bans: [], activity: [], unavailableReason: "Bot is offline right now." });
       }
-
-      const guild = await client.guilds.fetch(guildId).catch(() => null);
-      if (!guild) {
-        return res.json({ bans: [], activity: [], unavailableReason: "Bot is not in this server or cannot access it." });
-      }
-
-      const config = await storage.getGuildConfig(guildId);
       const cleanText = (value: unknown) => String(value || "")
         .replace(/`/g, "")
         .replace(/\*\*/g, "")
@@ -1847,15 +1879,20 @@ export async function registerRoutes(
       const collectChannelActivity = async (channelId: string | null | undefined, source: "commands" | "moderation") => {
         if (!channelId) return [] as Array<{ id: string; timestamp: string; userId: string | null; username: string; avatarUrl: string | null; action: string; source: "commands" | "moderation" }>;
 
-        const channel = await client.channels.fetch(channelId).catch(() => null);
-        if (!channel || !("messages" in channel)) return [] as Array<{ id: string; timestamp: string; userId: string | null; username: string; avatarUrl: string | null; action: string; source: "commands" | "moderation" }>;
-
-        const messages = await (channel as any).messages.fetch({ limit: 20 }).catch(() => null);
-        if (!messages) return [] as Array<{ id: string; timestamp: string; userId: string | null; username: string; avatarUrl: string | null; action: string; source: "commands" | "moderation" }>;
+        let messages: any[] = [];
+        if (hasBotToken) {
+          messages = await discordBotApiRequest<any[]>(`/channels/${channelId}/messages?limit=20`).catch(() => []);
+        } else if (canUseGatewayClient) {
+          const channel = await client.channels.fetch(channelId).catch(() => null);
+          if (channel && "messages" in channel) {
+            const fetched = await (channel as any).messages.fetch({ limit: 20 }).catch(() => null);
+            messages = fetched ? Array.from((fetched as any).values()) as any[] : [];
+          }
+        }
 
         const items = [] as Array<{ id: string; timestamp: string; userId: string | null; username: string; avatarUrl: string | null; action: string; source: "commands" | "moderation" }>;
-        for (const message of Array.from(messages.values())) {
-          const embed = message.embeds?.[0];
+        for (const message of messages) {
+          const embed = Array.isArray(message.embeds) ? message.embeds[0] : undefined;
           const userField = embed?.fields?.find((field: any) => /^(user|moderator)$/i.test(String(field?.name || "")));
           const commandField = embed?.fields?.find((field: any) => /^command$/i.test(String(field?.name || "")));
           const optionsField = embed?.fields?.find((field: any) => /^options$/i.test(String(field?.name || "")));
@@ -1863,7 +1900,7 @@ export async function registerRoutes(
           const userFieldValue = String(userField?.value || "");
           const userId = userFieldValue.match(/<@!?(\d+)>/)?.[1] || null;
           const username = userFieldValue.match(/\(([^)]+)\)/)?.[1] || cleanText(userFieldValue.replace(/<@!?(\d+)>/g, "")) || "Unknown";
-          const cachedUser = userId ? client.users.cache.get(userId) : null;
+          const cachedUser = userId && canUseGatewayClient ? client.users.cache.get(userId) : null;
           const avatarUrl = cachedUser?.displayAvatarURL?.({ size: 64 }) || null;
 
           let action = cleanText(embed?.title || embed?.description || message.content || "Logged activity");
@@ -1877,7 +1914,7 @@ export async function registerRoutes(
 
           items.push({
             id: `${source}-${message.id}`,
-            timestamp: message.createdAt?.toISOString?.() || new Date().toISOString(),
+            timestamp: String(message.createdAt?.toISOString?.() || message.timestamp || new Date().toISOString()),
             userId,
             username,
             avatarUrl,
@@ -1890,34 +1927,46 @@ export async function registerRoutes(
       };
 
       const [banCollection, auditLogs, commandActivity, moderationActivity] = await Promise.all([
-        guild.bans.fetch().catch(() => null),
-        guild.fetchAuditLogs({ limit: 20 }).catch(() => null),
+        hasBotToken
+          ? discordBotApiRequest<any[]>(`/guilds/${guildId}/bans?limit=1000`).catch(() => [])
+          : Promise.resolve([]),
+        hasBotToken
+          ? discordBotApiRequest<any>(`/guilds/${guildId}/audit-logs?limit=20`).catch(() => null)
+          : Promise.resolve(null),
         collectChannelActivity(config?.commandLogChannelId, "commands"),
         collectChannelActivity(config?.modLogChannelId, "moderation"),
       ]);
 
-      const bans = banCollection
-        ? Array.from(banCollection.values())
+      const bans = Array.isArray(banCollection)
+        ? banCollection
             .map((ban: any) => ({
               userId: String(ban.user?.id || ""),
-              username: String(ban.user?.username || ban.user?.tag || "Unknown User"),
-              avatarUrl: ban.user?.displayAvatarURL?.({ size: 64 }) || null,
+              username: String(ban.user?.username || ban.user?.global_name || ban.user?.tag || "Unknown User"),
+              avatarUrl: buildDiscordAvatarUrl(String(ban.user?.id || ""), ban.user?.avatar || null),
               reason: ban.reason ? String(ban.reason) : null,
             }))
             .filter((ban) => ban.userId)
             .sort((a, b) => a.username.localeCompare(b.username))
         : [];
 
-      const auditActivity = auditLogs
-        ? Array.from(auditLogs.entries.values()).map((entry: any) => ({
-            id: `audit-${entry.id}`,
-            timestamp: new Date(entry.createdTimestamp || Date.now()).toISOString(),
-            userId: entry.executor?.id ? String(entry.executor.id) : null,
-            username: entry.executor?.username ? String(entry.executor.username) : "Unknown",
-            avatarUrl: entry.executor?.displayAvatarURL?.({ size: 64 }) || null,
-            action: formatAuditAction(entry),
-            source: "audit" as const,
-          }))
+      const auditActivity = Array.isArray(auditLogs?.audit_log_entries)
+        ? auditLogs.audit_log_entries.map((entry: any) => {
+            const executor = Array.isArray(auditLogs?.users)
+              ? auditLogs.users.find((user: any) => String(user?.id || "") === String(entry?.user_id || ""))
+              : null;
+            const target = Array.isArray(auditLogs?.users)
+              ? auditLogs.users.find((user: any) => String(user?.id || "") === String(entry?.target_id || ""))
+              : null;
+            return {
+              id: `audit-${entry.id}`,
+              timestamp: new Date(entry.id ? Number((BigInt(entry.id) >> 22n) + 1420070400000n) : Date.now()).toISOString(),
+              userId: executor?.id ? String(executor.id) : null,
+              username: executor?.username ? String(executor.username) : "Unknown",
+              avatarUrl: buildDiscordAvatarUrl(executor?.id ? String(executor.id) : null, executor?.avatar || null),
+              action: formatAuditAction({ action: Number(entry?.action_type), target }),
+              source: "audit" as const,
+            };
+          })
         : [];
 
       const activity = [...auditActivity, ...commandActivity, ...moderationActivity]
@@ -1926,6 +1975,154 @@ export async function registerRoutes(
         .slice(0, 40);
 
       res.json({ bans, activity });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/guilds/:guildId/snippets", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const snippets = await storage.getAllSnippets(guildId);
+      res.json({ snippets });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/snippets", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+
+      const alias = String(req.body?.alias || "").trim().toLowerCase();
+      const content = String(req.body?.content || "").trim();
+      if (!alias) return res.status(400).json({ error: "Snippet alias is required." });
+      if (!content) return res.status(400).json({ error: "Snippet content is required." });
+
+      const existing = await storage.getSnippet(guildId, alias);
+      const snippet = existing
+        ? await storage.updateSnippet(guildId, alias, content)
+        : await storage.createSnippet({ guildId, alias, content, createdById: user.id });
+
+      if (!snippet) return res.status(500).json({ error: "Failed to save snippet." });
+      res.json({ success: true, snippet });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/snippets/:alias", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const alias = String(req.params.alias || "").trim().toLowerCase();
+      if (!alias) return res.status(400).json({ error: "Snippet alias is required." });
+
+      await storage.deleteSnippet(guildId, alias);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/feature-embeds/:featureKey/post", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+      const featureKey = String(req.params.featureKey || "").trim().toLowerCase();
+      const hasBotToken = !!getDiscordBotToken();
+
+      if (!hasBotToken && !client.isReady()) {
+        return res.status(503).json({ error: "Bot token is not available, so the dashboard cannot post embeds right now." });
+      }
+
+      const config = await storage.getGuildConfig(guildId);
+      let targetChannelId = String(req.body?.channelId || "").trim();
+      let messagePayload: any = null;
+
+      if (featureKey === "modmail") {
+        targetChannelId = targetChannelId || String(config?.modmailEmbedChannelId || "").trim();
+        if (!targetChannelId) {
+          return res.status(400).json({ error: "No modmail embed channel has been saved yet. Post it once after setup so the dashboard can refresh it." });
+        }
+
+        const embedTitle = config?.modmailEmbedTitle || "Support Tickets";
+        const embedDescription = config?.modmailEmbedDescription || "Select a category below to create a ticket.";
+        const ticketEmbed = new EmbedBuilder()
+          .setTitle(embedTitle)
+          .setDescription(embedDescription)
+          .setColor(0x2f3136);
+
+        let customCategories: { id: string; label: string; description: string; emoji?: string; modalQuestions?: string[] }[] = [];
+        if (config?.customModmailCategories) {
+          try {
+            customCategories = JSON.parse(config.customModmailCategories);
+          } catch {
+            customCategories = [];
+          }
+        }
+
+        const builtInCategories = [
+          { id: "general", label: "General Inquiries", description: "General questions or support", emoji: "📥" },
+          { id: "competitive", label: "Apply For Competitive", description: "Apply to join the competitive team", emoji: "🖥️" },
+          { id: "contentcreator", label: "Apply For Content Creator", description: "Apply to become a content creator", emoji: "📷" },
+          { id: "report", label: "User Reports", description: "Report a user", emoji: "🚨" },
+          { id: "partnerships", label: "Partnerships", description: "Partnership inquiries", emoji: "📋" },
+        ];
+
+        const categoriesToUse = customCategories.length > 0 ? customCategories : builtInCategories;
+        const options = categoriesToUse.map((cat) => {
+          const hasModal = "modalQuestions" in cat && Array.isArray(cat.modalQuestions) && cat.modalQuestions.length > 0;
+          const option = new StringSelectMenuOptionBuilder()
+            .setLabel(String(cat.label || "Category").slice(0, 100))
+            .setDescription(String(cat.description || "Open a ticket").slice(0, 100))
+            .setValue(hasModal ? `${cat.id}::modal` : String(cat.id || "general"));
+          if (cat.emoji) option.setEmoji(cat.emoji);
+          return option;
+        });
+
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId(`ticket_select_${guildId}`)
+          .setPlaceholder("Select a ticket category...")
+          .addOptions(options);
+
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+        messagePayload = { embeds: [ticketEmbed], components: [row] };
+      } else {
+        return res.status(400).json({ error: "That embed type is not supported yet from the dashboard." });
+      }
+
+      const sentMessage = hasBotToken
+        ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages`, {
+            method: "POST",
+            body: JSON.stringify({
+              embeds: (messagePayload?.embeds || []).map((embed: any) => typeof embed?.toJSON === "function" ? embed.toJSON() : embed),
+              components: (messagePayload?.components || []).map((component: any) => typeof component?.toJSON === "function" ? component.toJSON() : component),
+            }),
+          })
+        : await (async () => {
+            const channel = await client.channels.fetch(targetChannelId).catch(() => null);
+            if (!channel || !("send" in channel)) {
+              throw new Error("Could not access the target channel.");
+            }
+            return await (channel as any).send(messagePayload);
+          })();
+
+      if (featureKey === "modmail") {
+        await storage.upsertGuildConfig({
+          guildId,
+          modmailEmbedChannelId: targetChannelId,
+          modmailEmbedMessageId: sentMessage.id,
+        });
+      }
+
+      res.json({ success: true, channelId: targetChannelId, messageId: sentMessage.id });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
