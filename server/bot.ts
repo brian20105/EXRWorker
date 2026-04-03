@@ -275,6 +275,7 @@ function extractGuildIdFromInteractionCustomId(customId: string | null | undefin
     "appeal_start_",
     "start_staff_application_",
     "start_quiz_",
+    "terminate_quizzes_",
     "request_inactivity_",
     "inactivity_submit_",
     "config_modmail_modal_",
@@ -3037,6 +3038,12 @@ async function sendQuizQuestion(userId: string, dmChannel: any, isFirst: boolean
   if (!quizState) return;
 
   const config = await storage.getGuildConfig(quizState.guildId);
+  if (!isDashboardFeatureEnabled(config, "quiz")) {
+    activeQuizzes.delete(userId);
+    await dmChannel.send({ content: DISABLED_MESSAGE }).catch(() => {});
+    return;
+  }
+
   const questions = getQuizQuestions(config);
   const question = questions[quizState.currentQuestion];
 
@@ -3061,10 +3068,16 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
   const quizState = activeQuizzes.get(userId);
   if (!quizState) return;
 
+  const config = await storage.getGuildConfig(quizState.guildId);
+  if (!isDashboardFeatureEnabled(config, "quiz")) {
+    activeQuizzes.delete(userId);
+    await dmChannel.send({ content: DISABLED_MESSAGE }).catch(() => {});
+    return;
+  }
+
   quizState.answers.push(answer);
   quizState.currentQuestion++;
 
-  const config = await storage.getGuildConfig(quizState.guildId);
   const questions = getQuizQuestions(config);
 
     if (quizState.currentQuestion < questions.length) {
@@ -3145,6 +3158,26 @@ async function processQuizAnswer(userId: string, answer: string, dmChannel: any)
       content: "✅ Thank you for completing the quiz! Your submission has been sent for review. You will receive a DM once it has been reviewed.",
     });
   }
+}
+
+async function terminateQuizSessions(initiatedByUserId?: string): Promise<number> {
+  const sessions = Array.from(activeQuizzes.entries());
+  const count = sessions.length;
+
+  for (const [userId] of sessions) {
+    try {
+      const user = await client.users.fetch(userId);
+      const reason = initiatedByUserId
+        ? ` by <@${initiatedByUserId}>`
+        : " by an administrator";
+      await user.send(`⚠️ Your quiz session has been terminated${reason}. Please start a new quiz if you wish to continue.`);
+    } catch {
+      // Ignore DM failures
+    }
+  }
+
+  activeQuizzes.clear();
+  return count;
 }
 
 async function sendStaffApplicationQuestion(userId: string, dmChannel: any, isFirst = false): Promise<void> {
@@ -7662,7 +7695,12 @@ client.on("interactionCreate", async (interaction) => {
             .setCustomId(`start_quiz_${interaction.guildId}`)
             .setLabel("Start Quiz")
             .setStyle(ButtonStyle.Primary)
-            .setEmoji("📝")
+            .setEmoji("📝"),
+          new ButtonBuilder()
+            .setCustomId(`terminate_quizzes_${interaction.guildId}`)
+            .setLabel("Terminate Quiz")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("✖️")
         );
 
         if (interaction.channel && "send" in interaction.channel) {
@@ -8040,20 +8078,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       } else if (commandName === "terminate_quizzes") {
         if (!await safeDeferReply(interaction)) return;
-
-        const count = activeQuizzes.size;
-
-        // Send termination message to all active quiz users
-        for (const [userId, quizState] of Array.from(activeQuizzes.entries())) {
-          try {
-            const user = await client.users.fetch(userId);
-            await user.send("⚠️ Your quiz session has been terminated by an administrator. Please start a new quiz if you wish to continue.");
-          } catch (error) {
-            console.log(`Could not DM user ${userId} about quiz termination`);
-          }
-        }
-
-        activeQuizzes.clear();
+        const count = await terminateQuizSessions(interaction.user.id);
 
         await interaction.editReply({
           content: `✅ Terminated ${count} active quiz session${count !== 1 ? "s" : ""}.`,
@@ -13752,6 +13777,12 @@ client.on("interactionCreate", async (interaction) => {
         console.log(`[QUIZ START] Processing quiz start for user ${user.id}`);
 
         try {
+          const config = await storage.getGuildConfig(guildId).catch(() => undefined);
+          if (!isDashboardFeatureEnabled(config, "quiz")) {
+            await interaction.editReply({ content: DISABLED_MESSAGE });
+            return;
+          }
+
           activeQuizzes.set(user.id, {
             guildId,
             currentQuestion: 0,
@@ -13797,6 +13828,43 @@ client.on("interactionCreate", async (interaction) => {
           // Clean up after a short delay to allow for double-click protection
           setTimeout(() => processingQuizStart.delete(user.id), 5000);
         }
+        return;
+      } else if (interaction.customId.startsWith("terminate_quizzes_")) {
+        try {
+          if (!await safeDeferReply(interaction)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+
+        const member = interaction.member;
+        const memberPermissions = member && "permissions" in member
+          ? (typeof member.permissions === "string" ? member.permissions : member.permissions?.bitfield)
+          : undefined;
+
+        const permBits = typeof memberPermissions === "string"
+          ? BigInt(memberPermissions)
+          : (memberPermissions ?? BigInt(0));
+        const ADMINISTRATOR = BigInt(1) << BigInt(3);
+        const isAdmin = (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+
+        if (!isAdmin) {
+          await interaction.editReply({ content: "❌ You need Administrator permission to terminate quiz sessions." });
+          return;
+        }
+
+        const guildConfig = interaction.guildId
+          ? await storage.getGuildConfig(interaction.guildId).catch(() => undefined)
+          : undefined;
+        if (!isDashboardFeatureEnabled(guildConfig, "quiz")) {
+          await interaction.editReply({ content: DISABLED_MESSAGE });
+          return;
+        }
+
+        const count = await terminateQuizSessions(interaction.user.id);
+        await interaction.editReply({
+          content: `✅ Terminated ${count} active quiz session${count !== 1 ? "s" : ""}.`,
+        });
         return;
       } else if (interaction.customId.startsWith("request_inactivity_")) {
         const guildId = interaction.customId.replace("request_inactivity_", "");
@@ -13997,6 +14065,14 @@ client.on("interactionCreate", async (interaction) => {
         });
         return;
       } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
+        if (interaction.guildId) {
+          const guildConfig = await storage.getGuildConfig(interaction.guildId).catch(() => undefined);
+          if (!isDashboardFeatureEnabled(guildConfig, "quiz")) {
+            await respondInteractionDisabled(interaction);
+            return;
+          }
+        }
+
         const isApprove = interaction.customId.startsWith("quiz_approve_");
         const submissionId = interaction.customId.replace(isApprove ? "quiz_approve_" : "quiz_deny_", "");
 
@@ -17210,6 +17286,12 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        const guildConfig = await storage.getGuildConfig(submission.guildId).catch(() => undefined);
+        if (!isDashboardFeatureEnabled(guildConfig, "quiz")) {
+          await interaction.editReply({ content: DISABLED_MESSAGE });
+          return;
+        }
+
         await storage.updateStaffIntroSubmission(submissionId, {
           status: action === "approve" ? "approved" : "denied",
           reviewedById: interaction.user.id,
@@ -20339,6 +20421,13 @@ client.on("messageCreate", async (message) => {
     // Check for active quiz first
     const quizState = activeQuizzes.get(message.author.id);
     if (quizState) {
+      const quizConfig = await storage.getGuildConfig(quizState.guildId).catch(() => undefined);
+      if (!isDashboardFeatureEnabled(quizConfig, "quiz")) {
+        activeQuizzes.delete(message.author.id);
+        await message.reply(DISABLED_MESSAGE).catch(() => {});
+        return;
+      }
+
       if (await isGuildCurrentlyDisabled(quizState.guildId)) {
         await message.reply(DISABLED_MESSAGE).catch(() => {});
         return;
