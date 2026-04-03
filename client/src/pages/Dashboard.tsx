@@ -186,9 +186,51 @@ interface BotFeatureModule {
   id: string;
   name: string;
   description: string;
+  area: FeatureAreaKey;
+  includes: string[];
   tab: SettingsTabKey;
   enabled: boolean;
 }
+
+type FeatureAreaKey =
+  | "support"
+  | "applications"
+  | "operations"
+  | "permissions"
+  | "messaging"
+  | "advanced"
+  | "logging";
+
+const FEATURE_AREA_META: Record<FeatureAreaKey, { title: string; description: string }> = {
+  support: {
+    title: "Support & Tickets",
+    description: "Ticket handling, appeal workflows, and request intake channels.",
+  },
+  applications: {
+    title: "Applications & Onboarding",
+    description: "Staff applications, intro quiz journeys, and submission pipelines.",
+  },
+  operations: {
+    title: "Operations",
+    description: "Daily staff tooling for payouts, inactivity requests, and automation.",
+  },
+  permissions: {
+    title: "Permissions & Access",
+    description: "Role-based access control for commands and operational actions.",
+  },
+  messaging: {
+    title: "Embeds & Messaging",
+    description: "User-facing embed templates, wording, and visual presentation.",
+  },
+  advanced: {
+    title: "Advanced Behavior",
+    description: "Custom category mappings and advanced server-specific behavior.",
+  },
+  logging: {
+    title: "Logging & Audit",
+    description: "Moderation and command-level logging, plus quiz/staff tracking visibility.",
+  },
+};
 
 const GUILD_ROLE_CONFIG_KEYS: Array<keyof GuildConfig> = [
   "allowedRoleIds",
@@ -1313,7 +1355,7 @@ export default function Dashboard() {
     modmail: !!(guildConfig.modmailCategoryId || guildConfig.modmailLogChannelId),
     appeals: !!(guildConfig.appealCategoryId || guildConfig.appealLogChannelId),
     payouts: !!(guildConfig.requestChannelId || guildConfig.logChannelId),
-    moderation: !!guildConfig.modLogChannelId,
+    moderation: !!(guildConfig.modLogChannelId || guildConfig.commandLogChannelId),
     quiz: !!guildConfig.quizLogChannelId,
     "staff-intro": !!(guildConfig.staffIntroChannelId || guildConfig.staffIntroSubmissionsChannelId),
     inactivity: !!(
@@ -1653,60 +1695,80 @@ export default function Dashboard() {
       id: "modmail",
       name: "Modmail",
       description: "Ticket intake and staff response system.",
+      area: "support",
+      includes: ["Ticket category", "Log channel", "Staff roles", "Claims", "Blocks"],
       tab: "channels",
     },
     {
       id: "appeals",
       name: "Appeals",
       description: "Appeal workflows with dedicated channels and staff.",
+      area: "support",
+      includes: ["Appeal category", "Appeal log", "Appeal staff roles", "Claim & close flow"],
       tab: "channels",
     },
     {
       id: "payouts",
       name: "Payout Requests",
       description: "Payout intake and logging channels.",
+      area: "operations",
+      includes: ["Request channel", "Log channel", "Mass messaging", "Status workflow"],
       tab: "channels",
     },
     {
       id: "moderation",
-      name: "Moderation Logs",
-      description: "Track moderation actions in a configured log channel.",
+      name: "Moderation & Command Logs",
+      description: "Track moderation actions and command usage in dedicated channels.",
+      area: "logging",
+      includes: ["Moderation logs", "Command logs", "Audit visibility"],
       tab: "channels",
     },
     {
       id: "quiz",
       name: "Quiz Tracking",
-      description: "Store quiz progress and outcomes in a log channel.",
+      description: "Quiz start/progress/review flow and submission tracking.",
+      area: "applications",
+      includes: ["Quiz log channel", "Quiz submissions", "Approve/deny actions"],
       tab: "channels",
     },
     {
       id: "staff-intro",
       name: "Staff Intro",
       description: "Staff introduction prompts and submission pipeline.",
+      area: "applications",
+      includes: ["Intro embed", "Submissions channel", "Question setup", "Application flow"],
       tab: "channels",
     },
     {
       id: "inactivity",
       name: "Inactivity",
       description: "Inactivity requests, routing, and logging.",
+      area: "operations",
+      includes: ["Request channel", "Submissions", "Inactivity logs", "Approval workflow"],
       tab: "channels",
     },
     {
       id: "permissions",
       name: "Role Permissions",
       description: "Grant feature access with role-based permissions.",
+      area: "permissions",
+      includes: ["Manager roles", "Prefix command roles", "Feature role gates"],
       tab: "roles",
     },
     {
       id: "embeds",
       name: "Embed Templates",
       description: "Customize bot-facing embed messages and titles.",
+      area: "messaging",
+      includes: ["Modmail embeds", "Appeal embeds", "Welcome embed", "Presence text"],
       tab: "embeds",
     },
     {
       id: "advanced",
       name: "Advanced Categories",
       description: "Custom category mappings and advanced bot behavior.",
+      area: "advanced",
+      includes: ["Custom categories", "Category ping JSON", "Modmail routing JSON"],
       tab: "advanced",
     },
   ];
@@ -1720,8 +1782,18 @@ export default function Dashboard() {
   const filteredModules = botFeatureModules.filter((module) => {
     const query = moduleSearch.trim().toLowerCase();
     if (!query) return true;
-    return `${module.name} ${module.description}`.toLowerCase().includes(query);
+    return `${module.name} ${module.description} ${FEATURE_AREA_META[module.area].title} ${module.includes.join(" ")}`
+      .toLowerCase()
+      .includes(query);
   });
+
+  const groupedFeatureModules = (Object.entries(FEATURE_AREA_META) as Array<[FeatureAreaKey, { title: string; description: string }]>)
+    .map(([areaKey, areaMeta]) => ({
+      areaKey,
+      areaMeta,
+      modules: filteredModules.filter((module) => module.area === areaKey),
+    }))
+    .filter((group) => group.modules.length > 0);
 
   const moduleById = botFeatureModules.reduce<Record<string, BotFeatureModule>>((acc, module) => {
     acc[module.id] = module;
@@ -2767,43 +2839,63 @@ export default function Dashboard() {
                     />
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                    {filteredModules.map((module) => (
-                      <div key={module.id} className="rounded-lg border border-border/70 bg-card/40 p-4">
-                        <div className="mb-3 flex items-start justify-between gap-3">
-                          <div>
-                            <p className="font-semibold">{module.name}</p>
-                            <p className="mt-1 text-sm text-muted-foreground">{module.description}</p>
-                          </div>
-                          <Switch
-                            checked={module.enabled}
-                            onCheckedChange={(nextChecked) => setFeatureEnabled(module.id, nextChecked)}
-                            data-testid={`switch-module-${module.id}`}
-                          />
+                  <div className="space-y-5">
+                    {groupedFeatureModules.map((group) => (
+                      <div key={`feature-area-${group.areaKey}`} className="space-y-3">
+                        <div>
+                          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">{group.areaMeta.title}</p>
+                          <p className="mt-1 text-sm text-muted-foreground">{group.areaMeta.description}</p>
                         </div>
-                        <Badge
-                          variant="outline"
-                          style={{
-                            backgroundColor: module.enabled ? DEFAULT_ENABLED_STATUS_COLOR : DEFAULT_DISABLED_STATUS_COLOR,
-                            borderColor: module.enabled ? DEFAULT_ENABLED_STATUS_COLOR : DEFAULT_DISABLED_STATUS_COLOR,
-                            color: getReadableTextColor(module.enabled ? DEFAULT_ENABLED_STATUS_COLOR : DEFAULT_DISABLED_STATUS_COLOR),
-                          }}
-                        >
-                          {module.enabled ? "Enabled" : "Disabled"}
-                        </Badge>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="ml-2"
-                          onClick={() => {
-                            if (!selectedGuild) return;
-                            setLocation(`/dashboard/module/${module.id}?guild=${selectedGuild}`);
-                          }}
-                          data-testid={`button-module-settings-${module.id}`}
-                        >
-                          <Settings className="mr-2 h-3.5 w-3.5" />
-                          Settings
-                        </Button>
+
+                        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                          {group.modules.map((module) => (
+                            <div key={module.id} className="rounded-lg border border-border/70 bg-card/40 p-4">
+                              <div className="mb-3 flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="font-semibold">{module.name}</p>
+                                  <p className="mt-1 text-sm text-muted-foreground">{module.description}</p>
+                                </div>
+                                <Switch
+                                  checked={module.enabled}
+                                  onCheckedChange={(nextChecked) => setFeatureEnabled(module.id, nextChecked)}
+                                  data-testid={`switch-module-${module.id}`}
+                                />
+                              </div>
+
+                              <div className="mb-3 flex flex-wrap gap-1.5">
+                                {module.includes.map((item) => (
+                                  <Badge key={`${module.id}-${item}`} variant="outline" className="text-[11px]">
+                                    {item}
+                                  </Badge>
+                                ))}
+                              </div>
+
+                              <Badge
+                                variant="outline"
+                                style={{
+                                  backgroundColor: module.enabled ? DEFAULT_ENABLED_STATUS_COLOR : DEFAULT_DISABLED_STATUS_COLOR,
+                                  borderColor: module.enabled ? DEFAULT_ENABLED_STATUS_COLOR : DEFAULT_DISABLED_STATUS_COLOR,
+                                  color: getReadableTextColor(module.enabled ? DEFAULT_ENABLED_STATUS_COLOR : DEFAULT_DISABLED_STATUS_COLOR),
+                                }}
+                              >
+                                {module.enabled ? "Enabled" : "Disabled"}
+                              </Badge>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="ml-2"
+                                onClick={() => {
+                                  if (!selectedGuild) return;
+                                  setLocation(`/dashboard/module/${module.id}?guild=${selectedGuild}`);
+                                }}
+                                data-testid={`button-module-settings-${module.id}`}
+                              >
+                                <Settings className="mr-2 h-3.5 w-3.5" />
+                                Settings
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
                   </div>
