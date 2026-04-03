@@ -276,6 +276,7 @@ function extractGuildIdFromInteractionCustomId(customId: string | null | undefin
     "start_staff_application_",
     "start_quiz_",
     "terminate_quizzes_",
+    "quiz_terminate_",
     "request_inactivity_",
     "inactivity_submit_",
     "config_modmail_modal_",
@@ -3059,8 +3060,17 @@ async function sendQuizQuestion(userId: string, dmChannel: any, isFirst: boolean
   }
   await logQuizProgress(quizState.guildId, userId, "question", quizState.currentQuestion + 1);
 
+  const terminateRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`quiz_terminate_${quizState.guildId}`)
+      .setLabel("Terminate Quiz")
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("✖️")
+  );
+
   await dmChannel.send({
     content: content,
+    components: [terminateRow],
   });
 }
 
@@ -13828,6 +13838,25 @@ client.on("interactionCreate", async (interaction) => {
           // Clean up after a short delay to allow for double-click protection
           setTimeout(() => processingQuizStart.delete(user.id), 5000);
         }
+        return;
+      } else if (interaction.customId.startsWith("quiz_terminate_")) {
+        const userId = interaction.user.id;
+        const guildId = interaction.customId.replace("quiz_terminate_", "");
+        const quizState = activeQuizzes.get(userId);
+
+        if (!quizState || quizState.guildId !== guildId) {
+          await interaction.reply({
+            content: "⚠️ There is no active quiz to terminate.",
+            flags: 64,
+          });
+          return;
+        }
+
+        activeQuizzes.delete(userId);
+        await interaction.reply({
+          content: "❌ Your quiz has been terminated. You may start a new quiz at any time.",
+          flags: 64,
+        });
         return;
       } else if (interaction.customId.startsWith("terminate_quizzes_")) {
         try {
