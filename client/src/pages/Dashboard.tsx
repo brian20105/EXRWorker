@@ -1826,50 +1826,125 @@ export default function Dashboard() {
         </CardHeader>
         <CardContent className="space-y-6">
           {moduleId === "modmail" && (
-            <div className="grid gap-4 md:grid-cols-2">
-              {renderChannelSelect("Modmail Category", "modmailCategoryId", categoryChannels, "select-module-modmail-category")}
-              {renderChannelSelect("Modmail Log Channel", "modmailLogChannelId", textChannels, "select-module-modmail-log")}
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Modmail Category", "modmailCategoryId", categoryChannels, "select-module-modmail-category")}
+                {renderChannelSelect("Modmail Log Channel", "modmailLogChannelId", textChannels, "select-module-modmail-log")}
+              </div>
+              <div className="space-y-5">
+                {renderRoleSection("Modmail Staff Roles", "modmailStaffRoleIds", "module-settings-modmail-staff-role")}
+                {renderRoleSection("Modmail Block Roles", "modmailBlockRoleIds", "module-settings-modmail-block-role")}
+                {renderRoleSection("Modmail Claim Roles", "modmailClaimRoleIds", "module-settings-modmail-claim-role")}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Modmail Embed Title</Label>
+                  <Input value={config.modmailEmbedTitle || ""} onChange={(event) => updateConfig("modmailEmbedTitle", event.target.value)} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Modmail Embed Description</Label>
+                  <Textarea value={config.modmailEmbedDescription || ""} onChange={(event) => updateConfig("modmailEmbedDescription", event.target.value)} />
+                </div>
+              </div>
             </div>
           )}
 
           {moduleId === "appeals" && (
-            <div className="grid gap-4 md:grid-cols-2">
-              {renderChannelSelect("Appeal Category", "appealCategoryId", categoryChannels, "select-module-appeal-category")}
-              {renderChannelSelect("Appeal Log Channel", "appealLogChannelId", textChannels, "select-module-appeal-log")}
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Appeal Category", "appealCategoryId", categoryChannels, "select-module-appeal-category")}
+                {renderChannelSelect("Appeal Log Channel", "appealLogChannelId", textChannels, "select-module-appeal-log")}
+              </div>
+              {renderRoleSection("Appeal Staff Roles", "appealStaffRoleIds", "module-settings-appeal-staff-role")}
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Appeal Embed Title</Label>
+                  <Input value={config.appealEmbedTitle || ""} onChange={(event) => updateConfig("appealEmbedTitle", event.target.value)} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Appeal Embed Description</Label>
+                  <Textarea value={config.appealEmbedDescription || ""} onChange={(event) => updateConfig("appealEmbedDescription", event.target.value)} />
+                </div>
+              </div>
             </div>
           )}
 
           {moduleId === "payouts" && (
-            <div className="grid gap-4 md:grid-cols-2">
-              {renderChannelSelect("Payout Request Channel", "requestChannelId", textChannels, "select-module-payout-request")}
-              {renderChannelSelect("Payout Log Channel", "logChannelId", textChannels, "select-module-payout-log")}
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Payout Request Channel", "requestChannelId", textChannels, "select-module-payout-request")}
+                {renderChannelSelect("Payout Log Channel", "logChannelId", textChannels, "select-module-payout-log")}
+                {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-module-payout-command-log")}
+              </div>
+              {renderRoleSection("Payout Approval Roles", "allowedRoleIds", "module-settings-payout-approval-role")}
             </div>
           )}
 
           {moduleId === "moderation" && (
-            <div className="grid gap-4 md:grid-cols-2">
-              {renderChannelSelect("Moderation Log Channel", "modLogChannelId", textChannels, "select-module-mod-log")}
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Moderation Log Channel", "modLogChannelId", textChannels, "select-module-mod-log")}
+                {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-module-command-log")}
+              </div>
+              <div className="space-y-5">
+                {renderRoleSection("Ban/Unban + Kick Approval Roles", "modRoleIds", "module-settings-moderation-role")}
+                {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "module-settings-prefix-ban-role")}
+                {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "module-settings-prefix-mute-role")}
+                {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "module-settings-prefix-kick-role")}
+                {renderPermissionRoleSection("Prefix Modlogs/Clean Roles", "prefixModlogsRoleIds", "module-settings-prefix-modlogs-role")}
+              </div>
             </div>
           )}
 
           {moduleId === "quiz" && (
-            <div className="grid gap-4 md:grid-cols-2">
-              {renderChannelSelect("Quiz Log Channel", "quizLogChannelId", textChannels, "select-module-quiz-log")}
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Quiz Log Channel", "quizLogChannelId", textChannels, "select-module-quiz-log")}
+                {renderChannelSelect("Command Log Channel", "commandLogChannelId", textChannels, "select-module-quiz-command-log")}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Tip: set a command log channel to track quiz start, review, and termination actions.
+              </p>
             </div>
           )}
 
           {moduleId === "staff-intro" && (
-            <div className="grid gap-4 md:grid-cols-2">
-              {renderChannelSelect("Staff Intro Channel", "staffIntroChannelId", textChannels, "select-module-staff-intro")}
-              {renderChannelSelect("Staff Intro Submissions", "staffIntroSubmissionsChannelId", textChannels, "select-module-staff-intro-submissions")}
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Staff Intro Channel", "staffIntroChannelId", textChannels, "select-module-staff-intro")}
+                {renderChannelSelect("Staff Intro Submissions", "staffIntroSubmissionsChannelId", textChannels, "select-module-staff-intro-submissions")}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Staff Intro Embed Title</Label>
+                  <Input value={config.staffIntroEmbedTitle || ""} onChange={(event) => updateConfig("staffIntroEmbedTitle", event.target.value)} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Staff Intro Embed Description</Label>
+                  <Textarea value={config.staffIntroEmbedDescription || ""} onChange={(event) => updateConfig("staffIntroEmbedDescription", event.target.value)} />
+                </div>
+              </div>
             </div>
           )}
 
           {moduleId === "inactivity" && (
-            <div className="grid gap-4 md:grid-cols-2">
-              {renderChannelSelect("Inactivity Channel", "inactivityChannelId", textChannels, "select-module-inactivity")}
-              {renderChannelSelect("Inactivity Submissions", "inactivitySubmissionsChannelId", textChannels, "select-module-inactivity-submissions")}
-              {renderChannelSelect("Inactivity Log Channel", "inactivityLogChannelId", textChannels, "select-module-inactivity-log")}
+            <div className="space-y-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Inactivity Channel", "inactivityChannelId", textChannels, "select-module-inactivity")}
+                {renderChannelSelect("Inactivity Submissions", "inactivitySubmissionsChannelId", textChannels, "select-module-inactivity-submissions")}
+                {renderChannelSelect("Inactivity Log Channel", "inactivityLogChannelId", textChannels, "select-module-inactivity-log")}
+              </div>
+              {renderRoleSection("Inactivity Ping Roles", "inactivityPingRoleIds", "module-settings-inactivity-ping-role")}
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Inactivity Embed Title</Label>
+                  <Input value={config.inactivityEmbedTitle || ""} onChange={(event) => updateConfig("inactivityEmbedTitle", event.target.value)} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Inactivity Embed Description</Label>
+                  <Textarea value={config.inactivityEmbedDescription || ""} onChange={(event) => updateConfig("inactivityEmbedDescription", event.target.value)} />
+                </div>
+              </div>
             </div>
           )}
 
@@ -2013,6 +2088,17 @@ export default function Dashboard() {
 
           {moduleId === "advanced" && (
             <div className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Command Prefix</Label>
+                  <Input
+                    value={config.commandPrefix || "."}
+                    onChange={(event) => updateConfig("commandPrefix", event.target.value)}
+                    placeholder="."
+                    data-testid="input-module-command-prefix"
+                  />
+                </div>
+              </div>
               <div className="space-y-2">
                 <Label>customCategoryPings (JSON object)</Label>
                 <Textarea
