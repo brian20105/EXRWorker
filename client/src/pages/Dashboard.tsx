@@ -156,6 +156,20 @@ interface MiscBanItem {
   reason: string | null;
 }
 
+type MiscBlockSystem = "staff_applications" | "modmail" | "appeal";
+
+interface MiscBlockItem {
+  system: MiscBlockSystem;
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+  blockedById: string | null;
+  blockedByUsername: string | null;
+  blockedByAvatarUrl: string | null;
+  reason: string | null;
+  expiresAt: string | null;
+}
+
 interface MiscActivityItem {
   id: string;
   timestamp: string;
@@ -488,11 +502,19 @@ export default function Dashboard() {
   const [roleSyncTargetRoleSearch, setRoleSyncTargetRoleSearch] = useState("");
   const [roleSyncGuildRoles, setRoleSyncGuildRoles] = useState<Record<string, Role[]>>({});
   const [miscBans, setMiscBans] = useState<MiscBanItem[]>([]);
+  const [miscBlocks, setMiscBlocks] = useState<MiscBlockItem[]>([]);
   const [miscActivity, setMiscActivity] = useState<MiscActivityItem[]>([]);
   const [miscOverviewLoading, setMiscOverviewLoading] = useState(false);
   const [miscOverviewError, setMiscOverviewError] = useState<string | null>(null);
   const [unbanningUserId, setUnbanningUserId] = useState<string | null>(null);
   const [unbanningAllBans, setUnbanningAllBans] = useState(false);
+  const [miscBlockUserIdInput, setMiscBlockUserIdInput] = useState("");
+  const [miscBlockSystem, setMiscBlockSystem] = useState<MiscBlockSystem>("modmail");
+  const [miscBlockDurationValue, setMiscBlockDurationValue] = useState("1");
+  const [miscBlockDurationUnit, setMiscBlockDurationUnit] = useState<"minutes" | "hours" | "days" | "weeks" | "permanent">("days");
+  const [miscBlockReason, setMiscBlockReason] = useState("");
+  const [blockingMiscUser, setBlockingMiscUser] = useState(false);
+  const [unblockingMiscKey, setUnblockingMiscKey] = useState<string | null>(null);
   const [snippetItems, setSnippetItems] = useState<SnippetItem[]>([]);
   const [snippetLoading, setSnippetLoading] = useState(false);
   const [snippetSaving, setSnippetSaving] = useState(false);
@@ -1108,10 +1130,12 @@ export default function Dashboard() {
     try {
       const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview`, undefined, 15000);
       setMiscBans(Array.isArray(data?.bans) ? data.bans : []);
+      setMiscBlocks(Array.isArray(data?.blocks) ? data.blocks : []);
       setMiscActivity(Array.isArray(data?.activity) ? data.activity : []);
       setMiscOverviewError(data?.unavailableReason ? String(data.unavailableReason) : null);
     } catch (e: any) {
       setMiscBans([]);
+      setMiscBlocks([]);
       setMiscActivity([]);
       setMiscOverviewError(e.message || "Failed to load server activity.");
     }
@@ -1149,6 +1173,103 @@ export default function Dashboard() {
       toast({ title: "Error", description: e.message || "Failed to unban all users.", variant: "destructive" });
     }
     setUnbanningAllBans(false);
+  };
+
+  const blockSystemLabels: Record<MiscBlockSystem, string> = {
+    staff_applications: "Staff Applications",
+    modmail: "Modmails",
+    appeal: "Appeals",
+  };
+
+  const formatBlockDurationLabel = (expiresAt: string | null) => {
+    if (!expiresAt) return "Permanent";
+    const expiresMs = new Date(expiresAt).getTime();
+    if (!Number.isFinite(expiresMs)) return "Custom";
+
+    const diffMs = expiresMs - Date.now();
+    if (diffMs <= 0) return `Expired (${new Date(expiresAt).toLocaleString()})`;
+
+    const totalMinutes = Math.max(1, Math.round(diffMs / 60000));
+    if (totalMinutes < 60) return `${totalMinutes} minute(s) remaining`;
+
+    const totalHours = Math.round(totalMinutes / 60);
+    if (totalHours < 48) return `${totalHours} hour(s) remaining`;
+
+    const totalDays = Math.round(totalHours / 24);
+    return `${totalDays} day(s) remaining`;
+  };
+
+  const blockUserFromMisc = async () => {
+    if (!selectedGuild) return;
+
+    const userId = miscBlockUserIdInput.trim();
+    const reason = miscBlockReason.trim();
+    if (!/^\d{17,20}$/.test(userId)) {
+      toast({ title: "User ID required", description: "Enter a valid Discord user ID.", variant: "destructive" });
+      return;
+    }
+    if (!reason) {
+      toast({ title: "Reason required", description: "Enter a reason for the block.", variant: "destructive" });
+      return;
+    }
+    if (miscBlockDurationUnit !== "permanent") {
+      const amount = Number(miscBlockDurationValue);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        toast({ title: "Duration required", description: "Enter a valid duration amount.", variant: "destructive" });
+        return;
+      }
+    }
+
+    setBlockingMiscUser(true);
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/blocks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId,
+          system: miscBlockSystem,
+          duration: miscBlockDurationUnit === "permanent" ? null : Number(miscBlockDurationValue),
+          timeUnit: miscBlockDurationUnit,
+          reason,
+        }),
+      }, 15000);
+      toast({ title: "User blocked", description: `Updated ${blockSystemLabels[miscBlockSystem]} block for ${userId}.` });
+      setMiscBlockReason("");
+      setMiscBlockUserIdInput("");
+      setMiscBlockDurationValue("1");
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to block this user.", variant: "destructive" });
+    }
+    setBlockingMiscUser(false);
+  };
+
+  const unblockMiscUser = async (system: MiscBlockSystem, userId: string, username?: string) => {
+    if (!selectedGuild) return;
+    const normalizedUserId = userId.trim();
+    if (!/^\d{17,20}$/.test(normalizedUserId)) {
+      toast({ title: "User ID required", description: "Enter a valid Discord user ID to unblock.", variant: "destructive" });
+      return;
+    }
+
+    const label = username || normalizedUserId;
+    if (!window.confirm(`Unblock ${label} from ${blockSystemLabels[system]}?`)) return;
+
+    const requestKey = `${system}:${normalizedUserId}`;
+    setUnblockingMiscKey(requestKey);
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/blocks/${encodeURIComponent(system)}/${encodeURIComponent(normalizedUserId)}`, {
+        method: "DELETE",
+      }, 15000);
+      toast({ title: "User unblocked", description: `${label} was removed from ${blockSystemLabels[system]}.` });
+      if (miscBlockUserIdInput.trim() === normalizedUserId && miscBlockSystem === system) {
+        setMiscBlockUserIdInput("");
+      }
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to unblock this user.", variant: "destructive" });
+    }
+    setUnblockingMiscKey(null);
   };
 
   const loadSnippets = async (guildId: string | null = selectedGuild) => {
@@ -4164,7 +4285,7 @@ export default function Dashboard() {
             <TabsContent value="miscellaneous" className="mt-0 space-y-4">
               <div>
                 <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Miscellaneous</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Manage role sync, review banned members, and inspect recent server activity.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Manage role sync, review banned members, control blocked users, and inspect recent server activity.</p>
               </div>
 
               <Card className="border-border/80 bg-card/90">
@@ -4377,7 +4498,7 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
 
-              <div className="grid gap-4 xl:grid-cols-[0.9fr,1.35fr]">
+              <div className="space-y-4">
                 <Card className="border-border/80 bg-card/90">
                   <CardHeader className="flex flex-row items-start justify-between space-y-0 gap-3">
                     <div className="space-y-1">
@@ -4435,6 +4556,162 @@ export default function Dashboard() {
                         ))}
                       </div>
                     )}
+                  </CardContent>
+                </Card>
+
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader className="space-y-1">
+                    <CardTitle className="text-base">Blocked Users</CardTitle>
+                    <CardDescription>Manage active blocks for Staff Applications, Modmails, and Appeals.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-5">
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="space-y-2 xl:col-span-1">
+                        <Label>User ID</Label>
+                        <Input
+                          value={miscBlockUserIdInput}
+                          onChange={(event) => setMiscBlockUserIdInput(event.target.value)}
+                          placeholder="123456789012345678"
+                          data-testid="input-misc-block-user-id"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Section</Label>
+                        <Select value={miscBlockSystem} onValueChange={(value) => setMiscBlockSystem(value as MiscBlockSystem)}>
+                          <SelectTrigger data-testid="select-misc-block-system">
+                            <SelectValue placeholder="Choose section" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="staff_applications">Staff Applications</SelectItem>
+                            <SelectItem value="modmail">Modmails</SelectItem>
+                            <SelectItem value="appeal">Appeals</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Duration</Label>
+                        <Input
+                          type="number"
+                          min="1"
+                          value={miscBlockDurationUnit === "permanent" ? "" : miscBlockDurationValue}
+                          onChange={(event) => setMiscBlockDurationValue(event.target.value)}
+                          placeholder={miscBlockDurationUnit === "permanent" ? "Permanent" : "1"}
+                          disabled={miscBlockDurationUnit === "permanent"}
+                          data-testid="input-misc-block-duration"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Duration Unit</Label>
+                        <Select value={miscBlockDurationUnit} onValueChange={(value) => setMiscBlockDurationUnit(value as "minutes" | "hours" | "days" | "weeks" | "permanent")}>
+                          <SelectTrigger data-testid="select-misc-block-duration-unit">
+                            <SelectValue placeholder="Select duration" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="minutes">Minutes</SelectItem>
+                            <SelectItem value="hours">Hours</SelectItem>
+                            <SelectItem value="days">Days</SelectItem>
+                            <SelectItem value="weeks">Weeks</SelectItem>
+                            <SelectItem value="permanent">Permanent</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Reason</Label>
+                      <Textarea
+                        value={miscBlockReason}
+                        onChange={(event) => setMiscBlockReason(event.target.value)}
+                        placeholder="Explain why this user is blocked."
+                        rows={3}
+                        data-testid="textarea-misc-block-reason"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button onClick={blockUserFromMisc} disabled={blockingMiscUser || miscOverviewLoading} data-testid="button-misc-block-user">
+                        {blockingMiscUser ? "Blocking…" : "Block User"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => unblockMiscUser(miscBlockSystem, miscBlockUserIdInput.trim())}
+                        disabled={blockingMiscUser || miscOverviewLoading || !miscBlockUserIdInput.trim()}
+                        data-testid="button-misc-unblock-user-id"
+                      >
+                        Unblock by User ID
+                      </Button>
+                    </div>
+
+                    <div className="space-y-4">
+                      {(["staff_applications", "modmail", "appeal"] as MiscBlockSystem[]).map((systemKey) => {
+                        const items = miscBlocks.filter((block) => block.system === systemKey);
+                        return (
+                          <div key={`misc-block-section-${systemKey}`} className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <p className="text-sm font-semibold">{blockSystemLabels[systemKey]}</p>
+                              <Badge variant="outline">{items.length}</Badge>
+                            </div>
+
+                            {miscOverviewLoading ? (
+                              <p className="text-sm text-muted-foreground">Loading blocked users…</p>
+                            ) : items.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">No users are currently blocked in this section.</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {items.map((block) => {
+                                  const requestKey = `${block.system}:${block.userId}`;
+                                  return (
+                                    <div key={requestKey} className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                                      <div className="flex min-w-0 flex-1 items-start gap-3">
+                                        {block.avatarUrl ? (
+                                          <img src={block.avatarUrl} alt={block.username} className="h-9 w-9 rounded-full object-cover" />
+                                        ) : (
+                                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                                            {block.username.slice(0, 2).toUpperCase()}
+                                          </div>
+                                        )}
+                                        <div className="min-w-0 flex-1 text-sm">
+                                          <p className="truncate font-medium">{block.username}</p>
+                                          <p className="text-[11px] text-muted-foreground">User ID: {block.userId}</p>
+                                          <p className="mt-1 text-xs text-muted-foreground">
+                                            <span className="font-medium text-foreground">Blocked by:</span>{" "}
+                                            {block.blockedByUsername || block.blockedById || "Unknown user"}
+                                            {block.blockedById ? ` (${block.blockedById})` : ""}
+                                          </p>
+                                          <p className="text-xs text-muted-foreground">
+                                            <span className="font-medium text-foreground">Duration:</span>{" "}
+                                            {formatBlockDurationLabel(block.expiresAt)}
+                                          </p>
+                                          {block.expiresAt && (
+                                            <p className="text-xs text-muted-foreground">
+                                              <span className="font-medium text-foreground">Expires:</span>{" "}
+                                              {new Date(block.expiresAt).toLocaleString()}
+                                            </p>
+                                          )}
+                                          <p className="mt-1 text-xs text-muted-foreground">
+                                            <span className="font-medium text-foreground">Reason:</span>{" "}
+                                            {block.reason || "No reason provided."}
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <Button
+                                        size="sm"
+                                        variant="destructive"
+                                        className="shrink-0"
+                                        disabled={unblockingMiscKey === requestKey}
+                                        onClick={() => unblockMiscUser(block.system, block.userId, block.username)}
+                                      >
+                                        {unblockingMiscKey === requestKey ? "Unblocking…" : "Unblock"}
+                                      </Button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </CardContent>
                 </Card>
 

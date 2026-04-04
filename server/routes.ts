@@ -249,6 +249,105 @@ function buildDiscordAvatarUrl(userId: string | null | undefined, avatarHash: st
   return `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.${extension}?size=64`;
 }
 
+type StaffApplicationBlockEntry = {
+  blockedById: string;
+  reason: string | null;
+  expiresAt: string | null;
+};
+
+function getStaffApplicationBlocksFromConfig(raw: unknown): Record<string, StaffApplicationBlockEntry> {
+  const root = parseDashboardConfigObject(raw);
+  const blocksRaw = root.__staffApplicationBlocks;
+  if (!blocksRaw || typeof blocksRaw !== "object" || Array.isArray(blocksRaw)) {
+    return {};
+  }
+
+  const result: Record<string, StaffApplicationBlockEntry> = {};
+  for (const [userId, value] of Object.entries(blocksRaw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    result[userId] = {
+      blockedById: String(entry.blockedById || ""),
+      reason: typeof entry.reason === "string" ? entry.reason : null,
+      expiresAt: typeof entry.expiresAt === "string" ? entry.expiresAt : null,
+    };
+  }
+
+  return result;
+}
+
+function writeStaffApplicationBlockToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  userId: string,
+  block: StaffApplicationBlockEntry,
+): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existing = getStaffApplicationBlocksFromConfig(existingCustomCategoryPings);
+  root.__staffApplicationBlocks = {
+    ...existing,
+    [userId]: block,
+  };
+  return JSON.stringify(root);
+}
+
+function removeStaffApplicationBlockFromConfig(existingCustomCategoryPings: string | null | undefined, userId: string): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existing = getStaffApplicationBlocksFromConfig(existingCustomCategoryPings);
+  if (existing[userId]) {
+    delete existing[userId];
+  }
+  root.__staffApplicationBlocks = existing;
+  return JSON.stringify(root);
+}
+
+function isBlockStillActive(expiresAt: string | Date | null | undefined): boolean {
+  if (!expiresAt) return true;
+  const expiresMs = new Date(expiresAt).getTime();
+  return Number.isFinite(expiresMs) && expiresMs > Date.now();
+}
+
+async function resolveDiscordUserSummary(userId: string | null | undefined, guildId?: string): Promise<{ userId: string | null; username: string; avatarUrl: string | null }> {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) {
+    return { userId: null, username: "Unknown user", avatarUrl: null };
+  }
+
+  if (getDiscordBotToken()) {
+    const member = guildId
+      ? await discordBotApiRequest<any>(`/guilds/${guildId}/members/${normalizedUserId}`).catch(() => null)
+      : null;
+    const user = member?.user || await discordBotApiRequest<any>(`/users/${normalizedUserId}`).catch(() => null);
+
+    if (user) {
+      return {
+        userId: normalizedUserId,
+        username: String(member?.nick || user?.global_name || user?.username || normalizedUserId),
+        avatarUrl: buildDiscordAvatarUrl(normalizedUserId, user?.avatar || null),
+      };
+    }
+  }
+
+  if (client.isReady()) {
+    const guild = guildId ? client.guilds.cache.get(guildId) : null;
+    const member = guild ? await guild.members.fetch(normalizedUserId).catch(() => null) : null;
+    const user = member?.user || client.users.cache.get(normalizedUserId) || await client.users.fetch(normalizedUserId).catch(() => null);
+
+    if (user) {
+      return {
+        userId: normalizedUserId,
+        username: String(member?.displayName || user?.displayName || user?.globalName || user?.username || normalizedUserId),
+        avatarUrl: typeof user.displayAvatarURL === "function" ? user.displayAvatarURL({ size: 64 }) : null,
+      };
+    }
+  }
+
+  return {
+    userId: normalizedUserId,
+    username: normalizedUserId,
+    avatarUrl: null,
+  };
+}
+
 function readOwnerBotPid(): number | null {
   try {
     const raw = fs.readFileSync(OWNER_BOT_PID_FILE, "utf8").trim();
@@ -2160,7 +2259,7 @@ export async function registerRoutes(
         return items;
       };
 
-      const [banCollection, auditLogs, commandActivity, moderationActivity] = await Promise.all([
+      const [banCollection, auditLogs, commandActivity, moderationActivity, modmailBlockRows, appealBlockRows] = await Promise.all([
         hasBotToken
           ? discordBotApiRequest<any[]>(`/guilds/${guildId}/bans?limit=1000`).catch(() => [])
           : Promise.resolve([]),
@@ -2169,6 +2268,8 @@ export async function registerRoutes(
           : Promise.resolve(null),
         collectChannelActivity(config?.commandLogChannelId, "commands"),
         collectChannelActivity(config?.modLogChannelId, "moderation"),
+        storage.getAllModmailBlocks(guildId).catch(() => []),
+        storage.getAllAppealBlocks(guildId).catch(() => []),
       ]);
 
       const bans = Array.isArray(banCollection)
@@ -2182,6 +2283,69 @@ export async function registerRoutes(
             .filter((ban) => ban.userId)
             .sort((a, b) => a.username.localeCompare(b.username))
         : [];
+
+      const userSummaryCache = new Map<string, { userId: string | null; username: string; avatarUrl: string | null }>();
+      const getCachedUserSummary = async (userId: string | null | undefined) => {
+        const normalizedUserId = String(userId || "").trim();
+        if (!normalizedUserId) {
+          return { userId: null, username: "Unknown user", avatarUrl: null };
+        }
+        const cached = userSummaryCache.get(normalizedUserId);
+        if (cached) return cached;
+        const resolved = await resolveDiscordUserSummary(normalizedUserId, guildId);
+        userSummaryCache.set(normalizedUserId, resolved);
+        return resolved;
+      };
+
+      const rawBlocks = [
+        ...(Array.isArray(modmailBlockRows)
+          ? modmailBlockRows
+              .filter((block: any) => isBlockStillActive(block?.expiresAt || null))
+              .map((block: any) => ({
+                system: "modmail" as const,
+                userId: String(block?.userId || ""),
+                blockedById: block?.blockedById ? String(block.blockedById) : null,
+                reason: block?.reason ? String(block.reason) : null,
+                expiresAt: block?.expiresAt ? new Date(block.expiresAt).toISOString() : null,
+              }))
+          : []),
+        ...(Array.isArray(appealBlockRows)
+          ? appealBlockRows
+              .filter((block: any) => isBlockStillActive(block?.expiresAt || null))
+              .map((block: any) => ({
+                system: "appeal" as const,
+                userId: String(block?.userId || ""),
+                blockedById: block?.blockedById ? String(block.blockedById) : null,
+                reason: block?.reason ? String(block.reason) : null,
+                expiresAt: block?.expiresAt ? new Date(block.expiresAt).toISOString() : null,
+              }))
+          : []),
+        ...Object.entries(getStaffApplicationBlocksFromConfig(config?.customCategoryPings))
+          .filter(([, block]) => isBlockStillActive(block?.expiresAt || null))
+          .map(([userId, block]) => ({
+            system: "staff_applications" as const,
+            userId: String(userId || ""),
+            blockedById: block?.blockedById ? String(block.blockedById) : null,
+            reason: block?.reason ? String(block.reason) : null,
+            expiresAt: block?.expiresAt || null,
+          })),
+      ].filter((block) => block.userId);
+
+      const blocks = await Promise.all(rawBlocks.map(async (block) => {
+        const blockedUser = await getCachedUserSummary(block.userId);
+        const blockedByUser = block.blockedById ? await getCachedUserSummary(block.blockedById) : null;
+        return {
+          system: block.system,
+          userId: block.userId,
+          username: blockedUser.username || block.userId,
+          avatarUrl: blockedUser.avatarUrl,
+          blockedById: block.blockedById || null,
+          blockedByUsername: blockedByUser?.username || null,
+          blockedByAvatarUrl: blockedByUser?.avatarUrl || null,
+          reason: block.reason,
+          expiresAt: block.expiresAt,
+        };
+      }));
 
       const auditActivity = Array.isArray(auditLogs?.audit_log_entries)
         ? auditLogs.audit_log_entries.map((entry: any) => {
@@ -2208,7 +2372,7 @@ export async function registerRoutes(
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, 40);
 
-      res.json({ bans, activity });
+      res.json({ bans, blocks, activity });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -2284,6 +2448,115 @@ export async function registerRoutes(
       res.json({ success: failed.length === 0, count, failed });
     } catch (e: any) {
       res.status(500).json({ error: e.message || "Failed to unban all users." });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/blocks", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+
+      const userId = String(req.body?.userId || "").trim();
+      const system = String(req.body?.system || "").trim() as "staff_applications" | "modmail" | "appeal";
+      const timeUnit = String(req.body?.timeUnit || "").trim().toLowerCase();
+      const reason = String(req.body?.reason || "").trim();
+      const duration = Number(req.body?.duration || 0);
+
+      if (!/^\d{17,20}$/.test(userId)) {
+        return res.status(400).json({ error: "A valid Discord user ID is required." });
+      }
+      if (!["staff_applications", "modmail", "appeal"].includes(system)) {
+        return res.status(400).json({ error: "Choose a valid block section." });
+      }
+      if (!reason) {
+        return res.status(400).json({ error: "A block reason is required." });
+      }
+
+      let expiresAt: Date | undefined;
+      if (timeUnit !== "permanent") {
+        const multipliers: Record<string, number> = {
+          minutes: 60 * 1000,
+          hours: 60 * 60 * 1000,
+          days: 24 * 60 * 60 * 1000,
+          weeks: 7 * 24 * 60 * 60 * 1000,
+        };
+        if (!Number.isFinite(duration) || duration <= 0 || !multipliers[timeUnit]) {
+          return res.status(400).json({ error: "Enter a valid block duration." });
+        }
+        expiresAt = new Date(Date.now() + duration * multipliers[timeUnit]);
+      }
+
+      const config = await storage.getGuildConfig(guildId);
+      if (system === "appeal") {
+        await storage.removeAppealBlock(guildId, userId);
+        await storage.createAppealBlock({
+          guildId,
+          userId,
+          blockedById: user.id,
+          reason,
+          expiresAt,
+        });
+      } else if (system === "staff_applications") {
+        await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: writeStaffApplicationBlockToConfig(
+            config?.customCategoryPings,
+            userId,
+            {
+              blockedById: user.id,
+              reason,
+              expiresAt: expiresAt ? expiresAt.toISOString() : null,
+            },
+          ),
+        });
+      } else {
+        await storage.removeModmailBlock(guildId, userId);
+        await storage.createModmailBlock({
+          guildId,
+          userId,
+          blockedById: user.id,
+          reason,
+          expiresAt,
+        });
+      }
+
+      res.json({ success: true, userId, system, expiresAt: expiresAt ? expiresAt.toISOString() : null });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to block this user." });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/blocks/:system/:userId", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      const system = String(req.params.system || "").trim() as "staff_applications" | "modmail" | "appeal";
+      const userId = String(req.params.userId || "").trim();
+      if (!/^\d{17,20}$/.test(userId)) {
+        return res.status(400).json({ error: "A valid Discord user ID is required." });
+      }
+      if (!["staff_applications", "modmail", "appeal"].includes(system)) {
+        return res.status(400).json({ error: "Choose a valid block section." });
+      }
+
+      if (system === "appeal") {
+        await storage.removeAppealBlock(guildId, userId);
+      } else if (system === "staff_applications") {
+        const config = await storage.getGuildConfig(guildId);
+        await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: removeStaffApplicationBlockFromConfig(config?.customCategoryPings, userId),
+        });
+      } else {
+        await storage.removeModmailBlock(guildId, userId);
+      }
+
+      res.json({ success: true, userId, system });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to unblock this user." });
     }
   });
 
