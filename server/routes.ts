@@ -600,8 +600,12 @@ function getDashboardSecurityAccessSettings(raw: unknown): { accessRoleIds: stri
   };
 }
 
-function hasDashboardSecurityAccess(userId: string, roleIds: string[], raw: unknown): boolean {
+function hasDashboardSecurityAccess(userId: string, roleIds: string[], raw: unknown, fallbackAllowed = false): boolean {
   const settings = getDashboardSecurityAccessSettings(raw);
+  const hasExplicitAccess = settings.accessUserIds.length > 0 || settings.accessRoleIds.length > 0;
+  if (!hasExplicitAccess) {
+    return fallbackAllowed;
+  }
   return settings.accessUserIds.includes(userId) || settings.accessRoleIds.some((roleId) => roleIds.includes(roleId));
 }
 
@@ -623,6 +627,12 @@ function compareConfigValue(left: unknown, right: unknown): boolean {
   }
 
   return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function didSecuritySettingsChange(previousConfig: any, nextConfig: any): boolean {
+  const previousParsed = parseDashboardConfigObject(previousConfig?.customCategoryPings);
+  const nextParsed = parseDashboardConfigObject(nextConfig?.customCategoryPings);
+  return JSON.stringify(previousParsed[DASHBOARD_SECURITY_SETTINGS_KEY] ?? null) !== JSON.stringify(nextParsed[DASHBOARD_SECURITY_SETTINGS_KEY] ?? null);
 }
 
 function hasOnlySecurityConfigChanges(previousConfig: any, nextConfig: any): boolean {
@@ -694,6 +704,35 @@ async function canManageGuildDashboard(userId: string, guildId: string): Promise
   const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
   const roleIds = Array.isArray(member.roles) ? member.roles : [];
   return managerRoleIds.length > 0 && managerRoleIds.some((roleId) => roleIds.includes(roleId));
+}
+
+async function canManageSecurityDashboard(userId: string, guildId: string): Promise<boolean> {
+  if (PRIVILEGED_DASHBOARD_USER_IDS.has(userId)) {
+    return true;
+  }
+
+  const config = await storage.getGuildConfig(guildId);
+
+  if (client.isReady()) {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return false;
+
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return false;
+
+    const hasGeneralAccess = guild.ownerId === userId || member.permissions.has(PermissionFlagsBits.Administrator) || ((config?.modRoleIds || []).filter(Boolean).some((roleId) => member.roles.cache.has(roleId)));
+    return hasDashboardSecurityAccess(userId, Array.from(member.roles.cache.keys()), config?.customCategoryPings, hasGeneralAccess);
+  }
+
+  if (!getBotToken()) return false;
+
+  const guildResponse = await discordApiRequest(`/guilds/${guildId}`);
+  const guild = (await guildResponse.json().catch(() => ({}))) as DiscordRestGuildDetails;
+  const memberResponse = await discordApiRequest(`/guilds/${guildId}/members/${userId}`);
+  const member = (await memberResponse.json().catch(() => ({}))) as DiscordRestGuildMember;
+  const roleIds = Array.isArray(member.roles) ? member.roles : [];
+  const hasGeneralAccess = String(guild.owner_id || "") === userId || hasAdministratorPermission(member.permissions) || ((config?.modRoleIds || []).filter(Boolean).some((roleId) => roleIds.includes(roleId)));
+  return hasDashboardSecurityAccess(userId, roleIds, config?.customCategoryPings, hasGeneralAccess);
 }
 
 async function canAccessGuild(userId: string, guildId: string): Promise<boolean> {
@@ -2056,6 +2095,11 @@ export async function registerRoutes(
         const roles = guild?.roles.cache
           .filter(r => r.name !== "@everyone")
           .map(r => ({ id: r.id, name: r.name, color: r.hexColor })) || [];
+        const viewerRoleIds = member ? Array.from(member.roles.cache.keys()) : [];
+        const viewerIsAdmin = member ? member.permissions.has(PermissionFlagsBits.Administrator) : false;
+        const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
+        const hasGeneralAccess = !!member && (viewerIsAdmin || guild?.ownerId === user.id || managerRoleIds.some((roleId) => member.roles.cache.has(roleId)));
+        const viewerHasSecurityAccess = hasDashboardSecurityAccess(user.id, viewerRoleIds, config?.customCategoryPings, hasGeneralAccess);
 
         return res.json({
           config: config || {},
@@ -2063,8 +2107,9 @@ export async function registerRoutes(
           roles,
           guildName: guild?.name || "Unknown",
           memberCount: guild?.memberCount ?? 0,
-          viewerRoleIds: member ? Array.from(member.roles.cache.keys()) : [],
-          viewerIsAdmin: member ? member.permissions.has(PermissionFlagsBits.Administrator) : false,
+          viewerRoleIds,
+          viewerIsAdmin,
+          viewerHasSecurityAccess,
         });
       }
 
@@ -2120,14 +2165,21 @@ export async function registerRoutes(
             .filter((role: any) => role.id)
         : [];
 
+      const viewerRoleIds = Array.isArray(memberRaw?.roles) ? memberRaw.roles.map((entry: unknown) => String(entry || "")).filter(Boolean) : [];
+      const viewerIsAdmin = hasAdministratorPermission(memberRaw?.permissions);
+      const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
+      const hasGeneralAccess = viewerIsAdmin || String((guild as any)?.owner_id || "") === user.id || managerRoleIds.some((roleId) => viewerRoleIds.includes(roleId));
+      const viewerHasSecurityAccess = hasDashboardSecurityAccess(user.id, viewerRoleIds, config?.customCategoryPings, hasGeneralAccess);
+
       res.json({ 
         config: config || {},
         channels,
         roles,
         guildName: String((guild as any)?.name || "Unknown"),
         memberCount: Number((guild as any)?.approximate_member_count ?? (guild as any)?.member_count ?? 0),
-        viewerRoleIds: Array.isArray(memberRaw?.roles) ? memberRaw.roles.map((entry: unknown) => String(entry || "")).filter(Boolean) : [],
-        viewerIsAdmin: hasAdministratorPermission(memberRaw?.permissions),
+        viewerRoleIds,
+        viewerIsAdmin,
+        viewerHasSecurityAccess,
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2997,13 +3049,19 @@ export async function registerRoutes(
       }
 
       const hasManagerAccess = await canManageGuildDashboard(user.id, guildId).catch(() => false);
-      if (!hasManagerAccess) {
-        const nextComparableConfig = {
-          ...(previousConfig || {}),
-          ...updates,
-          guildId,
-        };
+      const hasSecurityAccess = await canManageSecurityDashboard(user.id, guildId).catch(() => false);
+      const nextComparableConfig = {
+        ...(previousConfig || {}),
+        ...updates,
+        guildId,
+      };
+      const securityChanged = didSecuritySettingsChange(previousConfig || {}, nextComparableConfig);
 
+      if (securityChanged && !hasSecurityAccess) {
+        return res.status(403).json({ error: "You do not have permission to edit the Security category for this server." });
+      }
+
+      if (!hasManagerAccess) {
         if (!hasOnlySecurityConfigChanges(previousConfig || {}, nextComparableConfig)) {
           return res.status(403).json({ error: "You can only edit the Security category for this server." });
         }

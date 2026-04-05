@@ -543,6 +543,7 @@ export default function Dashboard() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [viewerRoleIds, setViewerRoleIds] = useState<string[]>([]);
   const [viewerIsAdmin, setViewerIsAdmin] = useState(false);
+  const [viewerHasSecurityAccess, setViewerHasSecurityAccess] = useState(false);
   const [featurePostChannels, setFeaturePostChannels] = useState<DashboardFeaturePostChannels>({});
   const [securitySettings, setSecuritySettings] = useState<DashboardSecuritySettings>(createDefaultSecuritySettings());
   const [securityWhitelistUserInput, setSecurityWhitelistUserInput] = useState("");
@@ -680,6 +681,7 @@ export default function Dashboard() {
     setGuildName(data.guildName || "");
     setViewerRoleIds(Array.isArray(data.viewerRoleIds) ? data.viewerRoleIds.map((entry: unknown) => String(entry || "")).filter(Boolean) : []);
     setViewerIsAdmin(data.viewerIsAdmin === true);
+    setViewerHasSecurityAccess(data.viewerHasSecurityAccess === true);
 
     const validRoleIds = new Set(nextRoles.map((role) => role.id));
     const sanitizeRoleIds = (value: unknown) => Array.isArray(value)
@@ -2461,10 +2463,7 @@ export default function Dashboard() {
   const selectedGuildSummary = guilds.find((guild) => guild.id === selectedGuild) || null;
   const visibleOwnerGuilds = ownerGuilds;
   const hasGeneralDashboardAccess = viewerIsAdmin || isOwnerUser || filterToCurrentServerRoleIds(config.modRoleIds || []).some((roleId) => viewerRoleIds.includes(roleId));
-  const canAccessSecurityTab = viewerIsAdmin
-    || isOwnerUser
-    || (!!currentUser?.id && securitySettings.accessUserIds.includes(currentUser.id))
-    || securitySettings.accessRoleIds.some((roleId) => viewerRoleIds.includes(roleId));
+  const canAccessSecurityTab = isOwnerUser || viewerHasSecurityAccess;
   const hasPrimaryTabAccess = (tab: PrimaryTabKey) => tab === "security" ? canAccessSecurityTab : hasGeneralDashboardAccess;
   const roleSyncSourceRoles = roleSyncSourceGuildId === selectedGuild
     ? roles

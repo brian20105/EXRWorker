@@ -45,7 +45,10 @@ const PREFIX_COMMAND_ALLOWED_USER_ID = "948598563359817728";
 const BOT_INSTANCE_LOCK_FILE = path.resolve(process.cwd(), ".discord-bot.lock");
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
+const DASHBOARD_SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
 const DISABLED_MESSAGE = "This is currently disabled, please contact the server owner to resolve the issue.";
+const SECURITY_TRIGGER_WINDOW_MS = 15_000;
+const SECURITY_AUDIT_LOOKUP_DELAY_MS = 1_000;
 let botInstanceLockAcquired = false;
 
 const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
@@ -242,6 +245,283 @@ function isDashboardFeatureEnabled(config: any, featureId: string): boolean {
   }
 
   return true;
+}
+
+type SecurityPunishmentType = "ban" | "kick" | "clear_roles";
+type SecurityRuleKey =
+  | "antiBan"
+  | "antiKick"
+  | "antiBotAdd"
+  | "antiRoleUpdate"
+  | "antiRoleAdd"
+  | "antiChannelCreate"
+  | "antiChannelDelete"
+  | "antiRoleCreate"
+  | "antiRoleDelete";
+
+type SecurityRuleConfig = {
+  threshold: number;
+  punishmentType: SecurityPunishmentType;
+  enabled: boolean;
+};
+
+type DashboardSecuritySettings = {
+  rules: Record<SecurityRuleKey, SecurityRuleConfig>;
+  whitelistedRoleIds: string[];
+  whitelistedUserIds: string[];
+  accessRoleIds: string[];
+  accessUserIds: string[];
+};
+
+const SECURITY_RULE_LABELS: Record<SecurityRuleKey, string> = {
+  antiBan: "Anti Ban",
+  antiKick: "Anti Kick",
+  antiBotAdd: "Anti Bot Add",
+  antiRoleUpdate: "Anti Role Update",
+  antiRoleAdd: "Anti Role Add",
+  antiChannelCreate: "Anti Channel Create",
+  antiChannelDelete: "Anti Channel Delete",
+  antiRoleCreate: "Anti Role Create",
+  antiRoleDelete: "Anti Role Delete",
+};
+
+const securityActionTracker = new Map<string, { count: number; startedAt: number }>();
+
+function createDefaultDashboardSecuritySettings(): DashboardSecuritySettings {
+  return {
+    rules: {
+      antiBan: { threshold: 3, punishmentType: "kick", enabled: false },
+      antiKick: { threshold: 3, punishmentType: "kick", enabled: false },
+      antiBotAdd: { threshold: 1, punishmentType: "ban", enabled: false },
+      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", enabled: false },
+      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", enabled: false },
+      antiChannelCreate: { threshold: 3, punishmentType: "kick", enabled: false },
+      antiChannelDelete: { threshold: 2, punishmentType: "ban", enabled: false },
+      antiRoleCreate: { threshold: 3, punishmentType: "kick", enabled: false },
+      antiRoleDelete: { threshold: 2, punishmentType: "ban", enabled: false },
+    },
+    whitelistedRoleIds: [],
+    whitelistedUserIds: [],
+    accessRoleIds: [],
+    accessUserIds: [],
+  };
+}
+
+function normalizeSecurityStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean)));
+}
+
+function getDashboardSecuritySettings(config?: any): DashboardSecuritySettings {
+  const parsed = parseDashboardConfigObject(config?.customCategoryPings);
+  const raw = parsed[DASHBOARD_SECURITY_SETTINGS_KEY];
+  const securityObject = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const defaults = createDefaultDashboardSecuritySettings();
+  const rulesRaw = securityObject.rules && typeof securityObject.rules === "object" && !Array.isArray(securityObject.rules)
+    ? securityObject.rules as Record<string, unknown>
+    : {};
+
+  const rules = (Object.keys(defaults.rules) as SecurityRuleKey[]).reduce<Record<SecurityRuleKey, SecurityRuleConfig>>((acc, ruleKey) => {
+    const ruleRaw = rulesRaw[ruleKey];
+    const ruleObject = ruleRaw && typeof ruleRaw === "object" && !Array.isArray(ruleRaw)
+      ? ruleRaw as Record<string, unknown>
+      : {};
+    const thresholdValue = Number(ruleObject.threshold);
+    const punishmentRaw = typeof ruleObject.punishmentType === "string" ? ruleObject.punishmentType : defaults.rules[ruleKey].punishmentType;
+
+    acc[ruleKey] = {
+      enabled: ruleObject.enabled === true,
+      threshold: Number.isFinite(thresholdValue) && thresholdValue > 0
+        ? Math.max(1, Math.min(50, Math.round(thresholdValue)))
+        : defaults.rules[ruleKey].threshold,
+      punishmentType: punishmentRaw === "ban" || punishmentRaw === "kick" || punishmentRaw === "clear_roles"
+        ? punishmentRaw
+        : defaults.rules[ruleKey].punishmentType,
+    };
+    return acc;
+  }, {} as Record<SecurityRuleKey, SecurityRuleConfig>);
+
+  return {
+    rules,
+    whitelistedRoleIds: normalizeSecurityStringList(securityObject.whitelistedRoleIds),
+    whitelistedUserIds: normalizeSecurityStringList(securityObject.whitelistedUserIds),
+    accessRoleIds: normalizeSecurityStringList(securityObject.accessRoleIds),
+    accessUserIds: normalizeSecurityStringList(securityObject.accessUserIds),
+  };
+}
+
+function getSecurityRuleLabel(ruleKey: SecurityRuleKey): string {
+  return SECURITY_RULE_LABELS[ruleKey] || ruleKey;
+}
+
+function getSecurityPunishmentLabel(punishmentType: SecurityPunishmentType): string {
+  switch (punishmentType) {
+    case "ban":
+      return "Ban";
+    case "kick":
+      return "Kick";
+    case "clear_roles":
+      return "Clear Roles";
+    default:
+      return punishmentType;
+  }
+}
+
+async function pause(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function findRecentAuditEntry(
+  guild: any,
+  type: AuditLogEvent,
+  predicate: (entry: any) => boolean,
+  limit = 6,
+  maxAgeMs = 20_000,
+): Promise<any | null> {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const logs = await guild.fetchAuditLogs({ limit, type });
+      const entry = logs.entries.find((candidate: any) => {
+        const createdTimestamp = Number(candidate?.createdTimestamp || 0);
+        return createdTimestamp > 0 && (Date.now() - createdTimestamp) <= maxAgeMs && predicate(candidate);
+      });
+      if (entry) return entry;
+    } catch {
+      return null;
+    }
+
+    if (attempt < 2) {
+      await pause(SECURITY_AUDIT_LOOKUP_DELAY_MS);
+    }
+  }
+
+  return null;
+}
+
+function bumpSecurityActionCount(guildId: string, executorId: string, ruleKey: SecurityRuleKey, threshold: number) {
+  const key = `${guildId}:${executorId}:${ruleKey}`;
+  const now = Date.now();
+  const existing = securityActionTracker.get(key);
+  const withinWindow = !!existing && (now - existing.startedAt) <= SECURITY_TRIGGER_WINDOW_MS;
+  const count = withinWindow ? existing!.count + 1 : 1;
+  const startedAt = withinWindow ? existing!.startedAt : now;
+  securityActionTracker.set(key, { count, startedAt });
+
+  const thresholdReached = count >= Math.max(1, threshold);
+  if (thresholdReached) {
+    securityActionTracker.delete(key);
+  }
+
+  return { count, thresholdReached };
+}
+
+async function sendSecurityLog(guild: any, config: any, embed: EmbedBuilder) {
+  const channelId = config?.modLogChannelId || config?.commandLogChannelId || config?.logChannelId;
+  if (!channelId) return;
+
+  try {
+    const logChannel = await safeChannelFetch(channelId);
+    if (logChannel && "send" in logChannel) {
+      await logChannel.send({ embeds: [embed] });
+    }
+  } catch (error) {
+    console.log("[SECURITY] Failed to send security log:", error);
+  }
+}
+
+async function handleSecurityTrigger(
+  guild: any,
+  executorId: string | null | undefined,
+  ruleKey: SecurityRuleKey,
+  details: string,
+  targetId?: string | null,
+) {
+  const normalizedExecutorId = String(executorId || "").trim();
+  if (!normalizedExecutorId || normalizedExecutorId === client.user?.id) {
+    return;
+  }
+
+  const config = await storage.getGuildConfig(guild.id).catch(() => null);
+  const securitySettings = getDashboardSecuritySettings(config);
+  const rule = securitySettings.rules[ruleKey];
+  if (!rule?.enabled) {
+    return;
+  }
+
+  if (securitySettings.whitelistedUserIds.includes(normalizedExecutorId)) {
+    return;
+  }
+
+  const executorMember = await guild.members.fetch(normalizedExecutorId).catch(() => null);
+  const executorRoleIds = executorMember ? Array.from(executorMember.roles.cache.keys()) : [];
+  if (securitySettings.whitelistedRoleIds.some((roleId) => executorRoleIds.includes(roleId))) {
+    return;
+  }
+
+  const { count, thresholdReached } = bumpSecurityActionCount(guild.id, normalizedExecutorId, ruleKey, rule.threshold);
+  if (!thresholdReached) {
+    return;
+  }
+
+  const reason = `${getSecurityRuleLabel(ruleKey)} threshold reached in ${guild.name}`;
+  let resultSummary = "No action taken.";
+  let actionSucceeded = false;
+
+  try {
+    if (guild.ownerId === normalizedExecutorId) {
+      resultSummary = "Detected, but the server owner cannot be punished automatically.";
+    } else if (!executorMember) {
+      resultSummary = "Detected, but the member could not be resolved in the guild.";
+    } else if (rule.punishmentType === "ban") {
+      if (!executorMember.bannable) {
+        resultSummary = "Detected, but the member is above the bot or cannot be banned.";
+      } else {
+        await executorMember.ban({ reason });
+        resultSummary = `Banned <@${normalizedExecutorId}>.`;
+        actionSucceeded = true;
+      }
+    } else if (rule.punishmentType === "kick") {
+      if (!executorMember.kickable) {
+        resultSummary = "Detected, but the member is above the bot or cannot be kicked.";
+      } else {
+        await executorMember.kick(reason);
+        resultSummary = `Kicked <@${normalizedExecutorId}>.`;
+        actionSucceeded = true;
+      }
+    } else {
+      const removableRoleIds = executorMember.roles.cache
+        .filter((role: any) => role.id !== guild.id && role.editable)
+        .map((role: any) => role.id);
+
+      if (removableRoleIds.length === 0) {
+        resultSummary = "Detected, but there were no removable roles on the member.";
+      } else {
+        await executorMember.roles.remove(removableRoleIds, reason);
+        resultSummary = `Cleared ${removableRoleIds.length} role(s) from <@${normalizedExecutorId}>.`;
+        actionSucceeded = true;
+      }
+    }
+  } catch (error: any) {
+    resultSummary = `Attempted ${getSecurityPunishmentLabel(rule.punishmentType)}, but it failed: ${error?.message || "Unknown error"}`;
+  }
+
+  const logEmbed = new EmbedBuilder()
+    .setTitle("Security Punishment Triggered")
+    .setColor(actionSucceeded ? 0xed4245 : 0xfaa61a)
+    .addFields(
+      { name: "Rule", value: getSecurityRuleLabel(ruleKey), inline: true },
+      { name: "Threshold", value: `${count}/${rule.threshold} in ${Math.round(SECURITY_TRIGGER_WINDOW_MS / 1000)}s`, inline: true },
+      { name: "Punishment", value: getSecurityPunishmentLabel(rule.punishmentType), inline: true },
+      { name: "Executor", value: `<@${normalizedExecutorId}>`, inline: true },
+      { name: "Target", value: targetId ? `<@${targetId}>` : "Unknown / N/A", inline: true },
+      { name: "Result", value: resultSummary, inline: false },
+      { name: "Details", value: details.slice(0, 1024) || "No additional details provided.", inline: false },
+    )
+    .setTimestamp();
+
+  await sendSecurityLog(guild, config, logEmbed);
 }
 
 function getRequiredDashboardFeatureForCommand(commandName: string, subcommand: string | null): string | null {
@@ -22221,6 +22501,31 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
     return;
   }
 
+  if (addedRoles.length > 0) {
+    try {
+      const auditEntry = await findRecentAuditEntry(
+        newMember.guild,
+        AuditLogEvent.MemberRoleUpdate,
+        (entry) => String(entry?.target?.id || "") === newMember.id,
+      );
+      const executorId = String(auditEntry?.executor?.id || "").trim();
+      if (executorId) {
+        const addedRoleLabels = addedRoles
+          .map((roleId) => newMember.guild.roles.cache.get(roleId)?.name || roleId)
+          .join(", ");
+        await handleSecurityTrigger(
+          newMember.guild,
+          executorId,
+          "antiRoleAdd",
+          `Added role(s) to ${newMember.user.tag}: ${addedRoleLabels || "Unknown roles"}`,
+          newMember.id,
+        );
+      }
+    } catch (securityError) {
+      console.log("[SECURITY] Failed to evaluate Anti Role Add:", securityError);
+    }
+  }
+
   console.log(`[ROLE SYNC] Added roles: ${addedRoles.join(", ") || "none"}`);
   console.log(`[ROLE SYNC] Removed roles: ${removedRoles.join(", ") || "none"}`);
 
@@ -22371,6 +22676,120 @@ client.on("guildDelete", () => {
   persistCurrentGuildSnapshot();
 });
 
+client.on("guildBanAdd", async (ban) => {
+  try {
+    const auditEntry = await findRecentAuditEntry(
+      ban.guild,
+      AuditLogEvent.MemberBanAdd,
+      (entry) => String(entry?.target?.id || "") === ban.user.id,
+    );
+    const executorId = String(auditEntry?.executor?.id || "").trim();
+    if (executorId) {
+      await handleSecurityTrigger(
+        ban.guild,
+        executorId,
+        "antiBan",
+        `Banned ${ban.user.tag}`,
+        ban.user.id,
+      );
+    }
+  } catch (error) {
+    console.log("[SECURITY] Failed to evaluate Anti Ban:", error);
+  }
+});
+
+client.on("channelCreate", async (channel) => {
+  try {
+    if (!(channel as any)?.guild) return;
+    const auditEntry = await findRecentAuditEntry(
+      (channel as any).guild,
+      AuditLogEvent.ChannelCreate,
+      (entry) => String(entry?.target?.id || "") === channel.id,
+    );
+    const executorId = String(auditEntry?.executor?.id || "").trim();
+    if (executorId) {
+      await handleSecurityTrigger(
+        (channel as any).guild,
+        executorId,
+        "antiChannelCreate",
+        `Created #${(channel as any).name || channel.id}`,
+      );
+    }
+  } catch (error) {
+    console.log("[SECURITY] Failed to evaluate Anti Channel Create:", error);
+  }
+});
+
+client.on("channelDelete", async (channel) => {
+  try {
+    if (!(channel as any)?.guild) return;
+    const auditEntry = await findRecentAuditEntry(
+      (channel as any).guild,
+      AuditLogEvent.ChannelDelete,
+      (entry) => String(entry?.target?.id || "") === channel.id,
+    );
+    const executorId = String(auditEntry?.executor?.id || "").trim();
+    if (executorId) {
+      await handleSecurityTrigger(
+        (channel as any).guild,
+        executorId,
+        "antiChannelDelete",
+        `Deleted #${(channel as any).name || channel.id}`,
+      );
+    }
+  } catch (error) {
+    console.log("[SECURITY] Failed to evaluate Anti Channel Delete:", error);
+  }
+});
+
+client.on("roleCreate", async (role) => {
+  try {
+    const auditEntry = await findRecentAuditEntry(
+      role.guild,
+      AuditLogEvent.RoleCreate,
+      (entry) => String(entry?.target?.id || "") === role.id,
+    );
+    const executorId = String(auditEntry?.executor?.id || "").trim();
+    if (executorId) {
+      await handleSecurityTrigger(role.guild, executorId, "antiRoleCreate", `Created role ${role.name}`);
+    }
+  } catch (error) {
+    console.log("[SECURITY] Failed to evaluate Anti Role Create:", error);
+  }
+});
+
+client.on("roleDelete", async (role) => {
+  try {
+    const auditEntry = await findRecentAuditEntry(
+      role.guild,
+      AuditLogEvent.RoleDelete,
+      (entry) => String(entry?.target?.id || "") === role.id,
+    );
+    const executorId = String(auditEntry?.executor?.id || "").trim();
+    if (executorId) {
+      await handleSecurityTrigger(role.guild, executorId, "antiRoleDelete", `Deleted role ${role.name}`);
+    }
+  } catch (error) {
+    console.log("[SECURITY] Failed to evaluate Anti Role Delete:", error);
+  }
+});
+
+client.on("roleUpdate", async (_oldRole, newRole) => {
+  try {
+    const auditEntry = await findRecentAuditEntry(
+      newRole.guild,
+      AuditLogEvent.RoleUpdate,
+      (entry) => String(entry?.target?.id || "") === newRole.id,
+    );
+    const executorId = String(auditEntry?.executor?.id || "").trim();
+    if (executorId) {
+      await handleSecurityTrigger(newRole.guild, executorId, "antiRoleUpdate", `Updated role ${newRole.name}`);
+    }
+  } catch (error) {
+    console.log("[SECURITY] Failed to evaluate Anti Role Update:", error);
+  }
+});
+
 // Handle user leaving server - notify open modmail/appeal threads
 client.on("guildMemberRemove", async (member) => {
   try {
@@ -22382,6 +22801,7 @@ client.on("guildMemberRemove", async (member) => {
 
     // Determine whether user was banned, kicked, or left
     let leaveStatus: "left" | "banned" | "kicked" = "left";
+    let kickExecutorId: string | null = null;
     try {
       const ban = await member.guild.bans.fetch(member.id).catch(() => null);
       if (ban) {
@@ -22392,7 +22812,10 @@ client.on("guildMemberRemove", async (member) => {
           const entry = logs.entries.find((e: any) => e.target?.id === member.id);
           if (entry) {
             const timeDiff = Date.now() - entry.createdTimestamp;
-            if (timeDiff < 15000) leaveStatus = "kicked";
+            if (timeDiff < 15000) {
+              leaveStatus = "kicked";
+              kickExecutorId = String(entry?.executor?.id || "").trim() || null;
+            }
           }
         } catch (auditErr) {
           // ignore audit log errors (no perms etc.)
@@ -22431,6 +22854,16 @@ client.on("guildMemberRemove", async (member) => {
         }
       }
     }
+
+    if (leaveStatus === "kicked" && kickExecutorId) {
+      await handleSecurityTrigger(
+        member.guild,
+        kickExecutorId,
+        "antiKick",
+        `Kicked ${member.user.tag}`,
+        member.id,
+      );
+    }
   } catch (e) {
     console.log("Error in guildMemberRemove handler:", e);
   }
@@ -22438,6 +22871,28 @@ client.on("guildMemberRemove", async (member) => {
 
 client.on("guildMemberAdd", async (member) => {
   try {
+    if (member.user.bot) {
+      try {
+        const auditEntry = await findRecentAuditEntry(
+          member.guild,
+          AuditLogEvent.BotAdd,
+          (entry) => String(entry?.target?.id || "") === member.user.id,
+        );
+        const executorId = String(auditEntry?.executor?.id || "").trim();
+        if (executorId) {
+          await handleSecurityTrigger(
+            member.guild,
+            executorId,
+            "antiBotAdd",
+            `Added bot ${member.user.tag}`,
+            member.user.id,
+          );
+        }
+      } catch (securityError) {
+        console.log("[SECURITY] Failed to evaluate Anti Bot Add:", securityError);
+      }
+    }
+
     try {
       const previousSnapshot = guildInviteSnapshots.get(member.guild.id) || new Map<string, InviteSnapshot>();
       const currentSnapshot = await fetchGuildInviteSnapshot(member.guild);
