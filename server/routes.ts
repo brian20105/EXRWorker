@@ -55,6 +55,7 @@ const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "9443850000
 const OWNER_BOT_PID_FILE = path.resolve(process.cwd(), ".owner-bot.pid");
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
+const DASHBOARD_SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -581,6 +582,64 @@ function parseDashboardConfigObject(raw: unknown): Record<string, unknown> {
   }
 }
 
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean)));
+}
+
+function getDashboardSecurityAccessSettings(raw: unknown): { accessRoleIds: string[]; accessUserIds: string[] } {
+  const parsed = parseDashboardConfigObject(raw);
+  const securityRaw = parsed[DASHBOARD_SECURITY_SETTINGS_KEY];
+  const security = securityRaw && typeof securityRaw === "object" && !Array.isArray(securityRaw)
+    ? securityRaw as Record<string, unknown>
+    : {};
+
+  return {
+    accessRoleIds: normalizeStringList(security.accessRoleIds),
+    accessUserIds: normalizeStringList(security.accessUserIds),
+  };
+}
+
+function hasDashboardSecurityAccess(userId: string, roleIds: string[], raw: unknown): boolean {
+  const settings = getDashboardSecurityAccessSettings(raw);
+  return settings.accessUserIds.includes(userId) || settings.accessRoleIds.some((roleId) => roleIds.includes(roleId));
+}
+
+function stripSecuritySettingsFromDashboardConfig(raw: unknown): string {
+  const parsed = parseDashboardConfigObject(raw);
+  delete parsed[DASHBOARD_SECURITY_SETTINGS_KEY];
+  return JSON.stringify(parsed);
+}
+
+function compareConfigValue(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return JSON.stringify(normalizeStringList(left)) === JSON.stringify(normalizeStringList(right));
+  }
+
+  if (left instanceof Date || right instanceof Date) {
+    const leftValue = left instanceof Date ? left.toISOString() : (left == null ? null : String(left));
+    const rightValue = right instanceof Date ? right.toISOString() : (right == null ? null : String(right));
+    return leftValue === rightValue;
+  }
+
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function hasOnlySecurityConfigChanges(previousConfig: any, nextConfig: any): boolean {
+  const previous = previousConfig || {};
+  const next = nextConfig || {};
+  const ignoredKeys = new Set(["id", "guildId", "updatedAt", "customCategoryPings"]);
+  const topLevelKeys = Array.from(new Set([...Object.keys(previous), ...Object.keys(next)])).filter((key) => !ignoredKeys.has(key));
+
+  for (const key of topLevelKeys) {
+    if (!compareConfigValue(previous[key], next[key])) {
+      return false;
+    }
+  }
+
+  return stripSecuritySettingsFromDashboardConfig(previous.customCategoryPings) === stripSecuritySettingsFromDashboardConfig(next.customCategoryPings);
+}
+
 function isGuildDisabledFromCustomCategoryPings(raw: unknown): boolean {
   const parsed = parseDashboardConfigObject(raw);
   return parsed[DASHBOARD_BOT_DISABLED_KEY] === true;
@@ -590,6 +649,51 @@ function writeGuildDisabledToCustomCategoryPings(raw: unknown, disabled: boolean
   const parsed = parseDashboardConfigObject(raw);
   parsed[DASHBOARD_BOT_DISABLED_KEY] = disabled;
   return JSON.stringify(parsed, null, 2);
+}
+
+async function canManageGuildDashboard(userId: string, guildId: string): Promise<boolean> {
+  if (PRIVILEGED_DASHBOARD_USER_IDS.has(userId)) {
+    return true;
+  }
+
+  if (client.isReady()) {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return false;
+
+    if (guild.ownerId === userId) {
+      return true;
+    }
+
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return false;
+
+    if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+      return true;
+    }
+
+    const config = await storage.getGuildConfig(guildId);
+    const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
+    return managerRoleIds.length > 0 && managerRoleIds.some((roleId) => member.roles.cache.has(roleId));
+  }
+
+  if (!getBotToken()) return false;
+
+  const guildResponse = await discordApiRequest(`/guilds/${guildId}`);
+  const guild = (await guildResponse.json().catch(() => ({}))) as DiscordRestGuildDetails;
+  if (String(guild.owner_id || "") === userId) {
+    return true;
+  }
+
+  const memberResponse = await discordApiRequest(`/guilds/${guildId}/members/${userId}`);
+  const member = (await memberResponse.json().catch(() => ({}))) as DiscordRestGuildMember;
+  if (hasAdministratorPermission(member.permissions)) {
+    return true;
+  }
+
+  const config = await storage.getGuildConfig(guildId);
+  const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
+  const roleIds = Array.isArray(member.roles) ? member.roles : [];
+  return managerRoleIds.length > 0 && managerRoleIds.some((roleId) => roleIds.includes(roleId));
 }
 
 async function canAccessGuild(userId: string, guildId: string): Promise<boolean> {
@@ -617,9 +721,11 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
 
     const config = await storage.getGuildConfig(guildId);
     const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
-    if (managerRoleIds.length === 0) return false;
+    const hasManagerAccess = managerRoleIds.length > 0 && managerRoleIds.some((roleId) => member.roles.cache.has(roleId));
+    const roleIds = Array.from(member.roles.cache.keys());
+    const hasSecurityAccess = hasDashboardSecurityAccess(userId, roleIds, config?.customCategoryPings);
+    const allowed = hasManagerAccess || hasSecurityAccess;
 
-    const allowed = managerRoleIds.some((roleId) => member.roles.cache.has(roleId));
     setCachedAccessDecision(userId, guildId, allowed);
     return allowed;
   }
@@ -644,9 +750,10 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
 
   const config = await storage.getGuildConfig(guildId);
   const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
-  if (managerRoleIds.length === 0) return false;
+  const hasManagerAccess = managerRoleIds.length > 0 && managerRoleIds.some((roleId) => roleIds.includes(roleId));
+  const hasSecurityAccess = hasDashboardSecurityAccess(userId, roleIds, config?.customCategoryPings);
+  const allowed = hasManagerAccess || hasSecurityAccess;
 
-  const allowed = managerRoleIds.some((roleId) => roleIds.includes(roleId));
   setCachedAccessDecision(userId, guildId, allowed);
   return allowed;
 }
@@ -2887,6 +2994,19 @@ export async function registerRoutes(
           return res.status(400).json({ error: "commandPrefix must be 1-3 characters." });
         }
         updates.commandPrefix = trimmedPrefix;
+      }
+
+      const hasManagerAccess = await canManageGuildDashboard(user.id, guildId).catch(() => false);
+      if (!hasManagerAccess) {
+        const nextComparableConfig = {
+          ...(previousConfig || {}),
+          ...updates,
+          guildId,
+        };
+
+        if (!hasOnlySecurityConfigChanges(previousConfig || {}, nextComparableConfig)) {
+          return res.status(403).json({ error: "You can only edit the Security category for this server." });
+        }
       }
       
       await storage.upsertGuildConfig({ guildId, ...updates });

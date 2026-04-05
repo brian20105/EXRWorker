@@ -95,7 +95,7 @@ interface AuthUser {
 }
 
 type SettingsTabKey = "channels" | "roles" | "embeds" | "advanced";
-type PrimaryTabKey = "settings" | "features" | "permissions" | "rosters" | "miscellaneous";
+type PrimaryTabKey = "settings" | "features" | "security" | "permissions" | "rosters" | "miscellaneous";
 
 interface RosterConfig {
   id: string;
@@ -195,6 +195,7 @@ type DashboardFeaturePostChannels = Partial<Record<FeaturePostChannelKey, string
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
   settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
   features: { label: "Bot Features", icon: Sparkles },
+  security: { label: "Security", icon: Shield },
   permissions: { label: "Bot Role Permissions", icon: Shield },
   rosters: { label: "Rosters", icon: ListTree },
   miscellaneous: { label: "Miscellaneous", icon: Braces },
@@ -230,6 +231,44 @@ interface DashboardBotPresenceSettings {
   status: "online" | "idle" | "dnd" | "invisible";
   activityType: "playing" | "listening" | "watching" | "competing";
   activityText: string;
+}
+
+type SecurityPunishmentType = "ban" | "kick" | "clear_roles";
+type SecurityRuleKey =
+  | "antiBan"
+  | "antiKick"
+  | "antiBotAdd"
+  | "antiRoleUpdate"
+  | "antiRoleAdd"
+  | "antiChannelCreate"
+  | "antiChannelDelete"
+  | "antiRoleCreate"
+  | "antiRoleDelete";
+
+interface SecurityRuleConfig {
+  threshold: number;
+  punishmentType: SecurityPunishmentType;
+  enabled: boolean;
+}
+
+interface DashboardSecuritySettings {
+  rules: Record<SecurityRuleKey, SecurityRuleConfig>;
+  whitelistedRoleIds: string[];
+  whitelistedUserIds: string[];
+  accessRoleIds: string[];
+  accessUserIds: string[];
+}
+
+interface OwnerSecurityAccessState {
+  open: boolean;
+  loaded: boolean;
+  loading: boolean;
+  saving: boolean;
+  roles: Role[];
+  config: GuildConfig | null;
+  accessRoleIds: string[];
+  accessUserIds: string[];
+  userIdInput: string;
 }
 
 interface BotFeatureModule {
@@ -316,6 +355,7 @@ const TEXT_CHANNEL_TYPES = new Set([0, 5]);
 const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
 const FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
+const SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
 const DEFAULT_TOP_FADE_COLOR = "#5865f2";
@@ -329,6 +369,52 @@ const ROSTER_EMBED_BUTTON_COLORS: Array<{ value: RosterEmbedButtonColor; label: 
   { value: "red", label: "Red" },
   { value: "grey", label: "Grey" },
 ];
+
+const SECURITY_RULE_META: Array<{ key: SecurityRuleKey; label: string; description: string }> = [
+  { key: "antiBan", label: "Anti Ban", description: "Stops mass bans before they turn into a nuke." },
+  { key: "antiKick", label: "Anti Kick", description: "Protects the server from repeated kicks." },
+  { key: "antiBotAdd", label: "Anti Bot Add", description: "Blocks unauthorized bot additions." },
+  { key: "antiRoleUpdate", label: "Anti Role Update", description: "Stops dangerous bulk role edits." },
+  { key: "antiRoleAdd", label: "Anti Role Add", description: "Prevents suspicious role assignments." },
+  { key: "antiChannelCreate", label: "Anti Channel Create", description: "Catches rapid unwanted channel creation." },
+  { key: "antiChannelDelete", label: "Anti Channel Delete", description: "Protects channels from mass deletion." },
+  { key: "antiRoleCreate", label: "Anti Role Create", description: "Stops spammy or malicious role creation." },
+  { key: "antiRoleDelete", label: "Anti Role Delete", description: "Protects important roles from deletion." },
+];
+
+function createDefaultSecuritySettings(): DashboardSecuritySettings {
+  return {
+    rules: {
+      antiBan: { threshold: 3, punishmentType: "kick", enabled: false },
+      antiKick: { threshold: 3, punishmentType: "kick", enabled: false },
+      antiBotAdd: { threshold: 1, punishmentType: "ban", enabled: false },
+      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", enabled: false },
+      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", enabled: false },
+      antiChannelCreate: { threshold: 3, punishmentType: "kick", enabled: false },
+      antiChannelDelete: { threshold: 2, punishmentType: "ban", enabled: false },
+      antiRoleCreate: { threshold: 3, punishmentType: "kick", enabled: false },
+      antiRoleDelete: { threshold: 2, punishmentType: "ban", enabled: false },
+    },
+    whitelistedRoleIds: [],
+    whitelistedUserIds: [],
+    accessRoleIds: [],
+    accessUserIds: [],
+  };
+}
+
+function createOwnerSecurityAccessState(): OwnerSecurityAccessState {
+  return {
+    open: false,
+    loaded: false,
+    loading: false,
+    saving: false,
+    roles: [],
+    config: null,
+    accessRoleIds: [],
+    accessUserIds: [],
+    userIdInput: "",
+  };
+}
 
 function normalizeHexColor(input: string | null | undefined, fallback: string): string {
   const normalized = String(input || "").trim().toLowerCase();
@@ -458,6 +544,8 @@ export default function Dashboard() {
   const [viewerRoleIds, setViewerRoleIds] = useState<string[]>([]);
   const [viewerIsAdmin, setViewerIsAdmin] = useState(false);
   const [featurePostChannels, setFeaturePostChannels] = useState<DashboardFeaturePostChannels>({});
+  const [securitySettings, setSecuritySettings] = useState<DashboardSecuritySettings>(createDefaultSecuritySettings());
+  const [securityWhitelistUserInput, setSecurityWhitelistUserInput] = useState("");
   const isOwnerUser = !!currentUser?.id && PRIVILEGED_DASHBOARD_USER_IDS.has(currentUser.id);
   const [showOwnerDashboard, setShowOwnerDashboard] = useState(false);
   const [ownerBotStatus, setOwnerBotStatus] = useState<"online" | "offline" | "checking">("checking");
@@ -465,6 +553,7 @@ export default function Dashboard() {
   const [ownerGuildCount, setOwnerGuildCount] = useState<number>(0);
   const [ownerGuilds, setOwnerGuilds] = useState<Guild[]>([]);
   const [ownerGuildsLoading, setOwnerGuildsLoading] = useState(false);
+  const [ownerSecurityAccess, setOwnerSecurityAccess] = useState<Record<string, OwnerSecurityAccessState>>({});
   const [ownerUpdatingGuildId, setOwnerUpdatingGuildId] = useState<string | null>(null);
   const [ownerTurningOn, setOwnerTurningOn] = useState(false);
   const [ownerTurningOff, setOwnerTurningOff] = useState(false);
@@ -627,6 +716,12 @@ export default function Dashboard() {
     setPermissionSettings(sanitizedPermissionSettings);
     setWelcomeEmbedSettings(getWelcomeEmbedSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     setBotPresenceSettings(getBotPresenceSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+    const nextSecuritySettings = getSecuritySettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+    setSecuritySettings({
+      ...nextSecuritySettings,
+      whitelistedRoleIds: sanitizeRoleIds(nextSecuritySettings.whitelistedRoleIds),
+      accessRoleIds: sanitizeRoleIds(nextSecuritySettings.accessRoleIds),
+    });
     syncFeatureFlagsState(sanitizedConfig, nextConfig.customCategoryPings || "{}");
 
     if (!preserveView) {
@@ -1801,6 +1896,46 @@ export default function Dashboard() {
     return next;
   };
 
+  const getSecuritySettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardSecuritySettings => {
+    const parsed = parseJsonObjectSafely(raw);
+    const value = parsed[SECURITY_SETTINGS_KEY];
+    const securityObject = value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+    const defaultSettings = createDefaultSecuritySettings();
+    const rulesRaw = securityObject.rules && typeof securityObject.rules === "object" && !Array.isArray(securityObject.rules)
+      ? securityObject.rules as Record<string, unknown>
+      : {};
+
+    const rules = SECURITY_RULE_META.reduce<Record<SecurityRuleKey, SecurityRuleConfig>>((acc, ruleMeta) => {
+      const rawRule = rulesRaw[ruleMeta.key];
+      const ruleObject = rawRule && typeof rawRule === "object" && !Array.isArray(rawRule)
+        ? rawRule as Record<string, unknown>
+        : {};
+      const nextThreshold = Number(ruleObject.threshold);
+      const punishmentValue = typeof ruleObject.punishmentType === "string" ? ruleObject.punishmentType : defaultSettings.rules[ruleMeta.key].punishmentType;
+
+      acc[ruleMeta.key] = {
+        enabled: ruleObject.enabled === true,
+        threshold: Number.isFinite(nextThreshold) && nextThreshold > 0
+          ? Math.max(1, Math.min(50, Math.round(nextThreshold)))
+          : defaultSettings.rules[ruleMeta.key].threshold,
+        punishmentType: punishmentValue === "ban" || punishmentValue === "kick" || punishmentValue === "clear_roles"
+          ? punishmentValue
+          : defaultSettings.rules[ruleMeta.key].punishmentType,
+      };
+      return acc;
+    }, {} as Record<SecurityRuleKey, SecurityRuleConfig>);
+
+    return {
+      rules,
+      whitelistedRoleIds: Array.from(new Set(normalizeStringArray(securityObject.whitelistedRoleIds))),
+      whitelistedUserIds: Array.from(new Set(normalizeStringArray(securityObject.whitelistedUserIds))),
+      accessRoleIds: Array.from(new Set(normalizeStringArray(securityObject.accessRoleIds))),
+      accessUserIds: Array.from(new Set(normalizeStringArray(securityObject.accessUserIds))),
+    };
+  };
+
   const normalizeStringArray = (value: unknown): string[] => {
     if (!Array.isArray(value)) return [];
     return value
@@ -1812,6 +1947,24 @@ export default function Dashboard() {
     const validRoleIds = new Set(roles.map((role) => role.id));
     return (roleIds || []).filter((id) => validRoleIds.has(id));
   };
+
+  const sanitizeSecuritySettings = (value: DashboardSecuritySettings): DashboardSecuritySettings => ({
+    rules: SECURITY_RULE_META.reduce<Record<SecurityRuleKey, SecurityRuleConfig>>((acc, ruleMeta) => {
+      const currentRule = value.rules[ruleMeta.key] || createDefaultSecuritySettings().rules[ruleMeta.key];
+      acc[ruleMeta.key] = {
+        enabled: currentRule.enabled === true,
+        threshold: Math.max(1, Math.min(50, Math.round(Number(currentRule.threshold) || createDefaultSecuritySettings().rules[ruleMeta.key].threshold))),
+        punishmentType: currentRule.punishmentType === "ban" || currentRule.punishmentType === "kick" || currentRule.punishmentType === "clear_roles"
+          ? currentRule.punishmentType
+          : createDefaultSecuritySettings().rules[ruleMeta.key].punishmentType,
+      };
+      return acc;
+    }, {} as Record<SecurityRuleKey, SecurityRuleConfig>),
+    whitelistedRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(value.whitelistedRoleIds))),
+    whitelistedUserIds: Array.from(new Set(normalizeStringArray(value.whitelistedUserIds))),
+    accessRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(value.accessRoleIds))),
+    accessUserIds: Array.from(new Set(normalizeStringArray(value.accessUserIds))),
+  });
 
   const getPermissionSettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardPermissionSettings => {
     const parsed = parseJsonObjectSafely(raw);
@@ -1943,6 +2096,247 @@ export default function Dashboard() {
     updateConfig(key, [...current, roleId]);
   };
 
+  const updateSecuritySettings = (updater: (prev: DashboardSecuritySettings) => DashboardSecuritySettings) => {
+    setSecuritySettings((prev) => {
+      const next = sanitizeSecuritySettings(updater(prev));
+      setCustomCategoryPingsText((previousText) => {
+        const parsed = parseJsonObjectSafely(previousText || config.customCategoryPings || "{}");
+        parsed[SECURITY_SETTINGS_KEY] = next;
+        const nextText = JSON.stringify(parsed, null, 2);
+        updateConfig("customCategoryPings", nextText);
+        return nextText;
+      });
+      return next;
+    });
+  };
+
+  const updateSecurityRule = (ruleKey: SecurityRuleKey, updates: Partial<SecurityRuleConfig>) => {
+    updateSecuritySettings((prev) => ({
+      ...prev,
+      rules: {
+        ...prev.rules,
+        [ruleKey]: {
+          ...prev.rules[ruleKey],
+          ...updates,
+        },
+      },
+    }));
+  };
+
+  const toggleSecurityRoleList = (key: "whitelistedRoleIds" | "accessRoleIds", roleId: string) => {
+    updateSecuritySettings((prev) => {
+      const current = prev[key] || [];
+      return {
+        ...prev,
+        [key]: current.includes(roleId)
+          ? current.filter((entry) => entry !== roleId)
+          : [...current, roleId],
+      };
+    });
+  };
+
+  const addSecurityWhitelistedUser = () => {
+    const userId = securityWhitelistUserInput.trim();
+    if (!/^\d{5,}$/.test(userId)) {
+      toast({ title: "Invalid user ID", description: "Enter a valid Discord user ID to whitelist.", variant: "destructive" });
+      return;
+    }
+
+    updateSecuritySettings((prev) => ({
+      ...prev,
+      whitelistedUserIds: Array.from(new Set([...(prev.whitelistedUserIds || []), userId])),
+    }));
+    setSecurityWhitelistUserInput("");
+  };
+
+  const removeSecurityWhitelistedUser = (userId: string) => {
+    updateSecuritySettings((prev) => ({
+      ...prev,
+      whitelistedUserIds: (prev.whitelistedUserIds || []).filter((entry) => entry !== userId),
+    }));
+  };
+
+  const toggleOwnerSecurityPanel = async (guildId: string) => {
+    const currentState = ownerSecurityAccess[guildId] || createOwnerSecurityAccessState();
+    const nextOpen = !currentState.open;
+
+    setOwnerSecurityAccess((prev) => ({
+      ...prev,
+      [guildId]: {
+        ...createOwnerSecurityAccessState(),
+        ...prev[guildId],
+        open: nextOpen,
+      },
+    }));
+
+    if (!nextOpen || currentState.loaded || currentState.loading) {
+      return;
+    }
+
+    setOwnerSecurityAccess((prev) => ({
+      ...prev,
+      [guildId]: {
+        ...createOwnerSecurityAccessState(),
+        ...prev[guildId],
+        open: true,
+        loading: true,
+      },
+    }));
+
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/config`, undefined, 15000);
+      const nextConfig = (data?.config || {}) as GuildConfig;
+      const nextRoles = (data?.roles || []) as Role[];
+      const validRoleIds = new Set(nextRoles.map((role) => role.id));
+      const nextSecurity = getSecuritySettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+
+      setOwnerSecurityAccess((prev) => ({
+        ...prev,
+        [guildId]: {
+          ...createOwnerSecurityAccessState(),
+          ...prev[guildId],
+          open: true,
+          loaded: true,
+          loading: false,
+          config: nextConfig,
+          roles: nextRoles,
+          accessRoleIds: nextSecurity.accessRoleIds.filter((roleId) => validRoleIds.has(roleId)),
+          accessUserIds: nextSecurity.accessUserIds,
+        },
+      }));
+    } catch (error: any) {
+      setOwnerSecurityAccess((prev) => ({
+        ...prev,
+        [guildId]: {
+          ...createOwnerSecurityAccessState(),
+          ...prev[guildId],
+          open: true,
+          loading: false,
+        },
+      }));
+      toast({ title: "Error", description: error?.message || "Failed to load security access for this server.", variant: "destructive" });
+    }
+  };
+
+  const toggleOwnerSecurityAccessRole = (guildId: string, roleId: string) => {
+    setOwnerSecurityAccess((prev) => {
+      const currentState = prev[guildId] || createOwnerSecurityAccessState();
+      const nextRoleIds = currentState.accessRoleIds.includes(roleId)
+        ? currentState.accessRoleIds.filter((entry) => entry !== roleId)
+        : [...currentState.accessRoleIds, roleId];
+
+      return {
+        ...prev,
+        [guildId]: {
+          ...currentState,
+          accessRoleIds: Array.from(new Set(nextRoleIds)),
+        },
+      };
+    });
+  };
+
+  const addOwnerSecurityAccessUser = (guildId: string) => {
+    const currentState = ownerSecurityAccess[guildId] || createOwnerSecurityAccessState();
+    const userId = currentState.userIdInput.trim();
+    if (!/^\d{5,}$/.test(userId)) {
+      toast({ title: "Invalid user ID", description: "Enter a valid Discord user ID for Security access.", variant: "destructive" });
+      return;
+    }
+
+    setOwnerSecurityAccess((prev) => ({
+      ...prev,
+      [guildId]: {
+        ...currentState,
+        accessUserIds: Array.from(new Set([...(currentState.accessUserIds || []), userId])),
+        userIdInput: "",
+      },
+    }));
+  };
+
+  const removeOwnerSecurityAccessUser = (guildId: string, userId: string) => {
+    setOwnerSecurityAccess((prev) => {
+      const currentState = prev[guildId] || createOwnerSecurityAccessState();
+      return {
+        ...prev,
+        [guildId]: {
+          ...currentState,
+          accessUserIds: currentState.accessUserIds.filter((entry) => entry !== userId),
+        },
+      };
+    });
+  };
+
+  const saveOwnerSecurityAccess = async (guildId: string) => {
+    const currentState = ownerSecurityAccess[guildId];
+    if (!currentState?.config) return;
+
+    setOwnerSecurityAccess((prev) => ({
+      ...prev,
+      [guildId]: {
+        ...currentState,
+        saving: true,
+      },
+    }));
+
+    try {
+      const parsed = parseJsonObjectSafely(currentState.config.customCategoryPings || "{}");
+      const existingSecurity = getSecuritySettingsFromCustomCategoryPings(currentState.config.customCategoryPings || "{}");
+      parsed[SECURITY_SETTINGS_KEY] = {
+        ...existingSecurity,
+        accessRoleIds: Array.from(new Set(currentState.accessRoleIds)),
+        accessUserIds: Array.from(new Set(currentState.accessUserIds)),
+      };
+
+      const payload: GuildConfig = {
+        ...currentState.config,
+        commandPrefix: (currentState.config.commandPrefix || ".").trim() || ".",
+        customCategoryPings: JSON.stringify(parsed, null, 2),
+      };
+
+      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }, 15000);
+
+      const savedConfig = (data?.config || payload) as GuildConfig;
+      const savedSecurity = getSecuritySettingsFromCustomCategoryPings(savedConfig.customCategoryPings || "{}");
+
+      setOwnerSecurityAccess((prev) => ({
+        ...prev,
+        [guildId]: {
+          ...(prev[guildId] || createOwnerSecurityAccessState()),
+          open: true,
+          loaded: true,
+          loading: false,
+          saving: false,
+          config: savedConfig,
+          roles: (prev[guildId]?.roles || currentState.roles || []),
+          accessRoleIds: savedSecurity.accessRoleIds,
+          accessUserIds: savedSecurity.accessUserIds,
+          userIdInput: "",
+        },
+      }));
+
+      if (guildId === selectedGuild) {
+        updateConfig("customCategoryPings", savedConfig.customCategoryPings || "{}");
+        setCustomCategoryPingsText(savedConfig.customCategoryPings || "{}");
+        setSecuritySettings(sanitizeSecuritySettings(savedSecurity));
+      }
+
+      toast({ title: "Saved", description: "Security access updated for this server." });
+    } catch (error: any) {
+      setOwnerSecurityAccess((prev) => ({
+        ...prev,
+        [guildId]: {
+          ...(prev[guildId] || createOwnerSecurityAccessState()),
+          saving: false,
+        },
+      }));
+      toast({ title: "Error", description: error?.message || "Failed to update security access.", variant: "destructive" });
+    }
+  };
+
   const parseJsonField = (raw: string, fieldName: string) => {
     const trimmed = raw.trim();
     if (!trimmed) return null;
@@ -2066,6 +2460,12 @@ export default function Dashboard() {
   const voiceChannels = channels.filter((c) => c.type === 2 || c.type === 13);
   const selectedGuildSummary = guilds.find((guild) => guild.id === selectedGuild) || null;
   const visibleOwnerGuilds = ownerGuilds;
+  const hasGeneralDashboardAccess = viewerIsAdmin || isOwnerUser || filterToCurrentServerRoleIds(config.modRoleIds || []).some((roleId) => viewerRoleIds.includes(roleId));
+  const canAccessSecurityTab = viewerIsAdmin
+    || isOwnerUser
+    || (!!currentUser?.id && securitySettings.accessUserIds.includes(currentUser.id))
+    || securitySettings.accessRoleIds.some((roleId) => viewerRoleIds.includes(roleId));
+  const hasPrimaryTabAccess = (tab: PrimaryTabKey) => tab === "security" ? canAccessSecurityTab : hasGeneralDashboardAccess;
   const roleSyncSourceRoles = roleSyncSourceGuildId === selectedGuild
     ? roles
     : (roleSyncGuildRoles[roleSyncSourceGuildId] || []);
@@ -2114,6 +2514,20 @@ export default function Dashboard() {
     if (requiredRoleIds.length === 0) return true;
     return requiredRoleIds.some((roleId) => viewerRoleIds.includes(roleId));
   };
+
+  useEffect(() => {
+    if (!selectedGuild) return;
+    if (hasPrimaryTabAccess(activePrimaryTab)) return;
+
+    if (canAccessSecurityTab) {
+      setActivePrimaryTab("security");
+      return;
+    }
+
+    if (hasGeneralDashboardAccess) {
+      setActivePrimaryTab("settings");
+    }
+  }, [selectedGuild, activePrimaryTab, canAccessSecurityTab, hasGeneralDashboardAccess]);
 
   const renderFeaturePostSection = (
     featureKey: FeaturePostChannelKey,
@@ -3162,6 +3576,79 @@ export default function Dashboard() {
     );
   };
 
+  const renderCustomRoleSection = (
+    label: string,
+    availableRoles: Role[],
+    selectedRoleIds: string[],
+    onToggle: (roleId: string) => void,
+    testIdPrefix: string,
+  ) => {
+    const query = (roleSearches[testIdPrefix] || "").trim().toLowerCase();
+    const matchedRoles = availableRoles.filter((role) => !query || role.name.toLowerCase().includes(query));
+
+    return (
+      <div className="space-y-3">
+        <Label>{label}</Label>
+        <div className="space-y-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
+                <span className="truncate text-left">
+                  {selectedRoleIds.length > 0 ? `${selectedRoleIds.length} role(s) selected` : "Select roles"}
+                </span>
+                <ChevronDown className="h-4 w-4 opacity-70" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="max-h-72 w-80">
+              <div className="px-1 pb-2">
+                <Input
+                  value={roleSearches[testIdPrefix] || ""}
+                  onChange={(event) =>
+                    setRoleSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))
+                  }
+                  placeholder="Search roles..."
+                  className="h-8"
+                  data-testid={`${testIdPrefix}-search`}
+                />
+              </div>
+              {matchedRoles.map((role) => {
+                const selected = selectedRoleIds.includes(role.id);
+                return (
+                  <DropdownMenuCheckboxItem
+                    key={role.id}
+                    checked={selected}
+                    onCheckedChange={() => onToggle(role.id)}
+                    onSelect={(event) => event.preventDefault()}
+                    data-testid={`${testIdPrefix}-${role.id}`}
+                  >
+                    {role.name}
+                  </DropdownMenuCheckboxItem>
+                );
+              })}
+              {matchedRoles.length === 0 && (
+                <p className="px-2 py-1 text-xs text-muted-foreground">No roles found.</p>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <div className="flex flex-wrap gap-2">
+            {availableRoles
+              .filter((role) => selectedRoleIds.includes(role.id))
+              .slice(0, 10)
+              .map((role) => (
+                <Badge key={role.id} variant="secondary" className="max-w-[220px] truncate" title={role.name}>
+                  {role.name}
+                </Badge>
+              ))}
+            {selectedRoleIds.length > 10 && (
+              <Badge variant="outline">+{selectedRoleIds.length - 10} more</Badge>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderRoleSection = (label: string, key: keyof GuildConfig, testIdPrefix: string) => {
     const selectedRoleIds = filterToCurrentServerRoleIds((config[key] as string[] | undefined) || []);
 
@@ -3493,61 +3980,164 @@ export default function Dashboard() {
                         </div>
                       ) : (
                         <div className="space-y-3">
-                        {visibleOwnerGuilds.map((guild) => (
-                          <div key={`owner-${guild.id}`} className="flex flex-col gap-3 rounded-xl border border-border bg-card/60 p-4 lg:flex-row lg:items-center lg:justify-between" data-testid={`owner-guild-${guild.id}`}>
-                            <div className="flex items-start gap-3 min-w-0">
-                              <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-muted">
-                                {guild.icon ? (
-                                  <img src={guild.icon} alt={guild.name} className="h-full w-full object-cover" />
-                                ) : (
-                                  <div className="flex h-full w-full items-center justify-center">
-                                    <Server className="h-6 w-6 text-muted-foreground" />
+                        {visibleOwnerGuilds.map((guild) => {
+                          const accessState = ownerSecurityAccess[guild.id] || createOwnerSecurityAccessState();
+                          const accessRoleNames = accessState.roles
+                            .filter((role) => accessState.accessRoleIds.includes(role.id))
+                            .map((role) => role.name);
+
+                          return (
+                            <div key={`owner-${guild.id}`} className="space-y-3 rounded-xl border border-border bg-card/60 p-4" data-testid={`owner-guild-${guild.id}`}>
+                              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                <div className="flex items-start gap-3 min-w-0">
+                                  <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-muted">
+                                    {guild.icon ? (
+                                      <img src={guild.icon} alt={guild.name} className="h-full w-full object-cover" />
+                                    ) : (
+                                      <div className="flex h-full w-full items-center justify-center">
+                                        <Server className="h-6 w-6 text-muted-foreground" />
+                                      </div>
+                                    )}
                                   </div>
-                                )}
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <p className="line-clamp-2 font-medium leading-tight">{guild.name}</p>
-                                <p className="mt-1 text-xs text-muted-foreground">{guild.memberCount} members</p>
-                                <div className="mt-2 flex flex-wrap gap-2">
-                                  <Badge variant={guild.isDisabled ? "destructive" : "outline"}>
-                                  {guild.isDisabled ? "Disabled" : "Enabled"}
-                                  </Badge>
-                                  <Badge variant="outline">{guild.id}</Badge>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="line-clamp-2 font-medium leading-tight">{guild.name}</p>
+                                    <p className="mt-1 text-xs text-muted-foreground">{guild.memberCount} members</p>
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      <Badge variant={guild.isDisabled ? "destructive" : "outline"}>
+                                        {guild.isDisabled ? "Disabled" : "Enabled"}
+                                      </Badge>
+                                      <Badge variant="outline">{guild.id}</Badge>
+                                    </div>
+                                    <p className="mt-2 text-xs text-muted-foreground">
+                                      Security access: {accessState.loaded
+                                        ? `${accessRoleNames.length} role(s) • ${accessState.accessUserIds.length} user ID(s)`
+                                        : "Click Security Access to manage"}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
+                                  <Button
+                                    variant="outline"
+                                    className="flex-1"
+                                    onClick={() => toggleOwnerSecurityPanel(guild.id)}
+                                    disabled={ownerGuildsLoading || ownerUpdatingGuildId === guild.id}
+                                    data-testid={`button-owner-security-access-${guild.id}`}
+                                  >
+                                    {accessState.open ? "Hide Security Access" : "Security Access"}
+                                  </Button>
+                                  <Button
+                                    className="flex-1 bg-red-600 text-white hover:bg-red-700"
+                                    onClick={() => setOwnerGuildDisabled(guild, true)}
+                                    disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId === guild.id || guild.isDisabled}
+                                    data-testid={`button-owner-disable-guild-${guild.id}`}
+                                  >
+                                    {ownerUpdatingGuildId === guild.id && !guild.isDisabled ? "Disabling..." : "Disable"}
+                                  </Button>
+                                  <Button
+                                    className="flex-1 bg-green-600 text-white hover:bg-green-700"
+                                    onClick={() => setOwnerGuildDisabled(guild, false)}
+                                    disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId === guild.id || !guild.isDisabled}
+                                    data-testid={`button-owner-enable-guild-${guild.id}`}
+                                  >
+                                    {ownerUpdatingGuildId === guild.id && !!guild.isDisabled ? "Enabling..." : "Enable"}
+                                  </Button>
+
+                                  <Button
+                                    variant="destructive"
+                                    size="sm"
+                                    className="w-full sm:w-auto"
+                                    onClick={() => leaveServer(guild)}
+                                    disabled={leavingGuildId === guild.id || ownerUpdatingGuildId === guild.id}
+                                    data-testid={`button-leave-guild-${guild.id}`}
+                                  >
+                                    {leavingGuildId === guild.id ? "Leaving..." : "Leave Server"}
+                                  </Button>
                                 </div>
                               </div>
-                            </div>
 
-                            <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
-                              <Button
-                                className="flex-1 bg-red-600 text-white hover:bg-red-700"
-                                onClick={() => setOwnerGuildDisabled(guild, true)}
-                                disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId === guild.id || guild.isDisabled}
-                                data-testid={`button-owner-disable-guild-${guild.id}`}
-                              >
-                                {ownerUpdatingGuildId === guild.id && !guild.isDisabled ? "Disabling..." : "Disable"}
-                              </Button>
-                              <Button
-                                className="flex-1 bg-green-600 text-white hover:bg-green-700"
-                                onClick={() => setOwnerGuildDisabled(guild, false)}
-                                disabled={ownerTurningOn || ownerTurningOff || ownerLeavingAll || ownerGuildsLoading || ownerUpdatingGuildId === guild.id || !guild.isDisabled}
-                                data-testid={`button-owner-enable-guild-${guild.id}`}
-                              >
-                                {ownerUpdatingGuildId === guild.id && !!guild.isDisabled ? "Enabling..." : "Enable"}
-                              </Button>
+                              {accessState.open && (
+                                <div className="rounded-xl border border-border/70 bg-background/40 p-4">
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                      <p className="font-medium">Security Category Access</p>
+                                      <p className="text-xs text-muted-foreground">Choose which roles or user IDs can open the Security tab for this server.</p>
+                                    </div>
+                                    <Button
+                                      size="sm"
+                                      onClick={() => saveOwnerSecurityAccess(guild.id)}
+                                      disabled={accessState.loading || accessState.saving}
+                                      data-testid={`button-owner-security-access-save-${guild.id}`}
+                                    >
+                                      {accessState.saving ? "Saving..." : "Update Access"}
+                                    </Button>
+                                  </div>
 
-                              <Button
-                                variant="destructive"
-                                size="sm"
-                                className="w-full sm:w-auto"
-                                onClick={() => leaveServer(guild)}
-                                disabled={leavingGuildId === guild.id || ownerUpdatingGuildId === guild.id}
-                                data-testid={`button-leave-guild-${guild.id}`}
-                              >
-                                {leavingGuildId === guild.id ? "Leaving..." : "Leave Server"}
-                              </Button>
+                                  {accessState.loading ? (
+                                    <p className="mt-4 text-sm text-muted-foreground">Loading roles...</p>
+                                  ) : (
+                                    <div className="mt-4 grid gap-4 xl:grid-cols-2">
+                                      <div className="space-y-4">
+                                        {renderCustomRoleSection(
+                                          "Allowed Roles",
+                                          accessState.roles,
+                                          accessState.accessRoleIds,
+                                          (roleId) => toggleOwnerSecurityAccessRole(guild.id, roleId),
+                                          `owner-security-access-${guild.id}`,
+                                        )}
+                                      </div>
+
+                                      <div className="space-y-3">
+                                        <Label>Allowed Users</Label>
+                                        <div className="flex flex-col gap-2 sm:flex-row">
+                                          <Input
+                                            value={accessState.userIdInput}
+                                            onChange={(event) => setOwnerSecurityAccess((prev) => ({
+                                              ...prev,
+                                              [guild.id]: {
+                                                ...(prev[guild.id] || createOwnerSecurityAccessState()),
+                                                userIdInput: event.target.value,
+                                              },
+                                            }))}
+                                            placeholder="Enter a user ID"
+                                            data-testid={`input-owner-security-user-${guild.id}`}
+                                          />
+                                          <Button
+                                            type="button"
+                                            onClick={() => addOwnerSecurityAccessUser(guild.id)}
+                                            data-testid={`button-owner-security-user-add-${guild.id}`}
+                                          >
+                                            Add User
+                                          </Button>
+                                        </div>
+
+                                        <div className="flex flex-wrap gap-2">
+                                          {accessState.accessUserIds.length === 0 ? (
+                                            <p className="text-sm text-muted-foreground">No extra user IDs are allowed yet.</p>
+                                          ) : (
+                                            accessState.accessUserIds.map((userId) => (
+                                              <Badge key={`owner-security-${guild.id}-${userId}`} variant="secondary" className="gap-2 pr-1">
+                                                {userId}
+                                                <button
+                                                  type="button"
+                                                  onClick={() => removeOwnerSecurityAccessUser(guild.id, userId)}
+                                                  className="rounded p-0.5 hover:bg-background/60"
+                                                  aria-label={`Remove ${userId}`}
+                                                >
+                                                  <X className="h-3 w-3" />
+                                                </button>
+                                              </Badge>
+                                            ))
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                         </div>
                       )}
                     </div>
@@ -3697,25 +4287,44 @@ export default function Dashboard() {
           <>
           <Tabs
             value={activePrimaryTab}
-            onValueChange={(value) => setActivePrimaryTab(value as PrimaryTabKey)}
+            onValueChange={(value) => {
+              const nextTab = value as PrimaryTabKey;
+              if (!hasPrimaryTabAccess(nextTab)) {
+                toast({
+                  title: "Access denied",
+                  description: nextTab === "security"
+                    ? "You do not have permission to access the Security category for this server."
+                    : "You do not have permission to manage this part of the dashboard.",
+                  variant: "destructive",
+                });
+                return;
+              }
+              setActivePrimaryTab(nextTab);
+            }}
             className="grid grid-cols-[84px_minmax(0,1fr)] gap-4 sm:grid-cols-[240px_minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-6"
           >
             <TabsList className="flex h-fit w-full flex-col gap-2 rounded-2xl border border-border/70 bg-card/85 p-2 shadow-sm backdrop-blur sm:p-3">
               {(Object.entries(PRIMARY_TAB_META) as Array<[PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }]>)
                 .map(([tabKey, meta]) => {
                   const Icon = meta.icon;
+                  const canOpenTab = hasPrimaryTabAccess(tabKey);
                   return (
                     <TabsTrigger
                       key={tabKey}
                       value={tabKey}
+                      disabled={!canOpenTab}
                       data-testid={tabKey === "settings"
                         ? "tab-settings"
                         : tabKey === "features"
                           ? "tab-bot-features"
-                          : tabKey === "rosters"
-                            ? "tab-rosters"
-                            : "tab-miscellaneous"}
-                      className="group flex min-h-14 w-full items-center justify-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-muted-foreground transition-all data-[state=active]:border-primary/30 data-[state=active]:bg-primary/15 data-[state=active]:text-foreground data-[state=active]:shadow-sm sm:justify-start"
+                          : tabKey === "security"
+                            ? "tab-security"
+                            : tabKey === "permissions"
+                              ? "tab-permissions"
+                              : tabKey === "rosters"
+                                ? "tab-rosters"
+                                : "tab-miscellaneous"}
+                      className="group flex min-h-14 w-full items-center justify-center gap-3 rounded-xl border border-transparent px-3 py-3 text-left text-muted-foreground transition-all data-[state=active]:border-primary/30 data-[state=active]:bg-primary/15 data-[state=active]:text-foreground data-[state=active]:shadow-sm disabled:cursor-not-allowed disabled:opacity-45 sm:justify-start"
                     >
                       <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-border/60 bg-background/80 text-primary transition-transform group-data-[state=active]:scale-105 group-data-[state=active]:border-primary/40 group-data-[state=active]:bg-primary/10">
                         <Icon className="h-4 w-4" />
@@ -3988,6 +4597,162 @@ export default function Dashboard() {
                   </div>
                 </CardContent>
               </Card>
+            </TabsContent>
+
+            <TabsContent value="security" className="mt-0 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Security</h3>
+                <p className="mt-1 text-sm text-muted-foreground">Configure anti-nuke thresholds, punishments, and protected roles or users for this server.</p>
+              </div>
+
+              {!canAccessSecurityTab ? (
+                <Card className="border-border/80 bg-card/90">
+                  <CardContent className="py-6">
+                    <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4">
+                      <div className="flex items-start gap-3">
+                        <AlertCircle className="mt-0.5 h-5 w-5 text-destructive" />
+                        <div>
+                          <p className="font-medium text-destructive">Access denied</p>
+                          <p className="mt-1 text-sm text-muted-foreground">Only explicitly allowed users or roles can open this Security category.</p>
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <>
+                  <Card className="border-border/80 bg-card/90" data-testid="card-security-rules">
+                    <CardHeader className="space-y-1">
+                      <CardTitle className="text-base">Anti-Nuke Protection</CardTitle>
+                      <CardDescription>
+                        Set how many times someone can do an action before Security responds with the selected punishment.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {SECURITY_RULE_META.map((ruleMeta) => {
+                        const rule = securitySettings.rules[ruleMeta.key];
+                        return (
+                          <div
+                            key={ruleMeta.key}
+                            className="grid gap-3 rounded-xl border border-border/70 bg-card/40 p-4 md:grid-cols-[minmax(0,1fr)_120px_190px_auto] md:items-center"
+                          >
+                            <div>
+                              <p className="font-semibold uppercase tracking-wide">{ruleMeta.label}</p>
+                              <p className="mt-1 text-sm text-muted-foreground">{ruleMeta.description}</p>
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Threshold</Label>
+                              <Input
+                                type="number"
+                                min={1}
+                                max={50}
+                                value={String(rule.threshold)}
+                                onChange={(event) => updateSecurityRule(ruleMeta.key, {
+                                  threshold: Math.max(1, Math.min(50, Number(event.target.value) || 1)),
+                                })}
+                                data-testid={`input-security-threshold-${ruleMeta.key}`}
+                              />
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Punishment Type</Label>
+                              <Select
+                                value={rule.punishmentType}
+                                onValueChange={(value) => updateSecurityRule(ruleMeta.key, {
+                                  punishmentType: value as SecurityPunishmentType,
+                                })}
+                              >
+                                <SelectTrigger data-testid={`select-security-punishment-${ruleMeta.key}`}>
+                                  <SelectValue placeholder="Select punishment" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="ban">Ban</SelectItem>
+                                  <SelectItem value="kick">Kick</SelectItem>
+                                  <SelectItem value="clear_roles">Clear Roles</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Status</Label>
+                              <Button
+                                type="button"
+                                size="icon"
+                                onClick={() => updateSecurityRule(ruleMeta.key, { enabled: !rule.enabled })}
+                                className={rule.enabled
+                                  ? "h-11 w-11 bg-primary text-primary-foreground hover:bg-primary/90"
+                                  : "h-11 w-11 border border-border bg-muted/40 text-muted-foreground hover:bg-muted"}
+                                data-testid={`button-security-toggle-${ruleMeta.key}`}
+                              >
+                                {rule.enabled ? <CheckCircle2 className="h-5 w-5" /> : <X className="h-5 w-5" />}
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </CardContent>
+                  </Card>
+
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <Card className="border-border/80 bg-card/90" data-testid="card-security-whitelisted-roles">
+                      <CardHeader className="space-y-1">
+                        <CardTitle className="text-base">WhiteListed Roles</CardTitle>
+                        <CardDescription>Members with these roles are never punished by Security.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {renderCustomRoleSection(
+                          "Protected Roles",
+                          roles,
+                          securitySettings.whitelistedRoleIds,
+                          (roleId) => toggleSecurityRoleList("whitelistedRoleIds", roleId),
+                          "security-whitelisted-roles",
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card className="border-border/80 bg-card/90" data-testid="card-security-whitelisted-users">
+                      <CardHeader className="space-y-1">
+                        <CardTitle className="text-base">WhiteListed Users</CardTitle>
+                        <CardDescription>Add or remove specific Discord user IDs that Security should never affect.</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <Input
+                            value={securityWhitelistUserInput}
+                            onChange={(event) => setSecurityWhitelistUserInput(event.target.value)}
+                            placeholder="Enter a user ID"
+                            data-testid="input-security-whitelisted-user"
+                          />
+                          <Button type="button" onClick={addSecurityWhitelistedUser} data-testid="button-security-whitelisted-user-add">
+                            Add User
+                          </Button>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                          {securitySettings.whitelistedUserIds.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">No users are whitelisted yet.</p>
+                          ) : (
+                            securitySettings.whitelistedUserIds.map((userId) => (
+                              <Badge key={`security-user-${userId}`} variant="secondary" className="gap-2 pr-1">
+                                {userId}
+                                <button
+                                  type="button"
+                                  onClick={() => removeSecurityWhitelistedUser(userId)}
+                                  className="rounded p-0.5 hover:bg-background/60"
+                                  aria-label={`Remove ${userId}`}
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </Badge>
+                            ))
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </div>
+                </>
+              )}
             </TabsContent>
 
             <TabsContent value="permissions" className="mt-0 space-y-4">
