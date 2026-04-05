@@ -51,6 +51,7 @@ const DISABLED_MESSAGE = "This is currently disabled, please contact the server 
 const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
 const SECURITY_AUDIT_LOOKUP_DELAY_MS = 1_000;
 const BLACKLIST_REBAN_RETRY_DELAYS_MS = [0, 120, 300, 750];
+const BLACKLIST_WATCHDOG_INTERVAL_MS = 2_000;
 let botInstanceLockAcquired = false;
 
 const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
@@ -498,6 +499,8 @@ async function sendSecurityLog(guild: any, config: any, securitySettings: Dashbo
   }
 }
 
+const blacklistSweepInProgress = new Set<string>();
+
 async function enforceBlacklistedUserBan(
   guild: any,
   userId: string | null | undefined,
@@ -536,6 +539,48 @@ async function enforceBlacklistedUserBan(
 
   console.log(`[BLACKLIST] Failed to enforce blacklist on ${normalizedUserId} in guild ${guild.id}:`, lastError);
   return false;
+}
+
+async function enforceGuildBlacklistState(guild: any): Promise<void> {
+  const guildId = String(guild?.id || "").trim();
+  if (!guildId || blacklistSweepInProgress.has(guildId)) {
+    return;
+  }
+
+  blacklistSweepInProgress.add(guildId);
+  try {
+    const config = await storage.getGuildConfig(guildId).catch(() => null);
+    const blacklistedUsers = getDashboardBlacklistedUsers(config);
+    const entries = Object.entries(blacklistedUsers);
+    if (entries.length === 0) {
+      return;
+    }
+
+    for (const [userId, entry] of entries) {
+      const activeBan = await guild.bans.fetch(userId).catch(() => null);
+      if (activeBan) {
+        continue;
+      }
+
+      await enforceBlacklistedUserBan(
+        guild,
+        userId,
+        entry,
+        "watchdog sweep detected a missing blacklist ban",
+      );
+    }
+  } finally {
+    blacklistSweepInProgress.delete(guildId);
+  }
+}
+
+async function enforceAllGuildBlacklistState(): Promise<void> {
+  const guilds = Array.from(client.guilds.cache.values());
+  for (const guild of guilds) {
+    await enforceGuildBlacklistState(guild).catch((error) => {
+      console.log(`[BLACKLIST] Watchdog sweep failed for guild ${guild.id}:`, error);
+    });
+  }
 }
 
 async function handleSecurityTrigger(
@@ -5991,6 +6036,11 @@ client.once("clientReady", async () => {
   setInterval(() => {
     syncDashboardSettingsFromStorage().catch(() => undefined);
   }, DASHBOARD_SETTINGS_SYNC_INTERVAL_MS);
+
+  enforceAllGuildBlacklistState().catch(() => undefined);
+  setInterval(() => {
+    enforceAllGuildBlacklistState().catch(() => undefined);
+  }, BLACKLIST_WATCHDOG_INTERVAL_MS);
 });
 
 const processedInteractions = new Set<string>();
