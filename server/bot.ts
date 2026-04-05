@@ -4886,6 +4886,64 @@ async function hasSnippetPermission(
   return config.snippetRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
+const SNIPPETS_PER_PAGE = 10;
+
+function buildSnippetListPage(
+  allSnippets: Array<{ alias: string; content: string }>,
+  pageNum: number,
+  prefix: string,
+  isAppeal = false
+): { embed: EmbedBuilder; components: ActionRowBuilder<ButtonBuilder>[] } {
+  const totalPages = Math.max(1, Math.ceil(allSnippets.length / SNIPPETS_PER_PAGE));
+  const requestedPage = Number.isFinite(pageNum) ? pageNum : 1;
+  const page = Math.max(1, Math.min(requestedPage, totalPages));
+  const start = (page - 1) * SNIPPETS_PER_PAGE;
+  const pageSnippets = allSnippets.slice(start, start + SNIPPETS_PER_PAGE);
+  const previewLimit = pageSnippets.length > 5 ? 220 : 500;
+
+  const snippetListDisplay = pageSnippets
+    .map((s, i) => {
+      const num = start + i + 1;
+      const content =
+        s.content.length > previewLimit
+          ? `${s.content.substring(0, previewLimit).trimEnd()}...`
+          : s.content;
+      return `**${num}.** \`${s.alias}\`\n${content}`;
+    })
+    .join("\n\n");
+
+  const embed = new EmbedBuilder()
+    .setTitle(isAppeal ? "📝 Appeal Snippet List" : "📝 Snippet List")
+    .setDescription(snippetListDisplay || "No snippets on this page.")
+    .setColor(0x5865f2)
+    .setFooter({
+      text: `Page ${page}/${totalPages} | Total: ${allSnippets.length} snippets | Use ${prefix}${isAppeal ? "asnip" : "snip"} list <page>`,
+    });
+
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  if (page > 1) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${isAppeal ? "asniplist" : "sniplist"}_${page - 1}`)
+        .setLabel("◀ Previous")
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
+  if (page < totalPages) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${isAppeal ? "asniplist" : "sniplist"}_${page + 1}`)
+        .setLabel("Next ▶")
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
+
+  return {
+    embed,
+    components: row.components.length > 0 ? [row] : [],
+  };
+}
+
 async function hasActivityPermission(
   memberRoles: string[] | undefined,
   memberPermissions: bigint | string | undefined,
@@ -14911,38 +14969,10 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const perPage = 10;
-          const totalPages = Math.ceil(allSnippets.length / perPage);
-          const page = Math.max(1, Math.min(pageNum, totalPages));
-          const start = (page - 1) * perPage;
-          const pageSnippets = allSnippets.slice(start, start + perPage);
+          const prefix = (await storage.getGuildConfig(interaction.guildId!))?.commandPrefix || ".";
+          const { embed, components } = buildSnippetListPage(allSnippets, pageNum, prefix, isAppeal);
 
-          const snippetListDisplay = pageSnippets.map((s, i) => {
-            const num = start + i + 1;
-            const content = s.content.length > 500 ? s.content.substring(0, 500) + "..." : s.content;
-            return `**${num}. ${s.alias}**\n${content}`;
-          }).join("\n\n");
-
-          const embed = new EmbedBuilder()
-            .setTitle(isAppeal ? "Appeal Snippets" : "Snippets")
-            .setDescription(snippetListDisplay)
-            .setColor(0x5865f2)
-            .setFooter({ text: `Page ${page}/${totalPages}` });
-
-          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`${isAppeal ? "asniplist" : "sniplist"}_${page - 1}`)
-              .setLabel("Prev")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(page <= 1),
-            new ButtonBuilder()
-              .setCustomId(`${isAppeal ? "asniplist" : "sniplist"}_${page + 1}`)
-              .setLabel("Next")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(page >= totalPages)
-          );
-
-          await interaction.update({ embeds: [embed], components: [row] });
+          await interaction.update({ embeds: [embed], components });
         } catch (error: any) {
           console.log("Error in snippet list pagination:", error);
           if (interaction.deferred || interaction.replied) {
@@ -20261,50 +20291,10 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Show fewer per page since we're showing full content (5 per page to stay under 4096 char limit)
-      const perPage = 5;
-      const totalPages = Math.ceil(allSnippets.length / perPage);
       const pageArg = rest ? parseInt(rest) : 1;
-      const page = isNaN(pageArg) || pageArg < 1 ? 1 : Math.min(pageArg, totalPages);
-      const start = (page - 1) * perPage;
-      const pageSnippets = allSnippets.slice(start, start + perPage);
+      const { embed, components } = buildSnippetListPage(allSnippets, pageArg, prefix, false);
 
-      const snippetListDisplay = pageSnippets.map((s, i) => {
-        const num = start + i + 1;
-        // Cap content at 500 chars to prevent embed overflow
-        const content = s.content.length > 500 ? s.content.substring(0, 500) + "..." : s.content;
-        return `**${num}.** \`${s.alias}\`\n${content}`;
-      }).join("\n\n");
-
-      const embed = new EmbedBuilder()
-        .setTitle(`📝 Snippet List`)
-        .setDescription(snippetListDisplay || "No snippets on this page.")
-        .setColor(0x5865f2)
-        .setFooter({ text: `Page ${page}/${totalPages} | Total: ${allSnippets.length} snippets | Use ${prefix}snip list <page>` });
-
-      const row = new ActionRowBuilder<ButtonBuilder>();
-      if (page > 1) {
-        row.addComponents(
-          new ButtonBuilder()
-            .setCustomId(`sniplist_${page - 1}`)
-            .setLabel("◀ Previous")
-            .setStyle(ButtonStyle.Secondary)
-        );
-      }
-      if (page < totalPages) {
-        row.addComponents(
-          new ButtonBuilder()
-            .setCustomId(`sniplist_${page + 1}`)
-            .setLabel("Next ▶")
-            .setStyle(ButtonStyle.Secondary)
-        );
-      }
-
-      if (row.components.length > 0) {
-        await message.reply({ embeds: [embed], components: [row] });
-      } else {
-        await message.reply({ embeds: [embed] });
-      }
+      await message.reply({ embeds: [embed], components });
       return;
     } else if (subCommand === "help") {
       if (!hasSnippetPerm) return;
@@ -20487,50 +20477,10 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Show fewer per page since we're showing full content (5 per page to stay under 4096 char limit)
-      const perPage = 5;
-      const totalPages = Math.ceil(allSnippets.length / perPage);
       const pageArg = rest ? parseInt(rest) : 1;
-      const page = isNaN(pageArg) || pageArg < 1 ? 1 : Math.min(pageArg, totalPages);
-      const start = (page - 1) * perPage;
-      const pageSnippets = allSnippets.slice(start, start + perPage);
+      const { embed, components } = buildSnippetListPage(allSnippets, pageArg, prefix, true);
 
-      const snippetListDisplay = pageSnippets.map((s, i) => {
-        const num = start + i + 1;
-        // Cap content at 500 chars to prevent embed overflow
-        const content = s.content.length > 500 ? s.content.substring(0, 500) + "..." : s.content;
-        return `**${num}.** \`${s.alias}\`\n${content}`;
-      }).join("\n\n");
-
-      const embed = new EmbedBuilder()
-        .setTitle(`📝 Appeal Snippet List`)
-        .setDescription(snippetListDisplay || "No snippets on this page.")
-        .setColor(0x5865f2)
-        .setFooter({ text: `Page ${page}/${totalPages} | Total: ${allSnippets.length} snippets | Use ${prefix}asnip list <page>` });
-
-      const row = new ActionRowBuilder<ButtonBuilder>();
-      if (page > 1) {
-        row.addComponents(
-          new ButtonBuilder()
-            .setCustomId(`asniplist_${page - 1}`)
-            .setLabel("◀ Previous")
-            .setStyle(ButtonStyle.Secondary)
-        );
-      }
-      if (page < totalPages) {
-        row.addComponents(
-          new ButtonBuilder()
-            .setCustomId(`asniplist_${page + 1}`)
-            .setLabel("Next ▶")
-            .setStyle(ButtonStyle.Secondary)
-        );
-      }
-
-      if (row.components.length > 0) {
-        await message.reply({ embeds: [embed], components: [row] });
-      } else {
-        await message.reply({ embeds: [embed] });
-      }
+      await message.reply({ embeds: [embed], components });
       return;
     } else if (subCommand === "help") {
       if (!hasSnippetPerm) return;
