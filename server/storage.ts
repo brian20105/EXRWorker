@@ -78,6 +78,17 @@ const inMemoryStore = {
 const GUILD_CONFIG_SQL_BACKOFF_MS = 15000;
 let guildConfigSqlBackoffUntil = 0;
 
+function normalizeScopeGuildIds(guildIds?: string[]): string[] {
+  return Array.from(new Set((guildIds || []).map((entry) => String(entry || "").trim()).filter(Boolean)));
+}
+
+function addGuildScopeCondition(conditions: any[], column: any, guildIds?: string[]): void {
+  const scopedGuildIds = normalizeScopeGuildIds(guildIds);
+  if (scopedGuildIds.length > 0) {
+    conditions.push(inArray(column, scopedGuildIds));
+  }
+}
+
 function isTransientSqlError(err: any): boolean {
   const message = String(err?.message || "").toLowerCase();
   const code = String(err?.code || "").toUpperCase();
@@ -163,21 +174,21 @@ export interface IStorage {
   getModmailStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
   getModmailStatsByCategoryForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
 
-  // Cross-server activity stats (aggregates from all servers)
-  getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number): Promise<number>;
+  // Cross-server activity stats (aggregates from linked/shared servers when a scope list is provided)
+  getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number>;
   getInviteStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
-  getInviteStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
-  getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
-  getModmailStatsByCategoryForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
-  getAppealStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
+  getInviteStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number>;
+  getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number>;
+  getModmailStatsByCategoryForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ category: string; count: number }[]>;
+  getAppealStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number>;
   getStaffReportStatsForUser(guildId: string, userId: string, fromDays?: number, toDays?: number): Promise<number>;
-  getStaffReportStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number>;
-  getAllGuildsActivityStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
-  getAllGuildsBanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
-  getAllGuildsUnbanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
-  getAllGuildsInviteStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
-  getAllGuildsModmailStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
-  getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
+  getStaffReportStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number>;
+  getAllGuildsActivityStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsBanStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsUnbanStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsInviteStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsModmailStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]>;
+  getAllGuildsAppealStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]>;
 
   createModmailBlock(block: InsertModmailBlock): Promise<ModmailBlock>;
   getActiveModmailBlock(guildId: string, userId: string): Promise<ModmailBlock | undefined>;
@@ -984,9 +995,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Cross-server activity stats - aggregates from ALL guilds
-  async getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number): Promise<number> {
+  async getActivityStatsForUserAllGuilds(userId: string, category: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number> {
     if (category === "invites") {
-      return this.getInviteStatsForUserAllGuilds(userId, fromDays, toDays);
+      return this.getInviteStatsForUserAllGuilds(userId, fromDays, toDays, scopeGuildIds);
     }
 
     const table = category === "ban" ? banRequests : unbanRequests;
@@ -995,6 +1006,7 @@ export class DatabaseStorage implements IStorage {
       eq(table.reviewedById, userId),
       eq(table.status, "approved")
     ];
+    addGuildScopeCondition(conditions, table.guildId, scopeGuildIds);
 
     const now = new Date();
     if (fromDays !== undefined) {
@@ -1030,8 +1042,9 @@ export class DatabaseStorage implements IStorage {
     return result[0]?.count || 0;
   }
 
-  async getInviteStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
+  async getInviteStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number> {
     let conditions: any[] = [eq(inviteAttributions.inviterId, userId)];
+    addGuildScopeCondition(conditions, inviteAttributions.guildId, scopeGuildIds);
 
     const now = new Date();
     if (fromDays !== undefined) {
@@ -1047,11 +1060,12 @@ export class DatabaseStorage implements IStorage {
     return result[0]?.count || 0;
   }
 
-  async getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
+  async getModmailStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number> {
     let conditions: any[] = [
       eq(modmailThreads.closedById, userId),
       eq(modmailThreads.status, "closed")
     ];
+    addGuildScopeCondition(conditions, modmailThreads.guildId, scopeGuildIds);
 
     const now = new Date();
     if (fromDays !== undefined) {
@@ -1067,11 +1081,12 @@ export class DatabaseStorage implements IStorage {
     return result[0]?.count || 0;
   }
 
-  async getModmailStatsByCategoryForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]> {
+  async getModmailStatsByCategoryForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ category: string; count: number }[]> {
     let conditions: any[] = [
       eq(modmailThreads.closedById, userId),
       eq(modmailThreads.status, "closed")
     ];
+    addGuildScopeCondition(conditions, modmailThreads.guildId, scopeGuildIds);
 
     const now = new Date();
     if (fromDays !== undefined) {
@@ -1092,11 +1107,12 @@ export class DatabaseStorage implements IStorage {
     return Object.entries(categoryCounts).map(([category, count]) => ({ category, count }));
   }
 
-  async getAppealStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
+  async getAppealStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number> {
     let conditions: any[] = [
       eq(appealThreads.closedById, userId),
       eq(appealThreads.status, "closed")
     ];
+    addGuildScopeCondition(conditions, appealThreads.guildId, scopeGuildIds);
 
     const now = new Date();
     if (fromDays !== undefined) {
@@ -1112,12 +1128,15 @@ export class DatabaseStorage implements IStorage {
     return result[0]?.count || 0;
   }
 
-  async getAllGuildsActivityStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+  async getAllGuildsActivityStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]> {
     const now = new Date();
 
     let banConditions: any[] = [eq(banRequests.status, "approved")];
     let unbanConditions: any[] = [eq(unbanRequests.status, "approved")];
     let inviteConditions: any[] = [];
+    addGuildScopeCondition(banConditions, banRequests.guildId, scopeGuildIds);
+    addGuildScopeCondition(unbanConditions, unbanRequests.guildId, scopeGuildIds);
+    addGuildScopeCondition(inviteConditions, inviteAttributions.guildId, scopeGuildIds);
 
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -1160,10 +1179,11 @@ export class DatabaseStorage implements IStorage {
     return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
   }
 
-  async getAllGuildsBanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+  async getAllGuildsBanStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]> {
     const now = new Date();
 
     let banConditions: any[] = [eq(banRequests.status, "approved")];
+    addGuildScopeCondition(banConditions, banRequests.guildId, scopeGuildIds);
 
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -1186,10 +1206,11 @@ export class DatabaseStorage implements IStorage {
     return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
   }
 
-  async getAllGuildsUnbanStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+  async getAllGuildsUnbanStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]> {
     const now = new Date();
 
     let unbanConditions: any[] = [eq(unbanRequests.status, "approved")];
+    addGuildScopeCondition(unbanConditions, unbanRequests.guildId, scopeGuildIds);
 
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -1212,10 +1233,11 @@ export class DatabaseStorage implements IStorage {
     return Object.entries(counts).map(([userId, count]) => ({ userId, count })).sort((a, b) => b.count - a.count);
   }
 
-  async getAllGuildsInviteStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+  async getAllGuildsInviteStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]> {
     const now = new Date();
 
     let conditions: any[] = [];
+    addGuildScopeCondition(conditions, inviteAttributions.guildId, scopeGuildIds);
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
       conditions.push(gte(inviteAttributions.createdAt, fromDate));
@@ -1241,8 +1263,9 @@ export class DatabaseStorage implements IStorage {
       .sort((a, b) => b.count - a.count);
   }
 
-  async getAllGuildsModmailStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+  async getAllGuildsModmailStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]> {
     let conditions: any[] = [eq(modmailThreads.status, "closed")];
+    addGuildScopeCondition(conditions, modmailThreads.guildId, scopeGuildIds);
 
     const now = new Date();
     if (fromDays !== undefined) {
@@ -1269,8 +1292,9 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
-  async getAllGuildsAppealStats(fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]> {
+  async getAllGuildsAppealStats(fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ userId: string; count: number }[]> {
     let conditions: any[] = [eq(appealThreads.status, "closed")];
+    addGuildScopeCondition(conditions, appealThreads.guildId, scopeGuildIds);
 
     const now = new Date();
     if (fromDays !== undefined) {
@@ -1348,11 +1372,13 @@ export class DatabaseStorage implements IStorage {
     return (banResult[0]?.count || 0) + (unbanResult[0]?.count || 0);
   }
 
-  async getStaffReportStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number): Promise<number> {
+  async getStaffReportStatsForUserAllGuilds(userId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<number> {
     const now = new Date();
 
     let conditions = [eq(banRequests.requestedById, userId)];
     let conditions2 = [eq(unbanRequests.requestedById, userId)];
+    addGuildScopeCondition(conditions, banRequests.guildId, scopeGuildIds);
+    addGuildScopeCondition(conditions2, unbanRequests.guildId, scopeGuildIds);
 
     if (fromDays !== undefined) {
       const fromDate = new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000);
@@ -2084,8 +2110,11 @@ export class DatabaseStorage implements IStorage {
     return result[0];
   }
 
-  async getModerationStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[]> {
-    const conditions = [eq(moderationActions.guildId, guildId)];
+  async getModerationStats(guildId: string, fromDays?: number, toDays?: number, scopeGuildIds?: string[]): Promise<{ moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[]> {
+    const scopedGuildIds = normalizeScopeGuildIds(scopeGuildIds);
+    const conditions = scopedGuildIds.length > 0
+      ? [inArray(moderationActions.guildId, scopedGuildIds)]
+      : [eq(moderationActions.guildId, guildId)];
 
     if (fromDays !== undefined) {
       const fromDate = new Date();

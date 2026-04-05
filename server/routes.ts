@@ -1058,13 +1058,6 @@ const FEATURE_LABELS: Record<string, string> = {
   sticky: "Sticky Messages",
 };
 
-const LATEST_BOT_UPDATE_HIGHLIGHTS = [
-  "New command: `/announce message:<text>` sends a quick announcement in the channel where you run it.",
-  "Dashboard cleanup: the duplicate Bot Permissions section in Settings has been removed.",
-  "New control: the Updates Channel now has its own `Post Latest Update` button for quick testing.",
-  "Update posts now announce dashboard changes and newly enabled features more reliably.",
-];
-
 function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown): string[] {
   const previousFlags = getDashboardFeatureFlags(previousRaw);
   const currentFlags = getDashboardFeatureFlags(currentRaw);
@@ -1082,6 +1075,103 @@ function getEnabledFeatureLabels(raw: unknown): string[] {
     .filter(([key]) => flags[key] !== false)
     .map(([, label]) => label)
     .sort((a, b) => a.localeCompare(b));
+}
+
+async function getRegisteredSlashCommandNames(): Promise<string[]> {
+  try {
+    if (client.isReady() && client.application) {
+      const commands = await client.application.commands.fetch();
+      return Array.from(commands.values())
+        .map((command) => String(command.name || "").trim())
+        .filter(Boolean);
+    }
+
+    const applicationId = String(process.env.DISCORD_APPLICATION_ID || process.env.DISCORD_CLIENT_ID || "").trim();
+    if (!applicationId || !getDiscordBotToken()) {
+      return [];
+    }
+
+    const commands = await discordBotApiRequest<any[]>(`/applications/${applicationId}/commands`);
+    return Array.isArray(commands)
+      ? commands.map((command) => String(command?.name || "").trim()).filter(Boolean)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatSlashCommandHighlights(commandNames: string[], limit = 6): string {
+  const normalized = Array.from(new Set(
+    commandNames
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean),
+  ));
+
+  if (normalized.length === 0) {
+    return "";
+  }
+
+  const priorityOrder = ["announce", "block", "unblock", "activity", "roster", "sticky"];
+  const selected: string[] = [];
+
+  for (const name of priorityOrder) {
+    if (normalized.includes(name) && selected.length < limit) {
+      selected.push(`/${name}`);
+    }
+  }
+
+  const remaining = normalized.filter((name) => !priorityOrder.includes(name));
+  const tail = remaining.slice(-Math.max(0, limit - selected.length));
+  for (const name of tail) {
+    if (selected.length >= limit) break;
+    selected.push(`/${name}`);
+  }
+
+  return `${selected.join(", ")}${normalized.length > selected.length ? ` +${normalized.length - selected.length} more` : ""}`;
+}
+
+async function buildLatestBotUpdateHighlights(guildId: string, config: any): Promise<string[]> {
+  const guildSummary = getCachedGuildSummaryById(guildId);
+  const enabledFeatures = getEnabledFeatureLabels(config?.customCategoryPings);
+  const quickSettings = getDashboardQuickSettingsSummary(config?.customCategoryPings);
+  const databaseSetup = getDashboardDatabaseSetup(config?.customCategoryPings, guildId, guildSummary?.name || `Server ${guildId}`);
+  const liveSlashCommands = formatSlashCommandHighlights(await getRegisteredSlashCommandNames());
+
+  const lines: string[] = [];
+
+  if (liveSlashCommands) {
+    lines.push(`Live commands now available: ${liveSlashCommands}`);
+  }
+
+  if (databaseSetup.mode === "shared") {
+    lines.push(`Database setup: \`${databaseSetup.name}\` is shared across ${databaseSetup.linkedGuildIds.length + 1} server(s)`);
+  } else {
+    lines.push("Database setup: this server is using its own saved setup");
+  }
+
+  if (enabledFeatures.length > 0) {
+    lines.push(`Enabled modules right now: ${enabledFeatures.slice(0, 6).join(", ")}${enabledFeatures.length > 6 ? ` +${enabledFeatures.length - 6} more` : ""}`);
+  }
+
+  const readyTools: string[] = [];
+  if (config?.modmailCategoryId) readyTools.push("modmail");
+  if (config?.appealCategoryId) readyTools.push("appeals");
+  if (config?.staffIntroChannelId) readyTools.push("staff applications");
+  if (config?.inactivityChannelId) readyTools.push("inactivity requests");
+  if (config?.commandLogChannelId) readyTools.push("update posts");
+  if (readyTools.length > 0) {
+    lines.push(`Configured tools in this server: ${readyTools.join(", ")}`);
+  }
+
+  const serverSetupNotes: string[] = [];
+  if (quickSettings.moderationPrefix) serverSetupNotes.push(`mod prefix \`${quickSettings.moderationPrefix}\``);
+  if (quickSettings.modmailPrefix) serverSetupNotes.push(`modmail prefix \`${quickSettings.modmailPrefix}\``);
+  if (quickSettings.botNickname) serverSetupNotes.push(`nickname \`${quickSettings.botNickname}\``);
+  if (serverSetupNotes.length > 0) {
+    lines.push(`Server setup snapshot: ${serverSetupNotes.join(", ")}`);
+  }
+
+  return lines.slice(0, 5);
 }
 
 function getFeatureToggleChanges(previousRaw: unknown, currentRaw: unknown): { enabled: string[]; disabled: string[] } {
@@ -2887,11 +2977,10 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Choose an Updates Channel first." });
       }
 
-      const enabledFeatures = getEnabledFeatureLabels(config?.customCategoryPings);
-      const summaryLines = [
-        ...LATEST_BOT_UPDATE_HIGHLIGHTS,
-        `Enabled modules right now: ${enabledFeatures.length > 0 ? `${enabledFeatures.slice(0, 6).join(", ")}${enabledFeatures.length > 6 ? ` +${enabledFeatures.length - 6} more` : ""}` : "None"}`,
-      ];
+      const summaryLines = await buildLatestBotUpdateHighlights(guildId, config);
+      if (summaryLines.length === 0) {
+        summaryLines.push("Live bot feature snapshot refreshed for this server.");
+      }
 
       const posted = await postDashboardUpdateToChannel(guildId, targetChannelId, user.id, summaryLines, {
         title: "Latest Bot Update",
