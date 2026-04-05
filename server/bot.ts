@@ -50,6 +50,7 @@ const DASHBOARD_BLACKLIST_USERS_KEY = "__dashboardBlacklistedUsers";
 const DISABLED_MESSAGE = "This is currently disabled, please contact the server owner to resolve the issue.";
 const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
 const SECURITY_AUDIT_LOOKUP_DELAY_MS = 1_000;
+const BLACKLIST_REBAN_RETRY_DELAYS_MS = [0, 120, 300, 750];
 let botInstanceLockAcquired = false;
 
 const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
@@ -517,14 +518,24 @@ async function enforceBlacklistedUserBan(
   }
   const reason = reasonParts.join(" • ").slice(0, 512);
 
-  try {
-    await guild.members.ban(normalizedUserId, { reason, deleteMessageSeconds: 0 });
-    console.log(`[BLACKLIST] Enforced blacklist on ${normalizedUserId} in guild ${guild.id} (${context})`);
-    return true;
-  } catch (error) {
-    console.log(`[BLACKLIST] Failed to enforce blacklist on ${normalizedUserId} in guild ${guild.id}:`, error);
-    return false;
+  let lastError: unknown = null;
+  for (let index = 0; index < BLACKLIST_REBAN_RETRY_DELAYS_MS.length; index += 1) {
+    const delayMs = BLACKLIST_REBAN_RETRY_DELAYS_MS[index];
+    if (delayMs > 0) {
+      await pause(delayMs);
+    }
+
+    try {
+      await guild.members.ban(normalizedUserId, { reason, deleteMessageSeconds: 0 });
+      console.log(`[BLACKLIST] Enforced blacklist on ${normalizedUserId} in guild ${guild.id} (${context}) on attempt ${index + 1}`);
+      return true;
+    } catch (error) {
+      lastError = error;
+    }
   }
+
+  console.log(`[BLACKLIST] Failed to enforce blacklist on ${normalizedUserId} in guild ${guild.id}:`, lastError);
+  return false;
 }
 
 async function handleSecurityTrigger(
@@ -22839,7 +22850,6 @@ client.on("guildBanRemove", async (ban) => {
       return;
     }
 
-    await pause(750);
     await enforceBlacklistedUserBan(
       ban.guild,
       ban.user.id,
