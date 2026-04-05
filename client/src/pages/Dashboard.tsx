@@ -248,11 +248,13 @@ type SecurityRuleKey =
 interface SecurityRuleConfig {
   threshold: number;
   punishmentType: SecurityPunishmentType;
+  timeWindowSeconds: number;
   enabled: boolean;
 }
 
 interface DashboardSecuritySettings {
   rules: Record<SecurityRuleKey, SecurityRuleConfig>;
+  logChannelId: string | null;
   whitelistedRoleIds: string[];
   whitelistedUserIds: string[];
   accessRoleIds: string[];
@@ -361,6 +363,7 @@ const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
 const DEFAULT_TOP_FADE_COLOR = "#5865f2";
 const DEFAULT_ENABLED_STATUS_COLOR = "#00ff7b";
 const DEFAULT_DISABLED_STATUS_COLOR = "#ff0000";
+const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
 const BACKGROUND_COLOR_PRESETS = ["#ff0000", "#00ff7b", "#0000ff"];
 
 const ROSTER_EMBED_BUTTON_COLORS: Array<{ value: RosterEmbedButtonColor; label: string }> = [
@@ -385,16 +388,17 @@ const SECURITY_RULE_META: Array<{ key: SecurityRuleKey; label: string; descripti
 function createDefaultSecuritySettings(): DashboardSecuritySettings {
   return {
     rules: {
-      antiBan: { threshold: 3, punishmentType: "kick", enabled: false },
-      antiKick: { threshold: 3, punishmentType: "kick", enabled: false },
-      antiBotAdd: { threshold: 1, punishmentType: "ban", enabled: false },
-      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", enabled: false },
-      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", enabled: false },
-      antiChannelCreate: { threshold: 3, punishmentType: "kick", enabled: false },
-      antiChannelDelete: { threshold: 2, punishmentType: "ban", enabled: false },
-      antiRoleCreate: { threshold: 3, punishmentType: "kick", enabled: false },
-      antiRoleDelete: { threshold: 2, punishmentType: "ban", enabled: false },
+      antiBan: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiKick: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiBotAdd: { threshold: 1, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiChannelCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiChannelDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiRoleCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiRoleDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
     },
+    logChannelId: null,
     whitelistedRoleIds: [],
     whitelistedUserIds: [],
     accessRoleIds: [],
@@ -1915,6 +1919,7 @@ export default function Dashboard() {
         ? rawRule as Record<string, unknown>
         : {};
       const nextThreshold = Number(ruleObject.threshold);
+      const nextTimeWindow = Number(ruleObject.timeWindowSeconds);
       const punishmentValue = typeof ruleObject.punishmentType === "string" ? ruleObject.punishmentType : defaultSettings.rules[ruleMeta.key].punishmentType;
 
       acc[ruleMeta.key] = {
@@ -1925,12 +1930,18 @@ export default function Dashboard() {
         punishmentType: punishmentValue === "ban" || punishmentValue === "kick" || punishmentValue === "clear_roles"
           ? punishmentValue
           : defaultSettings.rules[ruleMeta.key].punishmentType,
+        timeWindowSeconds: Number.isFinite(nextTimeWindow) && nextTimeWindow > 0
+          ? Math.max(5, Math.min(3600, Math.round(nextTimeWindow)))
+          : defaultSettings.rules[ruleMeta.key].timeWindowSeconds,
       };
       return acc;
     }, {} as Record<SecurityRuleKey, SecurityRuleConfig>);
 
     return {
       rules,
+      logChannelId: typeof securityObject.logChannelId === "string" && securityObject.logChannelId.trim()
+        ? securityObject.logChannelId.trim()
+        : null,
       whitelistedRoleIds: Array.from(new Set(normalizeStringArray(securityObject.whitelistedRoleIds))),
       whitelistedUserIds: Array.from(new Set(normalizeStringArray(securityObject.whitelistedUserIds))),
       accessRoleIds: Array.from(new Set(normalizeStringArray(securityObject.accessRoleIds))),
@@ -1959,9 +1970,13 @@ export default function Dashboard() {
         punishmentType: currentRule.punishmentType === "ban" || currentRule.punishmentType === "kick" || currentRule.punishmentType === "clear_roles"
           ? currentRule.punishmentType
           : createDefaultSecuritySettings().rules[ruleMeta.key].punishmentType,
+        timeWindowSeconds: Math.max(5, Math.min(3600, Math.round(Number(currentRule.timeWindowSeconds) || createDefaultSecuritySettings().rules[ruleMeta.key].timeWindowSeconds))),
       };
       return acc;
     }, {} as Record<SecurityRuleKey, SecurityRuleConfig>),
+    logChannelId: typeof value.logChannelId === "string" && value.logChannelId.trim()
+      ? value.logChannelId.trim()
+      : null,
     whitelistedRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(value.whitelistedRoleIds))),
     whitelistedUserIds: Array.from(new Set(normalizeStringArray(value.whitelistedUserIds))),
     accessRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(value.accessRoleIds))),
@@ -2103,7 +2118,10 @@ export default function Dashboard() {
       const next = sanitizeSecuritySettings(updater(prev));
       setCustomCategoryPingsText((previousText) => {
         const parsed = parseJsonObjectSafely(previousText || config.customCategoryPings || "{}");
-        parsed[SECURITY_SETTINGS_KEY] = next;
+        parsed[SECURITY_SETTINGS_KEY] = {
+          ...next,
+          logChannelId: next.logChannelId || null,
+        };
         const nextText = JSON.stringify(parsed, null, 2);
         updateConfig("customCategoryPings", nextText);
         return nextText;
@@ -3648,6 +3666,66 @@ export default function Dashboard() {
     );
   };
 
+  const renderCustomChannelSection = (
+    label: string,
+    availableChannels: Channel[],
+    selectedChannelId: string | null | undefined,
+    onSelect: (channelId: string | null) => void,
+    testIdPrefix: string,
+  ) => {
+    const value = selectedChannelId || NONE_VALUE;
+    const query = (channelSearches[testIdPrefix] || "").trim().toLowerCase();
+    const filteredChannels = availableChannels.filter((channel) => !query || channel.name.toLowerCase().includes(query));
+    const selectedChannel = availableChannels.find((channel) => channel.id === selectedChannelId);
+
+    return (
+      <div className="space-y-3">
+        <Label>{label}</Label>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
+              <span className="truncate text-left">{selectedChannel ? `#${selectedChannel.name}` : "Select channel"}</span>
+              <ChevronDown className="h-4 w-4 opacity-70" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="max-h-80 w-80 overflow-y-auto">
+            <div className="px-1 pb-2">
+              <Input
+                value={channelSearches[testIdPrefix] || ""}
+                onChange={(event) => setChannelSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))}
+                placeholder="Search channels..."
+                className="h-8"
+                data-testid={`${testIdPrefix}-search`}
+              />
+            </div>
+            <DropdownMenuCheckboxItem
+              checked={value === NONE_VALUE}
+              onCheckedChange={() => onSelect(null)}
+              onSelect={(event) => event.preventDefault()}
+              data-testid={`${testIdPrefix}-none`}
+            >
+              Not set
+            </DropdownMenuCheckboxItem>
+            {filteredChannels.map((channel) => (
+              <DropdownMenuCheckboxItem
+                key={channel.id}
+                checked={value === channel.id}
+                onCheckedChange={() => onSelect(channel.id)}
+                onSelect={(event) => event.preventDefault()}
+                data-testid={`${testIdPrefix}-${channel.id}`}
+              >
+                #{channel.name}
+              </DropdownMenuCheckboxItem>
+            ))}
+            {filteredChannels.length === 0 && (
+              <p className="px-2 py-1 text-xs text-muted-foreground">No channels found.</p>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    );
+  };
+
   const renderRoleSection = (label: string, key: keyof GuildConfig, testIdPrefix: string) => {
     const selectedRoleIds = filterToCurrentServerRoleIds((config[key] as string[] | undefined) || []);
 
@@ -4620,11 +4698,27 @@ export default function Dashboard() {
                 </Card>
               ) : (
                 <>
+                  <Card className="border-border/80 bg-card/90" data-testid="card-security-log-channel">
+                    <CardHeader className="space-y-1">
+                      <CardTitle className="text-base">Security Log</CardTitle>
+                      <CardDescription>Choose the channel where Security warning and punishment messages should be posted.</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      {renderCustomChannelSection(
+                        "Security Log Channel",
+                        textChannels,
+                        securitySettings.logChannelId,
+                        (channelId) => updateSecuritySettings((prev) => ({ ...prev, logChannelId: channelId })),
+                        "security-log-channel",
+                      )}
+                    </CardContent>
+                  </Card>
+
                   <Card className="border-border/80 bg-card/90" data-testid="card-security-rules">
                     <CardHeader className="space-y-1">
                       <CardTitle className="text-base">Anti-Nuke Protection</CardTitle>
                       <CardDescription>
-                        Set how many times someone can do an action before Security responds with the selected punishment.
+                        Set how many times someone can do an action before Security responds with the selected punishment. If they stop before the timer expires, their count resets.
                       </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-3">
@@ -4633,7 +4727,7 @@ export default function Dashboard() {
                         return (
                           <div
                             key={ruleMeta.key}
-                            className="grid gap-3 rounded-xl border border-border/70 bg-card/40 p-4 md:grid-cols-[minmax(0,1fr)_120px_190px_auto] md:items-center"
+                            className="grid gap-3 rounded-xl border border-border/70 bg-card/40 p-4 md:grid-cols-[minmax(0,1fr)_110px_190px_120px_auto] md:items-center"
                           >
                             <div>
                               <p className="font-semibold uppercase tracking-wide">{ruleMeta.label}</p>
@@ -4671,6 +4765,21 @@ export default function Dashboard() {
                                   <SelectItem value="clear_roles">Clear Roles</SelectItem>
                                 </SelectContent>
                               </Select>
+                            </div>
+
+                            <div className="space-y-2">
+                              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Time</Label>
+                              <Input
+                                type="number"
+                                min={5}
+                                max={3600}
+                                value={String(rule.timeWindowSeconds)}
+                                onChange={(event) => updateSecurityRule(ruleMeta.key, {
+                                  timeWindowSeconds: Math.max(5, Math.min(3600, Number(event.target.value) || DEFAULT_SECURITY_TIME_WINDOW_SECONDS)),
+                                })}
+                                data-testid={`input-security-time-${ruleMeta.key}`}
+                              />
+                              <p className="text-[11px] text-muted-foreground">seconds</p>
                             </div>
 
                             <div className="space-y-2">

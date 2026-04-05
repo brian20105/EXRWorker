@@ -47,7 +47,7 @@ const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DASHBOARD_SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
 const DISABLED_MESSAGE = "This is currently disabled, please contact the server owner to resolve the issue.";
-const SECURITY_TRIGGER_WINDOW_MS = 15_000;
+const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
 const SECURITY_AUDIT_LOOKUP_DELAY_MS = 1_000;
 let botInstanceLockAcquired = false;
 
@@ -262,11 +262,13 @@ type SecurityRuleKey =
 type SecurityRuleConfig = {
   threshold: number;
   punishmentType: SecurityPunishmentType;
+  timeWindowSeconds: number;
   enabled: boolean;
 };
 
 type DashboardSecuritySettings = {
   rules: Record<SecurityRuleKey, SecurityRuleConfig>;
+  logChannelId: string | null;
   whitelistedRoleIds: string[];
   whitelistedUserIds: string[];
   accessRoleIds: string[];
@@ -285,21 +287,34 @@ const SECURITY_RULE_LABELS: Record<SecurityRuleKey, string> = {
   antiRoleDelete: "Anti Role Delete",
 };
 
+const SECURITY_REASON_LABELS: Record<SecurityRuleKey, string> = {
+  antiBan: "Banning Members",
+  antiKick: "Kicking Members",
+  antiBotAdd: "Adding Bots",
+  antiRoleUpdate: "Updating Roles",
+  antiRoleAdd: "Giving Dangerous Permissions",
+  antiChannelCreate: "Creating Channels",
+  antiChannelDelete: "Deleting Channels",
+  antiRoleCreate: "Creating Roles",
+  antiRoleDelete: "Deleting Roles",
+};
+
 const securityActionTracker = new Map<string, { count: number; startedAt: number }>();
 
 function createDefaultDashboardSecuritySettings(): DashboardSecuritySettings {
   return {
     rules: {
-      antiBan: { threshold: 3, punishmentType: "kick", enabled: false },
-      antiKick: { threshold: 3, punishmentType: "kick", enabled: false },
-      antiBotAdd: { threshold: 1, punishmentType: "ban", enabled: false },
-      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", enabled: false },
-      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", enabled: false },
-      antiChannelCreate: { threshold: 3, punishmentType: "kick", enabled: false },
-      antiChannelDelete: { threshold: 2, punishmentType: "ban", enabled: false },
-      antiRoleCreate: { threshold: 3, punishmentType: "kick", enabled: false },
-      antiRoleDelete: { threshold: 2, punishmentType: "ban", enabled: false },
+      antiBan: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiKick: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiBotAdd: { threshold: 1, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiChannelCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiChannelDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiRoleCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiRoleDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
     },
+    logChannelId: null,
     whitelistedRoleIds: [],
     whitelistedUserIds: [],
     accessRoleIds: [],
@@ -329,6 +344,7 @@ function getDashboardSecuritySettings(config?: any): DashboardSecuritySettings {
       ? ruleRaw as Record<string, unknown>
       : {};
     const thresholdValue = Number(ruleObject.threshold);
+    const timeWindowValue = Number(ruleObject.timeWindowSeconds);
     const punishmentRaw = typeof ruleObject.punishmentType === "string" ? ruleObject.punishmentType : defaults.rules[ruleKey].punishmentType;
 
     acc[ruleKey] = {
@@ -339,12 +355,18 @@ function getDashboardSecuritySettings(config?: any): DashboardSecuritySettings {
       punishmentType: punishmentRaw === "ban" || punishmentRaw === "kick" || punishmentRaw === "clear_roles"
         ? punishmentRaw
         : defaults.rules[ruleKey].punishmentType,
+      timeWindowSeconds: Number.isFinite(timeWindowValue) && timeWindowValue > 0
+        ? Math.max(5, Math.min(3600, Math.round(timeWindowValue)))
+        : defaults.rules[ruleKey].timeWindowSeconds,
     };
     return acc;
   }, {} as Record<SecurityRuleKey, SecurityRuleConfig>);
 
   return {
     rules,
+    logChannelId: typeof securityObject.logChannelId === "string" && securityObject.logChannelId.trim()
+      ? securityObject.logChannelId.trim()
+      : null,
     whitelistedRoleIds: normalizeSecurityStringList(securityObject.whitelistedRoleIds),
     whitelistedUserIds: normalizeSecurityStringList(securityObject.whitelistedUserIds),
     accessRoleIds: normalizeSecurityStringList(securityObject.accessRoleIds),
@@ -367,6 +389,10 @@ function getSecurityPunishmentLabel(punishmentType: SecurityPunishmentType): str
     default:
       return punishmentType;
   }
+}
+
+function getSecurityReasonLabel(ruleKey: SecurityRuleKey): string {
+  return SECURITY_REASON_LABELS[ruleKey] || getSecurityRuleLabel(ruleKey);
 }
 
 async function pause(ms: number): Promise<void> {
@@ -400,11 +426,18 @@ async function findRecentAuditEntry(
   return null;
 }
 
-function bumpSecurityActionCount(guildId: string, executorId: string, ruleKey: SecurityRuleKey, threshold: number) {
+function bumpSecurityActionCount(
+  guildId: string,
+  executorId: string,
+  ruleKey: SecurityRuleKey,
+  threshold: number,
+  timeWindowSeconds: number,
+) {
   const key = `${guildId}:${executorId}:${ruleKey}`;
   const now = Date.now();
+  const timeWindowMs = Math.max(5, Math.min(3600, timeWindowSeconds)) * 1000;
   const existing = securityActionTracker.get(key);
-  const withinWindow = !!existing && (now - existing.startedAt) <= SECURITY_TRIGGER_WINDOW_MS;
+  const withinWindow = !!existing && (now - existing.startedAt) <= timeWindowMs;
   const count = withinWindow ? existing!.count + 1 : 1;
   const startedAt = withinWindow ? existing!.startedAt : now;
   securityActionTracker.set(key, { count, startedAt });
@@ -414,11 +447,16 @@ function bumpSecurityActionCount(guildId: string, executorId: string, ruleKey: S
     securityActionTracker.delete(key);
   }
 
-  return { count, thresholdReached };
+  return {
+    count,
+    thresholdReached,
+    remainingAttempts: Math.max(0, Math.max(1, threshold) - count),
+    timeWindowMs,
+  };
 }
 
-async function sendSecurityLog(guild: any, config: any, embed: EmbedBuilder) {
-  const channelId = config?.modLogChannelId || config?.commandLogChannelId || config?.logChannelId;
+async function sendSecurityLog(guild: any, config: any, securitySettings: DashboardSecuritySettings, embed: EmbedBuilder) {
+  const channelId = securitySettings.logChannelId || config?.modLogChannelId || config?.commandLogChannelId || config?.logChannelId;
   if (!channelId) return;
 
   try {
@@ -460,8 +498,32 @@ async function handleSecurityTrigger(
     return;
   }
 
-  const { count, thresholdReached } = bumpSecurityActionCount(guild.id, normalizedExecutorId, ruleKey, rule.threshold);
+  const { count, thresholdReached, remainingAttempts, timeWindowMs } = bumpSecurityActionCount(
+    guild.id,
+    normalizedExecutorId,
+    ruleKey,
+    rule.threshold,
+    rule.timeWindowSeconds,
+  );
+
+  const userFieldValue = executorMember
+    ? `${executorMember.user.tag}\n\`${normalizedExecutorId}\``
+    : `<@${normalizedExecutorId}>\n\`${normalizedExecutorId}\``;
+
   if (!thresholdReached) {
+    const warningEmbed = new EmbedBuilder()
+      .setTitle("User Warning")
+      .setColor(0xfaa61a)
+      .addFields(
+        { name: "User:", value: userFieldValue, inline: false },
+        { name: "Reason:", value: getSecurityReasonLabel(ruleKey), inline: false },
+        { name: "Remaining Attempts:", value: `${remainingAttempts}`, inline: false },
+        { name: "Time:", value: `${Math.round(timeWindowMs / 1000)} second(s)`, inline: false },
+      )
+      .setFooter({ text: details.slice(0, 200) || "Security warning issued." })
+      .setTimestamp();
+
+    await sendSecurityLog(guild, config, securitySettings, warningEmbed);
     return;
   }
 
@@ -507,21 +569,19 @@ async function handleSecurityTrigger(
     resultSummary = `Attempted ${getSecurityPunishmentLabel(rule.punishmentType)}, but it failed: ${error?.message || "Unknown error"}`;
   }
 
-  const logEmbed = new EmbedBuilder()
-    .setTitle("Security Punishment Triggered")
+  const punishedEmbed = new EmbedBuilder()
+    .setTitle("User Punished")
     .setColor(actionSucceeded ? 0xed4245 : 0xfaa61a)
     .addFields(
-      { name: "Rule", value: getSecurityRuleLabel(ruleKey), inline: true },
-      { name: "Threshold", value: `${count}/${rule.threshold} in ${Math.round(SECURITY_TRIGGER_WINDOW_MS / 1000)}s`, inline: true },
-      { name: "Punishment", value: getSecurityPunishmentLabel(rule.punishmentType), inline: true },
-      { name: "Executor", value: `<@${normalizedExecutorId}>`, inline: true },
-      { name: "Target", value: targetId ? `<@${targetId}>` : "Unknown / N/A", inline: true },
-      { name: "Result", value: resultSummary, inline: false },
-      { name: "Details", value: details.slice(0, 1024) || "No additional details provided.", inline: false },
+      { name: "User:", value: userFieldValue, inline: false },
+      { name: "Reason:", value: getSecurityReasonLabel(ruleKey), inline: false },
+      { name: "Punishment Type:", value: getSecurityPunishmentLabel(rule.punishmentType), inline: false },
+      { name: "Time:", value: `${Math.round(timeWindowMs / 1000)} second(s)`, inline: false },
     )
+    .setFooter({ text: resultSummary.slice(0, 200) || details.slice(0, 200) || "Security punishment applied." })
     .setTimestamp();
 
-  await sendSecurityLog(guild, config, logEmbed);
+  await sendSecurityLog(guild, config, securitySettings, punishedEmbed);
 }
 
 function getRequiredDashboardFeatureForCommand(commandName: string, subcommand: string | null): string | null {
