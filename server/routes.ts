@@ -636,14 +636,15 @@ function getDashboardDatabaseSetup(raw: unknown, fallbackGuildId: string, fallba
   }
 
   const setup = setupRaw as Record<string, unknown>;
-  const linkedGuildIds = Array.isArray(setup.linkedGuildIds)
+  const parsedLinkedGuildIds = Array.isArray(setup.linkedGuildIds)
     ? Array.from(new Set(
         setup.linkedGuildIds
           .map((entry) => String(entry || "").trim())
           .filter((entry) => Boolean(entry) && entry !== cleanFallbackGuildId),
       ))
     : [];
-  const mode: "single" | "shared" = setup.mode === "shared" && linkedGuildIds.length > 0 ? "shared" : "single";
+  const mode: "single" | "shared" = setup.mode === "shared" && parsedLinkedGuildIds.length > 0 ? "shared" : "single";
+  const linkedGuildIds = mode === "shared" ? parsedLinkedGuildIds : [];
 
   return {
     mode,

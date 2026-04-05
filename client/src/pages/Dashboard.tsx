@@ -1832,9 +1832,10 @@ export default function Dashboard() {
 
     const databaseSetupValue = value as Record<string, unknown>;
     const mode = databaseSetupValue.mode === "shared" ? "shared" : "single";
-    const linkedGuildIds = Array.isArray(databaseSetupValue.linkedGuildIds)
+    const parsedLinkedGuildIds = Array.isArray(databaseSetupValue.linkedGuildIds)
       ? databaseSetupValue.linkedGuildIds.map((entry) => String(entry || "").trim()).filter(Boolean)
       : [];
+    const linkedGuildIds = mode === "shared" ? parsedLinkedGuildIds : [];
 
     return {
       mode,

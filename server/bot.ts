@@ -1892,10 +1892,12 @@ async function getExtraActivityGuildIds(baseGuildId: string, useAllGuilds: boole
   const config = await storage.getGuildConfig(normalizedGuildId).catch(() => undefined);
   const parsed = parseDashboardConfigObject(config?.customCategoryPings);
   const setupRaw = parsed[DASHBOARD_DATABASE_SETUP_KEY];
-  const linkedGuildIdsRaw = setupRaw && typeof setupRaw === "object" && !Array.isArray(setupRaw)
-    ? (setupRaw as Record<string, unknown>).linkedGuildIds
+  const setupObject = setupRaw && typeof setupRaw === "object" && !Array.isArray(setupRaw)
+    ? setupRaw as Record<string, unknown>
     : null;
-  const linkedGuildIds = Array.isArray(linkedGuildIdsRaw)
+  const mode = setupObject?.mode === "shared" ? "shared" : "single";
+  const linkedGuildIdsRaw = setupObject?.linkedGuildIds;
+  const linkedGuildIds = mode === "shared" && Array.isArray(linkedGuildIdsRaw)
     ? linkedGuildIdsRaw
         .map((entry: unknown) => String(entry || "").trim())
         .filter((entry: string) => Boolean(entry) && entry !== normalizedGuildId)
