@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X, SlidersHorizontal, Sparkles, ListTree } from "lucide-react";
+import { ArrowLeft, Save, Server, Shield, ShieldAlert, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X, SlidersHorizontal, Sparkles, ListTree } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useTheme } from "next-themes";
 import { useLocation, useRoute } from "wouter";
@@ -206,7 +206,7 @@ type DashboardFeaturePostChannels = Partial<Record<FeaturePostChannelKey, string
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
   settings: { label: "Dashboard Settings", icon: SlidersHorizontal },
   features: { label: "Bot Features", icon: Sparkles },
-  security: { label: "Security", icon: Shield },
+  security: { label: "Security", icon: ShieldAlert },
   permissions: { label: "Bot Role Permissions", icon: Shield },
   rosters: { label: "Rosters", icon: ListTree },
   miscellaneous: { label: "Miscellaneous", icon: Braces },
