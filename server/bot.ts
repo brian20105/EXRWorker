@@ -46,6 +46,7 @@ const BOT_INSTANCE_LOCK_FILE = path.resolve(process.cwd(), ".discord-bot.lock");
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DASHBOARD_SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
+const DASHBOARD_BLACKLIST_USERS_KEY = "__dashboardBlacklistedUsers";
 const DISABLED_MESSAGE = "This is currently disabled, please contact the server owner to resolve the issue.";
 const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
 const SECURITY_AUDIT_LOOKUP_DELAY_MS = 1_000;
@@ -275,6 +276,12 @@ type DashboardSecuritySettings = {
   accessUserIds: string[];
 };
 
+type DashboardBlacklistEntry = {
+  blacklistedById: string;
+  reason: string | null;
+  createdAt: string | null;
+};
+
 const SECURITY_RULE_LABELS: Record<SecurityRuleKey, string> = {
   antiBan: "Anti Ban",
   antiKick: "Anti Kick",
@@ -374,6 +381,27 @@ function getDashboardSecuritySettings(config?: any): DashboardSecuritySettings {
   };
 }
 
+function getDashboardBlacklistedUsers(config?: any): Record<string, DashboardBlacklistEntry> {
+  const parsed = parseDashboardConfigObject(config?.customCategoryPings);
+  const raw = parsed[DASHBOARD_BLACKLIST_USERS_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+
+  const result: Record<string, DashboardBlacklistEntry> = {};
+  for (const [userId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    result[userId] = {
+      blacklistedById: String(entry.blacklistedById || ""),
+      reason: typeof entry.reason === "string" ? entry.reason : null,
+      createdAt: typeof entry.createdAt === "string" ? entry.createdAt : null,
+    };
+  }
+
+  return result;
+}
+
 function getSecurityRuleLabel(ruleKey: SecurityRuleKey): string {
   return SECURITY_RULE_LABELS[ruleKey] || ruleKey;
 }
@@ -466,6 +494,36 @@ async function sendSecurityLog(guild: any, config: any, securitySettings: Dashbo
     }
   } catch (error) {
     console.log("[SECURITY] Failed to send security log:", error);
+  }
+}
+
+async function enforceBlacklistedUserBan(
+  guild: any,
+  userId: string | null | undefined,
+  entry: DashboardBlacklistEntry | null | undefined,
+  context: string,
+): Promise<boolean> {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId || normalizedUserId === client.user?.id) {
+    return false;
+  }
+
+  const reasonParts = ["Dashboard blacklist enforcement"];
+  if (entry?.reason) {
+    reasonParts.push(entry.reason);
+  }
+  if (context) {
+    reasonParts.push(context);
+  }
+  const reason = reasonParts.join(" • ").slice(0, 512);
+
+  try {
+    await guild.members.ban(normalizedUserId, { reason, deleteMessageSeconds: 0 });
+    console.log(`[BLACKLIST] Enforced blacklist on ${normalizedUserId} in guild ${guild.id} (${context})`);
+    return true;
+  } catch (error) {
+    console.log(`[BLACKLIST] Failed to enforce blacklist on ${normalizedUserId} in guild ${guild.id}:`, error);
+    return false;
   }
 }
 
@@ -22773,6 +22831,26 @@ client.on("guildBanAdd", async (ban) => {
   }
 });
 
+client.on("guildBanRemove", async (ban) => {
+  try {
+    const config = await storage.getGuildConfig(ban.guild.id).catch(() => null);
+    const blacklistEntry = getDashboardBlacklistedUsers(config)[ban.user.id];
+    if (!blacklistEntry) {
+      return;
+    }
+
+    await pause(750);
+    await enforceBlacklistedUserBan(
+      ban.guild,
+      ban.user.id,
+      blacklistEntry,
+      "user was unbanned while still blacklisted",
+    );
+  } catch (error) {
+    console.log("[BLACKLIST] Failed to re-ban blacklisted user after unban:", error);
+  }
+});
+
 client.on("channelCreate", async (channel) => {
   try {
     if (!(channel as any)?.guild) return;
@@ -22946,6 +23024,18 @@ client.on("guildMemberRemove", async (member) => {
 
 client.on("guildMemberAdd", async (member) => {
   try {
+    const guildConfig = await storage.getGuildConfig(member.guild.id).catch(() => undefined);
+    const blacklistEntry = getDashboardBlacklistedUsers(guildConfig)[member.id];
+    if (blacklistEntry) {
+      await enforceBlacklistedUserBan(
+        member.guild,
+        member.id,
+        blacklistEntry,
+        "user joined while still blacklisted",
+      );
+      return;
+    }
+
     if (member.user.bot) {
       try {
         const auditEntry = await findRecentAuditEntry(
@@ -23068,8 +23158,7 @@ client.on("guildMemberAdd", async (member) => {
     }
 
     try {
-      const config = await storage.getGuildConfig(member.guild.id);
-      const welcomeSetup = getWelcomeSetupFromGuildConfig(config);
+      const welcomeSetup = getWelcomeSetupFromGuildConfig(guildConfig);
       if (welcomeSetup.channelId) {
         const channel = await client.channels.fetch(welcomeSetup.channelId).catch(() => null);
         if (channel && "send" in channel) {

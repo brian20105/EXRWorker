@@ -170,6 +170,17 @@ interface MiscBlockItem {
   expiresAt: string | null;
 }
 
+interface MiscBlacklistItem {
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+  blacklistedById: string | null;
+  blacklistedByUsername: string | null;
+  blacklistedByAvatarUrl: string | null;
+  reason: string | null;
+  createdAt: string | null;
+}
+
 interface MiscActivityItem {
   id: string;
   timestamp: string;
@@ -596,12 +607,17 @@ export default function Dashboard() {
   const [roleSyncTargetRoleSearch, setRoleSyncTargetRoleSearch] = useState("");
   const [roleSyncGuildRoles, setRoleSyncGuildRoles] = useState<Record<string, Role[]>>({});
   const [miscBans, setMiscBans] = useState<MiscBanItem[]>([]);
+  const [miscBlacklistedUsers, setMiscBlacklistedUsers] = useState<MiscBlacklistItem[]>([]);
   const [miscBlocks, setMiscBlocks] = useState<MiscBlockItem[]>([]);
   const [miscActivity, setMiscActivity] = useState<MiscActivityItem[]>([]);
   const [miscOverviewLoading, setMiscOverviewLoading] = useState(false);
   const [miscOverviewError, setMiscOverviewError] = useState<string | null>(null);
   const [unbanningUserId, setUnbanningUserId] = useState<string | null>(null);
   const [unbanningAllBans, setUnbanningAllBans] = useState(false);
+  const [miscBlacklistUserIdInput, setMiscBlacklistUserIdInput] = useState("");
+  const [miscBlacklistReason, setMiscBlacklistReason] = useState("");
+  const [blacklistingMiscUser, setBlacklistingMiscUser] = useState(false);
+  const [unblacklistingMiscUserId, setUnblacklistingMiscUserId] = useState<string | null>(null);
   const [miscBlockUserIdInput, setMiscBlockUserIdInput] = useState("");
   const [miscBlockSystem, setMiscBlockSystem] = useState<MiscBlockSystem>("modmail");
   const [miscBlockDurationValue, setMiscBlockDurationValue] = useState("1");
@@ -1231,11 +1247,13 @@ export default function Dashboard() {
     try {
       const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview`, undefined, 15000);
       setMiscBans(Array.isArray(data?.bans) ? data.bans : []);
+      setMiscBlacklistedUsers(Array.isArray(data?.blacklistedUsers) ? data.blacklistedUsers : []);
       setMiscBlocks(Array.isArray(data?.blocks) ? data.blocks : []);
       setMiscActivity(Array.isArray(data?.activity) ? data.activity : []);
       setMiscOverviewError(data?.unavailableReason ? String(data.unavailableReason) : null);
     } catch (e: any) {
       setMiscBans([]);
+      setMiscBlacklistedUsers([]);
       setMiscBlocks([]);
       setMiscActivity([]);
       setMiscOverviewError(e.message || "Failed to load server activity.");
@@ -1274,6 +1292,68 @@ export default function Dashboard() {
       toast({ title: "Error", description: e.message || "Failed to unban all users.", variant: "destructive" });
     }
     setUnbanningAllBans(false);
+  };
+
+  const blacklistMiscUser = async () => {
+    if (!selectedGuild) return;
+
+    const userId = miscBlacklistUserIdInput.trim();
+    const reason = miscBlacklistReason.trim();
+    if (!/^\d{17,20}$/.test(userId)) {
+      toast({ title: "User ID required", description: "Enter a valid Discord user ID.", variant: "destructive" });
+      return;
+    }
+
+    setBlacklistingMiscUser(true);
+    try {
+      const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/blacklist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId,
+          reason,
+        }),
+      }, 15000);
+      toast({
+        title: "User blacklisted",
+        description: data?.warning
+          ? String(data.warning)
+          : `User ${userId} will be re-banned until removed from the blacklist.`,
+      });
+      setMiscBlacklistUserIdInput("");
+      setMiscBlacklistReason("");
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to blacklist this user.", variant: "destructive" });
+    }
+    setBlacklistingMiscUser(false);
+  };
+
+  const unblacklistMiscUser = async (userId: string, username?: string) => {
+    if (!selectedGuild) return;
+    const normalizedUserId = userId.trim();
+    if (!/^\d{17,20}$/.test(normalizedUserId)) {
+      toast({ title: "User ID required", description: "Enter a valid Discord user ID to remove from the blacklist.", variant: "destructive" });
+      return;
+    }
+
+    const label = username || normalizedUserId;
+    if (!window.confirm(`Remove ${label} from Blacklisted Users?`)) return;
+
+    setUnblacklistingMiscUserId(normalizedUserId);
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/blacklist/${encodeURIComponent(normalizedUserId)}`, {
+        method: "DELETE",
+      }, 15000);
+      toast({ title: "User removed", description: `${label} was removed from Blacklisted Users.` });
+      if (miscBlacklistUserIdInput.trim() === normalizedUserId) {
+        setMiscBlacklistUserIdInput("");
+      }
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to remove this user from the blacklist.", variant: "destructive" });
+    }
+    setUnblacklistingMiscUserId(null);
   };
 
   const blockSystemLabels: Record<MiscBlockSystem, string> = {
@@ -5424,6 +5504,99 @@ export default function Dashboard() {
                               onClick={() => unbanUser(ban.userId, ban.username)}
                             >
                               {unbanningUserId === ban.userId ? "Unbanning…" : "Unban"}
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader className="space-y-1">
+                    <CardTitle className="text-base">Blacklisted Users</CardTitle>
+                    <CardDescription>Any user listed here will be re-banned instantly until you remove them from the website blacklist.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-5">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>User ID</Label>
+                        <Input
+                          value={miscBlacklistUserIdInput}
+                          onChange={(event) => setMiscBlacklistUserIdInput(event.target.value)}
+                          placeholder="123456789012345678"
+                          data-testid="input-misc-blacklist-user-id"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Reason</Label>
+                        <Input
+                          value={miscBlacklistReason}
+                          onChange={(event) => setMiscBlacklistReason(event.target.value)}
+                          placeholder="Chargeback / alt account / ban evasion"
+                          data-testid="input-misc-blacklist-reason"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button onClick={blacklistMiscUser} disabled={blacklistingMiscUser || miscOverviewLoading} data-testid="button-misc-blacklist-user">
+                        {blacklistingMiscUser ? "Blacklisting…" : "Blacklist User"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => unblacklistMiscUser(miscBlacklistUserIdInput.trim())}
+                        disabled={blacklistingMiscUser || miscOverviewLoading || !miscBlacklistUserIdInput.trim()}
+                        data-testid="button-misc-unblacklist-user-id"
+                      >
+                        Remove from Blacklist
+                      </Button>
+                    </div>
+
+                    {miscOverviewLoading ? (
+                      <p className="text-sm text-muted-foreground">Loading blacklisted users…</p>
+                    ) : miscBlacklistedUsers.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No users are currently on the instant re-ban blacklist.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {miscBlacklistedUsers.map((entry) => (
+                          <div key={`misc-blacklist-${entry.userId}`} className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                            <div className="flex min-w-0 flex-1 items-start gap-3">
+                              {entry.avatarUrl ? (
+                                <img src={entry.avatarUrl} alt={entry.username} className="h-9 w-9 rounded-full object-cover" />
+                              ) : (
+                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                                  {entry.username.slice(0, 2).toUpperCase()}
+                                </div>
+                              )}
+                              <div className="min-w-0 flex-1 text-sm">
+                                <p className="truncate font-medium">{entry.username}</p>
+                                <p className="text-[11px] text-muted-foreground">User ID: {entry.userId}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  <span className="font-medium text-foreground">Blacklisted by:</span>{" "}
+                                  {entry.blacklistedByUsername || entry.blacklistedById || "Unknown user"}
+                                  {entry.blacklistedById ? ` (${entry.blacklistedById})` : ""}
+                                </p>
+                                {entry.createdAt && (
+                                  <p className="text-xs text-muted-foreground">
+                                    <span className="font-medium text-foreground">Added:</span>{" "}
+                                    {new Date(entry.createdAt).toLocaleString()}
+                                  </p>
+                                )}
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  <span className="font-medium text-foreground">Reason:</span>{" "}
+                                  {entry.reason || "No reason provided."}
+                                </p>
+                              </div>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              className="shrink-0"
+                              disabled={unblacklistingMiscUserId === entry.userId}
+                              onClick={() => unblacklistMiscUser(entry.userId, entry.username)}
+                            >
+                              {unblacklistingMiscUserId === entry.userId ? "Removing…" : "Remove"}
                             </Button>
                           </div>
                         ))}

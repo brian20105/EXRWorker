@@ -56,6 +56,7 @@ const OWNER_BOT_PID_FILE = path.resolve(process.cwd(), ".owner-bot.pid");
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const DASHBOARD_SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
+const DASHBOARD_BLACKLIST_USERS_KEY = "__dashboardBlacklistedUsers";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -256,6 +257,12 @@ type StaffApplicationBlockEntry = {
   expiresAt: string | null;
 };
 
+type DashboardBlacklistEntry = {
+  blacklistedById: string;
+  reason: string | null;
+  createdAt: string | null;
+};
+
 function getStaffApplicationBlocksFromConfig(raw: unknown): Record<string, StaffApplicationBlockEntry> {
   const root = parseDashboardConfigObject(raw);
   const blocksRaw = root.__staffApplicationBlocks;
@@ -298,6 +305,51 @@ function removeStaffApplicationBlockFromConfig(existingCustomCategoryPings: stri
     delete existing[userId];
   }
   root.__staffApplicationBlocks = existing;
+  return JSON.stringify(root);
+}
+
+function getBlacklistedUsersFromConfig(raw: unknown): Record<string, DashboardBlacklistEntry> {
+  const root = parseDashboardConfigObject(raw);
+  const blacklistRaw = root[DASHBOARD_BLACKLIST_USERS_KEY];
+  if (!blacklistRaw || typeof blacklistRaw !== "object" || Array.isArray(blacklistRaw)) {
+    return {};
+  }
+
+  const result: Record<string, DashboardBlacklistEntry> = {};
+  for (const [userId, value] of Object.entries(blacklistRaw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    result[userId] = {
+      blacklistedById: String(entry.blacklistedById || ""),
+      reason: typeof entry.reason === "string" ? entry.reason : null,
+      createdAt: typeof entry.createdAt === "string" ? entry.createdAt : null,
+    };
+  }
+
+  return result;
+}
+
+function writeBlacklistedUserToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  userId: string,
+  entry: DashboardBlacklistEntry,
+): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existing = getBlacklistedUsersFromConfig(existingCustomCategoryPings);
+  root[DASHBOARD_BLACKLIST_USERS_KEY] = {
+    ...existing,
+    [userId]: entry,
+  };
+  return JSON.stringify(root);
+}
+
+function removeBlacklistedUserFromConfig(existingCustomCategoryPings: string | null | undefined, userId: string): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existing = getBlacklistedUsersFromConfig(existingCustomCategoryPings);
+  if (existing[userId]) {
+    delete existing[userId];
+  }
+  root[DASHBOARD_BLACKLIST_USERS_KEY] = existing;
   return JSON.stringify(root);
 }
 
@@ -2229,9 +2281,9 @@ export async function registerRoutes(
       const config = await storage.getGuildConfig(guildId);
       const hasBotToken = !!getDiscordBotToken();
       const canUseGatewayClient = client.isReady();
-      if (!hasBotToken && !canUseGatewayClient) {
-        return res.json({ bans: [], activity: [], unavailableReason: "Bot is offline right now." });
-      }
+      const unavailableReason = !hasBotToken && !canUseGatewayClient
+        ? "Bot is offline right now."
+        : null;
       const cleanText = (value: unknown) => String(value || "")
         .replace(/`/g, "")
         .replace(/\*\*/g, "")
@@ -2490,21 +2542,46 @@ export async function registerRoutes(
           })),
       ].filter((block) => block.userId);
 
-      const blocks = await Promise.all(rawBlocks.map(async (block) => {
-        const blockedUser = await getCachedUserSummary(block.userId);
-        const blockedByUser = block.blockedById ? await getCachedUserSummary(block.blockedById) : null;
-        return {
-          system: block.system,
-          userId: block.userId,
-          username: blockedUser.username || block.userId,
-          avatarUrl: blockedUser.avatarUrl,
-          blockedById: block.blockedById || null,
-          blockedByUsername: blockedByUser?.username || null,
-          blockedByAvatarUrl: blockedByUser?.avatarUrl || null,
-          reason: block.reason,
-          expiresAt: block.expiresAt,
-        };
-      }));
+      const rawBlacklistedUsers = Object.entries(getBlacklistedUsersFromConfig(config?.customCategoryPings))
+        .map(([userId, entry]) => ({
+          userId: String(userId || ""),
+          blacklistedById: entry?.blacklistedById ? String(entry.blacklistedById) : null,
+          reason: entry?.reason ? String(entry.reason) : null,
+          createdAt: entry?.createdAt || null,
+        }))
+        .filter((entry) => entry.userId);
+
+      const [blocks, blacklistedUsers] = await Promise.all([
+        Promise.all(rawBlocks.map(async (block) => {
+          const blockedUser = await getCachedUserSummary(block.userId);
+          const blockedByUser = block.blockedById ? await getCachedUserSummary(block.blockedById) : null;
+          return {
+            system: block.system,
+            userId: block.userId,
+            username: blockedUser.username || block.userId,
+            avatarUrl: blockedUser.avatarUrl,
+            blockedById: block.blockedById || null,
+            blockedByUsername: blockedByUser?.username || null,
+            blockedByAvatarUrl: blockedByUser?.avatarUrl || null,
+            reason: block.reason,
+            expiresAt: block.expiresAt,
+          };
+        })),
+        Promise.all(rawBlacklistedUsers.map(async (entry) => {
+          const blacklistedUser = await getCachedUserSummary(entry.userId);
+          const blacklistedByUser = entry.blacklistedById ? await getCachedUserSummary(entry.blacklistedById) : null;
+          return {
+            userId: entry.userId,
+            username: blacklistedUser.username || entry.userId,
+            avatarUrl: blacklistedUser.avatarUrl,
+            blacklistedById: entry.blacklistedById || null,
+            blacklistedByUsername: blacklistedByUser?.username || null,
+            blacklistedByAvatarUrl: blacklistedByUser?.avatarUrl || null,
+            reason: entry.reason,
+            createdAt: entry.createdAt,
+          };
+        })),
+      ]);
 
       const auditActivity = Array.isArray(auditLogs?.audit_log_entries)
         ? auditLogs.audit_log_entries.map((entry: any) => {
@@ -2531,7 +2608,7 @@ export async function registerRoutes(
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, 40);
 
-      res.json({ bans, blocks, activity });
+      res.json({ bans, blacklistedUsers, blocks, activity, unavailableReason });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -2546,6 +2623,11 @@ export async function registerRoutes(
 
       if (!/^\d{17,20}$/.test(userId)) {
         return res.status(400).json({ error: "A valid user ID is required." });
+      }
+
+      const config = await storage.getGuildConfig(guildId);
+      if (getBlacklistedUsersFromConfig(config?.customCategoryPings)[userId]) {
+        return res.status(400).json({ error: "Remove this user from Blacklisted Users before unbanning them." });
       }
 
       if (getBotToken()) {
@@ -2574,6 +2656,9 @@ export async function registerRoutes(
         return res.status(503).json({ error: "Bot is offline right now." });
       }
 
+      const config = await storage.getGuildConfig(guildId);
+      const blacklistedUserIds = new Set(Object.keys(getBlacklistedUsersFromConfig(config?.customCategoryPings)));
+
       let banUserIds: string[] = [];
       if (getBotToken()) {
         const bans = await discordBotApiRequest<any[]>(`/guilds/${guildId}/bans?limit=1000`).catch(() => []);
@@ -2589,7 +2674,13 @@ export async function registerRoutes(
 
       let count = 0;
       const failed: string[] = [];
+      const skipped: string[] = [];
       for (const userId of banUserIds) {
+        if (blacklistedUserIds.has(userId)) {
+          skipped.push(userId);
+          continue;
+        }
+
         try {
           if (getBotToken()) {
             await discordApiRequest(`/guilds/${guildId}/bans/${userId}`, { method: "DELETE" });
@@ -2604,9 +2695,93 @@ export async function registerRoutes(
         }
       }
 
-      res.json({ success: failed.length === 0, count, failed });
+      res.json({ success: failed.length === 0, count, failed, skipped });
     } catch (e: any) {
       res.status(500).json({ error: e.message || "Failed to unban all users." });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/blacklist", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+
+      const userId = String(req.body?.userId || "").trim();
+      const reason = String(req.body?.reason || "").trim();
+
+      if (!/^\d{17,20}$/.test(userId)) {
+        return res.status(400).json({ error: "A valid Discord user ID is required." });
+      }
+
+      const config = await storage.getGuildConfig(guildId);
+      await storage.upsertGuildConfig({
+        guildId,
+        customCategoryPings: writeBlacklistedUserToConfig(
+          config?.customCategoryPings,
+          userId,
+          {
+            blacklistedById: user.id,
+            reason: reason || "Blacklisted from dashboard",
+            createdAt: new Date().toISOString(),
+          },
+        ),
+      });
+
+      let enforced = false;
+      let warning: string | null = null;
+      const auditReason = `Dashboard blacklist enforcement${reason ? `: ${reason}` : ""}`.slice(0, 512);
+
+      try {
+        if (client.isReady()) {
+          const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+          if (guild) {
+            await guild.members.ban(userId, { reason: auditReason, deleteMessageSeconds: 0 });
+            enforced = true;
+          }
+        } else if (getBotToken()) {
+          await discordApiRequest(`/guilds/${guildId}/bans/${userId}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Audit-Log-Reason": auditReason,
+            },
+            body: JSON.stringify({ delete_message_seconds: 0 }),
+          });
+          enforced = true;
+        } else {
+          warning = "The user was saved to the blacklist, but the bot is offline so the instant re-ban could not run yet.";
+        }
+      } catch (banError: any) {
+        warning = banError?.message || "The user was saved to the blacklist, but the instant re-ban failed.";
+      }
+
+      res.json({ success: true, userId, enforced, warning });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to blacklist this user." });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/blacklist/:userId", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      const userId = String(req.params.userId || "").trim();
+      if (!/^\d{17,20}$/.test(userId)) {
+        return res.status(400).json({ error: "A valid Discord user ID is required." });
+      }
+
+      const config = await storage.getGuildConfig(guildId);
+      await storage.upsertGuildConfig({
+        guildId,
+        customCategoryPings: removeBlacklistedUserFromConfig(config?.customCategoryPings, userId),
+      });
+
+      res.json({ success: true, userId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to remove this user from the blacklist." });
     }
   });
 
