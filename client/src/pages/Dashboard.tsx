@@ -874,6 +874,10 @@ export default function Dashboard() {
           fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/config`, undefined, 15000)
             .then((data) => applyGuildConfigData(data, true))
             .catch(() => undefined);
+
+          if (activePrimaryTab === "miscellaneous") {
+            loadMiscOverview(selectedGuild).catch(() => undefined);
+          }
           return;
         }
 
@@ -889,7 +893,7 @@ export default function Dashboard() {
     return () => {
       eventSource.close();
     };
-  }, [selectedGuild]);
+  }, [selectedGuild, activePrimaryTab]);
 
   // Fetch rosters when the rosters tab is active
   useEffect(() => {

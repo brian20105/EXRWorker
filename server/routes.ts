@@ -2728,6 +2728,12 @@ export async function registerRoutes(
         ),
       });
 
+      const updatedConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        config: updatedConfig || { guildId },
+      });
+
       let enforced = false;
       let warning: string | null = null;
       const auditReason = `Dashboard blacklist enforcement${reason ? `: ${reason}` : ""}`.slice(0, 512);
@@ -2777,6 +2783,12 @@ export async function registerRoutes(
       await storage.upsertGuildConfig({
         guildId,
         customCategoryPings: removeBlacklistedUserFromConfig(config?.customCategoryPings, userId),
+      });
+
+      const updatedConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        config: updatedConfig || { guildId },
       });
 
       res.json({ success: true, userId });
@@ -2855,6 +2867,12 @@ export async function registerRoutes(
         });
       }
 
+      const updatedConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        config: updatedConfig || { guildId },
+      });
+
       res.json({ success: true, userId, system, expiresAt: expiresAt ? expiresAt.toISOString() : null });
     } catch (e: any) {
       res.status(500).json({ error: e.message || "Failed to block this user." });
@@ -2887,6 +2905,12 @@ export async function registerRoutes(
       } else {
         await storage.removeModmailBlock(guildId, userId);
       }
+
+      const updatedConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        config: updatedConfig || { guildId },
+      });
 
       res.json({ success: true, userId, system });
     } catch (e: any) {
