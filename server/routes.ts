@@ -55,7 +55,6 @@ const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "9443850000
 const OWNER_BOT_PID_FILE = path.resolve(process.cwd(), ".owner-bot.pid");
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
-const DASHBOARD_DATABASE_SETUP_KEY = "__dashboardDatabaseSetup";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -593,110 +592,6 @@ function writeGuildDisabledToCustomCategoryPings(raw: unknown, disabled: boolean
   return JSON.stringify(parsed, null, 2);
 }
 
-type DashboardDatabaseSetupEntry = {
-  mode: "single" | "shared";
-  databaseId: string;
-  name: string;
-  linkedGuildIds: string[];
-  primaryGuildId: string;
-  updatedById: string | null;
-  updatedAt: number;
-};
-
-function buildSharedDatabaseId(guildIds: string[]): string {
-  const normalizedGuildIds = Array.from(new Set(
-    guildIds
-      .map((entry) => String(entry || "").trim())
-      .filter(Boolean),
-  )).sort((a, b) => a.localeCompare(b));
-
-  if (normalizedGuildIds.length <= 1) {
-    return normalizedGuildIds[0] || "";
-  }
-
-  return `shared_${crypto.createHash("sha1").update(normalizedGuildIds.join(":"), "utf8").digest("hex").slice(0, 12)}`;
-}
-
-function getDashboardDatabaseSetup(raw: unknown, fallbackGuildId: string, fallbackGuildName?: string): DashboardDatabaseSetupEntry {
-  const parsed = parseDashboardConfigObject(raw);
-  const setupRaw = parsed[DASHBOARD_DATABASE_SETUP_KEY];
-  const cleanFallbackGuildId = String(fallbackGuildId || "").trim();
-  const safeFallbackName = (String(fallbackGuildName || "").trim() || `Server ${cleanFallbackGuildId}`).trim();
-
-  if (!setupRaw || typeof setupRaw !== "object" || Array.isArray(setupRaw)) {
-    return {
-      mode: "single",
-      databaseId: cleanFallbackGuildId,
-      name: `${safeFallbackName} Database`,
-      linkedGuildIds: [],
-      primaryGuildId: cleanFallbackGuildId,
-      updatedById: null,
-      updatedAt: Date.now(),
-    };
-  }
-
-  const setup = setupRaw as Record<string, unknown>;
-  const parsedLinkedGuildIds = Array.isArray(setup.linkedGuildIds)
-    ? Array.from(new Set(
-        setup.linkedGuildIds
-          .map((entry) => String(entry || "").trim())
-          .filter((entry) => Boolean(entry) && entry !== cleanFallbackGuildId),
-      ))
-    : [];
-  const mode: "single" | "shared" = setup.mode === "shared" && parsedLinkedGuildIds.length > 0 ? "shared" : "single";
-  const linkedGuildIds = mode === "shared" ? parsedLinkedGuildIds : [];
-
-  return {
-    mode,
-    databaseId: typeof setup.databaseId === "string" && setup.databaseId.trim()
-      ? setup.databaseId.trim()
-      : (mode === "shared" ? buildSharedDatabaseId([cleanFallbackGuildId, ...linkedGuildIds]) : cleanFallbackGuildId),
-    name: typeof setup.name === "string" && setup.name.trim()
-      ? setup.name.trim()
-      : `${safeFallbackName} Database`,
-    linkedGuildIds,
-    primaryGuildId: typeof setup.primaryGuildId === "string" && setup.primaryGuildId.trim()
-      ? setup.primaryGuildId.trim()
-      : cleanFallbackGuildId,
-    updatedById: typeof setup.updatedById === "string" && setup.updatedById.trim()
-      ? setup.updatedById.trim()
-      : null,
-    updatedAt: typeof setup.updatedAt === "number" && Number.isFinite(setup.updatedAt)
-      ? setup.updatedAt
-      : Date.now(),
-  };
-}
-
-function writeDashboardDatabaseSetup(raw: unknown, setup: DashboardDatabaseSetupEntry): string {
-  const parsed = parseDashboardConfigObject(raw);
-  const primaryGuildId = String(setup.primaryGuildId || "").trim();
-  const linkedGuildIds = Array.from(new Set(
-    (setup.linkedGuildIds || [])
-      .map((entry) => String(entry || "").trim())
-      .filter((entry) => Boolean(entry) && entry !== primaryGuildId),
-  ));
-  const mode: "single" | "shared" = setup.mode === "shared" && linkedGuildIds.length > 0 ? "shared" : "single";
-  const databaseId = String(
-    setup.databaseId
-    || (mode === "shared" ? buildSharedDatabaseId([primaryGuildId, ...linkedGuildIds]) : primaryGuildId),
-  ).trim();
-  const name = String(setup.name || `${primaryGuildId} Database`).trim() || `${primaryGuildId} Database`;
-
-  parsed[DASHBOARD_DATABASE_SETUP_KEY] = {
-    mode,
-    databaseId,
-    name,
-    linkedGuildIds,
-    primaryGuildId,
-    updatedById: setup.updatedById || null,
-    updatedAt: typeof setup.updatedAt === "number" && Number.isFinite(setup.updatedAt)
-      ? setup.updatedAt
-      : Date.now(),
-  };
-
-  return JSON.stringify(parsed, null, 2);
-}
-
 async function canAccessGuild(userId: string, guildId: string): Promise<boolean> {
   if (PRIVILEGED_DASHBOARD_USER_IDS.has(userId)) {
     setCachedAccessDecision(userId, guildId, true);
@@ -1059,6 +954,13 @@ const FEATURE_LABELS: Record<string, string> = {
   sticky: "Sticky Messages",
 };
 
+const LATEST_BOT_UPDATE_HIGHLIGHTS = [
+  "New command: `/announce message:<text>` sends a quick announcement in the channel where you run it.",
+  "Dashboard cleanup: the duplicate Bot Permissions section in Settings has been removed.",
+  "New control: the Updates Channel now has its own `Post Latest Update` button for quick testing.",
+  "Update posts now announce dashboard changes and newly enabled features more reliably.",
+];
+
 function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown): string[] {
   const previousFlags = getDashboardFeatureFlags(previousRaw);
   const currentFlags = getDashboardFeatureFlags(currentRaw);
@@ -1076,103 +978,6 @@ function getEnabledFeatureLabels(raw: unknown): string[] {
     .filter(([key]) => flags[key] !== false)
     .map(([, label]) => label)
     .sort((a, b) => a.localeCompare(b));
-}
-
-async function getRegisteredSlashCommandNames(): Promise<string[]> {
-  try {
-    if (client.isReady() && client.application) {
-      const commands = await client.application.commands.fetch();
-      return Array.from(commands.values())
-        .map((command) => String(command.name || "").trim())
-        .filter(Boolean);
-    }
-
-    const applicationId = String(process.env.DISCORD_APPLICATION_ID || process.env.DISCORD_CLIENT_ID || "").trim();
-    if (!applicationId || !getDiscordBotToken()) {
-      return [];
-    }
-
-    const commands = await discordBotApiRequest<any[]>(`/applications/${applicationId}/commands`);
-    return Array.isArray(commands)
-      ? commands.map((command) => String(command?.name || "").trim()).filter(Boolean)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function formatSlashCommandHighlights(commandNames: string[], limit = 6): string {
-  const normalized = Array.from(new Set(
-    commandNames
-      .map((entry) => String(entry || "").trim())
-      .filter(Boolean),
-  ));
-
-  if (normalized.length === 0) {
-    return "";
-  }
-
-  const priorityOrder = ["announce", "block", "unblock", "activity", "roster", "sticky"];
-  const selected: string[] = [];
-
-  for (const name of priorityOrder) {
-    if (normalized.includes(name) && selected.length < limit) {
-      selected.push(`/${name}`);
-    }
-  }
-
-  const remaining = normalized.filter((name) => !priorityOrder.includes(name));
-  const tail = remaining.slice(-Math.max(0, limit - selected.length));
-  for (const name of tail) {
-    if (selected.length >= limit) break;
-    selected.push(`/${name}`);
-  }
-
-  return `${selected.join(", ")}${normalized.length > selected.length ? ` +${normalized.length - selected.length} more` : ""}`;
-}
-
-async function buildLatestBotUpdateHighlights(guildId: string, config: any): Promise<string[]> {
-  const guildSummary = getCachedGuildSummaryById(guildId);
-  const enabledFeatures = getEnabledFeatureLabels(config?.customCategoryPings);
-  const quickSettings = getDashboardQuickSettingsSummary(config?.customCategoryPings);
-  const databaseSetup = getDashboardDatabaseSetup(config?.customCategoryPings, guildId, guildSummary?.name || `Server ${guildId}`);
-  const liveSlashCommands = formatSlashCommandHighlights(await getRegisteredSlashCommandNames());
-
-  const lines: string[] = [];
-
-  if (liveSlashCommands) {
-    lines.push(`Live commands now available: ${liveSlashCommands}`);
-  }
-
-  if (databaseSetup.mode === "shared") {
-    lines.push(`Database setup: \`${databaseSetup.name}\` is shared across ${databaseSetup.linkedGuildIds.length + 1} server(s)`);
-  } else {
-    lines.push("Database setup: this server is using its own saved setup");
-  }
-
-  if (enabledFeatures.length > 0) {
-    lines.push(`Enabled modules right now: ${enabledFeatures.slice(0, 6).join(", ")}${enabledFeatures.length > 6 ? ` +${enabledFeatures.length - 6} more` : ""}`);
-  }
-
-  const readyTools: string[] = [];
-  if (config?.modmailCategoryId) readyTools.push("modmail");
-  if (config?.appealCategoryId) readyTools.push("appeals");
-  if (config?.staffIntroChannelId) readyTools.push("staff applications");
-  if (config?.inactivityChannelId) readyTools.push("inactivity requests");
-  if (config?.commandLogChannelId) readyTools.push("update posts");
-  if (readyTools.length > 0) {
-    lines.push(`Configured tools in this server: ${readyTools.join(", ")}`);
-  }
-
-  const serverSetupNotes: string[] = [];
-  if (quickSettings.moderationPrefix) serverSetupNotes.push(`mod prefix \`${quickSettings.moderationPrefix}\``);
-  if (quickSettings.modmailPrefix) serverSetupNotes.push(`modmail prefix \`${quickSettings.modmailPrefix}\``);
-  if (quickSettings.botNickname) serverSetupNotes.push(`nickname \`${quickSettings.botNickname}\``);
-  if (serverSetupNotes.length > 0) {
-    lines.push(`Server setup snapshot: ${serverSetupNotes.join(", ")}`);
-  }
-
-  return lines.slice(0, 5);
 }
 
 function getFeatureToggleChanges(previousRaw: unknown, currentRaw: unknown): { enabled: string[]; disabled: string[] } {
@@ -2978,10 +2783,11 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Choose an Updates Channel first." });
       }
 
-      const summaryLines = await buildLatestBotUpdateHighlights(guildId, config);
-      if (summaryLines.length === 0) {
-        summaryLines.push("Live bot feature snapshot refreshed for this server.");
-      }
+      const enabledFeatures = getEnabledFeatureLabels(config?.customCategoryPings);
+      const summaryLines = [
+        ...LATEST_BOT_UPDATE_HIGHLIGHTS,
+        `Enabled modules right now: ${enabledFeatures.length > 0 ? `${enabledFeatures.slice(0, 6).join(", ")}${enabledFeatures.length > 6 ? ` +${enabledFeatures.length - 6} more` : ""}` : "None"}`,
+      ];
 
       const posted = await postDashboardUpdateToChannel(guildId, targetChannelId, user.id, summaryLines, {
         title: "Latest Bot Update",
@@ -2994,131 +2800,6 @@ export async function registerRoutes(
       res.json({ success: true, channelId: targetChannelId });
     } catch (e: any) {
       res.status(500).json({ error: e.message || "Failed to post the latest update." });
-    }
-  });
-
-  app.post("/api/guilds/:guildId/database-setup", async (req, res) => {
-    try {
-      const auth = await requireGuildAccess(req, res);
-      if (!auth) return;
-      const { guildId, user } = auth;
-
-      const requestedMode: "single" | "shared" = req.body?.mode === "shared" ? "shared" : "single";
-      const requestedLinkedGuildIds = Array.isArray(req.body?.linkedGuildIds)
-        ? req.body.linkedGuildIds
-            .map((entry: unknown) => String(entry || "").trim())
-            .filter((entry: string) => Boolean(entry) && entry !== guildId)
-        : [];
-      const selectedGuildName = getCachedGuildSummaryById(guildId)?.name || `Server ${guildId}`;
-      const requestedGroupGuildIds = requestedMode === "shared"
-        ? Array.from(new Set([guildId, ...requestedLinkedGuildIds]))
-        : [guildId];
-      const effectiveMode: "single" | "shared" = requestedMode === "shared" && requestedGroupGuildIds.length > 1 ? "shared" : "single";
-      const requestedName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-      const resolvedName = requestedName || `${selectedGuildName} ${effectiveMode === "shared" ? "Shared Database" : "Database"}`;
-
-      const existingConfig = await storage.getGuildConfig(guildId);
-      const existingSetup = getDashboardDatabaseSetup(existingConfig?.customCategoryPings, guildId, selectedGuildName);
-      const previousGroupGuildIds = Array.from(new Set([guildId, ...(existingSetup.linkedGuildIds || [])]));
-      const allAffectedGuildIds = Array.from(new Set([...previousGroupGuildIds, ...requestedGroupGuildIds]));
-
-      for (const relatedGuildId of allAffectedGuildIds) {
-        if (relatedGuildId === guildId) {
-          rememberGuildAccess(req, res, user.id, relatedGuildId);
-          continue;
-        }
-
-        let allowed = false;
-        try {
-          allowed = await canAccessGuild(user.id, relatedGuildId);
-        } catch (error: any) {
-          const isRateLimited = error?.status === 429 || String(error?.message || "").includes("1015");
-          if (isRateLimited) {
-            return res.status(503).json({ error: "Discord is temporarily rate-limited. Please retry saving the database setup in a few seconds." });
-          }
-          return res.status(500).json({ error: "Could not verify access for every linked server right now. Please retry." });
-        }
-
-        if (!allowed) {
-          const guildLabel = getCachedGuildSummaryById(relatedGuildId)?.name || `Server ${relatedGuildId}`;
-          return res.status(403).json({ error: `You must have dashboard access in ${guildLabel} before linking it to this database.` });
-        }
-
-        rememberGuildAccess(req, res, user.id, relatedGuildId);
-      }
-
-      const updatedAt = Date.now();
-      const sharedDatabaseId = effectiveMode === "shared"
-        ? buildSharedDatabaseId(requestedGroupGuildIds)
-        : guildId;
-      const updatedConfigs = new Map<string, Awaited<ReturnType<typeof storage.upsertGuildConfig>>>();
-
-      for (const targetGuildId of allAffectedGuildIds) {
-        const targetConfig = await storage.getGuildConfig(targetGuildId);
-        const targetGuildName = getCachedGuildSummaryById(targetGuildId)?.name || `Server ${targetGuildId}`;
-        const includedInGroup = requestedGroupGuildIds.includes(targetGuildId);
-
-        const nextSetup: DashboardDatabaseSetupEntry = includedInGroup
-          ? {
-              mode: effectiveMode,
-              databaseId: effectiveMode === "shared" ? sharedDatabaseId : targetGuildId,
-              name: resolvedName,
-              linkedGuildIds: requestedGroupGuildIds.filter((id) => id !== targetGuildId),
-              primaryGuildId: guildId,
-              updatedById: user.id,
-              updatedAt,
-            }
-          : {
-              mode: "single",
-              databaseId: targetGuildId,
-              name: `${targetGuildName} Database`,
-              linkedGuildIds: [],
-              primaryGuildId: targetGuildId,
-              updatedById: user.id,
-              updatedAt,
-            };
-
-        const mergedCustomCategoryPings = writeDashboardDatabaseSetup(targetConfig?.customCategoryPings, nextSetup);
-        const nextConfig = await storage.upsertGuildConfig({
-          guildId: targetGuildId,
-          customCategoryPings: mergedCustomCategoryPings,
-        });
-
-        updatedConfigs.set(targetGuildId, nextConfig);
-        broadcastGuildUpdate(targetGuildId, {
-          type: "config-updated",
-          guildId: targetGuildId,
-          config: nextConfig || {},
-          editorId: user.id,
-        });
-      }
-
-      const primaryConfig = updatedConfigs.get(guildId);
-      if (primaryConfig?.commandLogChannelId) {
-        const includedServerLabels = requestedGroupGuildIds
-          .map((id) => getCachedGuildSummaryById(id)?.name || `Server ${id}`)
-          .join(", ");
-        const summaryLines = effectiveMode === "shared"
-          ? [
-              `Shared database name: ${resolvedName}`,
-              `Linked servers: ${includedServerLabels}`,
-            ]
-          : ["This server is now using its own database setup again."];
-
-        await postDashboardUpdateToChannel(guildId, primaryConfig.commandLogChannelId, user.id, summaryLines, {
-          title: effectiveMode === "shared" ? "Shared Database Updated" : "Database Setup Updated",
-          description: `Saved by <@${user.id}>`,
-        });
-      }
-
-      const selectedSetup = getDashboardDatabaseSetup(primaryConfig?.customCategoryPings, guildId, selectedGuildName);
-      res.json({
-        success: true,
-        setup: selectedSetup,
-        updatedGuildIds: requestedGroupGuildIds,
-      });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message || "Failed to save the database setup." });
     }
   });
 

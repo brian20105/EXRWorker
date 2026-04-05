@@ -1882,28 +1882,15 @@ async function incrementExtraActivityCounter(
   });
 }
 
-const DASHBOARD_DATABASE_SETUP_KEY = "__dashboardDatabaseSetup";
+function getExtraActivityGuildIds(baseGuildId: string, useAllGuilds: boolean): string[] {
+  if (!useAllGuilds) return [baseGuildId];
 
-async function getExtraActivityGuildIds(baseGuildId: string, useAllGuilds: boolean): Promise<string[]> {
-  const normalizedGuildId = String(baseGuildId || "").trim();
-  if (!normalizedGuildId) return [];
-  if (!useAllGuilds) return [normalizedGuildId];
-
-  const config = await storage.getGuildConfig(normalizedGuildId).catch(() => undefined);
-  const parsed = parseDashboardConfigObject(config?.customCategoryPings);
-  const setupRaw = parsed[DASHBOARD_DATABASE_SETUP_KEY];
-  const setupObject = setupRaw && typeof setupRaw === "object" && !Array.isArray(setupRaw)
-    ? setupRaw as Record<string, unknown>
-    : null;
-  const mode = setupObject?.mode === "shared" ? "shared" : "single";
-  const linkedGuildIdsRaw = setupObject?.linkedGuildIds;
-  const linkedGuildIds = mode === "shared" && Array.isArray(linkedGuildIdsRaw)
-    ? linkedGuildIdsRaw
-        .map((entry: unknown) => String(entry || "").trim())
-        .filter((entry: string) => Boolean(entry) && entry !== normalizedGuildId)
-    : [];
-
-  return Array.from(new Set([normalizedGuildId, ...linkedGuildIds]));
+  const guildIds = new Set<string>();
+  if (baseGuildId) guildIds.add(baseGuildId);
+  for (const guild of client.guilds.cache.values()) {
+    guildIds.add(guild.id);
+  }
+  return Array.from(guildIds);
 }
 
 async function getExtraActivityStatsForScope(
@@ -1912,7 +1899,7 @@ async function getExtraActivityStatsForScope(
   useAllGuilds: boolean,
 ): Promise<Array<{ userId: string; count: number }>> {
   const totals = new Map<string, number>();
-  const guildIds = await getExtraActivityGuildIds(baseGuildId, useAllGuilds);
+  const guildIds = getExtraActivityGuildIds(baseGuildId, useAllGuilds);
 
   for (const guildId of guildIds) {
     const config = await storage.getGuildConfig(guildId).catch(() => undefined);
@@ -1945,7 +1932,7 @@ async function adjustExtraActivityCounterForScope(
   amount: number,
   useAllGuilds: boolean,
 ): Promise<void> {
-  const guildIds = await getExtraActivityGuildIds(baseGuildId, useAllGuilds);
+  const guildIds = getExtraActivityGuildIds(baseGuildId, useAllGuilds);
   for (const guildId of guildIds) {
     await incrementExtraActivityCounter(guildId, key, userId, amount);
   }
@@ -3911,10 +3898,10 @@ const commands = [
         .addStringOption((option) =>
           option
             .setName("scope")
-            .setDescription("Show stats from this server only or the linked shared-database servers")
+            .setDescription("Show stats from this server only or all servers")
             .setRequired(false)
             .addChoices(
-              { name: "Linked Servers", value: "all" },
+              { name: "All Servers", value: "all" },
               { name: "This Server Only", value: "guild" }
             )
         )
@@ -6828,18 +6815,17 @@ client.on("interactionCreate", async (interaction) => {
         try {
           const targetMember = interaction.options.getUser("member");
           const category = interaction.options.getString("category");
-          const scope = interaction.options.getString("scope") || "guild";
+          const scope = interaction.options.getString("scope") || "all"; // Default to all servers
           const fromDays = interaction.options.getInteger("from") ?? undefined;
           const toDays = interaction.options.getInteger("to") ?? undefined;
-          const scopeGuildIds = await getExtraActivityGuildIds(interaction.guildId!, scope === "all");
-          const useAllGuilds = scope === "all" && scopeGuildIds.length > 1;
+          const useAllGuilds = scope === "all";
 
           // Build time range description with Discord timestamps (hammer times)
           const now = new Date();
           const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
           const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
 
-          let timeRangeDesc = useAllGuilds ? `📊 **Linked Servers (${scopeGuildIds.length})**` : "📊 **This Server Only**";
+          let timeRangeDesc = useAllGuilds ? "📊 **All Servers**" : "📊 **This Server Only**";
           if (fromDate || toDays !== undefined) {
             const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
             const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
@@ -6848,7 +6834,7 @@ client.on("interactionCreate", async (interaction) => {
 
           let moderationStatsRows: { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[] = [];
           try {
-            moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays, useAllGuilds ? scopeGuildIds : undefined);
+            moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays);
           } catch (e) {
             console.log("Could not fetch moderation action stats:", e);
           }
@@ -6873,35 +6859,35 @@ client.on("interactionCreate", async (interaction) => {
 
             try {
               memberBanStats = useAllGuilds 
-                ? await storage.getActivityStatsForUserAllGuilds(targetMember.id, "ban", fromDays, toDays, scopeGuildIds)
+                ? await storage.getActivityStatsForUserAllGuilds(targetMember.id, "ban", fromDays, toDays)
                 : await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "ban", fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member ban stats:", e);
             }
             try {
               memberUnbanStats = useAllGuilds
-                ? await storage.getActivityStatsForUserAllGuilds(targetMember.id, "unban", fromDays, toDays, scopeGuildIds)
+                ? await storage.getActivityStatsForUserAllGuilds(targetMember.id, "unban", fromDays, toDays)
                 : await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "unban", fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member unban stats:", e);
             }
             try {
               memberInviteStats = useAllGuilds
-                ? await storage.getInviteStatsForUserAllGuilds(targetMember.id, fromDays, toDays, scopeGuildIds)
+                ? await storage.getInviteStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
                 : await storage.getInviteStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member invite stats:", e);
             }
             try {
               memberModmailStats = useAllGuilds
-                ? await storage.getModmailStatsForUserAllGuilds(targetMember.id, fromDays, toDays, scopeGuildIds)
+                ? await storage.getModmailStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
                 : await storage.getModmailStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member modmail stats:", e);
             }
             try {
               memberAppealStats = useAllGuilds
-                ? await storage.getAppealStatsForUserAllGuilds(targetMember.id, fromDays, toDays, scopeGuildIds)
+                ? await storage.getAppealStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
                 : await storage.getAppealStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member appeal stats:", e);
@@ -6940,7 +6926,7 @@ client.on("interactionCreate", async (interaction) => {
             let memberStaffReportStats = 0;
             try {
               memberStaffReportStats = useAllGuilds
-                ? await storage.getStaffReportStatsForUserAllGuilds(targetMember.id, fromDays, toDays, scopeGuildIds)
+                ? await storage.getStaffReportStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
                 : await storage.getStaffReportStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
             } catch (e) {
               console.log("Could not fetch member staff report stats:", e);
@@ -7013,7 +6999,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (!category || category === "ban") {
               banStats = useAllGuilds
-                ? await storage.getAllGuildsBanStats(fromDays, toDays, scopeGuildIds)
+                ? await storage.getAllGuildsBanStats(fromDays, toDays)
                 : await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
             }
           } catch (e) {
@@ -7033,7 +7019,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (!category || category === "unban") {
               unbanStats = useAllGuilds
-                ? await storage.getAllGuildsUnbanStats(fromDays, toDays, scopeGuildIds)
+                ? await storage.getAllGuildsUnbanStats(fromDays, toDays)
                 : await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
             }
           } catch (e) {
@@ -7043,7 +7029,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (!category || category === "invites") {
               inviteStats = useAllGuilds
-                ? await storage.getAllGuildsInviteStats(fromDays, toDays, scopeGuildIds)
+                ? await storage.getAllGuildsInviteStats(fromDays, toDays)
                 : await storage.getInviteStats(interaction.guildId!, fromDays, toDays);
             }
           } catch (e) {
@@ -7053,7 +7039,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (!category || category === "modmail") {
               modmailStats = useAllGuilds
-                ? await storage.getAllGuildsModmailStats(fromDays, toDays, scopeGuildIds)
+                ? await storage.getAllGuildsModmailStats(fromDays, toDays)
                 : await storage.getModmailStats(interaction.guildId!, fromDays, toDays);
             }
           } catch (e) {
@@ -7063,7 +7049,7 @@ client.on("interactionCreate", async (interaction) => {
           try {
             if (!category || category === "appeal") {
               appealStats = useAllGuilds
-                ? await storage.getAllGuildsAppealStats(fromDays, toDays, scopeGuildIds)
+                ? await storage.getAllGuildsAppealStats(fromDays, toDays)
                 : await storage.getAppealStats(interaction.guildId!, fromDays, toDays);
             }
           } catch (e) {
@@ -10463,10 +10449,9 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const scopeGuildIds = await getExtraActivityGuildIds(interaction.guildId!, true);
         const moderationRowsByGuild = await Promise.all(
-          scopeGuildIds.map((guildId) =>
-            storage.getModerationStats(guildId, fromDays, toDays, scopeGuildIds).catch(() => [] as { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[])
+          Array.from(client.guilds.cache.values()).map((g) =>
+            storage.getModerationStats(g.id, fromDays, toDays).catch(() => [] as { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[])
           )
         );
         const moderationTotals = new Map<string, { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }>();
@@ -10492,8 +10477,8 @@ client.on("interactionCreate", async (interaction) => {
         }
         const moderationStatsRows = Array.from(moderationTotals.values());
         const moderationMap = new Map(moderationStatsRows.map((entry) => [entry.moderatorId, entry]));
-        const banStats = await storage.getAllGuildsBanStats(fromDays, toDays, scopeGuildIds).catch(() => [] as { userId: string; count: number }[]);
-        const unbanStats = await storage.getAllGuildsUnbanStats(fromDays, toDays, scopeGuildIds).catch(() => [] as { userId: string; count: number }[]);
+        const banStats = await storage.getAllGuildsBanStats(fromDays, toDays).catch(() => [] as { userId: string; count: number }[]);
+        const unbanStats = await storage.getAllGuildsUnbanStats(fromDays, toDays).catch(() => [] as { userId: string; count: number }[]);
         const banMap = new Map(banStats.map((entry) => [entry.userId, entry.count]));
         const unbanMap = new Map(unbanStats.map((entry) => [entry.userId, entry.count]));
 
@@ -10507,10 +10492,10 @@ client.on("interactionCreate", async (interaction) => {
 
           if (group === "staff") {
             const [modmailCount, inviteCount, staffReportCount, appealCount] = await Promise.all([
-              storage.getModmailStatsForUserAllGuilds(userId, fromDays, toDays, scopeGuildIds),
-              storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays, scopeGuildIds),
-              storage.getStaffReportStatsForUserAllGuilds(userId, fromDays, toDays, scopeGuildIds),
-              storage.getAppealStatsForUserAllGuilds(userId, fromDays, toDays, scopeGuildIds),
+              storage.getModmailStatsForUserAllGuilds(userId, fromDays, toDays),
+              storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
+              storage.getStaffReportStatsForUserAllGuilds(userId, fromDays, toDays),
+              storage.getAppealStatsForUserAllGuilds(userId, fromDays, toDays),
             ]);
 
             const total = modmailCount + muteCount + inviteCount + staffReportCount + appealCount;
@@ -10524,8 +10509,8 @@ client.on("interactionCreate", async (interaction) => {
 
           if (group === "administration") {
             const [modmailCount, inviteCount, roleRequestsReviewed, kickRequestsReviewed, staffAccepted] = await Promise.all([
-              storage.getModmailStatsForUserAllGuilds(userId, fromDays, toDays, scopeGuildIds),
-              storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays, scopeGuildIds),
+              storage.getModmailStatsForUserAllGuilds(userId, fromDays, toDays),
+              storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", userId, true),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", userId, true),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", userId, true),
@@ -10542,7 +10527,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           const [inviteCount, partnerships, acceptedSemiProsPros] = await Promise.all([
-            storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays, scopeGuildIds),
+            storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
             getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", userId, true),
             getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", userId, true),
           ]);
@@ -12853,15 +12838,14 @@ client.on("interactionCreate", async (interaction) => {
             const scope = parts[4];
             const fromDays = parts[5] === "none" ? undefined : parseInt(parts[5]);
             const toDays = parts[6] === "none" ? undefined : parseInt(parts[6]);
-            const scopeGuildIds = await getExtraActivityGuildIds(interaction.guildId!, scope === "all");
-            const useAllGuilds = scope === "all" && scopeGuildIds.length > 1;
+            const useAllGuilds = scope === "all";
 
             // Reuse the activity command logic
             const now = new Date();
             const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
             const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
 
-            let timeRangeDesc = useAllGuilds ? `📊 **Linked Servers (${scopeGuildIds.length})**` : "📊 **This Server Only**";
+            let timeRangeDesc = useAllGuilds ? "📊 **All Servers**" : "📊 **This Server Only**";
             if (fromDate || toDays !== undefined) {
               const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
               const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
@@ -12888,13 +12872,13 @@ client.on("interactionCreate", async (interaction) => {
             try {
               if (!category || category === "ban") {
                 banStats = useAllGuilds
-                  ? await storage.getAllGuildsBanStats(fromDays, toDays, scopeGuildIds)
+                  ? await storage.getAllGuildsBanStats(fromDays, toDays)
                   : await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
               }
             } catch (e) {}
             try {
               if (!category || category === "modban" || category === "kick" || category === "mute") {
-                moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays, useAllGuilds ? scopeGuildIds : undefined);
+                moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays);
                 moderationBanStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.bans }));
                 moderationKickStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.kicks }));
                 moderationMuteStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.mutes }));
@@ -12903,28 +12887,28 @@ client.on("interactionCreate", async (interaction) => {
             try {
               if (!category || category === "unban") {
                 unbanStats = useAllGuilds
-                  ? await storage.getAllGuildsUnbanStats(fromDays, toDays, scopeGuildIds)
+                  ? await storage.getAllGuildsUnbanStats(fromDays, toDays)
                   : await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
               }
             } catch (e) {}
             try {
               if (!category || category === "invites") {
                 inviteStats = useAllGuilds
-                  ? await storage.getAllGuildsInviteStats(fromDays, toDays, scopeGuildIds)
+                  ? await storage.getAllGuildsInviteStats(fromDays, toDays)
                   : await storage.getInviteStats(interaction.guildId!, fromDays, toDays);
               }
             } catch (e) {}
             try {
               if (!category || category === "modmail") {
                 modmailStats = useAllGuilds
-                  ? await storage.getAllGuildsModmailStats(fromDays, toDays, scopeGuildIds)
+                  ? await storage.getAllGuildsModmailStats(fromDays, toDays)
                   : await storage.getModmailStats(interaction.guildId!, fromDays, toDays);
               }
             } catch (e) {}
             try {
               if (!category || category === "appeal") {
                 appealStats = useAllGuilds
-                  ? await storage.getAllGuildsAppealStats(fromDays, toDays, scopeGuildIds)
+                  ? await storage.getAllGuildsAppealStats(fromDays, toDays)
                   : await storage.getAppealStats(interaction.guildId!, fromDays, toDays);
               }
             } catch (e) {}
