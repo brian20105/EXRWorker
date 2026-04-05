@@ -2012,11 +2012,14 @@ export default function Dashboard() {
       applyGuildConfigData(refreshed, true);
       const savedMode = result?.setup?.mode === "shared" ? "shared" : "single";
       const savedLinkedGuildCount = Array.isArray(result?.setup?.linkedGuildIds) ? result.setup.linkedGuildIds.length + 1 : 1;
+      const resetGuildCount = Array.isArray(result?.resetGuildIds) ? result.resetGuildIds.length : 0;
       toast({
         title: "Database setup saved",
         description: savedMode === "shared"
-          ? `Shared this database with ${savedLinkedGuildCount} server(s).`
-          : "This server is now using its own database setup.",
+          ? `Shared this database with ${savedLinkedGuildCount} server(s). ${resetGuildCount > 0 ? "Old server data was cleared, so set them up again." : ""}`.trim()
+          : (resetGuildCount > 0
+              ? "This server now has a fresh database setup. Old server data was cleared, so configure it again."
+              : "This server is now using its own database setup."),
       });
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to save database setup.", variant: "destructive" });
@@ -3925,7 +3928,7 @@ export default function Dashboard() {
                       </Badge>
                     </div>
                     <p className="mt-2 text-xs text-muted-foreground">
-                      Shared mode only works for servers where you already have dashboard access.
+                      Shared mode only works for servers where you already have dashboard access. Saving a new database setup clears the affected server's old config/data so you can set it up fresh.
                     </p>
                   </div>
 

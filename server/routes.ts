@@ -2,13 +2,35 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { client } from "./bot";
-import { guildConfigs, insertGuildConfigSchema } from "@shared/schema";
+import {
+  guildConfigs,
+  insertGuildConfigSchema,
+  payoutRequests,
+  roleSyncPairs,
+  banRequests,
+  unbanRequests,
+  staffIntroSubmissions,
+  inactivityRequests,
+  modmailThreads,
+  modmailMessages,
+  modmailBlocks,
+  snippets,
+  activityResetBackups,
+  inviteAttributions,
+  appealThreads,
+  appealMessages,
+  appealBlocks,
+  appealSnippets,
+  moderationActions,
+  rosterConfigs,
+} from "@shared/schema";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { spawn as spawnProcess, execFile as execFileAsync } from "child_process";
 import { ActivityType, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, GatewayIntentBits, AuditLogEvent, StringSelectMenuBuilder, StringSelectMenuOptionBuilder } from "discord.js";
 import { db } from "./sql";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { promisify } from "util";
 import { readOwnerGuildSnapshot } from "./owner-guild-snapshot";
 import { readOwnerBotDesiredState, writeOwnerBotDesiredState } from "./owner-bot-state";
@@ -695,6 +717,81 @@ function writeDashboardDatabaseSetup(raw: unknown, setup: DashboardDatabaseSetup
   };
 
   return JSON.stringify(parsed, null, 2);
+}
+
+function hasExplicitDashboardDatabaseSetup(raw: unknown): boolean {
+  const parsed = parseDashboardConfigObject(raw);
+  return Object.prototype.hasOwnProperty.call(parsed, DASHBOARD_DATABASE_SETUP_KEY);
+}
+
+function normalizeComparableIdList(values: string[]): string[] {
+  return Array.from(new Set(
+    (values || [])
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean),
+  )).sort((a, b) => a.localeCompare(b));
+}
+
+function hasDatabaseSetupChanged(previousSetup: DashboardDatabaseSetupEntry, nextSetup: DashboardDatabaseSetupEntry): boolean {
+  if (previousSetup.mode !== nextSetup.mode) return true;
+  if (String(previousSetup.databaseId || "") !== String(nextSetup.databaseId || "")) return true;
+  if (String(previousSetup.primaryGuildId || "") !== String(nextSetup.primaryGuildId || "")) return true;
+
+  const previousLinkedGuildIds = normalizeComparableIdList(previousSetup.linkedGuildIds || []);
+  const nextLinkedGuildIds = normalizeComparableIdList(nextSetup.linkedGuildIds || []);
+  return JSON.stringify(previousLinkedGuildIds) !== JSON.stringify(nextLinkedGuildIds);
+}
+
+async function resetGuildForDatabaseSetup(
+  guildId: string,
+  nextSetup: DashboardDatabaseSetupEntry,
+  preservedManagerRoleIds: string[] = [],
+) {
+  const modmailThreadRows = await db
+    .select({ id: modmailThreads.id })
+    .from(modmailThreads)
+    .where(eq(modmailThreads.guildId, guildId));
+  const modmailThreadIds = modmailThreadRows.map((row: { id: string }) => String(row.id || "").trim()).filter(Boolean);
+
+  const appealThreadRows = await db
+    .select({ id: appealThreads.id })
+    .from(appealThreads)
+    .where(eq(appealThreads.guildId, guildId));
+  const appealThreadIds = appealThreadRows.map((row: { id: string }) => String(row.id || "").trim()).filter(Boolean);
+
+  if (modmailThreadIds.length > 0) {
+    await db.delete(modmailMessages).where(inArray(modmailMessages.threadId, modmailThreadIds));
+  }
+  if (appealThreadIds.length > 0) {
+    await db.delete(appealMessages).where(inArray(appealMessages.threadId, appealThreadIds));
+  }
+
+  await db.delete(payoutRequests).where(eq(payoutRequests.guildId, guildId));
+  await db.delete(banRequests).where(eq(banRequests.guildId, guildId));
+  await db.delete(unbanRequests).where(eq(unbanRequests.guildId, guildId));
+  await db.delete(staffIntroSubmissions).where(eq(staffIntroSubmissions.guildId, guildId));
+  await db.delete(inactivityRequests).where(eq(inactivityRequests.guildId, guildId));
+  await db.delete(modmailBlocks).where(eq(modmailBlocks.guildId, guildId));
+  await db.delete(modmailThreads).where(eq(modmailThreads.guildId, guildId));
+  await db.delete(snippets).where(eq(snippets.guildId, guildId));
+  await db.delete(activityResetBackups).where(eq(activityResetBackups.guildId, guildId));
+  await db.delete(inviteAttributions).where(eq(inviteAttributions.guildId, guildId));
+  await db.delete(appealBlocks).where(eq(appealBlocks.guildId, guildId));
+  await db.delete(appealThreads).where(eq(appealThreads.guildId, guildId));
+  await db.delete(appealSnippets).where(eq(appealSnippets.guildId, guildId));
+  await db.delete(moderationActions).where(eq(moderationActions.guildId, guildId));
+  await db.delete(rosterConfigs).where(eq(rosterConfigs.guildId, guildId));
+  await db.delete(roleSyncPairs).where(or(
+    eq(roleSyncPairs.sourceGuildId, guildId),
+    eq(roleSyncPairs.targetGuildId, guildId),
+  ));
+  await db.delete(guildConfigs).where(eq(guildConfigs.guildId, guildId));
+
+  return await storage.upsertGuildConfig({
+    guildId,
+    modRoleIds: preservedManagerRoleIds,
+    customCategoryPings: writeDashboardDatabaseSetup(undefined, nextSetup),
+  });
 }
 
 async function canAccessGuild(userId: string, guildId: string): Promise<boolean> {
@@ -3052,6 +3149,7 @@ export async function registerRoutes(
         ? buildSharedDatabaseId(requestedGroupGuildIds)
         : guildId;
       const updatedConfigs = new Map<string, Awaited<ReturnType<typeof storage.upsertGuildConfig>>>();
+      const resetGuildIds: string[] = [];
 
       for (const targetGuildId of allAffectedGuildIds) {
         const targetConfig = await storage.getGuildConfig(targetGuildId);
@@ -3078,11 +3176,20 @@ export async function registerRoutes(
               updatedAt,
             };
 
-        const mergedCustomCategoryPings = writeDashboardDatabaseSetup(targetConfig?.customCategoryPings, nextSetup);
-        const nextConfig = await storage.upsertGuildConfig({
-          guildId: targetGuildId,
-          customCategoryPings: mergedCustomCategoryPings,
-        });
+        const existingTargetSetup = getDashboardDatabaseSetup(targetConfig?.customCategoryPings, targetGuildId, targetGuildName);
+        const shouldResetGuildData = !hasExplicitDashboardDatabaseSetup(targetConfig?.customCategoryPings)
+          || hasDatabaseSetupChanged(existingTargetSetup, nextSetup);
+
+        const nextConfig = shouldResetGuildData
+          ? await resetGuildForDatabaseSetup(targetGuildId, nextSetup, targetConfig?.modRoleIds || [])
+          : await storage.upsertGuildConfig({
+              guildId: targetGuildId,
+              customCategoryPings: writeDashboardDatabaseSetup(targetConfig?.customCategoryPings, nextSetup),
+            });
+
+        if (shouldResetGuildData) {
+          resetGuildIds.push(targetGuildId);
+        }
 
         updatedConfigs.set(targetGuildId, nextConfig);
         broadcastGuildUpdate(targetGuildId, {
@@ -3116,6 +3223,7 @@ export async function registerRoutes(
         success: true,
         setup: selectedSetup,
         updatedGuildIds: requestedGroupGuildIds,
+        resetGuildIds,
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message || "Failed to save the database setup." });
