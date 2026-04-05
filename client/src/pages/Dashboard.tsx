@@ -232,6 +232,13 @@ interface DashboardBotPresenceSettings {
   activityText: string;
 }
 
+interface DashboardDatabaseSetup {
+  mode: "single" | "shared";
+  databaseId: string;
+  name: string;
+  linkedGuildIds: string[];
+}
+
 interface BotFeatureModule {
   id: string;
   name: string;
@@ -316,6 +323,7 @@ const TEXT_CHANNEL_TYPES = new Set([0, 5]);
 const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
 const FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
+const DATABASE_SETUP_KEY = "__dashboardDatabaseSetup";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
 const DEFAULT_TOP_FADE_COLOR = "#5865f2";
@@ -548,6 +556,13 @@ export default function Dashboard() {
     modmailPrefix: "",
     botNickname: "",
   });
+  const [databaseSetup, setDatabaseSetup] = useState<DashboardDatabaseSetup>({
+    mode: "single",
+    databaseId: "",
+    name: "",
+    linkedGuildIds: [],
+  });
+  const [savingDatabaseSetup, setSavingDatabaseSetup] = useState(false);
   const [permissionSettings, setPermissionSettings] = useState<DashboardPermissionSettings>({
     stickyCommandRoleIds: [],
     roleRequestCommandRoleIds: [],
@@ -619,6 +634,7 @@ export default function Dashboard() {
     setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
     setFeaturePostChannels(getFeaturePostChannelsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+    setDatabaseSetup(getDatabaseSetupFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     const nextPermissionSettings = getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     const sanitizedPermissionSettings: DashboardPermissionSettings = { ...nextPermissionSettings };
     for (const roleKey of PERMISSION_ROLE_KEYS) {
@@ -1801,6 +1817,37 @@ export default function Dashboard() {
     return next;
   };
 
+  const getDatabaseSetupFromCustomCategoryPings = (raw: string | null | undefined): DashboardDatabaseSetup => {
+    const parsed = parseJsonObjectSafely(raw);
+    const value = parsed[DATABASE_SETUP_KEY];
+    const defaultName = guildName ? `${guildName} Database` : "Per-Guild Database";
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {
+        mode: "single",
+        databaseId: selectedGuild || "",
+        name: defaultName,
+        linkedGuildIds: [],
+      };
+    }
+
+    const databaseSetupValue = value as Record<string, unknown>;
+    const mode = databaseSetupValue.mode === "shared" ? "shared" : "single";
+    const linkedGuildIds = Array.isArray(databaseSetupValue.linkedGuildIds)
+      ? databaseSetupValue.linkedGuildIds.map((entry) => String(entry || "").trim()).filter(Boolean)
+      : [];
+
+    return {
+      mode,
+      databaseId: typeof databaseSetupValue.databaseId === "string" && databaseSetupValue.databaseId.trim()
+        ? databaseSetupValue.databaseId.trim()
+        : (selectedGuild || ""),
+      name: typeof databaseSetupValue.name === "string" && databaseSetupValue.name.trim()
+        ? databaseSetupValue.name.trim()
+        : defaultName,
+      linkedGuildIds,
+    };
+  };
+
   const normalizeStringArray = (value: unknown): string[] => {
     if (!Array.isArray(value)) return [];
     return value
@@ -1931,6 +1978,49 @@ export default function Dashboard() {
       }
       return { ...prev, [key]: [...current, roleId] };
     });
+  };
+
+  const toggleDatabaseLinkedGuild = (guildId: string) => {
+    setDatabaseSetup((prev) => {
+      const current = prev.linkedGuildIds || [];
+      if (current.includes(guildId)) {
+        return { ...prev, linkedGuildIds: current.filter((id) => id !== guildId) };
+      }
+      return { ...prev, linkedGuildIds: [...current, guildId] };
+    });
+  };
+
+  const saveDatabaseSetup = async () => {
+    if (!selectedGuild) return;
+
+    const mode = databaseSetup.mode === "shared" ? "shared" : "single";
+    const linkedGuildIds = mode === "shared"
+      ? Array.from(new Set((databaseSetup.linkedGuildIds || []).map((entry) => String(entry || "").trim()).filter((entry) => !!entry && entry !== selectedGuild)))
+      : [];
+    const name = (databaseSetup.name || "").trim() || (mode === "shared" ? `${guildName || "Shared"} Database` : `${guildName || "Server"} Database`);
+
+    setSavingDatabaseSetup(true);
+    try {
+      const result = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/database-setup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, name, linkedGuildIds }),
+      }, 15000);
+
+      const refreshed = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/config`, undefined, 15000);
+      applyGuildConfigData(refreshed, true);
+      const savedMode = result?.setup?.mode === "shared" ? "shared" : "single";
+      const savedLinkedGuildCount = Array.isArray(result?.setup?.linkedGuildIds) ? result.setup.linkedGuildIds.length + 1 : 1;
+      toast({
+        title: "Database setup saved",
+        description: savedMode === "shared"
+          ? `Shared this database with ${savedLinkedGuildCount} server(s).`
+          : "This server is now using its own database setup.",
+      });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to save database setup.", variant: "destructive" });
+    }
+    setSavingDatabaseSetup(false);
   };
 
   const toggleRole = (key: keyof GuildConfig, roleId: string) => {
@@ -3776,6 +3866,133 @@ export default function Dashboard() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {renderRoleSection("Manager Roles", "modRoleIds", "settings-manager-role")}
+                </CardContent>
+              </Card>
+
+              <Card className="border-border/80 bg-card/90" data-testid="card-database-setup">
+                <CardHeader className="space-y-1">
+                  <CardTitle className="text-base">Database Setup</CardTitle>
+                  <CardDescription>
+                    Keep this server on its own setup or share one logical database group across other servers you can already manage in the website.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Mode</Label>
+                      <Select
+                        value={databaseSetup.mode}
+                        onValueChange={(value) => setDatabaseSetup((prev) => ({
+                          ...prev,
+                          mode: value === "shared" ? "shared" : "single",
+                          databaseId: value === "shared" ? prev.databaseId : (selectedGuild || prev.databaseId),
+                          linkedGuildIds: value === "shared" ? prev.linkedGuildIds : [],
+                        }))}
+                      >
+                        <SelectTrigger data-testid="select-database-setup-mode">
+                          <SelectValue placeholder="Choose mode" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="single">One database for this server</SelectItem>
+                          <SelectItem value="shared">Share one database across servers</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Database Name</Label>
+                      <Input
+                        value={databaseSetup.name}
+                        onChange={(event) => setDatabaseSetup((prev) => ({ ...prev, name: event.target.value }))}
+                        placeholder={databaseSetup.mode === "shared" ? `${guildName || "Shared"} Shared Database` : `${guildName || "Server"} Database`}
+                        data-testid="input-database-setup-name"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-md border border-border/70 bg-muted/20 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Database ID</p>
+                        <p className="font-mono text-sm">
+                          {databaseSetup.mode === "shared"
+                            ? (databaseSetup.databaseId || "Generated when you save")
+                            : (selectedGuild || databaseSetup.databaseId || "Unavailable")}
+                        </p>
+                      </div>
+                      <Badge variant="outline">
+                        {(databaseSetup.mode === "shared" ? databaseSetup.linkedGuildIds.length + 1 : 1)} server(s)
+                      </Badge>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Shared mode only works for servers where you already have dashboard access.
+                    </p>
+                  </div>
+
+                  {databaseSetup.mode === "shared" && (
+                    <div className="space-y-3">
+                      <div>
+                        <Label>Linked Servers</Label>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Select the additional servers that should use this same database group.
+                        </p>
+                      </div>
+
+                      {guilds.filter((guild) => guild.id !== selectedGuild).length === 0 ? (
+                        <p className="text-sm text-muted-foreground">
+                          No other accessible servers are available yet. Add your manager role there first, then come back here.
+                        </p>
+                      ) : (
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {guilds
+                            .filter((guild) => guild.id !== selectedGuild)
+                            .map((guild) => {
+                              const checked = databaseSetup.linkedGuildIds.includes(guild.id);
+                              return (
+                                <label
+                                  key={`database-link-${guild.id}`}
+                                  className={`flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2 transition-colors ${checked ? "border-primary bg-primary/5" : "border-border/60 bg-muted/10 hover:bg-muted/20"}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    className="mt-0.5 accent-primary"
+                                    checked={checked}
+                                    onChange={() => toggleDatabaseLinkedGuild(guild.id)}
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate text-sm font-medium">{guild.name}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {guild.memberCount > 0 ? `${guild.memberCount} members` : guild.id}
+                                    </p>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">Current Scope</p>
+                    <div className="flex flex-wrap gap-2">
+                      {[selectedGuild, ...(databaseSetup.mode === "shared" ? databaseSetup.linkedGuildIds : [])]
+                        .filter(Boolean)
+                        .map((linkedGuildId) => {
+                          const linkedGuild = guilds.find((entry) => entry.id === linkedGuildId);
+                          return (
+                            <Badge key={`database-scope-${linkedGuildId}`} variant="outline">
+                              {linkedGuild?.name || (linkedGuildId === selectedGuild ? guildName || linkedGuildId : linkedGuildId)}
+                            </Badge>
+                          );
+                        })}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <Button onClick={saveDatabaseSetup} disabled={savingDatabaseSetup || !selectedGuild} data-testid="button-save-database-setup">
+                      {savingDatabaseSetup ? "Saving..." : "Save Database Setup"}
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
 
