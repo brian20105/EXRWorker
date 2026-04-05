@@ -509,6 +509,11 @@ async function handleSecurityTrigger(
   const userFieldValue = executorMember
     ? `${executorMember.user.tag}\n\`${normalizedExecutorId}\``
     : `<@${normalizedExecutorId}>\n\`${normalizedExecutorId}\``;
+  const targetFieldValue = targetId && targetId !== normalizedExecutorId
+    ? `<@${targetId}>\n\`${targetId}\``
+    : null;
+  const thresholdLabel = `${count}/${Math.max(1, rule.threshold)} action(s)`;
+  const timeWindowLabel = `${Math.round(timeWindowMs / 1000)} second(s)`;
 
   if (!thresholdReached) {
     const warningEmbed = new EmbedBuilder()
@@ -516,9 +521,11 @@ async function handleSecurityTrigger(
       .setColor(0xfaa61a)
       .addFields(
         { name: "User:", value: userFieldValue, inline: false },
+        ...(targetFieldValue ? [{ name: "Target:", value: targetFieldValue, inline: false }] : []),
         { name: "Reason:", value: getSecurityReasonLabel(ruleKey), inline: false },
+        { name: "Threshold:", value: thresholdLabel, inline: false },
         { name: "Remaining Attempts:", value: `${remainingAttempts}`, inline: false },
-        { name: "Time:", value: `${Math.round(timeWindowMs / 1000)} second(s)`, inline: false },
+        { name: "Time:", value: timeWindowLabel, inline: false },
       )
       .setFooter({ text: details.slice(0, 200) || "Security warning issued." })
       .setTimestamp();
@@ -570,15 +577,23 @@ async function handleSecurityTrigger(
   }
 
   const punishedEmbed = new EmbedBuilder()
-    .setTitle("User Punished")
+    .setTitle(actionSucceeded ? "User Punished" : "Punishment Blocked")
     .setColor(actionSucceeded ? 0xed4245 : 0xfaa61a)
+    .setDescription(
+      actionSucceeded
+        ? `<@${normalizedExecutorId}> hit the **${getSecurityRuleLabel(ruleKey)}** threshold and the configured punishment was applied.`
+        : `<@${normalizedExecutorId}> hit the **${getSecurityRuleLabel(ruleKey)}** threshold, but the punishment could not be completed.`
+    )
     .addFields(
       { name: "User:", value: userFieldValue, inline: false },
+      ...(targetFieldValue ? [{ name: "Target:", value: targetFieldValue, inline: false }] : []),
       { name: "Reason:", value: getSecurityReasonLabel(ruleKey), inline: false },
-      { name: "Punishment Type:", value: getSecurityPunishmentLabel(rule.punishmentType), inline: false },
-      { name: "Time:", value: `${Math.round(timeWindowMs / 1000)} second(s)`, inline: false },
+      { name: "Threshold:", value: thresholdLabel, inline: true },
+      { name: "Punishment Type:", value: getSecurityPunishmentLabel(rule.punishmentType), inline: true },
+      { name: "Time Window:", value: timeWindowLabel, inline: true },
+      { name: actionSucceeded ? "Result:" : "Why it failed:", value: resultSummary.slice(0, 1024), inline: false },
     )
-    .setFooter({ text: resultSummary.slice(0, 200) || details.slice(0, 200) || "Security punishment applied." })
+    .setFooter({ text: details.slice(0, 200) || "Security punishment applied." })
     .setTimestamp();
 
   await sendSecurityLog(guild, config, securitySettings, punishedEmbed);
