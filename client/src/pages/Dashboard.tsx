@@ -261,6 +261,8 @@ interface SecurityRuleConfig {
   punishmentType: SecurityPunishmentType;
   timeWindowSeconds: number;
   enabled: boolean;
+  whitelistedRoleIds: string[];
+  whitelistedUserIds: string[];
 }
 
 interface DashboardSecuritySettings {
@@ -399,15 +401,15 @@ const SECURITY_RULE_META: Array<{ key: SecurityRuleKey; label: string; descripti
 function createDefaultSecuritySettings(): DashboardSecuritySettings {
   return {
     rules: {
-      antiBan: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiKick: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiBotAdd: { threshold: 1, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiChannelCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiChannelDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiRoleCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiRoleDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiBan: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiKick: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiBotAdd: { threshold: 1, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiChannelCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiChannelDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiRoleCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiRoleDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
     },
     logChannelId: null,
     whitelistedRoleIds: [],
@@ -562,6 +564,7 @@ export default function Dashboard() {
   const [featurePostChannels, setFeaturePostChannels] = useState<DashboardFeaturePostChannels>({});
   const [securitySettings, setSecuritySettings] = useState<DashboardSecuritySettings>(createDefaultSecuritySettings());
   const [securityWhitelistUserInput, setSecurityWhitelistUserInput] = useState("");
+  const [securityRuleWhitelistUserInputs, setSecurityRuleWhitelistUserInputs] = useState<Partial<Record<SecurityRuleKey, string>>>({});
   const isOwnerUser = !!currentUser?.id && PRIVILEGED_DASHBOARD_USER_IDS.has(currentUser.id);
   const [showOwnerDashboard, setShowOwnerDashboard] = useState(false);
   const [ownerBotStatus, setOwnerBotStatus] = useState<"online" | "offline" | "checking">("checking");
@@ -2023,6 +2026,8 @@ export default function Dashboard() {
         timeWindowSeconds: Number.isFinite(nextTimeWindow) && nextTimeWindow > 0
           ? Math.max(5, Math.min(3600, Math.round(nextTimeWindow)))
           : defaultSettings.rules[ruleMeta.key].timeWindowSeconds,
+        whitelistedRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(normalizeStringArray(ruleObject.whitelistedRoleIds)))),
+        whitelistedUserIds: Array.from(new Set(normalizeStringArray(ruleObject.whitelistedUserIds))),
       };
       return acc;
     }, {} as Record<SecurityRuleKey, SecurityRuleConfig>);
@@ -2061,6 +2066,8 @@ export default function Dashboard() {
           ? currentRule.punishmentType
           : createDefaultSecuritySettings().rules[ruleMeta.key].punishmentType,
         timeWindowSeconds: Math.max(5, Math.min(3600, Math.round(Number(currentRule.timeWindowSeconds) || createDefaultSecuritySettings().rules[ruleMeta.key].timeWindowSeconds))),
+        whitelistedRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(currentRule.whitelistedRoleIds))),
+        whitelistedUserIds: Array.from(new Set(normalizeStringArray(currentRule.whitelistedUserIds))),
       };
       return acc;
     }, {} as Record<SecurityRuleKey, SecurityRuleConfig>),
@@ -2263,6 +2270,57 @@ export default function Dashboard() {
     updateSecuritySettings((prev) => ({
       ...prev,
       whitelistedUserIds: (prev.whitelistedUserIds || []).filter((entry) => entry !== userId),
+    }));
+  };
+
+  const toggleSecurityRuleRoleList = (ruleKey: SecurityRuleKey, roleId: string) => {
+    updateSecuritySettings((prev) => {
+      const current = prev.rules[ruleKey]?.whitelistedRoleIds || [];
+      return {
+        ...prev,
+        rules: {
+          ...prev.rules,
+          [ruleKey]: {
+            ...prev.rules[ruleKey],
+            whitelistedRoleIds: current.includes(roleId)
+              ? current.filter((entry) => entry !== roleId)
+              : [...current, roleId],
+          },
+        },
+      };
+    });
+  };
+
+  const addSecurityRuleWhitelistedUser = (ruleKey: SecurityRuleKey) => {
+    const userId = String(securityRuleWhitelistUserInputs[ruleKey] || "").trim();
+    if (!/^\d{5,}$/.test(userId)) {
+      toast({ title: "Invalid user ID", description: "Enter a valid Discord user ID to whitelist for this rule.", variant: "destructive" });
+      return;
+    }
+
+    updateSecuritySettings((prev) => ({
+      ...prev,
+      rules: {
+        ...prev.rules,
+        [ruleKey]: {
+          ...prev.rules[ruleKey],
+          whitelistedUserIds: Array.from(new Set([...(prev.rules[ruleKey]?.whitelistedUserIds || []), userId])),
+        },
+      },
+    }));
+    setSecurityRuleWhitelistUserInputs((prev) => ({ ...prev, [ruleKey]: "" }));
+  };
+
+  const removeSecurityRuleWhitelistedUser = (ruleKey: SecurityRuleKey, userId: string) => {
+    updateSecuritySettings((prev) => ({
+      ...prev,
+      rules: {
+        ...prev.rules,
+        [ruleKey]: {
+          ...prev.rules[ruleKey],
+          whitelistedUserIds: (prev.rules[ruleKey]?.whitelistedUserIds || []).filter((entry) => entry !== userId),
+        },
+      },
     }));
   };
 
@@ -4817,74 +4875,127 @@ export default function Dashboard() {
                         return (
                           <div
                             key={ruleMeta.key}
-                            className="grid gap-3 rounded-xl border border-border/70 bg-card/40 p-4 md:grid-cols-[minmax(0,1fr)_110px_190px_120px_auto] md:items-center"
+                            className="space-y-4 rounded-xl border border-border/70 bg-card/40 p-4"
                           >
-                            <div>
-                              <p className="font-semibold uppercase tracking-wide">{ruleMeta.label}</p>
-                              <p className="mt-1 text-sm text-muted-foreground">{ruleMeta.description}</p>
+                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_110px_190px_120px_auto] md:items-center">
+                              <div>
+                                <p className="font-semibold uppercase tracking-wide">{ruleMeta.label}</p>
+                                <p className="mt-1 text-sm text-muted-foreground">{ruleMeta.description}</p>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Threshold</Label>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={50}
+                                  value={String(rule.threshold)}
+                                  onChange={(event) => updateSecurityRule(ruleMeta.key, {
+                                    threshold: Math.max(1, Math.min(50, Number(event.target.value) || 1)),
+                                  })}
+                                  data-testid={`input-security-threshold-${ruleMeta.key}`}
+                                />
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Punishment Type</Label>
+                                <Select
+                                  value={rule.punishmentType}
+                                  onValueChange={(value) => updateSecurityRule(ruleMeta.key, {
+                                    punishmentType: value as SecurityPunishmentType,
+                                  })}
+                                >
+                                  <SelectTrigger data-testid={`select-security-punishment-${ruleMeta.key}`}>
+                                    <SelectValue placeholder="Select punishment" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="ban">Ban</SelectItem>
+                                    <SelectItem value="kick">Kick</SelectItem>
+                                    <SelectItem value="clear_roles">Clear Roles</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Time</Label>
+                                <Input
+                                  type="number"
+                                  min={5}
+                                  max={3600}
+                                  value={String(rule.timeWindowSeconds)}
+                                  onChange={(event) => updateSecurityRule(ruleMeta.key, {
+                                    timeWindowSeconds: Math.max(5, Math.min(3600, Number(event.target.value) || DEFAULT_SECURITY_TIME_WINDOW_SECONDS)),
+                                  })}
+                                  data-testid={`input-security-time-${ruleMeta.key}`}
+                                />
+                                <p className="text-[11px] text-muted-foreground">seconds</p>
+                              </div>
+
+                              <div className="space-y-2">
+                                <Label className="text-xs uppercase tracking-wide text-muted-foreground">Status</Label>
+                                <Button
+                                  type="button"
+                                  size="icon"
+                                  onClick={() => updateSecurityRule(ruleMeta.key, { enabled: !rule.enabled })}
+                                  className={rule.enabled
+                                    ? "h-11 w-11 bg-primary text-primary-foreground hover:bg-primary/90"
+                                    : "h-11 w-11 border border-border bg-muted/40 text-muted-foreground hover:bg-muted"}
+                                  data-testid={`button-security-toggle-${ruleMeta.key}`}
+                                >
+                                  {rule.enabled ? <CheckCircle2 className="h-5 w-5" /> : <X className="h-5 w-5" />}
+                                </Button>
+                              </div>
                             </div>
 
-                            <div className="space-y-2">
-                              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Threshold</Label>
-                              <Input
-                                type="number"
-                                min={1}
-                                max={50}
-                                value={String(rule.threshold)}
-                                onChange={(event) => updateSecurityRule(ruleMeta.key, {
-                                  threshold: Math.max(1, Math.min(50, Number(event.target.value) || 1)),
-                                })}
-                                data-testid={`input-security-threshold-${ruleMeta.key}`}
-                              />
-                            </div>
+                            <div className="grid gap-4 xl:grid-cols-2">
+                              <div className="space-y-3 rounded-lg border border-border/60 bg-background/20 p-3">
+                                {renderCustomRoleSection(
+                                  `Whitelisted Roles for ${ruleMeta.label}`,
+                                  roles,
+                                  rule.whitelistedRoleIds || [],
+                                  (roleId) => toggleSecurityRuleRoleList(ruleMeta.key, roleId),
+                                  `security-rule-whitelisted-roles-${ruleMeta.key}`,
+                                )}
+                              </div>
 
-                            <div className="space-y-2">
-                              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Punishment Type</Label>
-                              <Select
-                                value={rule.punishmentType}
-                                onValueChange={(value) => updateSecurityRule(ruleMeta.key, {
-                                  punishmentType: value as SecurityPunishmentType,
-                                })}
-                              >
-                                <SelectTrigger data-testid={`select-security-punishment-${ruleMeta.key}`}>
-                                  <SelectValue placeholder="Select punishment" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="ban">Ban</SelectItem>
-                                  <SelectItem value="kick">Kick</SelectItem>
-                                  <SelectItem value="clear_roles">Clear Roles</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            </div>
+                              <div className="space-y-3 rounded-lg border border-border/60 bg-background/20 p-3">
+                                <Label>{`Whitelisted Users for ${ruleMeta.label}`}</Label>
+                                <div className="flex flex-col gap-2 sm:flex-row">
+                                  <Input
+                                    value={securityRuleWhitelistUserInputs[ruleMeta.key] || ""}
+                                    onChange={(event) => setSecurityRuleWhitelistUserInputs((prev) => ({ ...prev, [ruleMeta.key]: event.target.value }))}
+                                    placeholder="Enter a user ID"
+                                    data-testid={`input-security-rule-whitelisted-user-${ruleMeta.key}`}
+                                  />
+                                  <Button
+                                    type="button"
+                                    onClick={() => addSecurityRuleWhitelistedUser(ruleMeta.key)}
+                                    data-testid={`button-security-rule-whitelisted-user-add-${ruleMeta.key}`}
+                                  >
+                                    Add User
+                                  </Button>
+                                </div>
 
-                            <div className="space-y-2">
-                              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Time</Label>
-                              <Input
-                                type="number"
-                                min={5}
-                                max={3600}
-                                value={String(rule.timeWindowSeconds)}
-                                onChange={(event) => updateSecurityRule(ruleMeta.key, {
-                                  timeWindowSeconds: Math.max(5, Math.min(3600, Number(event.target.value) || DEFAULT_SECURITY_TIME_WINDOW_SECONDS)),
-                                })}
-                                data-testid={`input-security-time-${ruleMeta.key}`}
-                              />
-                              <p className="text-[11px] text-muted-foreground">seconds</p>
-                            </div>
-
-                            <div className="space-y-2">
-                              <Label className="text-xs uppercase tracking-wide text-muted-foreground">Status</Label>
-                              <Button
-                                type="button"
-                                size="icon"
-                                onClick={() => updateSecurityRule(ruleMeta.key, { enabled: !rule.enabled })}
-                                className={rule.enabled
-                                  ? "h-11 w-11 bg-primary text-primary-foreground hover:bg-primary/90"
-                                  : "h-11 w-11 border border-border bg-muted/40 text-muted-foreground hover:bg-muted"}
-                                data-testid={`button-security-toggle-${ruleMeta.key}`}
-                              >
-                                {rule.enabled ? <CheckCircle2 className="h-5 w-5" /> : <X className="h-5 w-5" />}
-                              </Button>
+                                <div className="flex flex-wrap gap-2">
+                                  {(rule.whitelistedUserIds || []).length === 0 ? (
+                                    <p className="text-sm text-muted-foreground">No users are whitelisted for this rule yet.</p>
+                                  ) : (
+                                    (rule.whitelistedUserIds || []).map((userId) => (
+                                      <Badge key={`security-rule-user-${ruleMeta.key}-${userId}`} variant="secondary" className="gap-2 pr-1">
+                                        {userId}
+                                        <button
+                                          type="button"
+                                          onClick={() => removeSecurityRuleWhitelistedUser(ruleMeta.key, userId)}
+                                          className="rounded p-0.5 hover:bg-background/60"
+                                          aria-label={`Remove ${userId}`}
+                                        >
+                                          <X className="h-3 w-3" />
+                                        </button>
+                                      </Badge>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
                             </div>
                           </div>
                         );

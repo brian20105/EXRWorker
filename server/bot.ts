@@ -267,6 +267,8 @@ type SecurityRuleConfig = {
   punishmentType: SecurityPunishmentType;
   timeWindowSeconds: number;
   enabled: boolean;
+  whitelistedRoleIds: string[];
+  whitelistedUserIds: string[];
 };
 
 type DashboardSecuritySettings = {
@@ -313,15 +315,15 @@ const securityActionTracker = new Map<string, { count: number; startedAt: number
 function createDefaultDashboardSecuritySettings(): DashboardSecuritySettings {
   return {
     rules: {
-      antiBan: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiKick: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiBotAdd: { threshold: 1, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiChannelCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiChannelDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiRoleCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
-      antiRoleDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false },
+      antiBan: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiKick: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiBotAdd: { threshold: 1, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiRoleUpdate: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiRoleAdd: { threshold: 3, punishmentType: "clear_roles", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiChannelCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiChannelDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiRoleCreate: { threshold: 3, punishmentType: "kick", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
+      antiRoleDelete: { threshold: 2, punishmentType: "ban", timeWindowSeconds: DEFAULT_SECURITY_TIME_WINDOW_SECONDS, enabled: false, whitelistedRoleIds: [], whitelistedUserIds: [] },
     },
     logChannelId: null,
     whitelistedRoleIds: [],
@@ -367,6 +369,8 @@ function getDashboardSecuritySettings(config?: any): DashboardSecuritySettings {
       timeWindowSeconds: Number.isFinite(timeWindowValue) && timeWindowValue > 0
         ? Math.max(5, Math.min(3600, Math.round(timeWindowValue)))
         : defaults.rules[ruleKey].timeWindowSeconds,
+      whitelistedRoleIds: normalizeSecurityStringList(ruleObject.whitelistedRoleIds),
+      whitelistedUserIds: normalizeSecurityStringList(ruleObject.whitelistedUserIds),
     };
     return acc;
   }, {} as Record<SecurityRuleKey, SecurityRuleConfig>);
@@ -609,6 +613,14 @@ async function handleSecurityTrigger(
   const executorMember = await guild.members.fetch(normalizedExecutorId).catch(() => null);
   const executorRoleIds = executorMember ? Array.from(executorMember.roles.cache.keys()) : [];
   if (securitySettings.whitelistedRoleIds.some((roleId) => executorRoleIds.includes(roleId))) {
+    return;
+  }
+
+  if ((rule.whitelistedUserIds || []).includes(normalizedExecutorId)) {
+    return;
+  }
+
+  if ((rule.whitelistedRoleIds || []).some((roleId) => executorRoleIds.includes(roleId))) {
     return;
   }
 
