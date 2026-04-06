@@ -746,6 +746,15 @@ export default function Dashboard() {
     const nextSecuritySettings = getSecuritySettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     setSecuritySettings({
       ...nextSecuritySettings,
+      rules: SECURITY_RULE_META.reduce<Record<SecurityRuleKey, SecurityRuleConfig>>((acc, ruleMeta) => {
+        const currentRule = nextSecuritySettings.rules[ruleMeta.key] || createDefaultSecuritySettings().rules[ruleMeta.key];
+        acc[ruleMeta.key] = {
+          ...currentRule,
+          whitelistedRoleIds: sanitizeRoleIds(currentRule.whitelistedRoleIds),
+          whitelistedUserIds: Array.from(new Set(currentRule.whitelistedUserIds || [])),
+        };
+        return acc;
+      }, {} as Record<SecurityRuleKey, SecurityRuleConfig>),
       whitelistedRoleIds: sanitizeRoleIds(nextSecuritySettings.whitelistedRoleIds),
       accessRoleIds: sanitizeRoleIds(nextSecuritySettings.accessRoleIds),
     });
@@ -2045,7 +2054,7 @@ export default function Dashboard() {
         timeWindowSeconds: Number.isFinite(nextTimeWindow) && nextTimeWindow > 0
           ? Math.max(5, Math.min(3600, Math.round(nextTimeWindow)))
           : defaultSettings.rules[ruleMeta.key].timeWindowSeconds,
-        whitelistedRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(normalizeStringArray(ruleObject.whitelistedRoleIds)))),
+        whitelistedRoleIds: Array.from(new Set(normalizeStringArray(ruleObject.whitelistedRoleIds))),
         whitelistedUserIds: Array.from(new Set(normalizeStringArray(ruleObject.whitelistedUserIds))),
       };
       return acc;
