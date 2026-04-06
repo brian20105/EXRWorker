@@ -907,6 +907,7 @@ export const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildModeration,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.DirectMessageTyping,
     GatewayIntentBits.MessageContent,
