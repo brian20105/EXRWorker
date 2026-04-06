@@ -63,6 +63,7 @@ const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 let cachedGuildSummaries: DashboardGuildSummary[] = [];
 let cachedGuildSummariesAt = 0;
 const accessDecisionCache = new Map<string, { allowed: boolean; checkedAt: number }>();
+const guildConfigMutationLocks = new Map<string, Promise<void>>();
 
 function getAuthSecret(): string {
   return (process.env.DASHBOARD_AUTH_SECRET || process.env.DISCORD_CLIENT_SECRET || "change-me").trim();
@@ -251,6 +252,23 @@ function buildDiscordAvatarUrl(userId: string | null | undefined, avatarHash: st
   return `https://cdn.discordapp.com/avatars/${userId}/${avatarHash}.${extension}?size=64`;
 }
 
+async function withGuildConfigMutationLock<T>(guildId: string, task: () => Promise<T>): Promise<T> {
+  const previous = guildConfigMutationLocks.get(guildId) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  guildConfigMutationLocks.set(guildId, previous.then(() => current));
+  await previous;
+
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
 type StaffApplicationBlockEntry = {
   blockedById: string;
   reason: string | null;
@@ -351,6 +369,27 @@ function removeBlacklistedUserFromConfig(existingCustomCategoryPings: string | n
   }
   root[DASHBOARD_BLACKLIST_USERS_KEY] = existing;
   return JSON.stringify(root);
+}
+
+function mergeProtectedCustomCategoryCollections(nextRaw: unknown, previousRaw: unknown): string {
+  const next = parseDashboardConfigObject(nextRaw);
+  const previous = parseDashboardConfigObject(previousRaw);
+  const protectedKeys = [DASHBOARD_BLACKLIST_USERS_KEY, "__staffApplicationBlocks"];
+
+  for (const key of protectedKeys) {
+    const previousValue = previous[key];
+    const nextValue = next[key];
+    if (previousValue && typeof previousValue === "object" && !Array.isArray(previousValue)) {
+      next[key] = {
+        ...(previousValue as Record<string, unknown>),
+        ...(nextValue && typeof nextValue === "object" && !Array.isArray(nextValue)
+          ? nextValue as Record<string, unknown>
+          : {}),
+      };
+    }
+  }
+
+  return JSON.stringify(next, null, 2);
 }
 
 function isBlockStillActive(expiresAt: string | Date | null | undefined): boolean {
@@ -2714,21 +2753,22 @@ export async function registerRoutes(
         return res.status(400).json({ error: "A valid Discord user ID is required." });
       }
 
-      const config = await storage.getGuildConfig(guildId);
-      await storage.upsertGuildConfig({
-        guildId,
-        customCategoryPings: writeBlacklistedUserToConfig(
-          config?.customCategoryPings,
-          userId,
-          {
-            blacklistedById: user.id,
-            reason: reason || "Blacklisted from dashboard",
-            createdAt: new Date().toISOString(),
-          },
-        ),
-      });
+      const updatedConfig = await withGuildConfigMutationLock(guildId, async () => {
+        const config = await storage.getGuildConfig(guildId);
+        return await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: writeBlacklistedUserToConfig(
+            config?.customCategoryPings,
+            userId,
+            {
+              blacklistedById: user.id,
+              reason: reason || "Blacklisted from dashboard",
+              createdAt: new Date().toISOString(),
+            },
+          ),
+        });
+      }).catch(() => undefined);
 
-      const updatedConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
       broadcastGuildUpdate(guildId, {
         type: "config-updated",
         config: updatedConfig || { guildId },
@@ -2779,13 +2819,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: "A valid Discord user ID is required." });
       }
 
-      const config = await storage.getGuildConfig(guildId);
-      await storage.upsertGuildConfig({
-        guildId,
-        customCategoryPings: removeBlacklistedUserFromConfig(config?.customCategoryPings, userId),
-      });
+      const updatedConfig = await withGuildConfigMutationLock(guildId, async () => {
+        const config = await storage.getGuildConfig(guildId);
+        return await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: removeBlacklistedUserFromConfig(config?.customCategoryPings, userId),
+        });
+      }).catch(() => undefined);
 
-      const updatedConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
       broadcastGuildUpdate(guildId, {
         type: "config-updated",
         config: updatedConfig || { guildId },
@@ -3247,6 +3288,13 @@ export async function registerRoutes(
         updates.commandPrefix = trimmedPrefix;
       }
 
+      if (typeof updates.customCategoryPings === "string") {
+        updates.customCategoryPings = mergeProtectedCustomCategoryCollections(
+          updates.customCategoryPings,
+          previousConfig?.customCategoryPings,
+        );
+      }
+
       const hasManagerAccess = await canManageGuildDashboard(user.id, guildId).catch(() => false);
       const hasSecurityAccess = await canManageSecurityDashboard(user.id, guildId).catch(() => false);
       const nextComparableConfig = {
@@ -3266,7 +3314,9 @@ export async function registerRoutes(
         }
       }
       
-      await storage.upsertGuildConfig({ guildId, ...updates });
+      await withGuildConfigMutationLock(guildId, async () => {
+        await storage.upsertGuildConfig({ guildId, ...updates });
+      });
       let config = await storage.getGuildConfig(guildId);
 
       const presenceSource = typeof updates.customCategoryPings === "string"
