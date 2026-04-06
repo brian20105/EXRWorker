@@ -375,6 +375,14 @@ function mergeProtectedCustomCategoryCollections(nextRaw: unknown, previousRaw: 
   const next = parseDashboardConfigObject(nextRaw);
   const previous = parseDashboardConfigObject(previousRaw);
   const protectedKeys = [DASHBOARD_BLACKLIST_USERS_KEY, "__staffApplicationBlocks"];
+  const mergedSecuritySettings = mergeDashboardSecuritySettings(
+    previous[DASHBOARD_SECURITY_SETTINGS_KEY],
+    next[DASHBOARD_SECURITY_SETTINGS_KEY],
+  );
+
+  if (mergedSecuritySettings) {
+    next[DASHBOARD_SECURITY_SETTINGS_KEY] = mergedSecuritySettings;
+  }
 
   for (const key of protectedKeys) {
     const previousValue = previous[key];
@@ -676,6 +684,76 @@ function parseDashboardConfigObject(raw: unknown): Record<string, unknown> {
 function normalizeStringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean)));
+}
+
+const DASHBOARD_SECURITY_RULE_KEYS = [
+  "antiBan",
+  "antiKick",
+  "antiBotAdd",
+  "antiRoleUpdate",
+  "antiRoleAdd",
+  "antiChannelCreate",
+  "antiChannelDelete",
+  "antiRoleCreate",
+  "antiRoleDelete",
+] as const;
+
+function toRecordObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function getSecuritySettingsUpdatedAtMs(value: unknown): number {
+  const settings = toRecordObject(value);
+  const timestamp = Date.parse(String(settings.updatedAt || ""));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function mergeDashboardSecuritySettings(previousValue: unknown, nextValue: unknown): Record<string, unknown> | null {
+  const previous = toRecordObject(previousValue);
+  const next = toRecordObject(nextValue);
+
+  if (Object.keys(previous).length === 0 && Object.keys(next).length === 0) {
+    return null;
+  }
+
+  if (Object.keys(previous).length === 0) {
+    return next;
+  }
+
+  if (Object.keys(next).length === 0) {
+    return previous;
+  }
+
+  const previousUpdatedAtMs = getSecuritySettingsUpdatedAtMs(previous);
+  const nextUpdatedAtMs = getSecuritySettingsUpdatedAtMs(next);
+
+  if (previousUpdatedAtMs > nextUpdatedAtMs) {
+    return previous;
+  }
+
+  const previousRules = toRecordObject(previous.rules);
+  const nextRules = toRecordObject(next.rules);
+  const mergedRules: Record<string, unknown> = { ...previousRules, ...nextRules };
+
+  for (const ruleKey of DASHBOARD_SECURITY_RULE_KEYS) {
+    const previousRule = toRecordObject(previousRules[ruleKey]);
+    const nextRule = toRecordObject(nextRules[ruleKey]);
+    if (Object.keys(previousRule).length === 0 && Object.keys(nextRule).length === 0) {
+      continue;
+    }
+    mergedRules[ruleKey] = {
+      ...previousRule,
+      ...nextRule,
+    };
+  }
+
+  return {
+    ...previous,
+    ...next,
+    rules: mergedRules,
+  };
 }
 
 function getDashboardSecurityAccessSettings(raw: unknown): { accessRoleIds: string[]; accessUserIds: string[] } {

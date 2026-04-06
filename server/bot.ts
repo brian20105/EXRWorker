@@ -303,7 +303,7 @@ const SECURITY_REASON_LABELS: Record<SecurityRuleKey, string> = {
   antiKick: "Kicking Members",
   antiBotAdd: "Adding Bots",
   antiRoleUpdate: "Updating Roles",
-  antiRoleAdd: "Giving Dangerous Permissions",
+  antiRoleAdd: "Giving Administrator Roles",
   antiChannelCreate: "Creating Channels",
   antiChannelDelete: "Deleting Channels",
   antiRoleCreate: "Creating Roles",
@@ -22708,7 +22708,12 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
     return;
   }
 
-  if (addedRoles.length > 0) {
+  const addedAdministratorRoles = addedRoles.filter((roleId) => {
+    const role = newMember.guild.roles.cache.get(roleId);
+    return !!role?.permissions?.has(PermissionFlagsBits.Administrator);
+  });
+
+  if (addedAdministratorRoles.length > 0) {
     try {
       const auditEntry = await findRecentAuditEntry(
         newMember.guild,
@@ -22717,14 +22722,14 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
       );
       const executorId = String(auditEntry?.executor?.id || "").trim();
       if (executorId) {
-        const addedRoleLabels = addedRoles
+        const addedRoleLabels = addedAdministratorRoles
           .map((roleId) => newMember.guild.roles.cache.get(roleId)?.name || roleId)
           .join(", ");
         await handleSecurityTrigger(
           newMember.guild,
           executorId,
           "antiRoleAdd",
-          `Added role(s) to ${newMember.user.tag}: ${addedRoleLabels || "Unknown roles"}`,
+          `Added administrator role(s) to ${newMember.user.tag}: ${addedRoleLabels || "Unknown roles"}`,
           newMember.id,
         );
       }

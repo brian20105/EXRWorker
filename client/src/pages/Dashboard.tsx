@@ -272,6 +272,7 @@ interface DashboardSecuritySettings {
   whitelistedUserIds: string[];
   accessRoleIds: string[];
   accessUserIds: string[];
+  updatedAt: string | null;
 }
 
 interface OwnerSecurityAccessState {
@@ -391,7 +392,7 @@ const SECURITY_RULE_META: Array<{ key: SecurityRuleKey; label: string; descripti
   { key: "antiKick", label: "Anti Kick", description: "Protects the server from repeated kicks." },
   { key: "antiBotAdd", label: "Anti Bot Add", description: "Blocks unauthorized bot additions." },
   { key: "antiRoleUpdate", label: "Anti Role Update", description: "Stops dangerous bulk role edits." },
-  { key: "antiRoleAdd", label: "Anti Role Add", description: "Prevents suspicious role assignments." },
+  { key: "antiRoleAdd", label: "Anti Role Add", description: "Only reacts when someone gives a role with Administrator." },
   { key: "antiChannelCreate", label: "Anti Channel Create", description: "Catches rapid unwanted channel creation." },
   { key: "antiChannelDelete", label: "Anti Channel Delete", description: "Protects channels from mass deletion." },
   { key: "antiRoleCreate", label: "Anti Role Create", description: "Stops spammy or malicious role creation." },
@@ -416,6 +417,7 @@ function createDefaultSecuritySettings(): DashboardSecuritySettings {
     whitelistedUserIds: [],
     accessRoleIds: [],
     accessUserIds: [],
+    updatedAt: null,
   };
 }
 
@@ -2058,6 +2060,9 @@ export default function Dashboard() {
       whitelistedUserIds: Array.from(new Set(normalizeStringArray(securityObject.whitelistedUserIds))),
       accessRoleIds: Array.from(new Set(normalizeStringArray(securityObject.accessRoleIds))),
       accessUserIds: Array.from(new Set(normalizeStringArray(securityObject.accessUserIds))),
+      updatedAt: typeof securityObject.updatedAt === "string" && securityObject.updatedAt.trim()
+        ? securityObject.updatedAt.trim()
+        : null,
     };
   };
 
@@ -2095,6 +2100,9 @@ export default function Dashboard() {
     whitelistedUserIds: Array.from(new Set(normalizeStringArray(value.whitelistedUserIds))),
     accessRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(value.accessRoleIds))),
     accessUserIds: Array.from(new Set(normalizeStringArray(value.accessUserIds))),
+    updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim()
+      ? value.updatedAt.trim()
+      : null,
   });
 
   const getPermissionSettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardPermissionSettings => {
@@ -2229,7 +2237,10 @@ export default function Dashboard() {
 
   const updateSecuritySettings = (updater: (prev: DashboardSecuritySettings) => DashboardSecuritySettings) => {
     setSecuritySettings((prev) => {
-      const next = sanitizeSecuritySettings(updater(prev));
+      const next = sanitizeSecuritySettings({
+        ...updater(prev),
+        updatedAt: new Date().toISOString(),
+      });
       setCustomCategoryPingsText((previousText) => {
         const parsed = parseJsonObjectSafely(previousText || config.customCategoryPings || "{}");
         parsed[SECURITY_SETTINGS_KEY] = {
