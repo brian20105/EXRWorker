@@ -878,7 +878,9 @@ export default function Dashboard() {
             .then((data) => applyGuildConfigData(data, true))
             .catch(() => undefined);
 
-          loadMiscOverview(selectedGuild).catch(() => undefined);
+          if (activePrimaryTab === "miscellaneous") {
+            loadMiscOverview(selectedGuild, { silent: true }).catch(() => undefined);
+          }
           return;
         }
 
@@ -1244,11 +1246,18 @@ export default function Dashboard() {
     setPostingRosterEmbedId(null);
   };
 
-  const loadMiscOverview = async (guildId: string | null = selectedGuild) => {
+  const loadMiscOverview = async (
+    guildId: string | null = selectedGuild,
+    options?: { silent?: boolean },
+  ) => {
     if (!guildId) return;
 
-    setMiscOverviewLoading(true);
-    setMiscOverviewError(null);
+    const silent = options?.silent === true;
+    if (!silent) {
+      setMiscOverviewLoading(true);
+      setMiscOverviewError(null);
+    }
+
     try {
       const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview`, undefined, 15000);
       setMiscBans(Array.isArray(data?.bans) ? data.bans : []);
@@ -1257,13 +1266,18 @@ export default function Dashboard() {
       setMiscActivity(Array.isArray(data?.activity) ? data.activity : []);
       setMiscOverviewError(data?.unavailableReason ? String(data.unavailableReason) : null);
     } catch (e: any) {
-      setMiscBans([]);
-      setMiscBlacklistedUsers([]);
-      setMiscBlocks([]);
-      setMiscActivity([]);
-      setMiscOverviewError(e.message || "Failed to load server activity.");
+      if (!silent) {
+        setMiscBans([]);
+        setMiscBlacklistedUsers([]);
+        setMiscBlocks([]);
+        setMiscActivity([]);
+        setMiscOverviewError(e.message || "Failed to load server activity.");
+      }
     }
-    setMiscOverviewLoading(false);
+
+    if (!silent) {
+      setMiscOverviewLoading(false);
+    }
   };
 
   const unbanUser = async (userId: string, username: string) => {
@@ -1587,8 +1601,11 @@ export default function Dashboard() {
 
     loadMiscOverview(selectedGuild).catch(() => undefined);
     const intervalId = window.setInterval(() => {
-      loadMiscOverview(selectedGuild).catch(() => undefined);
-    }, 5000);
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      loadMiscOverview(selectedGuild, { silent: true }).catch(() => undefined);
+    }, 30000);
 
     return () => {
       window.clearInterval(intervalId);
