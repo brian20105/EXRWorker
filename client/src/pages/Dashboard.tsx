@@ -3692,6 +3692,14 @@ export default function Dashboard() {
     </div>
   );
 
+  const stopDropdownSearchKeyPropagation = (event: any) => {
+    if (event.key === "Escape") {
+      return;
+    }
+    event.stopPropagation();
+    event.nativeEvent?.stopImmediatePropagation?.();
+  };
+
   const renderChannelSelect = (
     label: string,
     key: keyof GuildConfig,
@@ -3725,6 +3733,8 @@ export default function Dashboard() {
                 onChange={(event) =>
                   setChannelSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
                 }
+                onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                onKeyDown={stopDropdownSearchKeyPropagation}
                 placeholder="Search channels..."
                 className="h-8"
                 data-testid={`${testId}-search`}
@@ -3788,6 +3798,8 @@ export default function Dashboard() {
                   onChange={(event) =>
                     setRoleSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))
                   }
+                  onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                  onKeyDown={stopDropdownSearchKeyPropagation}
                   placeholder="Search roles..."
                   className="h-8"
                   data-testid={`${testIdPrefix}-search`}
@@ -3858,6 +3870,8 @@ export default function Dashboard() {
               <Input
                 value={channelSearches[testIdPrefix] || ""}
                 onChange={(event) => setChannelSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))}
+                onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                onKeyDown={stopDropdownSearchKeyPropagation}
                 placeholder="Search channels..."
                 className="h-8"
                 data-testid={`${testIdPrefix}-search`}
@@ -3987,6 +4001,8 @@ export default function Dashboard() {
                 onChange={(event) =>
                   setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
                 }
+                onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                onKeyDown={stopDropdownSearchKeyPropagation}
                 placeholder="Search roles..."
                 className="h-8"
                 data-testid={`${testIdPrefix}-search`}
