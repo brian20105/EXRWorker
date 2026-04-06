@@ -875,9 +875,7 @@ export default function Dashboard() {
             .then((data) => applyGuildConfigData(data, true))
             .catch(() => undefined);
 
-          if (activePrimaryTab === "miscellaneous") {
-            loadMiscOverview(selectedGuild).catch(() => undefined);
-          }
+          loadMiscOverview(selectedGuild).catch(() => undefined);
           return;
         }
 
@@ -1583,7 +1581,15 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!selectedGuild || activePrimaryTab !== "miscellaneous") return;
-    loadMiscOverview(selectedGuild);
+
+    loadMiscOverview(selectedGuild).catch(() => undefined);
+    const intervalId = window.setInterval(() => {
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    }, 5000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
   }, [selectedGuild, activePrimaryTab]);
 
   useEffect(() => {
