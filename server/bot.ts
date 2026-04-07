@@ -429,6 +429,18 @@ function getSecurityReasonLabel(ruleKey: SecurityRuleKey): string {
   return SECURITY_REASON_LABELS[ruleKey] || getSecurityRuleLabel(ruleKey);
 }
 
+function roleHasAdministratorPermission(role: any): boolean {
+  try {
+    const bitfield = role?.permissions?.bitfield;
+    const permissionBits = typeof bitfield === "bigint"
+      ? bitfield
+      : BigInt(String(bitfield ?? 0));
+    return (permissionBits & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
+  } catch {
+    return false;
+  }
+}
+
 async function pause(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -3002,12 +3014,16 @@ function buildModlogsEmbed(
     const moderator = entry.moderatorId ? `<@${entry.moderatorId}>` : "Unknown";
     const parsed = extractReasonAndDuration(entry.reason);
     const reason = parsed.reason;
+    const guildName = entry.guildId
+      ? (client.guilds.cache.get(entry.guildId)?.name || `Guild ${entry.guildId}`)
+      : "Unknown Guild";
 
     const details = [
       `**Case ID: ${caseId}**`,
       `Type: ${type}`,
       `User: <@${targetId}>`,
       `Moderator: ${moderator}`,
+      `Server: ${guildName}`,
       `Reason: ${reason}`,
     ];
 
@@ -19079,24 +19095,8 @@ client.on("messageCreate", async (message) => {
     if (!modmailThread) return; // ignore if not in a modmail thread
 
     try {
-      // Find the most recent user (non-staff) modmail message for this thread
-      const msgs = await storage.getModmailMessages(modmailThread.id);
-      let lastUserMsg: any | undefined = undefined;
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const m = msgs[i];
-        if (m && String(m.isStaff) !== "true") {
-          lastUserMsg = m;
-          break;
-        }
-      }
-
-      if (!lastUserMsg || !lastUserMsg.channelMessageId) {
-        await message.reply({ content: "Could not find a recent user message to attach the menu to.", flags: 64 });
-        return;
-      }
-
       const actionMenu = new StringSelectMenuBuilder()
-        .setCustomId(`modmail_action_${modmailThread.id}_${lastUserMsg.channelMessageId}_${lastUserMsg.authorId}`)
+        .setCustomId(`modmail_action_${modmailThread.id}_0_${modmailThread.userId}`)
         .setPlaceholder("Select an action...")
         .addOptions(
           new StringSelectMenuOptionBuilder().setLabel("Toggle Member").setDescription("Add or remove a member from this ticket").setValue("toggle_member").setEmoji("👥"),
@@ -19106,7 +19106,7 @@ client.on("messageCreate", async (message) => {
         );
 
       const actionRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
-      await message.channel.send({ content: "", components: [actionRow] });
+      await message.channel.send({ components: [actionRow] });
     } catch (e) {
       console.log("Failed to send modmail action menu:", e);
     }
@@ -21858,6 +21858,14 @@ client.on("messageCreate", async (message) => {
               }
             }
 
+            // Send the regular close notice before deleting the channel
+            try {
+              const closeChannel = await client.channels.fetch(channelId);
+              if (closeChannel && "send" in closeChannel) {
+                await (closeChannel as any).send({ content: "Ticket closed. Deleting channel..." }).catch(() => {});
+              }
+            } catch (e) { }
+
             // Delete the channel
             try {
               const chanToDelete = await client.channels.fetch(channelId);
@@ -22137,12 +22145,20 @@ client.on("messageCreate", async (message) => {
               const closedUser = await client.users.fetch(threadToClose.userId);
               const closeEmbed = new EmbedBuilder()
                 .setTitle("Ticket Closed")
-                .setDescription("Your ticket has been closed due to inactivity. If you need further assistance, please open a new ticket.")
+                .setDescription("Your ticket has been closed by staff.")
                 .setColor(0xed4245)
+                .setTimestamp();
               await closedUser.send({ embeds: [closeEmbed] });
             } catch (e) {
               console.log("Could not notify user of ticket closure");
             }
+
+            try {
+              const closeChannel = await client.channels.fetch(channelId);
+              if (closeChannel && "send" in closeChannel) {
+                await (closeChannel as any).send({ content: "Ticket closed. Deleting channel..." }).catch(() => {});
+              }
+            } catch (e) { }
 
             if (guildId) {
               const threadConfig = await storage.getGuildConfig(guildId);
@@ -22710,7 +22726,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 
   const addedAdministratorRoles = addedRoles.filter((roleId) => {
     const role = newMember.guild.roles.cache.get(roleId);
-    return !!role?.permissions?.has(PermissionFlagsBits.Administrator);
+    return roleHasAdministratorPermission(role);
   });
 
   if (addedAdministratorRoles.length > 0) {
