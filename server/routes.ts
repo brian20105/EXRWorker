@@ -769,6 +769,19 @@ function getDashboardSecurityAccessSettings(raw: unknown): { accessRoleIds: stri
   };
 }
 
+function getDashboardBlacklistAccessSettings(raw: unknown): { blacklistAccessRoleIds: string[]; blacklistAccessUserIds: string[] } {
+  const parsed = parseDashboardConfigObject(raw);
+  const securityRaw = parsed[DASHBOARD_SECURITY_SETTINGS_KEY];
+  const security = securityRaw && typeof securityRaw === "object" && !Array.isArray(securityRaw)
+    ? securityRaw as Record<string, unknown>
+    : {};
+
+  return {
+    blacklistAccessRoleIds: normalizeStringList(security.blacklistAccessRoleIds),
+    blacklistAccessUserIds: normalizeStringList(security.blacklistAccessUserIds),
+  };
+}
+
 function hasDashboardSecurityAccess(userId: string, roleIds: string[], raw: unknown, fallbackAllowed = false): boolean {
   const settings = getDashboardSecurityAccessSettings(raw);
   const hasExplicitAccess = settings.accessUserIds.length > 0 || settings.accessRoleIds.length > 0;
@@ -776,6 +789,15 @@ function hasDashboardSecurityAccess(userId: string, roleIds: string[], raw: unkn
     return fallbackAllowed;
   }
   return settings.accessUserIds.includes(userId) || settings.accessRoleIds.some((roleId) => roleIds.includes(roleId));
+}
+
+function hasDashboardBlacklistAccess(userId: string, roleIds: string[], raw: unknown, fallbackAllowed = false): boolean {
+  const settings = getDashboardBlacklistAccessSettings(raw);
+  const hasExplicitAccess = settings.blacklistAccessUserIds.length > 0 || settings.blacklistAccessRoleIds.length > 0;
+  if (!hasExplicitAccess) {
+    return fallbackAllowed;
+  }
+  return settings.blacklistAccessUserIds.includes(userId) || settings.blacklistAccessRoleIds.some((roleId) => roleIds.includes(roleId));
 }
 
 function stripSecuritySettingsFromDashboardConfig(raw: unknown): string {
@@ -904,6 +926,38 @@ async function canManageSecurityDashboard(userId: string, guildId: string): Prom
   return hasDashboardSecurityAccess(userId, roleIds, config?.customCategoryPings, hasGeneralAccess);
 }
 
+async function canManageBlacklistDashboard(userId: string, guildId: string): Promise<boolean> {
+  if (PRIVILEGED_DASHBOARD_USER_IDS.has(userId)) {
+    return true;
+  }
+
+  const config = await storage.getGuildConfig(guildId);
+
+  if (client.isReady()) {
+    const guild = client.guilds.cache.get(guildId);
+    if (!guild) return false;
+
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return false;
+
+    const roleIds = Array.from(member.roles.cache.keys());
+    const hasGeneralAccess = guild.ownerId === userId || member.permissions.has(PermissionFlagsBits.Administrator) || ((config?.modRoleIds || []).filter(Boolean).some((roleId) => member.roles.cache.has(roleId)));
+    const hasSecurityAccess = hasDashboardSecurityAccess(userId, roleIds, config?.customCategoryPings, hasGeneralAccess);
+    return hasDashboardBlacklistAccess(userId, roleIds, config?.customCategoryPings, hasGeneralAccess || hasSecurityAccess);
+  }
+
+  if (!getBotToken()) return false;
+
+  const guildResponse = await discordApiRequest(`/guilds/${guildId}`);
+  const guild = (await guildResponse.json().catch(() => ({}))) as DiscordRestGuildDetails;
+  const memberResponse = await discordApiRequest(`/guilds/${guildId}/members/${userId}`);
+  const member = (await memberResponse.json().catch(() => ({}))) as DiscordRestGuildMember;
+  const roleIds = Array.isArray(member.roles) ? member.roles : [];
+  const hasGeneralAccess = String(guild.owner_id || "") === userId || hasAdministratorPermission(member.permissions) || ((config?.modRoleIds || []).filter(Boolean).some((roleId) => roleIds.includes(roleId)));
+  const hasSecurityAccess = hasDashboardSecurityAccess(userId, roleIds, config?.customCategoryPings, hasGeneralAccess);
+  return hasDashboardBlacklistAccess(userId, roleIds, config?.customCategoryPings, hasGeneralAccess || hasSecurityAccess);
+}
+
 async function canAccessGuild(userId: string, guildId: string): Promise<boolean> {
   if (PRIVILEGED_DASHBOARD_USER_IDS.has(userId)) {
     setCachedAccessDecision(userId, guildId, true);
@@ -932,7 +986,8 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
     const hasManagerAccess = managerRoleIds.length > 0 && managerRoleIds.some((roleId) => member.roles.cache.has(roleId));
     const roleIds = Array.from(member.roles.cache.keys());
     const hasSecurityAccess = hasDashboardSecurityAccess(userId, roleIds, config?.customCategoryPings);
-    const allowed = hasManagerAccess || hasSecurityAccess;
+    const hasBlacklistAccess = hasDashboardBlacklistAccess(userId, roleIds, config?.customCategoryPings, hasSecurityAccess || hasManagerAccess);
+    const allowed = hasManagerAccess || hasSecurityAccess || hasBlacklistAccess;
 
     setCachedAccessDecision(userId, guildId, allowed);
     return allowed;
@@ -960,7 +1015,8 @@ async function canAccessGuild(userId: string, guildId: string): Promise<boolean>
   const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
   const hasManagerAccess = managerRoleIds.length > 0 && managerRoleIds.some((roleId) => roleIds.includes(roleId));
   const hasSecurityAccess = hasDashboardSecurityAccess(userId, roleIds, config?.customCategoryPings);
-  const allowed = hasManagerAccess || hasSecurityAccess;
+  const hasBlacklistAccess = hasDashboardBlacklistAccess(userId, roleIds, config?.customCategoryPings, hasSecurityAccess || hasManagerAccess);
+  const allowed = hasManagerAccess || hasSecurityAccess || hasBlacklistAccess;
 
   setCachedAccessDecision(userId, guildId, allowed);
   return allowed;
@@ -2269,6 +2325,7 @@ export async function registerRoutes(
         const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
         const hasGeneralAccess = !!member && (viewerIsAdmin || guild?.ownerId === user.id || managerRoleIds.some((roleId) => member.roles.cache.has(roleId)));
         const viewerHasSecurityAccess = hasDashboardSecurityAccess(user.id, viewerRoleIds, config?.customCategoryPings, hasGeneralAccess);
+        const viewerHasBlacklistAccess = hasDashboardBlacklistAccess(user.id, viewerRoleIds, config?.customCategoryPings, hasGeneralAccess || viewerHasSecurityAccess);
 
         return res.json({
           config: config || {},
@@ -2279,6 +2336,7 @@ export async function registerRoutes(
           viewerRoleIds,
           viewerIsAdmin,
           viewerHasSecurityAccess,
+          viewerHasBlacklistAccess,
         });
       }
 
@@ -2339,6 +2397,7 @@ export async function registerRoutes(
       const managerRoleIds = (config?.modRoleIds || []).filter(Boolean);
       const hasGeneralAccess = viewerIsAdmin || String((guild as any)?.owner_id || "") === user.id || managerRoleIds.some((roleId) => viewerRoleIds.includes(roleId));
       const viewerHasSecurityAccess = hasDashboardSecurityAccess(user.id, viewerRoleIds, config?.customCategoryPings, hasGeneralAccess);
+      const viewerHasBlacklistAccess = hasDashboardBlacklistAccess(user.id, viewerRoleIds, config?.customCategoryPings, hasGeneralAccess || viewerHasSecurityAccess);
 
       res.json({ 
         config: config || {},
@@ -2349,6 +2408,7 @@ export async function registerRoutes(
         viewerRoleIds,
         viewerIsAdmin,
         viewerHasSecurityAccess,
+        viewerHasBlacklistAccess,
       });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -2735,7 +2795,11 @@ export async function registerRoutes(
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
-      const { guildId } = auth;
+      const { guildId, user } = auth;
+      const canManageBlacklist = await canManageBlacklistDashboard(user.id, guildId).catch(() => false);
+      if (!canManageBlacklist) {
+        return res.status(403).json({ error: "You do not have permission to manage the blacklist for this server." });
+      }
       const userId = String(req.params.userId || "").trim();
 
       if (!/^\d{17,20}$/.test(userId)) {
@@ -2823,6 +2887,10 @@ export async function registerRoutes(
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
       const { guildId, user } = auth;
+      const canManageBlacklist = await canManageBlacklistDashboard(user.id, guildId).catch(() => false);
+      if (!canManageBlacklist) {
+        return res.status(403).json({ error: "You do not have permission to manage the blacklist for this server." });
+      }
 
       const userId = String(req.body?.userId || "").trim();
       const reason = String(req.body?.reason || "").trim();
@@ -2890,7 +2958,11 @@ export async function registerRoutes(
     try {
       const auth = await requireGuildAccess(req, res);
       if (!auth) return;
-      const { guildId } = auth;
+      const { guildId, user } = auth;
+      const canManageBlacklist = await canManageBlacklistDashboard(user.id, guildId).catch(() => false);
+      if (!canManageBlacklist) {
+        return res.status(403).json({ error: "You do not have permission to manage the blacklist for this server." });
+      }
 
       const userId = String(req.params.userId || "").trim();
       if (!/^\d{17,20}$/.test(userId)) {

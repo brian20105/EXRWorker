@@ -272,6 +272,8 @@ interface DashboardSecuritySettings {
   whitelistedUserIds: string[];
   accessRoleIds: string[];
   accessUserIds: string[];
+  blacklistAccessRoleIds: string[];
+  blacklistAccessUserIds: string[];
   updatedAt: string | null;
 }
 
@@ -284,7 +286,10 @@ interface OwnerSecurityAccessState {
   config: GuildConfig | null;
   accessRoleIds: string[];
   accessUserIds: string[];
+  blacklistAccessRoleIds: string[];
+  blacklistAccessUserIds: string[];
   userIdInput: string;
+  blacklistUserIdInput: string;
 }
 
 interface BotFeatureModule {
@@ -417,6 +422,8 @@ function createDefaultSecuritySettings(): DashboardSecuritySettings {
     whitelistedUserIds: [],
     accessRoleIds: [],
     accessUserIds: [],
+    blacklistAccessRoleIds: [],
+    blacklistAccessUserIds: [],
     updatedAt: null,
   };
 }
@@ -431,7 +438,10 @@ function createOwnerSecurityAccessState(): OwnerSecurityAccessState {
     config: null,
     accessRoleIds: [],
     accessUserIds: [],
+    blacklistAccessRoleIds: [],
+    blacklistAccessUserIds: [],
     userIdInput: "",
+    blacklistUserIdInput: "",
   };
 }
 
@@ -563,6 +573,7 @@ export default function Dashboard() {
   const [viewerRoleIds, setViewerRoleIds] = useState<string[]>([]);
   const [viewerIsAdmin, setViewerIsAdmin] = useState(false);
   const [viewerHasSecurityAccess, setViewerHasSecurityAccess] = useState(false);
+  const [viewerHasBlacklistAccess, setViewerHasBlacklistAccess] = useState(false);
   const [featurePostChannels, setFeaturePostChannels] = useState<DashboardFeaturePostChannels>({});
   const [securitySettings, setSecuritySettings] = useState<DashboardSecuritySettings>(createDefaultSecuritySettings());
   const [securityWhitelistUserInput, setSecurityWhitelistUserInput] = useState("");
@@ -707,6 +718,7 @@ export default function Dashboard() {
     setViewerRoleIds(Array.isArray(data.viewerRoleIds) ? data.viewerRoleIds.map((entry: unknown) => String(entry || "")).filter(Boolean) : []);
     setViewerIsAdmin(data.viewerIsAdmin === true);
     setViewerHasSecurityAccess(data.viewerHasSecurityAccess === true);
+    setViewerHasBlacklistAccess(data.viewerHasBlacklistAccess === true);
 
     const validRoleIds = new Set(nextRoles.map((role) => role.id));
     const sanitizeRoleIds = (value: unknown) => Array.isArray(value)
@@ -757,6 +769,7 @@ export default function Dashboard() {
       }, {} as Record<SecurityRuleKey, SecurityRuleConfig>),
       whitelistedRoleIds: sanitizeRoleIds(nextSecuritySettings.whitelistedRoleIds),
       accessRoleIds: sanitizeRoleIds(nextSecuritySettings.accessRoleIds),
+      blacklistAccessRoleIds: sanitizeRoleIds(nextSecuritySettings.blacklistAccessRoleIds),
     });
     syncFeatureFlagsState(sanitizedConfig, nextConfig.customCategoryPings || "{}");
 
@@ -2069,6 +2082,8 @@ export default function Dashboard() {
       whitelistedUserIds: Array.from(new Set(normalizeStringArray(securityObject.whitelistedUserIds))),
       accessRoleIds: Array.from(new Set(normalizeStringArray(securityObject.accessRoleIds))),
       accessUserIds: Array.from(new Set(normalizeStringArray(securityObject.accessUserIds))),
+      blacklistAccessRoleIds: Array.from(new Set(normalizeStringArray(securityObject.blacklistAccessRoleIds))),
+      blacklistAccessUserIds: Array.from(new Set(normalizeStringArray(securityObject.blacklistAccessUserIds))),
       updatedAt: typeof securityObject.updatedAt === "string" && securityObject.updatedAt.trim()
         ? securityObject.updatedAt.trim()
         : null,
@@ -2109,6 +2124,8 @@ export default function Dashboard() {
     whitelistedUserIds: Array.from(new Set(normalizeStringArray(value.whitelistedUserIds))),
     accessRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(value.accessRoleIds))),
     accessUserIds: Array.from(new Set(normalizeStringArray(value.accessUserIds))),
+    blacklistAccessRoleIds: Array.from(new Set(filterToCurrentServerRoleIds(value.blacklistAccessRoleIds))),
+    blacklistAccessUserIds: Array.from(new Set(normalizeStringArray(value.blacklistAccessUserIds))),
     updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim()
       ? value.updatedAt.trim()
       : null,
@@ -2407,6 +2424,8 @@ export default function Dashboard() {
           roles: nextRoles,
           accessRoleIds: nextSecurity.accessRoleIds.filter((roleId) => validRoleIds.has(roleId)),
           accessUserIds: nextSecurity.accessUserIds,
+          blacklistAccessRoleIds: nextSecurity.blacklistAccessRoleIds.filter((roleId) => validRoleIds.has(roleId)),
+          blacklistAccessUserIds: nextSecurity.blacklistAccessUserIds,
         },
       }));
     } catch (error: any) {
@@ -2471,6 +2490,54 @@ export default function Dashboard() {
     });
   };
 
+  const toggleOwnerBlacklistAccessRole = (guildId: string, roleId: string) => {
+    setOwnerSecurityAccess((prev) => {
+      const currentState = prev[guildId] || createOwnerSecurityAccessState();
+      const nextRoleIds = currentState.blacklistAccessRoleIds.includes(roleId)
+        ? currentState.blacklistAccessRoleIds.filter((entry) => entry !== roleId)
+        : [...currentState.blacklistAccessRoleIds, roleId];
+
+      return {
+        ...prev,
+        [guildId]: {
+          ...currentState,
+          blacklistAccessRoleIds: Array.from(new Set(nextRoleIds)),
+        },
+      };
+    });
+  };
+
+  const addOwnerBlacklistAccessUser = (guildId: string) => {
+    const currentState = ownerSecurityAccess[guildId] || createOwnerSecurityAccessState();
+    const userId = currentState.blacklistUserIdInput.trim();
+    if (!/^\d{5,}$/.test(userId)) {
+      toast({ title: "Invalid user ID", description: "Enter a valid Discord user ID for blacklist access.", variant: "destructive" });
+      return;
+    }
+
+    setOwnerSecurityAccess((prev) => ({
+      ...prev,
+      [guildId]: {
+        ...currentState,
+        blacklistAccessUserIds: Array.from(new Set([...(currentState.blacklistAccessUserIds || []), userId])),
+        blacklistUserIdInput: "",
+      },
+    }));
+  };
+
+  const removeOwnerBlacklistAccessUser = (guildId: string, userId: string) => {
+    setOwnerSecurityAccess((prev) => {
+      const currentState = prev[guildId] || createOwnerSecurityAccessState();
+      return {
+        ...prev,
+        [guildId]: {
+          ...currentState,
+          blacklistAccessUserIds: currentState.blacklistAccessUserIds.filter((entry) => entry !== userId),
+        },
+      };
+    });
+  };
+
   const saveOwnerSecurityAccess = async (guildId: string) => {
     const currentState = ownerSecurityAccess[guildId];
     if (!currentState?.config) return;
@@ -2490,6 +2557,9 @@ export default function Dashboard() {
         ...existingSecurity,
         accessRoleIds: Array.from(new Set(currentState.accessRoleIds)),
         accessUserIds: Array.from(new Set(currentState.accessUserIds)),
+        blacklistAccessRoleIds: Array.from(new Set(currentState.blacklistAccessRoleIds)),
+        blacklistAccessUserIds: Array.from(new Set(currentState.blacklistAccessUserIds)),
+        updatedAt: new Date().toISOString(),
       };
 
       const payload: GuildConfig = {
@@ -2519,7 +2589,10 @@ export default function Dashboard() {
           roles: (prev[guildId]?.roles || currentState.roles || []),
           accessRoleIds: savedSecurity.accessRoleIds,
           accessUserIds: savedSecurity.accessUserIds,
+          blacklistAccessRoleIds: savedSecurity.blacklistAccessRoleIds,
+          blacklistAccessUserIds: savedSecurity.blacklistAccessUserIds,
           userIdInput: "",
+          blacklistUserIdInput: "",
         },
       }));
 
@@ -2529,7 +2602,7 @@ export default function Dashboard() {
         setSecuritySettings(sanitizeSecuritySettings(savedSecurity));
       }
 
-      toast({ title: "Saved", description: "Security access updated for this server." });
+      toast({ title: "Saved", description: "Security and blacklist access updated for this server." });
     } catch (error: any) {
       setOwnerSecurityAccess((prev) => ({
         ...prev,
@@ -2667,7 +2740,14 @@ export default function Dashboard() {
   const visibleOwnerGuilds = ownerGuilds;
   const hasGeneralDashboardAccess = viewerIsAdmin || isOwnerUser || filterToCurrentServerRoleIds(config.modRoleIds || []).some((roleId) => viewerRoleIds.includes(roleId));
   const canAccessSecurityTab = isOwnerUser || viewerHasSecurityAccess;
-  const hasPrimaryTabAccess = (tab: PrimaryTabKey) => tab === "security" ? canAccessSecurityTab : hasGeneralDashboardAccess;
+  const canAccessMiscTab = hasGeneralDashboardAccess || isOwnerUser || viewerHasBlacklistAccess;
+  const hasPrimaryTabAccess = (tab: PrimaryTabKey) => (
+    tab === "security"
+      ? canAccessSecurityTab
+      : tab === "miscellaneous"
+        ? canAccessMiscTab
+        : hasGeneralDashboardAccess
+  );
   const roleSyncSourceRoles = roleSyncSourceGuildId === selectedGuild
     ? roles
     : (roleSyncGuildRoles[roleSyncSourceGuildId] || []);
@@ -2728,8 +2808,13 @@ export default function Dashboard() {
 
     if (hasGeneralDashboardAccess) {
       setActivePrimaryTab("settings");
+      return;
     }
-  }, [selectedGuild, activePrimaryTab, canAccessSecurityTab, hasGeneralDashboardAccess]);
+
+    if (canAccessMiscTab) {
+      setActivePrimaryTab("miscellaneous");
+    }
+  }, [selectedGuild, activePrimaryTab, canAccessSecurityTab, canAccessMiscTab, hasGeneralDashboardAccess]);
 
   const renderFeaturePostSection = (
     featureKey: FeaturePostChannelKey,
@@ -4263,6 +4348,9 @@ export default function Dashboard() {
                           const accessRoleNames = accessState.roles
                             .filter((role) => accessState.accessRoleIds.includes(role.id))
                             .map((role) => role.name);
+                          const blacklistAccessRoleNames = accessState.roles
+                            .filter((role) => accessState.blacklistAccessRoleIds.includes(role.id))
+                            .map((role) => role.name);
 
                           return (
                             <div key={`owner-${guild.id}`} className="space-y-3 rounded-xl border border-border bg-card/60 p-4" data-testid={`owner-guild-${guild.id}`}>
@@ -4291,6 +4379,11 @@ export default function Dashboard() {
                                         ? `${accessRoleNames.length} role(s) • ${accessState.accessUserIds.length} user ID(s)`
                                         : "Click Security Access to manage"}
                                     </p>
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                      Blacklist access: {accessState.loaded
+                                        ? `${blacklistAccessRoleNames.length} role(s) • ${accessState.blacklistAccessUserIds.length} user ID(s)`
+                                        : "Click Security Access to manage"}
+                                    </p>
                                   </div>
                                 </div>
 
@@ -4302,7 +4395,7 @@ export default function Dashboard() {
                                     disabled={ownerGuildsLoading || ownerUpdatingGuildId === guild.id}
                                     data-testid={`button-owner-security-access-${guild.id}`}
                                   >
-                                    {accessState.open ? "Hide Security Access" : "Security Access"}
+                                    {accessState.open ? "Hide Access Controls" : "Access Controls"}
                                   </Button>
                                   <Button
                                     className="flex-1 bg-red-600 text-white hover:bg-red-700"
@@ -4338,8 +4431,8 @@ export default function Dashboard() {
                                 <div className="rounded-xl border border-border/70 bg-background/40 p-4">
                                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                     <div>
-                                      <p className="font-medium">Security Category Access</p>
-                                      <p className="text-xs text-muted-foreground">Choose which roles or user IDs can open the Security tab for this server.</p>
+                                      <p className="font-medium">Security & Blacklist Access</p>
+                                      <p className="text-xs text-muted-foreground">Choose which roles or user IDs can open Security and who can manage the server blacklist.</p>
                                     </div>
                                     <Button
                                       size="sm"
@@ -4354,59 +4447,118 @@ export default function Dashboard() {
                                   {accessState.loading ? (
                                     <p className="mt-4 text-sm text-muted-foreground">Loading roles...</p>
                                   ) : (
-                                    <div className="mt-4 grid gap-4 xl:grid-cols-2">
-                                      <div className="space-y-4">
-                                        {renderCustomRoleSection(
-                                          "Allowed Roles",
-                                          accessState.roles,
-                                          accessState.accessRoleIds,
-                                          (roleId) => toggleOwnerSecurityAccessRole(guild.id, roleId),
-                                          `owner-security-access-${guild.id}`,
-                                        )}
-                                      </div>
-
-                                      <div className="space-y-3">
-                                        <Label>Allowed Users</Label>
-                                        <div className="flex flex-col gap-2 sm:flex-row">
-                                          <Input
-                                            value={accessState.userIdInput}
-                                            onChange={(event) => setOwnerSecurityAccess((prev) => ({
-                                              ...prev,
-                                              [guild.id]: {
-                                                ...(prev[guild.id] || createOwnerSecurityAccessState()),
-                                                userIdInput: event.target.value,
-                                              },
-                                            }))}
-                                            placeholder="Enter a user ID"
-                                            data-testid={`input-owner-security-user-${guild.id}`}
-                                          />
-                                          <Button
-                                            type="button"
-                                            onClick={() => addOwnerSecurityAccessUser(guild.id)}
-                                            data-testid={`button-owner-security-user-add-${guild.id}`}
-                                          >
-                                            Add User
-                                          </Button>
+                                    <div className="mt-4 space-y-6">
+                                      <div className="grid gap-4 xl:grid-cols-2">
+                                        <div className="space-y-4">
+                                          {renderCustomRoleSection(
+                                            "Security Allowed Roles",
+                                            accessState.roles,
+                                            accessState.accessRoleIds,
+                                            (roleId) => toggleOwnerSecurityAccessRole(guild.id, roleId),
+                                            `owner-security-access-${guild.id}`,
+                                          )}
                                         </div>
 
-                                        <div className="flex flex-wrap gap-2">
-                                          {accessState.accessUserIds.length === 0 ? (
-                                            <p className="text-sm text-muted-foreground">No extra user IDs are allowed yet.</p>
-                                          ) : (
-                                            accessState.accessUserIds.map((userId) => (
-                                              <Badge key={`owner-security-${guild.id}-${userId}`} variant="secondary" className="gap-2 pr-1">
-                                                {userId}
-                                                <button
-                                                  type="button"
-                                                  onClick={() => removeOwnerSecurityAccessUser(guild.id, userId)}
-                                                  className="rounded p-0.5 hover:bg-background/60"
-                                                  aria-label={`Remove ${userId}`}
-                                                >
-                                                  <X className="h-3 w-3" />
-                                                </button>
-                                              </Badge>
-                                            ))
+                                        <div className="space-y-3">
+                                          <Label>Security Allowed Users</Label>
+                                          <div className="flex flex-col gap-2 sm:flex-row">
+                                            <Input
+                                              value={accessState.userIdInput}
+                                              onChange={(event) => setOwnerSecurityAccess((prev) => ({
+                                                ...prev,
+                                                [guild.id]: {
+                                                  ...(prev[guild.id] || createOwnerSecurityAccessState()),
+                                                  userIdInput: event.target.value,
+                                                },
+                                              }))}
+                                              placeholder="Enter a user ID"
+                                              data-testid={`input-owner-security-user-${guild.id}`}
+                                            />
+                                            <Button
+                                              type="button"
+                                              onClick={() => addOwnerSecurityAccessUser(guild.id)}
+                                              data-testid={`button-owner-security-user-add-${guild.id}`}
+                                            >
+                                              Add User
+                                            </Button>
+                                          </div>
+
+                                          <div className="flex flex-wrap gap-2">
+                                            {accessState.accessUserIds.length === 0 ? (
+                                              <p className="text-sm text-muted-foreground">No extra user IDs are allowed yet.</p>
+                                            ) : (
+                                              accessState.accessUserIds.map((userId) => (
+                                                <Badge key={`owner-security-${guild.id}-${userId}`} variant="secondary" className="gap-2 pr-1">
+                                                  {userId}
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => removeOwnerSecurityAccessUser(guild.id, userId)}
+                                                    className="rounded p-0.5 hover:bg-background/60"
+                                                    aria-label={`Remove ${userId}`}
+                                                  >
+                                                    <X className="h-3 w-3" />
+                                                  </button>
+                                                </Badge>
+                                              ))
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <div className="grid gap-4 xl:grid-cols-2 rounded-lg border border-border/60 bg-card/40 p-4">
+                                        <div className="space-y-4">
+                                          {renderCustomRoleSection(
+                                            "Blacklist Allowed Roles",
+                                            accessState.roles,
+                                            accessState.blacklistAccessRoleIds,
+                                            (roleId) => toggleOwnerBlacklistAccessRole(guild.id, roleId),
+                                            `owner-blacklist-access-${guild.id}`,
                                           )}
+                                        </div>
+
+                                        <div className="space-y-3">
+                                          <Label>Blacklist Allowed Users</Label>
+                                          <div className="flex flex-col gap-2 sm:flex-row">
+                                            <Input
+                                              value={accessState.blacklistUserIdInput}
+                                              onChange={(event) => setOwnerSecurityAccess((prev) => ({
+                                                ...prev,
+                                                [guild.id]: {
+                                                  ...(prev[guild.id] || createOwnerSecurityAccessState()),
+                                                  blacklistUserIdInput: event.target.value,
+                                                },
+                                              }))}
+                                              placeholder="Enter a user ID"
+                                              data-testid={`input-owner-blacklist-user-${guild.id}`}
+                                            />
+                                            <Button
+                                              type="button"
+                                              onClick={() => addOwnerBlacklistAccessUser(guild.id)}
+                                              data-testid={`button-owner-blacklist-user-add-${guild.id}`}
+                                            >
+                                              Add User
+                                            </Button>
+                                          </div>
+
+                                          <div className="flex flex-wrap gap-2">
+                                            {accessState.blacklistAccessUserIds.length === 0 ? (
+                                              <p className="text-sm text-muted-foreground">No extra user IDs can manage the blacklist yet.</p>
+                                            ) : (
+                                              accessState.blacklistAccessUserIds.map((userId) => (
+                                                <Badge key={`owner-blacklist-${guild.id}-${userId}`} variant="secondary" className="gap-2 pr-1">
+                                                  {userId}
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => removeOwnerBlacklistAccessUser(guild.id, userId)}
+                                                    className="rounded p-0.5 hover:bg-background/60"
+                                                    aria-label={`Remove ${userId}`}
+                                                  >
+                                                    <X className="h-3 w-3" />
+                                                  </button>
+                                                </Badge>
+                                              ))
+                                            )}
+                                          </div>
                                         </div>
                                       </div>
                                     </div>
@@ -5692,6 +5844,9 @@ export default function Dashboard() {
                     <CardDescription>Any user listed here will be re-banned instantly until you remove them from the website blacklist.</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-5">
+                    {!viewerHasBlacklistAccess && (
+                      <p className="text-xs text-muted-foreground">Only the owner-approved roles or user IDs can edit this server blacklist.</p>
+                    )}
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="space-y-2">
                         <Label>User ID</Label>
@@ -5699,6 +5854,7 @@ export default function Dashboard() {
                           value={miscBlacklistUserIdInput}
                           onChange={(event) => setMiscBlacklistUserIdInput(event.target.value)}
                           placeholder="123456789012345678"
+                          disabled={!viewerHasBlacklistAccess}
                           data-testid="input-misc-blacklist-user-id"
                         />
                       </div>
@@ -5708,19 +5864,20 @@ export default function Dashboard() {
                           value={miscBlacklistReason}
                           onChange={(event) => setMiscBlacklistReason(event.target.value)}
                           placeholder="Chargeback / alt account / ban evasion"
+                          disabled={!viewerHasBlacklistAccess}
                           data-testid="input-misc-blacklist-reason"
                         />
                       </div>
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      <Button onClick={blacklistMiscUser} disabled={blacklistingMiscUser || miscOverviewLoading} data-testid="button-misc-blacklist-user">
+                      <Button onClick={blacklistMiscUser} disabled={!viewerHasBlacklistAccess || blacklistingMiscUser || miscOverviewLoading} data-testid="button-misc-blacklist-user">
                         {blacklistingMiscUser ? "Blacklisting…" : "Blacklist User"}
                       </Button>
                       <Button
                         variant="outline"
                         onClick={() => unblacklistMiscUser(miscBlacklistUserIdInput.trim())}
-                        disabled={blacklistingMiscUser || miscOverviewLoading || !miscBlacklistUserIdInput.trim()}
+                        disabled={!viewerHasBlacklistAccess || blacklistingMiscUser || miscOverviewLoading || !miscBlacklistUserIdInput.trim()}
                         data-testid="button-misc-unblacklist-user-id"
                       >
                         Remove from Blacklist
@@ -5767,7 +5924,7 @@ export default function Dashboard() {
                               size="sm"
                               variant="destructive"
                               className="shrink-0"
-                              disabled={unblacklistingMiscUserId === entry.userId}
+                              disabled={!viewerHasBlacklistAccess || unblacklistingMiscUserId === entry.userId}
                               onClick={() => unblacklistMiscUser(entry.userId, entry.username)}
                             >
                               {unblacklistingMiscUserId === entry.userId ? "Removing…" : "Remove"}
