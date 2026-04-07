@@ -3014,6 +3014,7 @@ function buildModlogsEmbed(
     const moderator = entry.moderatorId ? `<@${entry.moderatorId}>` : "Unknown";
     const parsed = extractReasonAndDuration(entry.reason);
     const reason = parsed.reason;
+    const shouldShowServer = ["ban", "kick", "mute", "timeout"].includes(String(entry.actionType || "").toLowerCase());
     const guildName = entry.guildId
       ? (client.guilds.cache.get(entry.guildId)?.name || `Guild ${entry.guildId}`)
       : "Unknown Guild";
@@ -3023,7 +3024,7 @@ function buildModlogsEmbed(
       `Type: ${type}`,
       `User: <@${targetId}>`,
       `Moderator: ${moderator}`,
-      `Server: ${guildName}`,
+      ...(shouldShowServer ? [`Server: ${guildName}`] : []),
       `Reason: ${reason}`,
     ];
 
