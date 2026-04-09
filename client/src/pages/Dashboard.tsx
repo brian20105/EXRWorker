@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -3091,7 +3091,7 @@ export default function Dashboard() {
         <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
           <div className="space-y-2">
             <Label>Post Channel</Label>
-            <DropdownMenu>
+            <DropdownMenu onOpenChange={focusDropdownSearchInput(searchKey)}>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" className="w-full justify-between" data-testid={`feature-post-${featureKey}-trigger`}>
                   <span className="truncate text-left">
@@ -3103,6 +3103,8 @@ export default function Dashboard() {
               <DropdownMenuContent className="max-h-80 w-80 overflow-y-auto">
                 <div className="px-1 pb-2">
                   <Input
+                    ref={setDropdownSearchInputRef(searchKey)}
+                    autoFocus
                     value={channelSearches[searchKey] || ""}
                     onChange={(event) => setChannelSearches((prev) => ({ ...prev, [searchKey]: event.target.value }))}
                     onKeyDownCapture={stopDropdownSearchKeyPropagation}
@@ -4279,6 +4281,21 @@ export default function Dashboard() {
     </div>
   );
 
+  const dropdownSearchInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  const setDropdownSearchInputRef = (key: string) => (node: HTMLInputElement | null) => {
+    dropdownSearchInputRefs.current[key] = node;
+  };
+
+  const focusDropdownSearchInput = (key: string) => (open: boolean) => {
+    if (!open) return;
+    requestAnimationFrame(() => {
+      const input = dropdownSearchInputRefs.current[key];
+      input?.focus();
+      input?.select();
+    });
+  };
+
   const stopDropdownSearchKeyPropagation = (event: any) => {
     if (event.key === "Escape") {
       return;
@@ -4312,6 +4329,8 @@ export default function Dashboard() {
           <DropdownMenuContent className="max-h-80 w-80 overflow-y-auto">
             <div className="px-1 pb-2">
               <Input
+                ref={setDropdownSearchInputRef(testId)}
+                autoFocus
                 value={channelSearches[String(key)] || ""}
                 onChange={(event) =>
                   setChannelSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
@@ -4375,6 +4394,8 @@ export default function Dashboard() {
           <DropdownMenuContent className="max-h-72 w-80 overflow-y-auto">
             <div className="px-1 pb-2">
               <Input
+                ref={setDropdownSearchInputRef(testIdPrefix)}
+                autoFocus
                 value={roleSearches[testIdPrefix] || ""}
                 onChange={(event) =>
                   setRoleSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))
@@ -4436,9 +4457,11 @@ export default function Dashboard() {
                 <ChevronDown className="h-4 w-4 opacity-70" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent className="max-h-72 w-80">
+            <DropdownMenuContent className="max-h-72 w-80 overflow-y-auto">
               <div className="px-1 pb-2">
                 <Input
+                  ref={setDropdownSearchInputRef(testIdPrefix)}
+                  autoFocus
                   value={roleSearches[testIdPrefix] || ""}
                   onChange={(event) =>
                     setRoleSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))
@@ -4512,6 +4535,8 @@ export default function Dashboard() {
           <DropdownMenuContent className="max-h-80 w-80 overflow-y-auto">
             <div className="px-1 pb-2">
               <Input
+                ref={setDropdownSearchInputRef(testIdPrefix)}
+                autoFocus
                 value={channelSearches[testIdPrefix] || ""}
                 onChange={(event) => setChannelSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))}
                 onKeyDownCapture={stopDropdownSearchKeyPropagation}
@@ -4568,9 +4593,11 @@ export default function Dashboard() {
               <ChevronDown className="h-4 w-4 opacity-70" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="max-h-72 w-80">
+          <DropdownMenuContent className="max-h-72 w-80 overflow-y-auto">
             <div className="px-1 pb-2">
               <Input
+                ref={setDropdownSearchInputRef(testIdPrefix)}
+                autoFocus
                 value={roleSearches[String(key)] || ""}
                 onChange={(event) =>
                   setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
@@ -4639,9 +4666,11 @@ export default function Dashboard() {
               <ChevronDown className="h-4 w-4 opacity-70" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="max-h-72 w-80">
+          <DropdownMenuContent className="max-h-72 w-80 overflow-y-auto">
             <div className="px-1 pb-2">
               <Input
+                ref={setDropdownSearchInputRef(testIdPrefix)}
+                autoFocus
                 value={roleSearches[String(key)] || ""}
                 onChange={(event) =>
                   setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
@@ -6156,6 +6185,8 @@ export default function Dashboard() {
                         <DropdownMenuContent className="max-h-80 w-72 overflow-y-auto">
                           <div className="px-1 pb-2">
                             <Input
+                              ref={setDropdownSearchInputRef("role-sync-source-search")}
+                              autoFocus
                               value={roleSyncSourceRoleSearch}
                               onChange={(e) => setRoleSyncSourceRoleSearch(e.target.value)}
                               onKeyDownCapture={stopDropdownSearchKeyPropagation}
@@ -6211,6 +6242,8 @@ export default function Dashboard() {
                         <DropdownMenuContent className="max-h-80 w-72 overflow-y-auto">
                           <div className="px-1 pb-2">
                             <Input
+                              ref={setDropdownSearchInputRef("role-sync-target-search")}
+                              autoFocus
                               value={roleSyncTargetRoleSearch}
                               onChange={(e) => setRoleSyncTargetRoleSearch(e.target.value)}
                               onKeyDownCapture={stopDropdownSearchKeyPropagation}
