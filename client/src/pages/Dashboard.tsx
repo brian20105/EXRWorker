@@ -416,6 +416,15 @@ const DEFAULT_DISABLED_STATUS_COLOR = "#ff0000";
 const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
 const BACKGROUND_COLOR_PRESETS = ["#ff0000", "#00ff7b", "#0000ff"];
 
+function filterNamedItems<T extends { name: string }>(items: T[], rawQuery: string): T[] {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) {
+    return items;
+  }
+
+  return items.filter((item) => item.name.toLowerCase().includes(query));
+}
+
 function createLocalDashboardId(prefix: string): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -3069,6 +3078,9 @@ export default function Dashboard() {
       || (featureKey === "payouts" ? config.requestChannelId : null)
       || ""
     ) as string;
+    const searchKey = `feature-post-${featureKey}`;
+    const selectedChannel = textChannels.find((channel) => channel.id === currentChannelId);
+    const filteredChannels = filterNamedItems(textChannels, channelSearches[searchKey] || "");
 
     return (
       <div className="rounded-md border border-border/60 bg-muted/10 p-3 space-y-3">
@@ -3079,17 +3091,51 @@ export default function Dashboard() {
         <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
           <div className="space-y-2">
             <Label>Post Channel</Label>
-            <Select value={currentChannelId || NONE_VALUE} onValueChange={(value) => updateFeaturePostChannel(featureKey, value)}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select a channel" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NONE_VALUE}>No channel selected</SelectItem>
-                {textChannels.map((channel) => (
-                  <SelectItem key={`${featureKey}-post-${channel.id}`} value={channel.id}>#{channel.name}</SelectItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" className="w-full justify-between" data-testid={`feature-post-${featureKey}-trigger`}>
+                  <span className="truncate text-left">
+                    {selectedChannel ? `#${selectedChannel.name}` : "Select a channel"}
+                  </span>
+                  <ChevronDown className="h-4 w-4 opacity-70" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="max-h-80 w-80 overflow-y-auto">
+                <div className="px-1 pb-2">
+                  <Input
+                    value={channelSearches[searchKey] || ""}
+                    onChange={(event) => setChannelSearches((prev) => ({ ...prev, [searchKey]: event.target.value }))}
+                    onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                    onKeyDown={stopDropdownSearchKeyPropagation}
+                    placeholder="Search channels..."
+                    className="h-8"
+                    data-testid={`feature-post-${featureKey}-search`}
+                  />
+                </div>
+                <DropdownMenuCheckboxItem
+                  checked={!currentChannelId}
+                  onCheckedChange={() => updateFeaturePostChannel(featureKey, NONE_VALUE)}
+                  onSelect={(event) => event.preventDefault()}
+                  data-testid={`feature-post-${featureKey}-none`}
+                >
+                  No channel selected
+                </DropdownMenuCheckboxItem>
+                {filteredChannels.map((channel) => (
+                  <DropdownMenuCheckboxItem
+                    key={`${featureKey}-post-${channel.id}`}
+                    checked={currentChannelId === channel.id}
+                    onCheckedChange={() => updateFeaturePostChannel(featureKey, channel.id)}
+                    onSelect={(event) => event.preventDefault()}
+                    data-testid={`feature-post-${featureKey}-${channel.id}`}
+                  >
+                    #{channel.name}
+                  </DropdownMenuCheckboxItem>
                 ))}
-              </SelectContent>
-            </Select>
+                {filteredChannels.length === 0 && (
+                  <p className="px-2 py-1 text-xs text-muted-foreground">No channels found.</p>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
           <Button size="sm" variant="outline" disabled={postingFeatureEmbed === featureKey} onClick={() => postFeatureEmbed(featureKey)}>
             {postingFeatureEmbed === featureKey ? "Posting…" : buttonLabel}
@@ -4022,20 +4068,12 @@ export default function Dashboard() {
                     <h4 className="text-sm font-medium">Add Rule</h4>
                     <p className="mt-1 text-xs text-muted-foreground">Choose a role, delay, and whether it should be added or removed on join.</p>
                   </div>
-                  <div className="space-y-2">
-                    <Label>Role</Label>
-                    <Select value={newAutoRole.roleId || NONE_VALUE} onValueChange={(value) => setNewAutoRole((prev) => ({ ...prev, roleId: value === NONE_VALUE ? "" : value }))}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select role" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE_VALUE}>Select role</SelectItem>
-                        {roles.map((role) => (
-                          <SelectItem key={`autorole-${role.id}`} value={role.id}>{role.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  {renderSingleRoleSelect(
+                    "Role",
+                    newAutoRole.roleId || "",
+                    (roleId) => setNewAutoRole((prev) => ({ ...prev, roleId })),
+                    "auto-role-picker",
+                  )}
                   <div className="space-y-2">
                     <Label>Delay (minutes)</Label>
                     <Input
@@ -4153,20 +4191,12 @@ export default function Dashboard() {
                     <Label>Reaction</Label>
                     <Input value={newReactionRole.emoji} onChange={(event) => setNewReactionRole((prev) => ({ ...prev, emoji: event.target.value }))} placeholder="✅" />
                   </div>
-                  <div className="space-y-2">
-                    <Label>Role</Label>
-                    <Select value={newReactionRole.roleId || NONE_VALUE} onValueChange={(value) => setNewReactionRole((prev) => ({ ...prev, roleId: value === NONE_VALUE ? "" : value }))}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select role" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={NONE_VALUE}>Select role</SelectItem>
-                        {roles.map((role) => (
-                          <SelectItem key={`reaction-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
+                  {renderSingleRoleSelect(
+                    "Role",
+                    newReactionRole.roleId || "",
+                    (roleId) => setNewReactionRole((prev) => ({ ...prev, roleId })),
+                    "reaction-role-picker",
+                  )}
                   <div className="space-y-2">
                     <Label>Type</Label>
                     <Select value={newReactionRole.mode} onValueChange={(value) => setNewReactionRole((prev) => ({ ...prev, mode: value as ReactionRoleMode }))}>
@@ -4264,11 +4294,7 @@ export default function Dashboard() {
     testId: string,
   ) => {
     const value = (config[key] as string | null | undefined) || NONE_VALUE;
-    const query = (channelSearches[String(key)] || "").trim().toLowerCase();
-    const filteredChannels = options.filter((channel) => {
-      if (!query) return true;
-      return channel.name.toLowerCase().includes(query);
-    });
+    const filteredChannels = filterNamedItems(options, channelSearches[String(key)] || "");
     const selectedChannel = options.find((channel) => channel.id === value);
 
     return (
@@ -4325,6 +4351,69 @@ export default function Dashboard() {
     );
   };
 
+  const renderSingleRoleSelect = (
+    label: string,
+    selectedRoleId: string | null | undefined,
+    onSelect: (roleId: string) => void,
+    testIdPrefix: string,
+  ) => {
+    const matchedRoles = filterNamedItems(roles, roleSearches[testIdPrefix] || "");
+    const selectedRole = roles.find((role) => role.id === selectedRoleId);
+
+    return (
+      <div className="space-y-2">
+        <Label>{label}</Label>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
+              <span className="truncate text-left">
+                {selectedRole ? selectedRole.name : "Select role"}
+              </span>
+              <ChevronDown className="h-4 w-4 opacity-70" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="max-h-72 w-80 overflow-y-auto">
+            <div className="px-1 pb-2">
+              <Input
+                value={roleSearches[testIdPrefix] || ""}
+                onChange={(event) =>
+                  setRoleSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))
+                }
+                onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                onKeyDown={stopDropdownSearchKeyPropagation}
+                placeholder="Search roles..."
+                className="h-8"
+                data-testid={`${testIdPrefix}-search`}
+              />
+            </div>
+            <DropdownMenuCheckboxItem
+              checked={!selectedRoleId}
+              onCheckedChange={() => onSelect("")}
+              onSelect={(event) => event.preventDefault()}
+              data-testid={`${testIdPrefix}-none`}
+            >
+              Select role
+            </DropdownMenuCheckboxItem>
+            {matchedRoles.map((role) => (
+              <DropdownMenuCheckboxItem
+                key={role.id}
+                checked={selectedRoleId === role.id}
+                onCheckedChange={() => onSelect(role.id)}
+                onSelect={(event) => event.preventDefault()}
+                data-testid={`${testIdPrefix}-${role.id}`}
+              >
+                {role.name}
+              </DropdownMenuCheckboxItem>
+            ))}
+            {matchedRoles.length === 0 && (
+              <p className="px-2 py-1 text-xs text-muted-foreground">No roles found.</p>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    );
+  };
+
   const renderCustomRoleSection = (
     label: string,
     availableRoles: Role[],
@@ -4332,8 +4421,7 @@ export default function Dashboard() {
     onToggle: (roleId: string) => void,
     testIdPrefix: string,
   ) => {
-    const query = (roleSearches[testIdPrefix] || "").trim().toLowerCase();
-    const matchedRoles = availableRoles.filter((role) => !query || role.name.toLowerCase().includes(query));
+    const matchedRoles = filterNamedItems(availableRoles, roleSearches[testIdPrefix] || "");
 
     return (
       <div className="space-y-3">
@@ -4408,8 +4496,7 @@ export default function Dashboard() {
     testIdPrefix: string,
   ) => {
     const value = selectedChannelId || NONE_VALUE;
-    const query = (channelSearches[testIdPrefix] || "").trim().toLowerCase();
-    const filteredChannels = availableChannels.filter((channel) => !query || channel.name.toLowerCase().includes(query));
+    const filteredChannels = filterNamedItems(availableChannels, channelSearches[testIdPrefix] || "");
     const selectedChannel = availableChannels.find((channel) => channel.id === selectedChannelId);
 
     return (
@@ -4464,77 +4551,7 @@ export default function Dashboard() {
 
   const renderRoleSection = (label: string, key: keyof GuildConfig, testIdPrefix: string) => {
     const selectedRoleIds = filterToCurrentServerRoleIds((config[key] as string[] | undefined) || []);
-
-    return (
-    <div className="space-y-3">
-      <Label>{label}</Label>
-      <div className="space-y-2">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
-              <span className="truncate text-left">
-                {(selectedRoleIds.length || 0) > 0
-                  ? `${selectedRoleIds.length} role(s) selected`
-                  : "Select roles"}
-              </span>
-              <ChevronDown className="h-4 w-4 opacity-70" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent className="max-h-72 w-80">
-            <div className="px-1 pb-2">
-              <Input
-                value={roleSearches[String(key)] || ""}
-                onChange={(event) =>
-                  setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
-                }
-                placeholder="Search roles..."
-                className="h-8"
-                data-testid={`${testIdPrefix}-search`}
-              />
-            </div>
-            {roles
-              .filter((role) => {
-                const query = (roleSearches[String(key)] || "").trim().toLowerCase();
-                if (!query) return true;
-                return role.name.toLowerCase().includes(query);
-              })
-              .map((role) => {
-              const selected = selectedRoleIds.includes(role.id);
-              return (
-                <DropdownMenuCheckboxItem
-                  key={role.id}
-                  checked={selected}
-                  onCheckedChange={() => toggleRole(key, role.id)}
-                  onSelect={(event) => event.preventDefault()}
-                  data-testid={`${testIdPrefix}-${role.id}`}
-                >
-                  {role.name}
-                </DropdownMenuCheckboxItem>
-              );
-            })}
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        <div className="flex flex-wrap gap-2">
-          {roles
-            .filter((role) => selectedRoleIds.includes(role.id))
-            .slice(0, 8)
-            .map((role) => (
-              <Badge key={role.id} variant="secondary" className="max-w-[220px] truncate" title={role.name}>
-                {role.name}
-              </Badge>
-            ))}
-          {(selectedRoleIds.length || 0) > 8 && (
-            <Badge variant="outline">+{selectedRoleIds.length - 8} more</Badge>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-  };
-
-  const renderPermissionRoleSection = (label: string, key: keyof DashboardPermissionSettings, testIdPrefix: string) => {
-    const selectedRoleIds = filterToCurrentServerRoleIds(permissionSettings[key] || []);
+    const matchedRoles = filterNamedItems(roles, roleSearches[String(key)] || "");
 
     return (
     <div className="space-y-3">
@@ -4565,26 +4582,94 @@ export default function Dashboard() {
                 data-testid={`${testIdPrefix}-search`}
               />
             </div>
-            {roles
-              .filter((role) => {
-                const query = (roleSearches[String(key)] || "").trim().toLowerCase();
-                if (!query) return true;
-                return role.name.toLowerCase().includes(query);
-              })
-              .map((role) => {
-                const selected = selectedRoleIds.includes(role.id);
-                return (
-                  <DropdownMenuCheckboxItem
-                    key={role.id}
-                    checked={selected}
-                    onCheckedChange={() => togglePermissionRole(key, role.id)}
-                    onSelect={(event) => event.preventDefault()}
-                    data-testid={`${testIdPrefix}-${role.id}`}
-                  >
-                    {role.name}
-                  </DropdownMenuCheckboxItem>
-                );
-              })}
+            {matchedRoles.map((role) => {
+              const selected = selectedRoleIds.includes(role.id);
+              return (
+                <DropdownMenuCheckboxItem
+                  key={role.id}
+                  checked={selected}
+                  onCheckedChange={() => toggleRole(key, role.id)}
+                  onSelect={(event) => event.preventDefault()}
+                  data-testid={`${testIdPrefix}-${role.id}`}
+                >
+                  {role.name}
+                </DropdownMenuCheckboxItem>
+              );
+            })}
+            {matchedRoles.length === 0 && (
+              <p className="px-2 py-1 text-xs text-muted-foreground">No roles found.</p>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <div className="flex flex-wrap gap-2">
+          {roles
+            .filter((role) => selectedRoleIds.includes(role.id))
+            .slice(0, 8)
+            .map((role) => (
+              <Badge key={role.id} variant="secondary" className="max-w-[220px] truncate" title={role.name}>
+                {role.name}
+              </Badge>
+            ))}
+          {(selectedRoleIds.length || 0) > 8 && (
+            <Badge variant="outline">+{selectedRoleIds.length - 8} more</Badge>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+  };
+
+  const renderPermissionRoleSection = (label: string, key: keyof DashboardPermissionSettings, testIdPrefix: string) => {
+    const selectedRoleIds = filterToCurrentServerRoleIds(permissionSettings[key] || []);
+    const matchedRoles = filterNamedItems(roles, roleSearches[String(key)] || "");
+
+    return (
+    <div className="space-y-3">
+      <Label>{label}</Label>
+      <div className="space-y-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
+              <span className="truncate text-left">
+                {(selectedRoleIds.length || 0) > 0
+                  ? `${selectedRoleIds.length} role(s) selected`
+                  : "Select roles"}
+              </span>
+              <ChevronDown className="h-4 w-4 opacity-70" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="max-h-72 w-80">
+            <div className="px-1 pb-2">
+              <Input
+                value={roleSearches[String(key)] || ""}
+                onChange={(event) =>
+                  setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
+                }
+                onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                onKeyDown={stopDropdownSearchKeyPropagation}
+                placeholder="Search roles..."
+                className="h-8"
+                data-testid={`${testIdPrefix}-search`}
+              />
+            </div>
+            {matchedRoles.map((role) => {
+              const selected = selectedRoleIds.includes(role.id);
+              return (
+                <DropdownMenuCheckboxItem
+                  key={role.id}
+                  checked={selected}
+                  onCheckedChange={() => togglePermissionRole(key, role.id)}
+                  onSelect={(event) => event.preventDefault()}
+                  data-testid={`${testIdPrefix}-${role.id}`}
+                >
+                  {role.name}
+                </DropdownMenuCheckboxItem>
+              );
+            })}
+            {matchedRoles.length === 0 && (
+              <p className="px-2 py-1 text-xs text-muted-foreground">No roles found.</p>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -6073,23 +6158,23 @@ export default function Dashboard() {
                             <Input
                               value={roleSyncSourceRoleSearch}
                               onChange={(e) => setRoleSyncSourceRoleSearch(e.target.value)}
+                              onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                              onKeyDown={stopDropdownSearchKeyPropagation}
                               placeholder="Search roles…"
                               className="h-8"
                             />
                           </div>
-                          {roleSyncSourceRoles
-                            .filter((role) => !roleSyncSourceRoleSearch || role.name.toLowerCase().includes(roleSyncSourceRoleSearch.toLowerCase()))
-                            .map((role) => (
-                              <DropdownMenuCheckboxItem
-                                key={`role-sync-source-role-${role.id}`}
-                                checked={roleSyncSourceRoleId === role.id}
-                                onCheckedChange={() => setRoleSyncSourceRoleId(role.id)}
-                                onSelect={(e) => e.preventDefault()}
-                              >
-                                {role.name}
-                              </DropdownMenuCheckboxItem>
-                            ))}
-                          {roleSyncSourceRoles.filter((role) => !roleSyncSourceRoleSearch || role.name.toLowerCase().includes(roleSyncSourceRoleSearch.toLowerCase())).length === 0 && (
+                          {filterNamedItems(roleSyncSourceRoles, roleSyncSourceRoleSearch).map((role) => (
+                            <DropdownMenuCheckboxItem
+                              key={`role-sync-source-role-${role.id}`}
+                              checked={roleSyncSourceRoleId === role.id}
+                              onCheckedChange={() => setRoleSyncSourceRoleId(role.id)}
+                              onSelect={(e) => e.preventDefault()}
+                            >
+                              {role.name}
+                            </DropdownMenuCheckboxItem>
+                          ))}
+                          {filterNamedItems(roleSyncSourceRoles, roleSyncSourceRoleSearch).length === 0 && (
                             <p className="px-2 py-1 text-xs text-muted-foreground">No roles found.</p>
                           )}
                         </DropdownMenuContent>
@@ -6128,23 +6213,23 @@ export default function Dashboard() {
                             <Input
                               value={roleSyncTargetRoleSearch}
                               onChange={(e) => setRoleSyncTargetRoleSearch(e.target.value)}
+                              onKeyDownCapture={stopDropdownSearchKeyPropagation}
+                              onKeyDown={stopDropdownSearchKeyPropagation}
                               placeholder="Search roles…"
                               className="h-8"
                             />
                           </div>
-                          {roleSyncTargetRoles
-                            .filter((role) => !roleSyncTargetRoleSearch || role.name.toLowerCase().includes(roleSyncTargetRoleSearch.toLowerCase()))
-                            .map((role) => (
-                              <DropdownMenuCheckboxItem
-                                key={`role-sync-target-role-${role.id}`}
-                                checked={roleSyncTargetRoleId === role.id}
-                                onCheckedChange={() => setRoleSyncTargetRoleId(role.id)}
-                                onSelect={(e) => e.preventDefault()}
-                              >
-                                {role.name}
-                              </DropdownMenuCheckboxItem>
-                            ))}
-                          {roleSyncTargetRoles.filter((role) => !roleSyncTargetRoleSearch || role.name.toLowerCase().includes(roleSyncTargetRoleSearch.toLowerCase())).length === 0 && (
+                          {filterNamedItems(roleSyncTargetRoles, roleSyncTargetRoleSearch).map((role) => (
+                            <DropdownMenuCheckboxItem
+                              key={`role-sync-target-role-${role.id}`}
+                              checked={roleSyncTargetRoleId === role.id}
+                              onCheckedChange={() => setRoleSyncTargetRoleId(role.id)}
+                              onSelect={(e) => e.preventDefault()}
+                            >
+                              {role.name}
+                            </DropdownMenuCheckboxItem>
+                          ))}
+                          {filterNamedItems(roleSyncTargetRoles, roleSyncTargetRoleSearch).length === 0 && (
                             <p className="px-2 py-1 text-xs text-muted-foreground">No roles found.</p>
                           )}
                         </DropdownMenuContent>
@@ -6657,19 +6742,17 @@ export default function Dashboard() {
                       />
                     </div>
                     <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
-                      {textChannels
-                        .filter((channel) => !rosterEmbedChannelSearch || channel.name.toLowerCase().includes(rosterEmbedChannelSearch.toLowerCase()))
-                        .map((channel) => (
-                          <button
-                            key={channel.id}
-                            type="button"
-                            className={`w-full rounded px-2 py-1 text-left text-sm transition-colors hover:bg-accent ${rosterEmbedConfig.channelId === channel.id ? "bg-accent font-medium" : ""}`}
-                            onClick={() => setRosterEmbedConfig((prev) => ({ ...prev, channelId: channel.id }))}
-                          >
-                            #{channel.name}
-                          </button>
-                        ))}
-                      {textChannels.filter((channel) => !rosterEmbedChannelSearch || channel.name.toLowerCase().includes(rosterEmbedChannelSearch.toLowerCase())).length === 0 && (
+                      {filterNamedItems(textChannels, rosterEmbedChannelSearch).map((channel) => (
+                        <button
+                          key={channel.id}
+                          type="button"
+                          className={`w-full rounded px-2 py-1 text-left text-sm transition-colors hover:bg-accent ${rosterEmbedConfig.channelId === channel.id ? "bg-accent font-medium" : ""}`}
+                          onClick={() => setRosterEmbedConfig((prev) => ({ ...prev, channelId: channel.id }))}
+                        >
+                          #{channel.name}
+                        </button>
+                      ))}
+                      {filterNamedItems(textChannels, rosterEmbedChannelSearch).length === 0 && (
                         <p className="px-2 py-1 text-sm text-muted-foreground">No channels match.</p>
                       )}
                     </div>
@@ -6791,11 +6874,23 @@ export default function Dashboard() {
                 <div className="space-y-2">
                   <Label>Roles on this Roster *</Label>
                   <p className="text-xs text-muted-foreground">Members with these roles will appear on the roster. At least one role is required.</p>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={roleSearches["roster-modal-roles"] || ""}
+                      onChange={(event) => setRoleSearches((prev) => ({ ...prev, ["roster-modal-roles"]: event.target.value }))}
+                      placeholder="Search roster roles…"
+                      className="h-8 pl-8 text-sm"
+                    />
+                  </div>
                   <div className="max-h-48 overflow-y-auto rounded-md border border-border p-2 space-y-1">
                     {roles.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No roles available.</p>
                     ) : (
-                      roles.filter((r) => r.name !== "@everyone").map((role) => (
+                      filterNamedItems(
+                        roles.filter((role) => role.name !== "@everyone"),
+                        roleSearches["roster-modal-roles"] || "",
+                      ).map((role) => (
                         <label key={role.id} className="flex items-center gap-2 cursor-pointer rounded px-1 py-0.5 hover:bg-accent">
                           <input
                             type="checkbox"
@@ -6812,6 +6907,12 @@ export default function Dashboard() {
                         </label>
                       ))
                     )}
+                    {roles.length > 0 && filterNamedItems(
+                      roles.filter((role) => role.name !== "@everyone"),
+                      roleSearches["roster-modal-roles"] || "",
+                    ).length === 0 && (
+                      <p className="text-sm text-muted-foreground">No roles found.</p>
+                    )}
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -6826,19 +6927,17 @@ export default function Dashboard() {
                     />
                   </div>
                   <div className="max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1 space-y-0.5">
-                    {textChannels
-                      .filter((ch) => !rosterChannelSearch || ch.name.toLowerCase().includes(rosterChannelSearch.toLowerCase()))
-                      .map((ch) => (
-                        <button
-                          key={ch.id}
-                          type="button"
-                          className={`w-full text-left px-2 py-1 text-sm rounded transition-colors hover:bg-accent ${rosterModalChannelId === ch.id ? "bg-accent font-medium" : ""}`}
-                          onClick={() => setRosterModalChannelId(ch.id)}
-                        >
-                          #{ch.name}
-                        </button>
-                      ))}
-                    {textChannels.filter((ch) => !rosterChannelSearch || ch.name.toLowerCase().includes(rosterChannelSearch.toLowerCase())).length === 0 && (
+                    {filterNamedItems(textChannels, rosterChannelSearch).map((ch) => (
+                      <button
+                        key={ch.id}
+                        type="button"
+                        className={`w-full text-left px-2 py-1 text-sm rounded transition-colors hover:bg-accent ${rosterModalChannelId === ch.id ? "bg-accent font-medium" : ""}`}
+                        onClick={() => setRosterModalChannelId(ch.id)}
+                      >
+                        #{ch.name}
+                      </button>
+                    ))}
+                    {filterNamedItems(textChannels, rosterChannelSearch).length === 0 && (
                       <p className="px-2 py-1 text-sm text-muted-foreground">No channels match.</p>
                     )}
                   </div>
