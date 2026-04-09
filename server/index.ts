@@ -1,10 +1,22 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { readOwnerBotDesiredState } from "./owner-bot-state";
+import fs from "fs";
+import path from "path";
+import { spawn as spawnProcess } from "child_process";
+
+// Import keep_alive side effect (runs on startup)
+// @ts-ignore - keep_alive.js is a plain JS file with no exports
+import("../keep_alive.js").catch(() => {});
 
 const app = express();
 const httpServer = createServer(app);
+const OWNER_BOT_PID_FILE = path.resolve(process.cwd(), ".owner-bot.pid");
 
 declare module "http" {
   interface IncomingMessage {
@@ -31,6 +43,45 @@ export function log(message: string, source = "express") {
   });
 
   console.log(`${formattedTime} [${source}] ${message}`);
+}
+
+function readOwnerBotPid(): number | null {
+  try {
+    const raw = fs.readFileSync(OWNER_BOT_PID_FILE, "utf8").trim();
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPidRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startSavedOwnerBotIfNeeded(): void {
+  if (readOwnerBotDesiredState() !== "on") return;
+
+  const existingPid = readOwnerBotPid();
+  if (existingPid && isPidRunning(existingPid)) return;
+
+  try {
+    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+    const child = spawnProcess(npmCmd, ["run", "bot", "--", "--owner-dashboard-managed"], {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    log("restored owner-managed bot state: on", "server");
+  } catch (error: any) {
+    log(`failed to restore owner-managed bot state: ${error?.message || error}`, "server");
+  }
 }
 
 app.use((req, res, next) => {
@@ -81,22 +132,39 @@ app.use((req, res, next) => {
   }
 
   // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
+  // Other ports are firewalled. Default to 2000 if not specified.
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
+  const port = parseInt(process.env.PORT || "2000", 10);
+  const listenOptions: any = { port, host: "0.0.0.0" };
+  if (process.platform !== "win32") {
+    listenOptions.reusePort = true;
+  }
 
-  // Start Discord bot
-  const { startBot } = await import("./bot");
-  await startBot();
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once("error", (err: any) => {
+      log(`http server error: ${err.message}`, "server");
+      reject(err);
+    });
+
+    httpServer.listen(listenOptions, () => {
+      log(`serving on port ${port}`);
+      resolve();
+    });
+  }).catch((err: any) => {
+    if (err?.code === "EADDRINUSE") {
+      log(`port ${port} already in use; exiting to avoid duplicate bot instances`, "server");
+    }
+    process.exit(1);
+  });
+
+  // Start Discord bot only when explicitly enabled via RUN_BOT=true
+  const runBot = (process.env.RUN_BOT || "false").trim().toLowerCase() === "true";
+  if (runBot) {
+    const { startBot } = await import("./bot");
+    await startBot();
+  } else {
+    log("RUN_BOT is not true, skipping Discord bot startup", "server");
+    startSavedOwnerBotIfNeeded();
+  }
 })();

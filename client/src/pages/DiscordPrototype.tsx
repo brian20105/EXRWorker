@@ -5,7 +5,6 @@ import { DiscordEmbed } from "@/components/discord/Embed";
 import { DiscordModal } from "@/components/discord/Modal";
 import { DiscordButton } from "@/components/discord/Button";
 import { PlusCircle, Hash } from "lucide-react";
-</old_str>
 
 type MessageData = {
   id: string;

@@ -4,3 +4,10 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+.env
+.env.*
+!.env.example
+.config/
+.owner-guilds.json
+.owner-bot.state
+.owner-bot.pid

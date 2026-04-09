@@ -1,0 +1,66 @@
+[ROSTER] Error updating roster messages: TypeError: Cannot read properties of undefined (reading 'searchParams')
+    at Er (/opt/render/project/src/dist/index.cjs:69:131908)
+    at new pm (/opt/render/project/src/dist/index.cjs:69:134913)
+    at new Dc (/opt/render/project/src/dist/index.cjs:70:2448)
+    at Vm.newClient (/opt/render/project/src/dist/index.cjs:70:16207)
+    at Vm.connect (/opt/render/project/src/dist/index.cjs:70:16156)
+    at Vm.query (/opt/render/project/src/dist/index.cjs:70:18706)
+    at /opt/render/project/src/dist/index.cjs:70:28811
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+    at /opt/render/project/src/dist/index.cjs:70:28647
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+[ROLE SYNC] Added roles: 1447118813022781554
+[ROLE SYNC] Removed roles: none
+Discord client error: TypeError: Cannot read properties of undefined (reading 'searchParams')
+    at Er (/opt/render/project/src/dist/index.cjs:69:131908)
+    at new pm (/opt/render/project/src/dist/index.cjs:69:134913)
+    at new Dc (/opt/render/project/src/dist/index.cjs:70:2448)
+    at Vm.newClient (/opt/render/project/src/dist/index.cjs:70:16207)
+    at Vm.connect (/opt/render/project/src/dist/index.cjs:70:16156)
+    at Vm.query (/opt/render/project/src/dist/index.cjs:70:18706)
+    at /opt/render/project/src/dist/index.cjs:70:28811
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+    at /opt/render/project/src/dist/index.cjs:70:28647
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+[ROLE SYNC] guildMemberUpdate triggered for brian20105 in guild TRL | Team Thrill (1447066742559080489)
+Roster role changed for brian20105, updating rosters...
+[ROSTER] Database connection attempt 1 failed, retrying...
+[ROSTER] Database connection attempt 2 failed, retrying...
+[ROLE SYNC] guildMemberUpdate triggered for brian20105 in guild Team Thrill Staff HQ (1447126562414530726)
+[ROLE SYNC] Added roles: none
+[ROLE SYNC] Removed roles: 1447159778995605645
+Discord client error: TypeError: Cannot read properties of undefined (reading 'searchParams')
+    at Er (/opt/render/project/src/dist/index.cjs:69:131908)
+    at new pm (/opt/render/project/src/dist/index.cjs:69:134913)
+    at new Dc (/opt/render/project/src/dist/index.cjs:70:2448)
+    at Vm.newClient (/opt/render/project/src/dist/index.cjs:70:16207)
+    at Vm.connect (/opt/render/project/src/dist/index.cjs:70:16156)
+    at Vm.query (/opt/render/project/src/dist/index.cjs:70:18706)
+    at /opt/render/project/src/dist/index.cjs:70:28811
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+    at /opt/render/project/src/dist/index.cjs:70:28647
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+[ROSTER] Error updating roster messages: TypeError: Cannot read properties of undefined (reading 'searchParams')
+    at Er (/opt/render/project/src/dist/index.cjs:69:131908)
+    at new pm (/opt/render/project/src/dist/index.cjs:69:134913)
+    at new Dc (/opt/render/project/src/dist/index.cjs:70:2448)
+    at Vm.newClient (/opt/render/project/src/dist/index.cjs:70:16207)
+    at Vm.connect (/opt/render/project/src/dist/index.cjs:70:16156)
+    at Vm.query (/opt/render/project/src/dist/index.cjs:70:18706)
+    at /opt/render/project/src/dist/index.cjs:70:28811
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+    at /opt/render/project/src/dist/index.cjs:70:28647
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+[ROLE SYNC] Added roles: none
+[ROLE SYNC] Removed roles: 1447118813022781554
+Discord client error: TypeError: Cannot read properties of undefined (reading 'searchParams')
+    at Er (/opt/render/project/src/dist/index.cjs:69:131908)
+    at new pm (/opt/render/project/src/dist/index.cjs:69:134913)
+    at new Dc (/opt/render/project/src/dist/index.cjs:70:2448)
+    at Vm.newClient (/opt/render/project/src/dist/index.cjs:70:16207)
+    at Vm.connect (/opt/render/project/src/dist/index.cjs:70:16156)
+    at Vm.query (/opt/render/project/src/dist/index.cjs:70:18706)
+    at /opt/render/project/src/dist/index.cjs:70:28811
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)
+    at /opt/render/project/src/dist/index.cjs:70:28647
+    at Object.startActiveSpan (/opt/render/project/src/dist/index.cjs:63:9601)

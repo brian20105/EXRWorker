@@ -47,7 +47,40 @@ The server handles both the web API and Discord bot in a single process. The Exp
 ### Discord Bot
 - Requires `DISCORD_BOT_TOKEN` environment variable
 - Requires `DISCORD_APPLICATION_ID` environment variable
-- Uses discord.js v14 with Gateway Intents for Guilds and GuildMessages
+- Uses discord.js v14 with Gateway Intents for Guilds, GuildMessages, and DirectMessages
+- DM message caching: Stores last 50 messages per user to enable delete/edit tracking
+
+## Recent Changes (February 2026)
+
+### New Slash Commands
+- `/message` - DM a specific user with an embed message (admin-only)
+- `/message_all` - Mass DM all server members with rate limiting (100ms delay between sends)
+- `/block_list` - View blocked users from modmail and appeals with pagination (10 per page)
+
+### Bug Fixes
+- Fixed auto-unclaim to only trigger when the claimer doesn't respond (not when any staff types)
+- Fixed `/category_ping` command to work with custom categories via new `customCategoryPings` JSON field
+
+## Recent Changes (January 2026)
+
+### Web Dashboard
+- Added `/dashboard` route for configuring bot settings via web UI
+- Select a server, then configure channels and permission roles
+- API endpoints: GET/POST `/api/guilds/:guildId/config`
+- Channels: Payout request, payment logs, modmail, appeal, quiz log
+- Permission roles: Payout approval, moderation, modmail block/claim, snippets, activity
+
+### Quiz Progress Logging
+- Added `/setup_quiz_log` command to configure a channel for quiz progress logging
+- Logs when users start quizzes, progress through each question, and complete quizzes
+- Uses dynamic question count from questions array (not hardcoded)
+- Schema field: `quizLogChannelId` in guildConfigs table
+
+### Modmail DM Edit/Delete Tracking
+- Implemented DM message cache (50 messages per user) to track edits/deletes
+- Delete tracking shows deleted content on staff side without actually deleting from thread
+- Edit tracking shows before/after content for message edits
+- Handles partial messages gracefully with cache fallback
 
 ### Database
 - PostgreSQL database required

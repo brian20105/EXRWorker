@@ -6,17 +6,16 @@ hidden = [".config", ".git", "generated-icon.png", "node_modules", "dist"]
 channel = "stable-24_05"
 
 [deployment]
-deploymentTarget = "autoscale"
+deploymentTarget = "gce"
 build = ["npm", "run", "build"]
-publicDir = "dist/public"
 run = ["npm", "run", "start"]
 
 [[ports]]
-localPort = 5000
+localPort = 2000
 externalPort = 80
 
 [env]
-PORT = "5000"
+PORT = "2000"
 
 [workflows]
 runButton = "Project"
@@ -37,7 +36,7 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "npm run dev"
-waitForPort = 5000
+waitForPort = 2000
 
 [agent]
 mockupState = "FULLSTACK"
