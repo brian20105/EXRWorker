@@ -1677,6 +1677,152 @@ function extractUserIdFromToken(token?: string | null): string | null {
   return null;
 }
 
+function normalizeUserLookupText(value?: string | null): string {
+  return String(value || "").trim().replace(/^@+/, "").toLowerCase();
+}
+
+function getUserLookupCandidates(user: any, member?: any): string[] {
+  const values = new Set<string>();
+  const addValue = (value: unknown) => {
+    const normalized = normalizeUserLookupText(value == null ? "" : String(value));
+    if (normalized) values.add(normalized);
+  };
+
+  addValue(user?.id);
+  addValue(user?.username);
+  addValue(user?.globalName);
+  addValue(user?.tag);
+  addValue(member?.displayName);
+  addValue(member?.nickname);
+
+  return Array.from(values);
+}
+
+function pickBestUserLookupMatch(
+  query: string,
+  entries: Array<{ user: any; member: any | null }>,
+): { userId: string; targetMember: any | null; score: number } | null {
+  const normalizedQuery = normalizeUserLookupText(query);
+  if (!normalizedQuery) return null;
+
+  let bestMatch: { userId: string; targetMember: any | null; score: number } | null = null;
+  let hasTie = false;
+
+  for (const entry of entries) {
+    const user = entry?.user;
+    if (!user?.id) continue;
+
+    const candidates = getUserLookupCandidates(user, entry.member);
+    let score = 0;
+
+    if (candidates.includes(normalizedQuery)) {
+      score = 100;
+    } else if (candidates.some((value) => value.startsWith(normalizedQuery))) {
+      score = 80;
+    } else if (normalizedQuery.length >= 3 && candidates.some((value) => value.includes(normalizedQuery))) {
+      score = 60;
+    }
+
+    if (score <= 0) continue;
+
+    if (!bestMatch || score > bestMatch.score) {
+      bestMatch = { userId: user.id, targetMember: entry.member || null, score };
+      hasTie = false;
+    } else if (bestMatch && score === bestMatch.score && bestMatch.userId !== user.id) {
+      hasTie = true;
+    }
+  }
+
+  if (!bestMatch || hasTie) return null;
+  return bestMatch;
+}
+
+async function resolveModerationTargetFromArgs(
+  guild: any,
+  args: string[],
+  options?: { allowBannedUsers?: boolean; searchAllGuilds?: boolean; maxNameTokens?: number },
+): Promise<{ userId: string | null; tokensConsumed: number; targetMember: any | null }> {
+  const cleanedArgs = args.map((arg) => String(arg || "").trim()).filter(Boolean);
+  if (!guild || cleanedArgs.length === 0) {
+    return { userId: null, tokensConsumed: 0, targetMember: null };
+  }
+
+  const maxNameTokens = Math.max(1, Math.min(options?.maxNameTokens ?? 4, cleanedArgs.length));
+  const currentGuildEntries: Array<{ user: any; member: any | null }> = [];
+  const externalGuildEntries: Array<{ user: any; member: any | null }> = [];
+  const seenCurrentGuildUserIds = new Set<string>();
+  const seenExternalUserIds = new Set<string>();
+
+  const addEntry = (
+    entries: Array<{ user: any; member: any | null }>,
+    seenUserIds: Set<string>,
+    user: any,
+    member: any | null = null,
+  ) => {
+    if (!user?.id || seenUserIds.has(user.id)) return;
+    seenUserIds.add(user.id);
+    entries.push({ user, member });
+  };
+
+  guild.members.cache.forEach((member: any) => addEntry(currentGuildEntries, seenCurrentGuildUserIds, member.user, member));
+
+  if (options?.searchAllGuilds) {
+    for (const otherGuild of client.guilds.cache.values()) {
+      if (otherGuild.id === guild.id) continue;
+      otherGuild.members.cache.forEach((member: any) => addEntry(externalGuildEntries, seenExternalUserIds, member.user, null));
+    }
+  }
+
+  let banEntriesLoaded = false;
+
+  for (let tokenCount = maxNameTokens; tokenCount >= 1; tokenCount -= 1) {
+    const query = cleanedArgs.slice(0, tokenCount).join(" ");
+    const directId = extractUserIdFromToken(query);
+    if (directId) {
+      return {
+        userId: directId,
+        tokensConsumed: tokenCount,
+        targetMember: guild.members.cache.get(directId) || null,
+      };
+    }
+
+    let match = pickBestUserLookupMatch(query, currentGuildEntries);
+
+    if (!match && guild.members?.search) {
+      const normalizedQuery = normalizeUserLookupText(query).slice(0, 32);
+      if (normalizedQuery) {
+        const searchResults = await guild.members.search({ query: normalizedQuery, limit: 10 }).catch(() => null);
+        if (searchResults) {
+          const searchEntries: Array<{ user: any; member: any | null }> = [];
+          searchResults.forEach((member: any) => searchEntries.push({ user: member.user, member }));
+          match = pickBestUserLookupMatch(query, [...currentGuildEntries, ...searchEntries]);
+        }
+      }
+    }
+
+    if (!match && options?.allowBannedUsers && !banEntriesLoaded) {
+      banEntriesLoaded = true;
+      const bans = await guild.bans.fetch().catch(() => null);
+      bans?.forEach((ban: any) => addEntry(currentGuildEntries, seenCurrentGuildUserIds, ban.user, null));
+      match = pickBestUserLookupMatch(query, currentGuildEntries);
+    }
+
+    if (!match && options?.searchAllGuilds) {
+      match = pickBestUserLookupMatch(query, externalGuildEntries);
+    }
+
+    if (match) {
+      return {
+        userId: match.userId,
+        tokensConsumed: tokenCount,
+        targetMember: match.targetMember,
+      };
+    }
+  }
+
+  return { userId: null, tokensConsumed: 0, targetMember: null };
+}
+
 type PrefixModerationAction = "ban" | "mute" | "kick";
 
 interface ModerationSetupConfig {
@@ -1945,14 +2091,14 @@ function formatModActionLabel(action: PrefixModerationAction): string {
 
 function buildPrefixCommandUsageEmbed(prefix: string, action: PrefixModerationAction, actionEmoji: string): EmbedBuilder {
   const usage = action === "kick"
-    ? `${prefix}kick [user] [reason]`
-    : `${prefix}${action} [user] [limit] [reason]`;
+    ? `${prefix}kick [user|username|id] [reason]`
+    : `${prefix}${action} [user|username|id] [limit] [reason]`;
 
   const examples = action === "ban"
-    ? [`${prefix}ban @user 30m spamming`, `${prefix}ban 123456789012345678 repeated trolling`]
+    ? [`${prefix}ban @user 30m spamming`, `${prefix}ban brian repeated trolling`]
     : action === "mute"
-      ? [`${prefix}mute @user 10m caps spam`, `${prefix}mute 123456789012345678 rude behavior`]
-      : [`${prefix}kick @user repeated disruption`, `${prefix}kick 123456789012345678 ignored warnings`];
+      ? [`${prefix}mute @user 10m caps spam`, `${prefix}mute brian rude behavior`]
+      : [`${prefix}kick @user repeated disruption`, `${prefix}kick brian ignored warnings`];
 
   return new EmbedBuilder()
     .setColor(0x5865f2)
@@ -1960,6 +2106,7 @@ function buildPrefixCommandUsageEmbed(prefix: string, action: PrefixModerationAc
     .setDescription(`${actionEmoji} ${formatModActionLabel(action)} a member${action === "kick" ? "" : ", optional time limit"}`)
     .addFields(
       { name: "Usage", value: usage },
+      { name: "Target", value: "Use a mention, user ID, or username.", inline: false },
       { name: "Duration", value: action === "kick" ? "Not used for kick." : "Use `s`, `m`, `h`, or `d` (e.g., `30m`, `2d`). No duration = permanent.", inline: false },
       { name: "Examples", value: examples.join("\n"), inline: false },
     );
@@ -19608,8 +19755,8 @@ client.on("messageCreate", async (message) => {
           // ignore logging failures
         }
       };
-      const getDurationLabel = (cmd: string, parsedDurationMs: number | null, rawDurationToken: string | null) => {
-        if (cmd === "kick") return "Permanent";
+      const getDurationLabel = (cmd: string, parsedDurationMs: number | null, rawDurationToken: string | null): string | null => {
+        if (cmd === "kick") return null;
         if (parsedDurationMs && rawDurationToken) return rawDurationToken;
         return "Permanent";
       };
@@ -19617,26 +19764,38 @@ client.on("messageCreate", async (message) => {
         targetUserId: string,
         actionLabel: string,
         reasonText: string,
-        durationText: string,
+        durationText: string | null,
         banMessageText?: string,
         targetMemberForDm?: any,
       ): Promise<boolean> => {
         const safeReason = (reasonText || "No reason given.").slice(0, 1024);
-        const safeDuration = (durationText || "Permanent").slice(0, 1024);
+        const safeDuration = typeof durationText === "string" && durationText.trim().length > 0
+          ? durationText.trim().slice(0, 1024)
+          : null;
         const safeBanMessage = (banMessageText || "").trim().slice(0, 4000);
+        const serverName = (message.guild?.name || "this server").slice(0, 1024);
+        const actionPastTense = actionLabel === "Kick"
+          ? "kicked"
+          : actionLabel === "Mute"
+            ? "muted"
+            : "banned";
+        const defaultDescription = actionLabel === "Mute"
+          ? `You have been ${actionPastTense} in **${serverName}**.`
+          : `You have been ${actionPastTense} from **${serverName}**.`;
+        const dmFields: Array<{ name: string; value: string; inline?: boolean }> = [
+          { name: "Reason", value: safeReason, inline: false },
+        ];
+
+        if (safeDuration) {
+          dmFields.unshift({ name: "Duration", value: safeDuration, inline: true });
+        }
 
         const dmEmbed = new EmbedBuilder()
           .setColor(0xed4245)
           .setTitle(`${actionLabel} Notice`)
-          .addFields(
-            { name: "Duration", value: safeDuration, inline: true },
-            { name: "Reason", value: safeReason, inline: true },
-          )
+          .setDescription(safeBanMessage ? `${safeBanMessage}\n\nServer: **${serverName}**` : defaultDescription)
+          .addFields(dmFields)
           .setTimestamp();
-
-        if (safeBanMessage) {
-          dmEmbed.setDescription(safeBanMessage);
-        }
 
         try {
           if (targetMemberForDm?.send) {
@@ -19692,8 +19851,13 @@ client.on("messageCreate", async (message) => {
         // ignore delete failures for trigger command
       }
 
-      const targetToken = tokens[1];
-      const targetUserId = extractUserIdFromToken(targetToken);
+      const targetResolution = await resolveModerationTargetFromArgs(message.guild, tokens.slice(1), {
+        allowBannedUsers: command === "unban" || isBanLikeCommand,
+        searchAllGuilds: isBanLikeCommand,
+      });
+      const targetUserId = targetResolution.userId;
+      const consumedTargetTokens = Math.max(1, targetResolution.tokensConsumed || 1);
+
       if (!targetUserId) {
         const usageEmbed = command === "unban"
           ? new EmbedBuilder()
@@ -19701,8 +19865,8 @@ client.on("messageCreate", async (message) => {
             .setTitle(`Command: ${prefix}unban`)
             .setDescription(`${modSetup.actionEmojis.ban} Unban a user`)
             .addFields(
-              { name: "Usage", value: `${prefix}unban [user] [reason]` },
-              { name: "Examples", value: `${prefix}unban @user appeal accepted\n${prefix}unban 123456789012345678 temporary ban expired`, inline: false },
+              { name: "Usage", value: `${prefix}unban [user|username|id] [reason]` },
+              { name: "Examples", value: `${prefix}unban @user appeal accepted\n${prefix}unban brian temporary ban expired`, inline: false },
             )
           : isFullBanCommand
             ? new EmbedBuilder()
@@ -19710,9 +19874,9 @@ client.on("messageCreate", async (message) => {
               .setTitle(`Command: ${prefix}${command}`)
               .setDescription(`${modSetup.actionEmojis.ban} Full ban a user in every server the bot is in`)
               .addFields(
-                { name: "Usage", value: `${prefix}${command} [user] [limit] [reason]` },
+                { name: "Usage", value: `${prefix}${command} [user|username|id] [limit] [reason]` },
                 { name: "Duration", value: "Use `s`, `m`, `h`, or `d` (e.g., `30m`, `2d`). No duration = permanent.", inline: false },
-                { name: "Examples", value: `${prefix}${command} @user 30m repeated raids\n${prefix}${command} 123456789012345678 severe violations`, inline: false },
+                { name: "Examples", value: `${prefix}${command} @user 30m repeated raids\n${prefix}${command} brian severe violations`, inline: false },
               )
           : isFakeBanCommand
             ? new EmbedBuilder()
@@ -19720,9 +19884,9 @@ client.on("messageCreate", async (message) => {
               .setTitle(`Command: ${prefix}${command}`)
               .setDescription(`${modSetup.actionEmojis.ban} Send a fake ban message (does not actually ban, not logged)`)
               .addFields(
-                { name: "Usage", value: `${prefix}${command} [user] [limit] [reason]` },
+                { name: "Usage", value: `${prefix}${command} [user|username|id] [limit] [reason]` },
                 { name: "Duration", value: "Use `s`, `m`, `h`, or `d` (e.g., `30m`, `2d`). No duration = permanent.", inline: false },
-                { name: "Examples", value: `${prefix}${command} @user 30m spam links\n${prefix}${command} 123456789012345678 toxic behavior`, inline: false },
+                { name: "Examples", value: `${prefix}${command} @user 30m spam links\n${prefix}${command} brian toxic behavior`, inline: false },
               )
           : command === "unmute"
             ? new EmbedBuilder()
@@ -19730,8 +19894,8 @@ client.on("messageCreate", async (message) => {
               .setTitle(`Command: ${prefix}unmute`)
               .setDescription(`${modSetup.actionEmojis.mute} Unmute a member`)
               .addFields(
-                { name: "Usage", value: `${prefix}unmute [user] [reason]` },
-                { name: "Examples", value: `${prefix}unmute @user behavior improved\n${prefix}unmute 123456789012345678 timeout removed`, inline: false },
+                { name: "Usage", value: `${prefix}unmute [user|username|id] [reason]` },
+                { name: "Examples", value: `${prefix}unmute @user behavior improved\n${prefix}unmute brian timeout removed`, inline: false },
               )
             : buildPrefixCommandUsageEmbed(prefix, command as PrefixModerationAction, modSetup.actionEmojis[command as PrefixModerationAction]);
         await sendPrefixCommandEmbed(usageEmbed);
@@ -19755,7 +19919,7 @@ client.on("messageCreate", async (message) => {
       }
 
       if (command === "unban") {
-        const reason = tokens.slice(2).join(" ").trim() || "No reason given.";
+        const reason = tokens.slice(1 + consumedTargetTokens).join(" ").trim() || "No reason given.";
         try {
           await message.guild.members.unban(targetUserId, reason);
           message.guild.bans.cache.delete(targetUserId);
@@ -19777,22 +19941,25 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      let targetMember: any = null;
-      try {
-        targetMember = await message.guild.members.fetch(targetUserId);
-      } catch {
-        targetMember = null;
+      let targetMember: any = targetResolution.targetMember || null;
+      if (!targetMember) {
+        try {
+          targetMember = await message.guild.members.fetch(targetUserId);
+        } catch {
+          targetMember = null;
+        }
       }
 
       if (!targetMember) {
         if (isBanLikeCommand) {
           const hasDurationSlot = true;
-          const durationToken = hasDurationSlot ? tokens[2] : null;
+          const targetArgStartIndex = 1 + consumedTargetTokens;
+          const durationToken = hasDurationSlot ? tokens[targetArgStartIndex] : null;
           const durationMs = hasDurationSlot ? parseDurationMs(durationToken) : null;
 
-          let reasonStartIndex = 2;
+          let reasonStartIndex = targetArgStartIndex;
           if (hasDurationSlot && durationMs !== null) {
-            reasonStartIndex = 3;
+            reasonStartIndex = targetArgStartIndex + 1;
           }
           const reason = tokens.slice(reasonStartIndex).join(" ").trim() || "No reason given.";
 
@@ -19883,12 +20050,13 @@ client.on("messageCreate", async (message) => {
       }
 
       const hasDurationSlot = isBanLikeCommand || command === "mute";
-      const durationToken = hasDurationSlot ? tokens[2] : null;
+      const targetArgStartIndex = 1 + consumedTargetTokens;
+      const durationToken = hasDurationSlot ? tokens[targetArgStartIndex] : null;
       const durationMs = hasDurationSlot ? parseDurationMs(durationToken) : null;
 
-      let reasonStartIndex = 2;
+      let reasonStartIndex = targetArgStartIndex;
       if (hasDurationSlot && durationMs !== null) {
-        reasonStartIndex = 3;
+        reasonStartIndex = targetArgStartIndex + 1;
       }
       const reason = tokens.slice(reasonStartIndex).join(" ").trim() || "No reason given.";
 
