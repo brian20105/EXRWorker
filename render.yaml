@@ -19,3 +19,5 @@ services:
         sync: false
       - key: RUN_BOT
         value: "false"
+      - key: APP_RELEASE
+        value: "2026-04-09-reaction-role-fix-2"
