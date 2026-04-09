@@ -7,6 +7,9 @@ interface WorkerEnv {
   BACKEND_ORIGIN?: string;
 }
 
+const KEEPALIVE_PATH = "/api/bot-status";
+const KEEPALIVE_USER_AGENT = "exrworker-keepalive/1.0";
+
 function normalizeBackendOrigin(raw?: string): string | null {
   const value = (raw || "").trim();
   if (!value) return null;
@@ -34,6 +37,27 @@ function buildProxyInit(request: Request, url: URL): RequestInit {
   }
 
   return init;
+}
+
+async function pingBackend(env: WorkerEnv): Promise<void> {
+  const backendOrigin = normalizeBackendOrigin(env.BACKEND_ORIGIN);
+  if (!backendOrigin) return;
+
+  const response = await fetch(`${backendOrigin}${KEEPALIVE_PATH}`, {
+    method: "GET",
+    headers: {
+      "user-agent": KEEPALIVE_USER_AGENT,
+      "x-keepalive-source": "cloudflare-cron",
+    },
+    cf: {
+      cacheTtl: 0,
+      cacheEverything: false,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Backend keepalive failed with status ${response.status}`);
+  }
 }
 
 export default {
@@ -75,5 +99,13 @@ export default {
     }
 
     return assetResponse;
+  },
+
+  async scheduled(_controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      pingBackend(env).catch((error) => {
+        console.error("keepalive ping failed", error);
+      }),
+    );
   },
 };

@@ -2126,6 +2126,10 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  app.get("/api/health", (_req, res) => {
+    res.json({ ok: true, service: "expertworker", timestamp: new Date().toISOString() });
+  });
+
   app.get("/api/auth/discord/login", (req, res) => {
     const clientId = (process.env.DISCORD_CLIENT_ID || process.env.DISCORD_APPLICATION_ID || "").trim();
     if (!clientId) {
