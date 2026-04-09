@@ -51,12 +51,18 @@ export default {
       return fetch(proxyUrl, buildProxyInit(request, url));
     };
 
-    if (url.pathname.startsWith("/api/")) {
-      return proxyToBackend();
+    if (backendOrigin) {
+      try {
+        return await proxyToBackend();
+      } catch (error) {
+        if (!assets) {
+          throw error;
+        }
+      }
     }
 
     if (!assets) {
-      return proxyToBackend();
+      return new Response("Worker has no static assets or backend origin configured.", { status: 500 });
     }
 
     const assetResponse = await assets.fetch(request);
