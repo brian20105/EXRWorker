@@ -814,6 +814,8 @@ function getRequiredDashboardFeatureForCustomId(customId: string | null | undefi
     ["config_modmail_modal_", "modmail"],
     ["config_welcome_modal_", "embeds"],
     ["send_embed_modal_", "embeds"],
+    ["rrselect:", "reaction-roles"],
+    ["rrbtn:", "reaction-roles"],
   ];
 
   for (const [prefix, featureId] of prefixMatches) {
@@ -860,6 +862,11 @@ function extractGuildIdFromInteractionCustomId(customId: string | null | undefin
     } catch {
       return null;
     }
+  }
+
+  if (normalized.startsWith("rrbtn:") || normalized.startsWith("rrselect:")) {
+    const parts = normalized.split(":");
+    return parts[1] ? String(parts[1]).trim() || null : null;
   }
 
   if (normalized.startsWith("dm_ticket_modal_")) {
@@ -3089,6 +3096,7 @@ interface AutoRoleRuleConfig {
 }
 
 type ReactionRoleMode = "both" | "add_only" | "remove_only";
+type ReactionRolePickerStyle = "reactions" | "buttons" | "dropdown";
 
 interface ReactionRoleEntryConfig {
   id: string;
@@ -3103,6 +3111,7 @@ interface ReactionRoleSetupConfig {
   useExistingMessage: boolean;
   existingMessageInput: string;
   messageId: string | null;
+  pickerStyle: ReactionRolePickerStyle;
   embedTitle: string;
   embedDescription: string;
   items: ReactionRoleEntryConfig[];
@@ -3114,6 +3123,7 @@ const DEFAULT_REACTION_ROLE_SETUP: ReactionRoleSetupConfig = {
   useExistingMessage: false,
   existingMessageInput: "",
   messageId: null,
+  pickerStyle: "reactions",
   embedTitle: "Reaction Roles",
   embedDescription: "React below to manage your roles.",
   items: [],
@@ -3152,9 +3162,9 @@ function getReactionRoleSetupFromGuildConfig(config?: any): ReactionRoleSetupCon
           const emoji = typeof entry?.emoji === "string" ? entry.emoji.trim() : "";
           const roleId = typeof entry?.roleId === "string" ? entry.roleId.trim() : "";
           const rawMode = typeof entry?.mode === "string" ? entry.mode.toLowerCase() : "both";
-          if (!emoji || !roleId) return null;
+          if (!roleId) return null;
           return {
-            id: typeof entry?.id === "string" && entry.id.trim().length > 0 ? entry.id.trim() : `${roleId}-${emoji}`,
+            id: typeof entry?.id === "string" && entry.id.trim().length > 0 ? entry.id.trim() : `${roleId}-${emoji || "role"}`,
             emoji,
             roleId,
             mode: rawMode === "add_only" || rawMode === "remove_only" ? rawMode : "both",
@@ -3169,6 +3179,7 @@ function getReactionRoleSetupFromGuildConfig(config?: any): ReactionRoleSetupCon
     useExistingMessage: raw.useExistingMessage === true,
     existingMessageInput: typeof raw.existingMessageInput === "string" ? raw.existingMessageInput : "",
     messageId: typeof raw.messageId === "string" && raw.messageId.trim().length > 0 ? raw.messageId.trim() : null,
+    pickerStyle: raw.pickerStyle === "buttons" || raw.pickerStyle === "dropdown" ? raw.pickerStyle : "reactions",
     embedTitle: typeof raw.embedTitle === "string" && raw.embedTitle.trim().length > 0 ? raw.embedTitle : DEFAULT_REACTION_ROLE_SETUP.embedTitle,
     embedDescription: typeof raw.embedDescription === "string" && raw.embedDescription.trim().length > 0 ? raw.embedDescription : DEFAULT_REACTION_ROLE_SETUP.embedDescription,
     items,
@@ -3202,6 +3213,117 @@ function getReactionEmojiKey(reaction: any): string {
     return `${emoji.name}:${emoji.id}`;
   }
   return String(emoji.name || "").trim();
+}
+
+function parseReactionRoleButtonCustomId(customId: string | null | undefined): { guildId: string; roleId: string; mode: ReactionRoleMode } | null {
+  const match = String(customId || "").trim().match(/^rrbtn:(\d{17,20}):(\d{17,20}):(both|add_only|remove_only)$/);
+  if (!match) return null;
+  return {
+    guildId: match[1],
+    roleId: match[2],
+    mode: match[3] as ReactionRoleMode,
+  };
+}
+
+function buildReactionRoleSelectValue(roleId: string, mode: ReactionRoleMode): string {
+  return `rr:${roleId}:${mode}`;
+}
+
+async function setReactionRoleState(
+  member: any,
+  roleId: string,
+  shouldHaveRole: boolean,
+  reason: string,
+): Promise<"added" | "removed" | "unchanged" | "unavailable"> {
+  if (!member?.guild || !roleId) return "unavailable";
+
+  const me = member.guild.members.me ?? await member.guild.members.fetchMe().catch(() => null);
+  if (!me?.permissions?.has(PermissionFlagsBits.ManageRoles)) return "unavailable";
+
+  const role = member.guild.roles.cache.get(roleId);
+  if (!role || role.position >= me.roles.highest.position) return "unavailable";
+
+  const hasRole = member.roles?.cache?.has(role.id) === true;
+  if (shouldHaveRole) {
+    if (hasRole) return "unchanged";
+    try {
+      await member.roles.add(role.id, reason);
+      return "added";
+    } catch {
+      return "unavailable";
+    }
+  }
+
+  if (!hasRole) return "unchanged";
+  try {
+    await member.roles.remove(role.id, reason);
+    return "removed";
+  } catch {
+    return "unavailable";
+  }
+}
+
+async function applyReactionRoleButtonPress(member: any, roleId: string, mode: ReactionRoleMode): Promise<"added" | "removed" | "unchanged" | "unavailable"> {
+  const currentlyHasRole = member?.roles?.cache?.has(roleId) === true;
+  const shouldHaveRole = mode === "remove_only" ? false : mode === "add_only" ? true : !currentlyHasRole;
+  return await setReactionRoleState(member, roleId, shouldHaveRole, `Reaction role ${mode === "remove_only" ? "remove" : currentlyHasRole && mode === "both" ? "toggle remove" : "toggle add"} via button`);
+}
+
+async function applyReactionRoleSelectMenu(interaction: any): Promise<void> {
+  if (!await safeDeferReply(interaction, true)) return;
+
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.editReply({ content: "This role picker can only be used inside a server." });
+    return;
+  }
+
+  const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+  const setup = getReactionRoleSetupFromGuildConfig(config);
+  const currentMessageId = String(setup.messageId || "").trim();
+  if (setup.pickerStyle !== "dropdown" || !currentMessageId || currentMessageId !== String(interaction.message?.id || "").trim()) {
+    await interaction.editReply({ content: "This role dropdown is no longer active. Repost the reaction role message from the dashboard." });
+    return;
+  }
+
+  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member) {
+    await interaction.editReply({ content: "Could not find your member record in this server." });
+    return;
+  }
+
+  const selectedValues = new Set((interaction.values || []).map((value: string) => String(value)));
+  const addedRoles: string[] = [];
+  const removedRoles: string[] = [];
+
+  for (const entry of setup.items.filter((item) => item.roleId)) {
+    const role = guild.roles.cache.get(entry.roleId);
+    const roleLabel = role?.name || entry.roleId;
+    const optionValue = buildReactionRoleSelectValue(entry.roleId, entry.mode);
+
+    let result: "added" | "removed" | "unchanged" | "unavailable" = "unchanged";
+    if (selectedValues.has(optionValue)) {
+      result = await setReactionRoleState(
+        member,
+        entry.roleId,
+        entry.mode !== "remove_only",
+        `Reaction role ${entry.mode === "remove_only" ? "remove" : "add"} via dropdown menu`,
+      );
+    } else if (entry.mode === "both") {
+      result = await setReactionRoleState(member, entry.roleId, false, "Reaction role remove via dropdown menu");
+    }
+
+    if (result === "added") addedRoles.push(roleLabel);
+    if (result === "removed") removedRoles.push(roleLabel);
+  }
+
+  const summaryLines: string[] = [];
+  if (addedRoles.length > 0) summaryLines.push(`Added: ${addedRoles.join(", ")}`);
+  if (removedRoles.length > 0) summaryLines.push(`Removed: ${removedRoles.join(", ")}`);
+
+  await interaction.editReply({
+    content: summaryLines.length > 0 ? `Updated your roles.\n${summaryLines.join("\n")}` : "No role changes were needed.",
+  });
 }
 
 async function applyAutoRoleRule(member: any, rule: AutoRoleRuleConfig): Promise<void> {
@@ -3269,7 +3391,7 @@ async function handleReactionRoleEvent(reaction: any, user: any, action: "add" |
     if (!isDashboardFeatureEnabled(guildConfig, "reaction-roles")) return;
 
     const setup = getReactionRoleSetupFromGuildConfig(guildConfig);
-    if (!setup.items.length) return;
+    if (setup.pickerStyle !== "reactions" || !setup.items.length) return;
 
     const configuredMessageId = String(setup.messageId || "").trim();
     if (!configuredMessageId || configuredMessageId !== String(message.id || "").trim()) {
@@ -11249,6 +11371,11 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
     } else if (interaction.isStringSelectMenu()) {
+      if (interaction.customId.startsWith("rrselect:")) {
+        await applyReactionRoleSelectMenu(interaction);
+        return;
+      }
+
       if (interaction.customId === "moderation_request_select") {
         const selectedAction = interaction.values[0];
 
@@ -12945,6 +13072,44 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (interaction.isButton()) {
         const customId = interaction.customId;
+
+        const reactionRoleButton = parseReactionRoleButtonCustomId(customId);
+        if (reactionRoleButton) {
+          if (!await safeDeferReply(interaction, true)) return;
+
+          const guild = interaction.guild;
+          if (!guild) {
+            await interaction.editReply({ content: "This role button can only be used inside a server." });
+            return;
+          }
+
+          const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+          const setup = getReactionRoleSetupFromGuildConfig(config);
+          const currentMessageId = String(setup.messageId || "").trim();
+          if (setup.pickerStyle !== "buttons" || !currentMessageId || currentMessageId !== String(interaction.message?.id || "").trim()) {
+            await interaction.editReply({ content: "This role button is no longer active. Repost the reaction role message from the dashboard." });
+            return;
+          }
+
+          const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+          if (!member) {
+            await interaction.editReply({ content: "Could not find your member record in this server." });
+            return;
+          }
+
+          const result = await applyReactionRoleButtonPress(member, reactionRoleButton.roleId, reactionRoleButton.mode);
+          const roleLabel = guild.roles.cache.get(reactionRoleButton.roleId)?.name || reactionRoleButton.roleId;
+          const message = result === "added"
+            ? `Added **${roleLabel}**.`
+            : result === "removed"
+              ? `Removed **${roleLabel}**.`
+              : result === "unchanged"
+                ? `No changes were needed for **${roleLabel}**.`
+                : `I couldn't update **${roleLabel}**. Check the bot's role permissions.`;
+
+          await interaction.editReply({ content: message });
+          return;
+        }
         
         // Handle modmail copy button for mobile users
         if (customId.startsWith("modmail_copy_")) {

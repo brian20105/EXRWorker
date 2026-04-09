@@ -1332,8 +1332,8 @@ const FEATURE_LABELS: Record<string, string> = {
 const LATEST_BOT_UPDATE_HIGHLIGHTS = [
   "New dashboard feature: `Auto Roles` can add or remove roles when members join, with optional delays.",
   "New dashboard feature: `Reaction Roles` lets members react to get or remove server roles.",
-  "Reaction Roles now support `Both Ways`, `Add Only`, and `Remove Only`, plus existing message links/IDs.",
-  "The `Post Configured Embed` button can now publish or attach the latest reaction role setup directly from the dashboard.",
+  "Reaction Roles now support `Both Ways`, `Add Only`, and `Remove Only`, plus `Reactions`, `Buttons`, and `Dropdown Menu` picker styles.",
+  "The dashboard can now publish reaction-role posts as emoji reactions, clickable buttons, or a compact dropdown role picker.",
 ];
 
 function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown): string[] {
@@ -1581,6 +1581,7 @@ function writeSavedRosterEmbeds(raw: unknown, embeds: SavedRosterEmbedConfig[]):
 }
 
 type DashboardReactionRoleMode = "both" | "add_only" | "remove_only";
+type DashboardReactionRolePickerStyle = "reactions" | "buttons" | "dropdown";
 
 type DashboardReactionRoleItem = {
   id: string;
@@ -1595,6 +1596,7 @@ type DashboardReactionRoleSetup = {
   useExistingMessage: boolean;
   existingMessageInput: string;
   messageId: string | null;
+  pickerStyle: DashboardReactionRolePickerStyle;
   embedTitle: string;
   embedDescription: string;
   items: DashboardReactionRoleItem[];
@@ -1606,6 +1608,7 @@ const DEFAULT_REACTION_ROLE_SETUP: DashboardReactionRoleSetup = {
   useExistingMessage: false,
   existingMessageInput: "",
   messageId: null,
+  pickerStyle: "reactions",
   embedTitle: "Reaction Roles",
   embedDescription: "React below to manage your roles.",
   items: [],
@@ -1624,9 +1627,9 @@ function normalizeReactionRoleSetup(input: unknown): DashboardReactionRoleSetup 
         const emoji = String(item.emoji || "").trim();
         const roleId = String(item.roleId || "").trim();
         const rawMode = String(item.mode || "both").toLowerCase();
-        if (!emoji || !roleId) return null;
+        if (!roleId) return null;
         return {
-          id: String(item.id || `${roleId}-${emoji}`).trim() || `${roleId}-${emoji}`,
+          id: String(item.id || `${roleId}-${emoji || "role"}`).trim() || `${roleId}-${emoji || "role"}`,
           emoji,
           roleId,
           mode: rawMode === "add_only" || rawMode === "remove_only" ? rawMode : "both",
@@ -1640,6 +1643,7 @@ function normalizeReactionRoleSetup(input: unknown): DashboardReactionRoleSetup 
     useExistingMessage: value.useExistingMessage === true,
     existingMessageInput: typeof value.existingMessageInput === "string" ? value.existingMessageInput : "",
     messageId: String(value.messageId || "").trim() || null,
+    pickerStyle: value.pickerStyle === "buttons" || value.pickerStyle === "dropdown" ? value.pickerStyle : "reactions",
     embedTitle: String(value.embedTitle || DEFAULT_REACTION_ROLE_SETUP.embedTitle).trim() || DEFAULT_REACTION_ROLE_SETUP.embedTitle,
     embedDescription: String(value.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription).trim() || DEFAULT_REACTION_ROLE_SETUP.embedDescription,
     items,
@@ -1696,11 +1700,109 @@ function extractDiscordMessageTarget(value?: string | null): { channelId: string
 function normalizeReactionEmojiValue(value?: string | null): string {
   const trimmed = String(value || "").trim();
   if (!trimmed) return "";
+
   const customMatch = trimmed.match(/^<a?:([^:>]+):(\d{17,20})>$/);
   if (customMatch) {
     return `${customMatch[1]}:${customMatch[2]}`;
   }
+
+  const emojiById = trimmed.match(/^(\d{17,20})$/);
+  if (emojiById?.[1]) {
+    const emoji = client.emojis.cache.get(emojiById[1]);
+    if (emoji?.name) {
+      return `${emoji.name}:${emoji.id}`;
+    }
+  }
+
   return trimmed;
+}
+
+function getReactionRoleModeLabel(mode: DashboardReactionRoleMode): string {
+  return mode === "add_only" ? "Add only" : mode === "remove_only" ? "Remove only" : "Toggle";
+}
+
+function getReactionRoleButtonStyle(mode: DashboardReactionRoleMode): ButtonStyle {
+  return mode === "add_only" ? ButtonStyle.Success : mode === "remove_only" ? ButtonStyle.Danger : ButtonStyle.Primary;
+}
+
+function trySetReactionRoleComponentEmoji(component: any, emojiValue?: string | null): void {
+  const trimmed = String(emojiValue || "").trim();
+  if (!trimmed) return;
+
+  const customMatch = trimmed.match(/^<a?:([^:>]+):(\d{17,20})>$/);
+  try {
+    if (customMatch) {
+      component.setEmoji({ name: customMatch[1], id: customMatch[2] });
+      return;
+    }
+    component.setEmoji(trimmed);
+  } catch {
+    // Ignore invalid emoji on component labels.
+  }
+}
+
+async function buildReactionRoleComponents(
+  guildId: string,
+  items: DashboardReactionRoleItem[],
+  pickerStyle: DashboardReactionRolePickerStyle,
+): Promise<{ components: any[]; note: string | null }> {
+  if (pickerStyle === "reactions") {
+    return { components: [], note: null };
+  }
+
+  const guild = client.guilds.cache.get(guildId) ?? await client.guilds.fetch(guildId).catch(() => null);
+  await guild?.roles.fetch().catch(() => null);
+
+  const roleLabelFor = (roleId: string) => {
+    const roleName = guild?.roles?.cache?.get(roleId)?.name || `Role ${roleId}`;
+    return roleName.slice(0, 80);
+  };
+
+  const limitedItems = items.slice(0, 25);
+  const skippedCount = Math.max(0, items.length - limitedItems.length);
+
+  if (pickerStyle === "buttons") {
+    const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+    for (let index = 0; index < limitedItems.length; index += 5) {
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        ...limitedItems.slice(index, index + 5).map((entry) => {
+          const button = new ButtonBuilder()
+            .setCustomId(`rrbtn:${guildId}:${entry.roleId}:${entry.mode}`)
+            .setLabel(roleLabelFor(entry.roleId))
+            .setStyle(getReactionRoleButtonStyle(entry.mode));
+          trySetReactionRoleComponentEmoji(button, entry.emoji);
+          return button;
+        }),
+      );
+      rows.push(row);
+    }
+
+    return {
+      components: rows,
+      note: skippedCount > 0 ? `Buttons support up to 25 role options per message. ${skippedCount} extra entr${skippedCount === 1 ? "y was" : "ies were"} skipped.` : null,
+    };
+  }
+
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId(`rrselect:${guildId}`)
+    .setPlaceholder("Choose your roles")
+    .setMinValues(0)
+    .setMaxValues(Math.max(1, Math.min(limitedItems.length, 25)))
+    .addOptions(
+      limitedItems.map((entry) => {
+        const option = new StringSelectMenuOptionBuilder()
+          .setLabel(roleLabelFor(entry.roleId).slice(0, 100))
+          .setDescription(getReactionRoleModeLabel(entry.mode))
+          .setValue(`rr:${entry.roleId}:${entry.mode}`);
+        trySetReactionRoleComponentEmoji(option, entry.emoji);
+        return option;
+      }),
+    );
+
+  return {
+    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu)],
+    note: skippedCount > 0 ? `Dropdown menus support up to 25 role options per message. ${skippedCount} extra entr${skippedCount === 1 ? "y was" : "ies were"} skipped.` : null,
+  };
 }
 
 function convertLegacyRosterEmbedConfigsToSaved(raw: unknown): SavedRosterEmbedConfig[] {
@@ -3302,6 +3404,7 @@ export async function registerRoutes(
       let targetChannelId = String(req.body?.channelId || "").trim();
       let messagePayload: any = null;
       let sentMessage: any = null;
+      let reactionRoleResultNote: string | null = null;
 
       if (featureKey === "modmail") {
         targetChannelId = targetChannelId || String(config?.modmailEmbedChannelId || "").trim();
@@ -3419,15 +3522,20 @@ export async function registerRoutes(
         const reactionRoleSetup = hasOverride
           ? normalizeReactionRoleSetup(req.body.reactionRoleSetup)
           : getReactionRoleSetup(config?.customCategoryPings);
-        const configuredItems = reactionRoleSetup.items.filter((entry) => entry.emoji && entry.roleId);
+        const configuredItems = reactionRoleSetup.items.filter((entry) => entry.roleId && (reactionRoleSetup.pickerStyle !== "reactions" || entry.emoji));
 
         if (configuredItems.length === 0) {
-          return res.status(400).json({ error: "Add at least one reaction role entry first." });
+          return res.status(400).json({
+            error: reactionRoleSetup.pickerStyle === "reactions"
+              ? "Add at least one reaction role entry with an emoji first."
+              : "Add at least one role option first.",
+          });
         }
 
         const linkedMessage = extractDiscordMessageTarget(reactionRoleSetup.existingMessageInput);
         const linkedChannelId = linkedMessage.channelId || reactionRoleSetup.channelId || targetChannelId;
         const linkedMessageId = linkedMessage.messageId || reactionRoleSetup.messageId;
+        const { components: reactionRoleComponents, note: componentNote } = await buildReactionRoleComponents(guildId, configuredItems, reactionRoleSetup.pickerStyle);
 
         if (reactionRoleSetup.useExistingMessage) {
           if (!linkedMessageId) {
@@ -3450,20 +3558,46 @@ export async function registerRoutes(
                 }
                 return await (channel as any).messages.fetch(linkedMessageId);
               })();
+
+          const botUserId = String(client.user?.id || "").trim();
+          const messageAuthorId = String((sentMessage as any)?.author?.id || "").trim();
+          const canEditExistingMessage = !!botUserId && messageAuthorId === botUserId;
+          if (reactionRoleSetup.pickerStyle !== "reactions" && !canEditExistingMessage) {
+            return res.status(400).json({ error: "Buttons and dropdown menus can only be attached to a message sent by the bot. Use reactions or post a new embed instead." });
+          }
+
+          if (canEditExistingMessage && (reactionRoleSetup.pickerStyle !== "reactions" || (((sentMessage as any)?.components?.length || 0) > 0))) {
+            sentMessage = hasBotToken
+              ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages/${linkedMessageId}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    components: reactionRoleComponents.map((component: any) => typeof component?.toJSON === "function" ? component.toJSON() : component),
+                  }),
+                })
+              : await (sentMessage as any).edit({ components: reactionRoleComponents });
+          }
         } else {
           targetChannelId = targetChannelId || reactionRoleSetup.channelId || "";
           if (!targetChannelId) {
             return res.status(400).json({ error: "Choose a channel for the reaction role embed first." });
           }
 
+          const embedInstruction = reactionRoleSetup.pickerStyle === "buttons"
+            ? "\n\nUse the buttons below to add or remove your roles."
+            : reactionRoleSetup.pickerStyle === "dropdown"
+              ? "\n\nUse the dropdown menu below to choose your roles."
+              : "";
+
           const embed = new EmbedBuilder()
             .setTitle(reactionRoleSetup.embedTitle || DEFAULT_REACTION_ROLE_SETUP.embedTitle)
-            .setDescription(reactionRoleSetup.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription)
+            .setDescription(`${reactionRoleSetup.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription}${embedInstruction}`)
             .setColor(0x5865f2)
             .setFooter({ text: reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name });
 
-          messagePayload = { embeds: [embed], components: [] };
+          messagePayload = { embeds: [embed], components: reactionRoleComponents };
         }
+
+        reactionRoleResultNote = componentNote;
       } else {
         return res.status(400).json({ error: "That embed type is not supported yet from the dashboard." });
       }
@@ -3491,21 +3625,45 @@ export async function registerRoutes(
         const reactionRoleSetup = hasOverride
           ? normalizeReactionRoleSetup(req.body.reactionRoleSetup)
           : getReactionRoleSetup(config?.customCategoryPings);
+        const configuredItems = reactionRoleSetup.items.filter((entry) => entry.roleId && (reactionRoleSetup.pickerStyle !== "reactions" || entry.emoji));
 
-        for (const entry of reactionRoleSetup.items) {
-          const reactionValue = normalizeReactionEmojiValue(entry.emoji);
-          if (!reactionValue) continue;
-          try {
-            if (hasBotToken) {
-              await discordBotApiRequest(`/channels/${targetChannelId}/messages/${sentMessage.id}/reactions/${encodeURIComponent(reactionValue)}/@me`, {
-                method: "PUT",
-              });
-            } else if (typeof (sentMessage as any)?.react === "function") {
-              await (sentMessage as any).react(reactionValue);
+        if (reactionRoleSetup.pickerStyle === "reactions") {
+          const uniqueReactionValues = Array.from(new Set(
+            configuredItems
+              .map((entry) => normalizeReactionEmojiValue(entry.emoji))
+              .filter(Boolean),
+          ));
+          const reactionValuesToApply = uniqueReactionValues.slice(0, 20);
+          const skippedForLimit = Math.max(0, uniqueReactionValues.length - reactionValuesToApply.length);
+          let reactionFailures = 0;
+
+          for (const reactionValue of reactionValuesToApply) {
+            try {
+              if (hasBotToken) {
+                await discordBotApiRequest(`/channels/${targetChannelId}/messages/${sentMessage.id}/reactions/${encodeURIComponent(reactionValue)}/@me`, {
+                  method: "PUT",
+                });
+              } else if (typeof (sentMessage as any)?.react === "function") {
+                await (sentMessage as any).react(reactionValue);
+              }
+            } catch {
+              reactionFailures += 1;
             }
-          } catch {
-            // Ignore individual emoji failures so one bad emoji does not block the rest.
           }
+
+          const reactionNotes: string[] = [];
+          if (reactionValuesToApply.length > 0) {
+            const appliedCount = reactionValuesToApply.length - reactionFailures;
+            reactionNotes.push(`Applied ${appliedCount}/${reactionValuesToApply.length} reaction emoji${reactionValuesToApply.length === 1 ? "" : "s"}.`);
+          }
+          if (skippedForLimit > 0) {
+            reactionNotes.push(`Discord only allows 20 unique reactions on one message, so ${skippedForLimit} extra entr${skippedForLimit === 1 ? "y was" : "ies were"} skipped. Use buttons or the dropdown menu for larger role sets.`);
+          }
+          if (reactionFailures > 0) {
+            reactionNotes.push(`${reactionFailures} reaction emoji couldn't be added. Check the emoji format or the bot's access to external emoji.`);
+          }
+
+          reactionRoleResultNote = [reactionRoleResultNote, ...reactionNotes].filter(Boolean).join(" ").trim() || null;
         }
 
         await storage.upsertGuildConfig({
@@ -3526,7 +3684,7 @@ export async function registerRoutes(
         });
       }
 
-      res.json({ success: true, channelId: targetChannelId, messageId: sentMessage.id });
+      res.json({ success: true, channelId: targetChannelId, messageId: sentMessage.id, note: reactionRoleResultNote });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

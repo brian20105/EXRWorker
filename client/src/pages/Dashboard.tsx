@@ -254,6 +254,7 @@ interface AutoRoleRule {
 }
 
 type ReactionRoleMode = "both" | "add_only" | "remove_only";
+type ReactionRolePickerStyle = "reactions" | "buttons" | "dropdown";
 
 interface ReactionRoleItem {
   id: string;
@@ -268,6 +269,7 @@ interface DashboardReactionRoleSetup {
   useExistingMessage: boolean;
   existingMessageInput: string;
   messageId: string | null;
+  pickerStyle: ReactionRolePickerStyle;
   embedTitle: string;
   embedDescription: string;
   items: ReactionRoleItem[];
@@ -439,6 +441,7 @@ function createDefaultReactionRoleSetup(): DashboardReactionRoleSetup {
     useExistingMessage: false,
     existingMessageInput: "",
     messageId: null,
+    pickerStyle: "reactions",
     embedTitle: "Reaction Roles",
     embedDescription: "React below to manage your roles.",
     items: [],
@@ -1689,7 +1692,10 @@ export default function Dashboard() {
           messageId: typeof data?.messageId === "string" ? data.messageId : prev.messageId,
         }));
       }
-      toast({ title: "Embed posted", description: postedChannelId ? `Posted in <#${postedChannelId}>.` : "Applied to the configured message." });
+      const note = typeof data?.note === "string" && data.note.trim()
+        ? `${postedChannelId ? `Posted in <#${postedChannelId}>. ` : ""}${data.note.trim()}`.trim()
+        : (postedChannelId ? `Posted in <#${postedChannelId}>.` : "Applied to the configured message.");
+      toast({ title: "Embed posted", description: note });
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to post embed.", variant: "destructive" });
     }
@@ -2180,7 +2186,7 @@ export default function Dashboard() {
             const roleId = typeof item.roleId === "string" ? item.roleId.trim() : "";
             const emoji = typeof item.emoji === "string" ? item.emoji.trim() : "";
             const rawMode = typeof item.mode === "string" ? item.mode.toLowerCase() : "both";
-            if (!roleId || !emoji) return null;
+            if (!roleId) return null;
             return {
               id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : createLocalDashboardId("reaction"),
               roleId,
@@ -2197,6 +2203,7 @@ export default function Dashboard() {
       useExistingMessage: setup.useExistingMessage === true,
       existingMessageInput: typeof setup.existingMessageInput === "string" ? setup.existingMessageInput : "",
       messageId: typeof setup.messageId === "string" && setup.messageId.trim() ? setup.messageId.trim() : null,
+      pickerStyle: setup.pickerStyle === "buttons" || setup.pickerStyle === "dropdown" ? setup.pickerStyle : "reactions",
       embedTitle: typeof setup.embedTitle === "string" && setup.embedTitle.trim() ? setup.embedTitle : defaultSetup.embedTitle,
       embedDescription: typeof setup.embedDescription === "string" && setup.embedDescription.trim() ? setup.embedDescription : defaultSetup.embedDescription,
       items,
@@ -2439,8 +2446,8 @@ export default function Dashboard() {
     const emoji = newReactionRole.emoji.trim();
     const roleId = newReactionRole.roleId.trim();
 
-    if (!emoji) {
-      toast({ title: "Emoji required", description: "Enter or paste the emoji to use for this role.", variant: "destructive" });
+    if (!emoji && reactionRoleSetup.pickerStyle === "reactions") {
+      toast({ title: "Emoji required", description: "Enter or paste the emoji to use for this role when using reactions.", variant: "destructive" });
       return;
     }
 
@@ -4156,21 +4163,44 @@ export default function Dashboard() {
                     <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
                       <div>
                         <p className="text-sm font-medium">Use Existing Message</p>
-                        <p className="text-xs text-muted-foreground">Turn this on if you want to attach the reaction roles to a message ID or Discord message link.</p>
+                        <p className="text-xs text-muted-foreground">Turn this on if you want to attach the role picker to a message ID or Discord message link.</p>
                       </div>
                       <Switch checked={reactionRoleSetup.useExistingMessage} onCheckedChange={(checked) => setReactionRoleSetup((prev) => ({ ...prev, useExistingMessage: checked }))} />
                     </div>
                   </div>
-                  {reactionRoleSetup.useExistingMessage && (
-                    <div className="space-y-2 md:col-span-2">
-                      <Label>Message ID or Message Link</Label>
-                      <Input
-                        value={reactionRoleSetup.existingMessageInput}
-                        onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, existingMessageInput: event.target.value }))}
-                        placeholder="Message ID / Message Link"
-                      />
+                  <div className={`gap-4 md:col-span-2 ${reactionRoleSetup.useExistingMessage ? "grid md:grid-cols-2" : "space-y-2"}`}>
+                    {reactionRoleSetup.useExistingMessage && (
+                      <div className="space-y-2">
+                        <Label>Message ID or Message Link</Label>
+                        <Input
+                          value={reactionRoleSetup.existingMessageInput}
+                          onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, existingMessageInput: event.target.value }))}
+                          placeholder="Message ID / Message Link"
+                        />
+                        <p className="text-xs text-muted-foreground">Buttons and dropdown menus need a message the bot can edit.</p>
+                      </div>
+                    )}
+                    <div className="space-y-2">
+                      <Label>Role Picker Type</Label>
+                      <Select value={reactionRoleSetup.pickerStyle} onValueChange={(value) => setReactionRoleSetup((prev) => ({ ...prev, pickerStyle: value as ReactionRolePickerStyle }))}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="reactions">Reactions</SelectItem>
+                          <SelectItem value="buttons">Buttons</SelectItem>
+                          <SelectItem value="dropdown">Dropdown Menu</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {reactionRoleSetup.pickerStyle === "reactions"
+                          ? "Reaction mode works best for emoji roles, but Discord only allows up to 20 unique reactions on one message."
+                          : reactionRoleSetup.pickerStyle === "buttons"
+                            ? "Buttons are more reliable for quick taps and support up to 25 role options."
+                            : "Dropdown mode keeps the message compact and supports up to 25 role options."}
+                      </p>
                     </div>
-                  )}
+                  </div>
                 </div>
 
                 <div>
@@ -4185,13 +4215,21 @@ export default function Dashboard() {
               <div className="rounded-md border border-border/60 bg-muted/10 p-4 space-y-4">
                 <div>
                   <h4 className="text-sm font-medium">Reaction Settings</h4>
-                  <p className="mt-1 text-xs text-muted-foreground">Map each emoji to a role and choose whether reacting should add, remove, or fully toggle the role.</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {reactionRoleSetup.pickerStyle === "reactions"
+                      ? "Map each emoji to a role and choose whether reacting should add, remove, or fully toggle the role."
+                      : "Map each role option and choose whether using it should add, remove, or toggle the role."}
+                  </p>
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-[140px_1fr_180px_auto] md:items-end">
                   <div className="space-y-2">
-                    <Label>Reaction</Label>
-                    <Input value={newReactionRole.emoji} onChange={(event) => setNewReactionRole((prev) => ({ ...prev, emoji: event.target.value }))} placeholder="✅" />
+                    <Label>{reactionRoleSetup.pickerStyle === "reactions" ? "Reaction Emoji" : "Emoji (optional)"}</Label>
+                    <Input
+                      value={newReactionRole.emoji}
+                      onChange={(event) => setNewReactionRole((prev) => ({ ...prev, emoji: event.target.value }))}
+                      placeholder={reactionRoleSetup.pickerStyle === "reactions" ? "✅" : "Optional icon like ✅"}
+                    />
                   </div>
                   {renderSingleRoleSelect(
                     "Role",
@@ -4212,7 +4250,7 @@ export default function Dashboard() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <Button onClick={addReactionRoleItem}>Add Reaction</Button>
+                  <Button onClick={addReactionRoleItem}>{reactionRoleSetup.pickerStyle === "reactions" ? "Add Reaction" : "Add Role Option"}</Button>
                 </div>
 
                 {reactionRoleSetup.items.length === 0 ? (
@@ -4225,7 +4263,7 @@ export default function Dashboard() {
                       return (
                         <div key={entry.id} className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-2">
                           <div className="min-w-0 flex-1">
-                            <p className="text-sm font-medium">{entry.emoji} → {roleName}</p>
+                            <p className="text-sm font-medium">{entry.emoji ? `${entry.emoji} → ${roleName}` : roleName}</p>
                             <p className="text-xs text-muted-foreground">{typeLabel}</p>
                           </div>
                           <Button variant="destructive" size="sm" onClick={() => removeReactionRoleItem(entry.id)}>Remove</Button>
