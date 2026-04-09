@@ -1750,16 +1750,42 @@ function trySetReactionRoleComponentEmoji(component: any, emojiValue?: string | 
   const trimmed = String(emojiValue || "").trim();
   if (!trimmed) return;
 
-  const customMatch = trimmed.match(/^<a?:([^:>]+):(\d{17,20})>$/);
+  const normalizedCustom = trimmed
+    .replace(/^<a?:/, "")
+    .replace(/^a:/, "")
+    .replace(/^</, "")
+    .replace(/>$/, "");
+  const customMatch = normalizedCustom.match(/^([^:>]+):(\d{17,20})$/);
+
   try {
     if (customMatch) {
-      component.setEmoji({ name: customMatch[1], id: customMatch[2] });
+      component.setEmoji({
+        name: customMatch[1],
+        id: customMatch[2],
+        animated: /^<a:/.test(trimmed) || /^a:/.test(trimmed),
+      });
       return;
     }
     component.setEmoji(trimmed);
   } catch {
     // Ignore invalid emoji on component labels.
   }
+}
+
+function normalizeReactionRoleAssetUrl(value?: string | null): string | undefined {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return undefined;
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    // Ignore invalid embed asset URLs.
+  }
+
+  return undefined;
 }
 
 async function buildReactionRoleComponents(
@@ -3561,6 +3587,47 @@ export async function registerRoutes(
         const linkedChannelId = linkedMessage.channelId || reactionRoleSetup.channelId || targetChannelId;
         const linkedMessageId = linkedMessage.messageId || reactionRoleSetup.messageId;
         const { components: reactionRoleComponents, note: componentNote } = await buildReactionRoleComponents(guildId, configuredItems, reactionRoleSetup.pickerStyle);
+        const guildForEmbed = client.guilds.cache.get(guildId) ?? await client.guilds.fetch(guildId).catch(() => null);
+        const guildIconUrl = normalizeReactionRoleAssetUrl(guildForEmbed?.iconURL({ size: 256 }) || undefined);
+        const embedInstruction = reactionRoleSetup.pickerStyle === "buttons"
+          ? "\n\nUse the buttons below to add or remove your roles."
+          : reactionRoleSetup.pickerStyle === "dropdown"
+            ? "\n\nUse the dropdown menu below to choose your roles."
+            : "";
+
+        let embedColor = 0x5865f2;
+        if (reactionRoleSetup.embedColor) {
+          const parsedColor = parseInt(reactionRoleSetup.embedColor.replace("#", ""), 16);
+          if (!Number.isNaN(parsedColor) && parsedColor >= 0 && parsedColor <= 0xffffff) {
+            embedColor = parsedColor;
+          }
+        }
+
+        const reactionRoleEmbed = new EmbedBuilder()
+          .setTitle(reactionRoleSetup.embedTitle || DEFAULT_REACTION_ROLE_SETUP.embedTitle)
+          .setDescription(`${reactionRoleSetup.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription}${embedInstruction}`)
+          .setColor(embedColor)
+          .setFooter({
+            text: reactionRoleSetup.footerText || reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name,
+            iconURL: normalizeReactionRoleAssetUrl(reactionRoleSetup.footerIcon) || guildIconUrl,
+          });
+
+        if (reactionRoleSetup.authorName || reactionRoleSetup.authorIcon || guildIconUrl) {
+          reactionRoleEmbed.setAuthor({
+            name: reactionRoleSetup.authorName || reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name,
+            iconURL: normalizeReactionRoleAssetUrl(reactionRoleSetup.authorIcon) || guildIconUrl,
+          });
+        }
+
+        const thumbnailUrl = normalizeReactionRoleAssetUrl(reactionRoleSetup.thumbnailUrl) || guildIconUrl;
+        if (thumbnailUrl) {
+          reactionRoleEmbed.setThumbnail(thumbnailUrl);
+        }
+
+        const imageUrl = normalizeReactionRoleAssetUrl(reactionRoleSetup.imageUrl);
+        if (imageUrl) {
+          reactionRoleEmbed.setImage(imageUrl);
+        }
 
         if (reactionRoleSetup.useExistingMessage) {
           if (!linkedMessageId) {
@@ -3591,15 +3658,30 @@ export async function registerRoutes(
             return res.status(400).json({ error: "Buttons and dropdown menus can only be attached to a message sent by the bot. Use reactions or post a new embed instead." });
           }
 
-          if (canEditExistingMessage && (reactionRoleSetup.pickerStyle !== "reactions" || (((sentMessage as any)?.components?.length || 0) > 0))) {
+          if (canEditExistingMessage) {
             sentMessage = hasBotToken
               ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages/${linkedMessageId}`, {
                   method: "PATCH",
                   body: JSON.stringify({
+                    embeds: [reactionRoleEmbed.toJSON()],
                     components: reactionRoleComponents.map((component: any) => typeof component?.toJSON === "function" ? component.toJSON() : component),
                   }),
                 })
-              : await (sentMessage as any).edit({ components: reactionRoleComponents });
+              : await (sentMessage as any).edit({ embeds: [reactionRoleEmbed], components: reactionRoleComponents });
+
+            if (reactionRoleSetup.pickerStyle !== "reactions") {
+              try {
+                if (hasBotToken) {
+                  await discordBotApiRequest(`/channels/${targetChannelId}/messages/${linkedMessageId}/reactions`, {
+                    method: "DELETE",
+                  });
+                } else if (typeof (sentMessage as any)?.reactions?.removeAll === "function") {
+                  await (sentMessage as any).reactions.removeAll();
+                }
+              } catch {
+                // Ignore stale reaction cleanup failures when switching picker styles.
+              }
+            }
           }
         } else {
           targetChannelId = targetChannelId || reactionRoleSetup.channelId || "";
@@ -3607,45 +3689,7 @@ export async function registerRoutes(
             return res.status(400).json({ error: "Choose a channel for the reaction role embed first." });
           }
 
-          const embedInstruction = reactionRoleSetup.pickerStyle === "buttons"
-            ? "\n\nUse the buttons below to add or remove your roles."
-            : reactionRoleSetup.pickerStyle === "dropdown"
-              ? "\n\nUse the dropdown menu below to choose your roles."
-              : "";
-
-          let embedColor = 0x5865f2;
-          if (reactionRoleSetup.embedColor) {
-            const parsedColor = parseInt(reactionRoleSetup.embedColor.replace("#", ""), 16);
-            if (!Number.isNaN(parsedColor) && parsedColor >= 0 && parsedColor <= 0xffffff) {
-              embedColor = parsedColor;
-            }
-          }
-
-          const embed = new EmbedBuilder()
-            .setTitle(reactionRoleSetup.embedTitle || DEFAULT_REACTION_ROLE_SETUP.embedTitle)
-            .setDescription(`${reactionRoleSetup.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription}${embedInstruction}`)
-            .setColor(embedColor)
-            .setFooter({
-              text: reactionRoleSetup.footerText || reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name,
-              iconURL: reactionRoleSetup.footerIcon || undefined,
-            });
-
-          if (reactionRoleSetup.authorName || reactionRoleSetup.authorIcon) {
-            embed.setAuthor({
-              name: reactionRoleSetup.authorName || reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name,
-              iconURL: reactionRoleSetup.authorIcon || undefined,
-            });
-          }
-
-          if (reactionRoleSetup.thumbnailUrl) {
-            embed.setThumbnail(reactionRoleSetup.thumbnailUrl);
-          }
-
-          if (reactionRoleSetup.imageUrl) {
-            embed.setImage(reactionRoleSetup.imageUrl);
-          }
-
-          messagePayload = { embeds: [embed], components: reactionRoleComponents };
+          messagePayload = { embeds: [reactionRoleEmbed], components: reactionRoleComponents };
         }
 
         reactionRoleResultNote = componentNote;
@@ -3679,6 +3723,18 @@ export async function registerRoutes(
         const configuredItems = reactionRoleSetup.items.filter((entry) => entry.roleId && (reactionRoleSetup.pickerStyle !== "reactions" || entry.emoji));
 
         if (reactionRoleSetup.pickerStyle === "reactions") {
+          try {
+            if (hasBotToken) {
+              await discordBotApiRequest(`/channels/${targetChannelId}/messages/${sentMessage.id}/reactions`, {
+                method: "DELETE",
+              });
+            } else if (typeof (sentMessage as any)?.reactions?.removeAll === "function") {
+              await (sentMessage as any).reactions.removeAll();
+            }
+          } catch {
+            // Ignore cleanup failures before reapplying the configured reaction set.
+          }
+
           const uniqueReactionValues = Array.from(new Set(
             configuredItems
               .map((entry) => normalizeReactionEmojiValue(entry.emoji))

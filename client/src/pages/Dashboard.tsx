@@ -4241,6 +4241,7 @@ export default function Dashboard() {
                       onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, imageUrl: event.target.value }))}
                       placeholder="https://..."
                     />
+                    <p className="text-xs text-muted-foreground">Use direct image links. Leave the icon and thumbnail fields blank to automatically use the server icon.</p>
                   </div>
                   <div className="space-y-2 md:col-span-2">
                     <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
@@ -4302,6 +4303,7 @@ export default function Dashboard() {
                     {reactionRoleSetup.pickerStyle === "reactions"
                       ? "Map each emoji to a role and choose whether reacting should add, remove, or fully toggle the role."
                       : "Map each role option and choose whether using it should add, remove, or toggle the role."}
+                    {" "}Custom emoji formats like <code>✅</code>, <code>{"<:name:id>"}</code>, and <code>name:id</code> are supported.
                   </p>
                 </div>
 
@@ -4311,7 +4313,7 @@ export default function Dashboard() {
                     <Input
                       value={newReactionRole.emoji}
                       onChange={(event) => setNewReactionRole((prev) => ({ ...prev, emoji: event.target.value }))}
-                      placeholder={reactionRoleSetup.pickerStyle === "reactions" ? "✅" : "Optional icon like ✅"}
+                      placeholder={reactionRoleSetup.pickerStyle === "reactions" ? "✅ or <:exr:123456789012345678>" : "Optional icon like ✅ or <:exr:123456789012345678>"}
                     />
                   </div>
                   {renderSingleRoleSelect(
