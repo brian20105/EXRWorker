@@ -272,6 +272,13 @@ interface DashboardReactionRoleSetup {
   pickerStyle: ReactionRolePickerStyle;
   embedTitle: string;
   embedDescription: string;
+  embedColor: string;
+  authorName: string;
+  authorIcon: string;
+  footerText: string;
+  footerIcon: string;
+  thumbnailUrl: string;
+  imageUrl: string;
   items: ReactionRoleItem[];
 }
 
@@ -443,7 +450,14 @@ function createDefaultReactionRoleSetup(): DashboardReactionRoleSetup {
     messageId: null,
     pickerStyle: "reactions",
     embedTitle: "Reaction Roles",
-    embedDescription: "React below to manage your roles.",
+    embedDescription: "Use the controls below to manage your roles.",
+    embedColor: "5865f2",
+    authorName: "",
+    authorIcon: "",
+    footerText: "",
+    footerIcon: "",
+    thumbnailUrl: "",
+    imageUrl: "",
     items: [],
   };
 }
@@ -2206,6 +2220,13 @@ export default function Dashboard() {
       pickerStyle: setup.pickerStyle === "buttons" || setup.pickerStyle === "dropdown" ? setup.pickerStyle : "reactions",
       embedTitle: typeof setup.embedTitle === "string" && setup.embedTitle.trim() ? setup.embedTitle : defaultSetup.embedTitle,
       embedDescription: typeof setup.embedDescription === "string" && setup.embedDescription.trim() ? setup.embedDescription : defaultSetup.embedDescription,
+      embedColor: typeof setup.embedColor === "string" ? setup.embedColor.replace(/[^0-9a-fA-F]/g, "").slice(0, 6) : defaultSetup.embedColor,
+      authorName: typeof setup.authorName === "string" ? setup.authorName : defaultSetup.authorName,
+      authorIcon: typeof setup.authorIcon === "string" ? setup.authorIcon : defaultSetup.authorIcon,
+      footerText: typeof setup.footerText === "string" ? setup.footerText : defaultSetup.footerText,
+      footerIcon: typeof setup.footerIcon === "string" ? setup.footerIcon : defaultSetup.footerIcon,
+      thumbnailUrl: typeof setup.thumbnailUrl === "string" ? setup.thumbnailUrl : defaultSetup.thumbnailUrl,
+      imageUrl: typeof setup.imageUrl === "string" ? setup.imageUrl : defaultSetup.imageUrl,
       items,
     };
   };
@@ -2931,12 +2952,14 @@ export default function Dashboard() {
       ...reactionRoleSetup,
       channelId: (featurePostChannels["reaction-roles"] || reactionRoleSetup.channelId || "").trim(),
       messageId: reactionRoleSetup.messageId || null,
-      items: reactionRoleSetup.items.map((entry) => ({
-        id: entry.id,
-        emoji: entry.emoji.trim(),
-        roleId: entry.roleId,
-        mode: entry.mode,
-      })).filter((entry) => entry.emoji && entry.roleId),
+      items: reactionRoleSetup.items
+        .map((entry) => ({
+          id: entry.id,
+          emoji: entry.emoji.trim(),
+          roleId: entry.roleId,
+          mode: entry.mode,
+        }))
+        .filter((entry) => entry.roleId && (reactionRoleSetup.pickerStyle !== "reactions" || !!entry.emoji)),
     };
 
     const parsedCategoryPings = JSON.stringify(categoryPingsObject, null, 2);
@@ -3098,7 +3121,7 @@ export default function Dashboard() {
         <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
           <div className="space-y-2">
             <Label>Post Channel</Label>
-            <DropdownMenu onOpenChange={focusDropdownSearchInput(searchKey)}>
+            <DropdownMenu modal={false} onOpenChange={focusDropdownSearchInput(searchKey)}>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" className="w-full justify-between" data-testid={`feature-post-${featureKey}-trigger`}>
                   <span className="truncate text-left">
@@ -3114,6 +3137,7 @@ export default function Dashboard() {
                     autoFocus
                     value={channelSearches[searchKey] || ""}
                     onChange={(event) => setChannelSearches((prev) => ({ ...prev, [searchKey]: event.target.value }))}
+                    onPointerDown={stopDropdownSearchPointerPropagation}
                     onKeyDownCapture={stopDropdownSearchKeyPropagation}
                     onKeyDown={stopDropdownSearchKeyPropagation}
                     placeholder="Search channels..."
@@ -4157,7 +4181,66 @@ export default function Dashboard() {
                   </div>
                   <div className="space-y-2 md:col-span-2">
                     <Label>Embed Description</Label>
-                    <Textarea value={reactionRoleSetup.embedDescription} onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, embedDescription: event.target.value }))} placeholder="React below to manage your roles." />
+                    <Textarea value={reactionRoleSetup.embedDescription} onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, embedDescription: event.target.value }))} placeholder="Use the controls below to manage your roles." />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Embed Color (hex)</Label>
+                    <Input
+                      value={reactionRoleSetup.embedColor}
+                      onChange={(event) => setReactionRoleSetup((prev) => ({
+                        ...prev,
+                        embedColor: event.target.value.replace(/[^0-9a-fA-F]/g, "").slice(0, 6),
+                      }))}
+                      placeholder="5865f2"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Author Name</Label>
+                    <Input
+                      value={reactionRoleSetup.authorName}
+                      onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, authorName: event.target.value }))}
+                      placeholder="Role Selection"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Author Icon URL</Label>
+                    <Input
+                      value={reactionRoleSetup.authorIcon}
+                      onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, authorIcon: event.target.value }))}
+                      placeholder="https://..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Footer Text</Label>
+                    <Input
+                      value={reactionRoleSetup.footerText}
+                      onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, footerText: event.target.value }))}
+                      placeholder="Pick your roles below"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Footer Icon URL</Label>
+                    <Input
+                      value={reactionRoleSetup.footerIcon}
+                      onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, footerIcon: event.target.value }))}
+                      placeholder="https://..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Thumbnail URL</Label>
+                    <Input
+                      value={reactionRoleSetup.thumbnailUrl}
+                      onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, thumbnailUrl: event.target.value }))}
+                      placeholder="https://..."
+                    />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Image URL</Label>
+                    <Input
+                      value={reactionRoleSetup.imageUrl}
+                      onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, imageUrl: event.target.value }))}
+                      placeholder="https://..."
+                    />
                   </div>
                   <div className="space-y-2 md:col-span-2">
                     <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
@@ -4342,6 +4425,10 @@ export default function Dashboard() {
     event.nativeEvent?.stopImmediatePropagation?.();
   };
 
+  const stopDropdownSearchPointerPropagation = (event: React.PointerEvent<HTMLInputElement>) => {
+    event.stopPropagation();
+  };
+
   const renderChannelSelect = (
     label: string,
     key: keyof GuildConfig,
@@ -4355,7 +4442,7 @@ export default function Dashboard() {
     return (
       <div className="space-y-2">
         <Label>{label}</Label>
-        <DropdownMenu>
+        <DropdownMenu modal={false} onOpenChange={focusDropdownSearchInput(testId)}>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="w-full justify-between" data-testid={testId}>
               <span className="truncate text-left">
@@ -4373,6 +4460,7 @@ export default function Dashboard() {
                 onChange={(event) =>
                   setChannelSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
                 }
+                onPointerDown={stopDropdownSearchPointerPropagation}
                 onKeyDownCapture={stopDropdownSearchKeyPropagation}
                 onKeyDown={stopDropdownSearchKeyPropagation}
                 placeholder="Search channels..."
@@ -4420,7 +4508,7 @@ export default function Dashboard() {
     return (
       <div className="space-y-2">
         <Label>{label}</Label>
-        <DropdownMenu>
+        <DropdownMenu modal={false} onOpenChange={focusDropdownSearchInput(testIdPrefix)}>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
               <span className="truncate text-left">
@@ -4438,6 +4526,7 @@ export default function Dashboard() {
                 onChange={(event) =>
                   setRoleSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))
                 }
+                onPointerDown={stopDropdownSearchPointerPropagation}
                 onKeyDownCapture={stopDropdownSearchKeyPropagation}
                 onKeyDown={stopDropdownSearchKeyPropagation}
                 placeholder="Search roles..."
@@ -4486,7 +4575,7 @@ export default function Dashboard() {
       <div className="space-y-3">
         <Label>{label}</Label>
         <div className="space-y-2">
-          <DropdownMenu>
+          <DropdownMenu modal={false} onOpenChange={focusDropdownSearchInput(testIdPrefix)}>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
                 <span className="truncate text-left">
@@ -4504,6 +4593,7 @@ export default function Dashboard() {
                   onChange={(event) =>
                     setRoleSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))
                   }
+                  onPointerDown={stopDropdownSearchPointerPropagation}
                   onKeyDownCapture={stopDropdownSearchKeyPropagation}
                   onKeyDown={stopDropdownSearchKeyPropagation}
                   placeholder="Search roles..."
@@ -4563,7 +4653,7 @@ export default function Dashboard() {
     return (
       <div className="space-y-3">
         <Label>{label}</Label>
-        <DropdownMenu>
+        <DropdownMenu modal={false} onOpenChange={focusDropdownSearchInput(testIdPrefix)}>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
               <span className="truncate text-left">{selectedChannel ? `#${selectedChannel.name}` : "Select channel"}</span>
@@ -4577,6 +4667,7 @@ export default function Dashboard() {
                 autoFocus
                 value={channelSearches[testIdPrefix] || ""}
                 onChange={(event) => setChannelSearches((prev) => ({ ...prev, [testIdPrefix]: event.target.value }))}
+                onPointerDown={stopDropdownSearchPointerPropagation}
                 onKeyDownCapture={stopDropdownSearchKeyPropagation}
                 onKeyDown={stopDropdownSearchKeyPropagation}
                 placeholder="Search channels..."
@@ -4620,7 +4711,7 @@ export default function Dashboard() {
     <div className="space-y-3">
       <Label>{label}</Label>
       <div className="space-y-2">
-        <DropdownMenu>
+        <DropdownMenu modal={false} onOpenChange={focusDropdownSearchInput(testIdPrefix)}>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
               <span className="truncate text-left">
@@ -4640,6 +4731,7 @@ export default function Dashboard() {
                 onChange={(event) =>
                   setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
                 }
+                onPointerDown={stopDropdownSearchPointerPropagation}
                 onKeyDownCapture={stopDropdownSearchKeyPropagation}
                 onKeyDown={stopDropdownSearchKeyPropagation}
                 placeholder="Search roles..."
@@ -4693,7 +4785,7 @@ export default function Dashboard() {
     <div className="space-y-3">
       <Label>{label}</Label>
       <div className="space-y-2">
-        <DropdownMenu>
+        <DropdownMenu modal={false} onOpenChange={focusDropdownSearchInput(testIdPrefix)}>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="w-full justify-between" data-testid={`${testIdPrefix}-trigger`}>
               <span className="truncate text-left">
@@ -4713,6 +4805,7 @@ export default function Dashboard() {
                 onChange={(event) =>
                   setRoleSearches((prev) => ({ ...prev, [String(key)]: event.target.value }))
                 }
+                onPointerDown={stopDropdownSearchPointerPropagation}
                 onKeyDownCapture={stopDropdownSearchKeyPropagation}
                 onKeyDown={stopDropdownSearchKeyPropagation}
                 placeholder="Search roles..."

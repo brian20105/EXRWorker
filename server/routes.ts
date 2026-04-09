@@ -1599,6 +1599,13 @@ type DashboardReactionRoleSetup = {
   pickerStyle: DashboardReactionRolePickerStyle;
   embedTitle: string;
   embedDescription: string;
+  embedColor: string;
+  authorName: string;
+  authorIcon: string;
+  footerText: string;
+  footerIcon: string;
+  thumbnailUrl: string;
+  imageUrl: string;
   items: DashboardReactionRoleItem[];
 };
 
@@ -1610,7 +1617,14 @@ const DEFAULT_REACTION_ROLE_SETUP: DashboardReactionRoleSetup = {
   messageId: null,
   pickerStyle: "reactions",
   embedTitle: "Reaction Roles",
-  embedDescription: "React below to manage your roles.",
+  embedDescription: "Use the controls below to manage your roles.",
+  embedColor: "5865f2",
+  authorName: "",
+  authorIcon: "",
+  footerText: "",
+  footerIcon: "",
+  thumbnailUrl: "",
+  imageUrl: "",
   items: [],
 };
 
@@ -1646,6 +1660,13 @@ function normalizeReactionRoleSetup(input: unknown): DashboardReactionRoleSetup 
     pickerStyle: value.pickerStyle === "buttons" || value.pickerStyle === "dropdown" ? value.pickerStyle : "reactions",
     embedTitle: String(value.embedTitle || DEFAULT_REACTION_ROLE_SETUP.embedTitle).trim() || DEFAULT_REACTION_ROLE_SETUP.embedTitle,
     embedDescription: String(value.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription).trim() || DEFAULT_REACTION_ROLE_SETUP.embedDescription,
+    embedColor: String(value.embedColor || DEFAULT_REACTION_ROLE_SETUP.embedColor).trim().replace(/[^0-9a-f]/gi, "").slice(0, 6) || DEFAULT_REACTION_ROLE_SETUP.embedColor,
+    authorName: typeof value.authorName === "string" ? value.authorName.trim() : DEFAULT_REACTION_ROLE_SETUP.authorName,
+    authorIcon: typeof value.authorIcon === "string" ? value.authorIcon.trim() : DEFAULT_REACTION_ROLE_SETUP.authorIcon,
+    footerText: typeof value.footerText === "string" ? value.footerText.trim() : DEFAULT_REACTION_ROLE_SETUP.footerText,
+    footerIcon: typeof value.footerIcon === "string" ? value.footerIcon.trim() : DEFAULT_REACTION_ROLE_SETUP.footerIcon,
+    thumbnailUrl: typeof value.thumbnailUrl === "string" ? value.thumbnailUrl.trim() : DEFAULT_REACTION_ROLE_SETUP.thumbnailUrl,
+    imageUrl: typeof value.imageUrl === "string" ? value.imageUrl.trim() : DEFAULT_REACTION_ROLE_SETUP.imageUrl,
     items,
   };
 }
@@ -3588,11 +3609,37 @@ export async function registerRoutes(
               ? "\n\nUse the dropdown menu below to choose your roles."
               : "";
 
+          let embedColor = 0x5865f2;
+          if (reactionRoleSetup.embedColor) {
+            const parsedColor = parseInt(reactionRoleSetup.embedColor.replace("#", ""), 16);
+            if (!Number.isNaN(parsedColor) && parsedColor >= 0 && parsedColor <= 0xffffff) {
+              embedColor = parsedColor;
+            }
+          }
+
           const embed = new EmbedBuilder()
             .setTitle(reactionRoleSetup.embedTitle || DEFAULT_REACTION_ROLE_SETUP.embedTitle)
             .setDescription(`${reactionRoleSetup.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription}${embedInstruction}`)
-            .setColor(0x5865f2)
-            .setFooter({ text: reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name });
+            .setColor(embedColor)
+            .setFooter({
+              text: reactionRoleSetup.footerText || reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name,
+              iconURL: reactionRoleSetup.footerIcon || undefined,
+            });
+
+          if (reactionRoleSetup.authorName || reactionRoleSetup.authorIcon) {
+            embed.setAuthor({
+              name: reactionRoleSetup.authorName || reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name,
+              iconURL: reactionRoleSetup.authorIcon || undefined,
+            });
+          }
+
+          if (reactionRoleSetup.thumbnailUrl) {
+            embed.setThumbnail(reactionRoleSetup.thumbnailUrl);
+          }
+
+          if (reactionRoleSetup.imageUrl) {
+            embed.setImage(reactionRoleSetup.imageUrl);
+          }
 
           messagePayload = { embeds: [embed], components: reactionRoleComponents };
         }

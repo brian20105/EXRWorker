@@ -3114,6 +3114,13 @@ interface ReactionRoleSetupConfig {
   pickerStyle: ReactionRolePickerStyle;
   embedTitle: string;
   embedDescription: string;
+  embedColor: string;
+  authorName: string;
+  authorIcon: string;
+  footerText: string;
+  footerIcon: string;
+  thumbnailUrl: string;
+  imageUrl: string;
   items: ReactionRoleEntryConfig[];
 }
 
@@ -3125,7 +3132,14 @@ const DEFAULT_REACTION_ROLE_SETUP: ReactionRoleSetupConfig = {
   messageId: null,
   pickerStyle: "reactions",
   embedTitle: "Reaction Roles",
-  embedDescription: "React below to manage your roles.",
+  embedDescription: "Use the controls below to manage your roles.",
+  embedColor: "5865f2",
+  authorName: "",
+  authorIcon: "",
+  footerText: "",
+  footerIcon: "",
+  thumbnailUrl: "",
+  imageUrl: "",
   items: [],
 };
 
@@ -3182,6 +3196,13 @@ function getReactionRoleSetupFromGuildConfig(config?: any): ReactionRoleSetupCon
     pickerStyle: raw.pickerStyle === "buttons" || raw.pickerStyle === "dropdown" ? raw.pickerStyle : "reactions",
     embedTitle: typeof raw.embedTitle === "string" && raw.embedTitle.trim().length > 0 ? raw.embedTitle : DEFAULT_REACTION_ROLE_SETUP.embedTitle,
     embedDescription: typeof raw.embedDescription === "string" && raw.embedDescription.trim().length > 0 ? raw.embedDescription : DEFAULT_REACTION_ROLE_SETUP.embedDescription,
+    embedColor: typeof raw.embedColor === "string" ? raw.embedColor.replace(/[^0-9a-f]/gi, "").slice(0, 6) : DEFAULT_REACTION_ROLE_SETUP.embedColor,
+    authorName: typeof raw.authorName === "string" ? raw.authorName.trim() : DEFAULT_REACTION_ROLE_SETUP.authorName,
+    authorIcon: typeof raw.authorIcon === "string" ? raw.authorIcon.trim() : DEFAULT_REACTION_ROLE_SETUP.authorIcon,
+    footerText: typeof raw.footerText === "string" ? raw.footerText.trim() : DEFAULT_REACTION_ROLE_SETUP.footerText,
+    footerIcon: typeof raw.footerIcon === "string" ? raw.footerIcon.trim() : DEFAULT_REACTION_ROLE_SETUP.footerIcon,
+    thumbnailUrl: typeof raw.thumbnailUrl === "string" ? raw.thumbnailUrl.trim() : DEFAULT_REACTION_ROLE_SETUP.thumbnailUrl,
+    imageUrl: typeof raw.imageUrl === "string" ? raw.imageUrl.trim() : DEFAULT_REACTION_ROLE_SETUP.imageUrl,
     items,
   };
 }
