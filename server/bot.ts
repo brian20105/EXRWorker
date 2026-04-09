@@ -2576,6 +2576,41 @@ async function getExtraActivityCountForUserAcrossScope(
   return match?.count || 0;
 }
 
+async function getTrackedActivityMemberIds(
+  guild: any,
+  trackedRoleIds: string[] | null | undefined,
+): Promise<Set<string> | null> {
+  const normalizedRoleIds = Array.from(new Set((trackedRoleIds || []).map((entry) => String(entry || "").trim()).filter(Boolean)));
+  if (!guild || normalizedRoleIds.length === 0) return null;
+
+  try {
+    await guild.members.fetch();
+  } catch {
+    // Ignore member fetch failures and use whatever is already cached.
+  }
+
+  const memberIds = new Set<string>();
+  for (const roleId of normalizedRoleIds) {
+    const trackedRole = guild.roles?.cache?.get(roleId);
+    trackedRole?.members?.forEach((member: any) => memberIds.add(member.id));
+  }
+
+  return memberIds;
+}
+
+function filterCombinedActivityStatsToTrackedMembers(
+  combinedStats: Record<string, number>,
+  trackedMemberIds: Set<string> | null,
+): void {
+  if (!trackedMemberIds) return;
+
+  for (const userId of Object.keys(combinedStats)) {
+    if (!trackedMemberIds.has(userId)) {
+      delete combinedStats[userId];
+    }
+  }
+}
+
 async function adjustExtraActivityCounterForScope(
   baseGuildId: string,
   key: ExtraActivityCounterKey,
@@ -7908,6 +7943,8 @@ client.on("interactionCreate", async (interaction) => {
           const fromDays = interaction.options.getInteger("from") ?? undefined;
           const toDays = interaction.options.getInteger("to") ?? undefined;
           const useAllGuilds = scope === "all";
+          const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
+          const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
 
           // Build time range description with Discord timestamps (hammer times)
           const now = new Date();
@@ -7931,6 +7968,13 @@ client.on("interactionCreate", async (interaction) => {
 
           // If a specific member is requested, show their individual stats
           if (targetMember) {
+            if (trackedActivityMemberIds && !trackedActivityMemberIds.has(targetMember.id)) {
+              await interaction.editReply({
+                content: `**${targetMember.tag}** does not currently have one of the tracked activity roles, so they are hidden from \/activity until the role is added back.`,
+              });
+              return;
+            }
+
             let memberBanStats = 0;
             let memberUnbanStats = 0;
             let memberModmailStats = 0;
@@ -8231,36 +8275,13 @@ client.on("interactionCreate", async (interaction) => {
           delete combinedStats["staff_report_entry"];
           delete combinedStats["manual_entry"];
 
-          // Add members with tracked roles who have 0 activity
-          try {
-            const config = await storage.getGuildConfig(interaction.guildId!);
-            console.log(`[ACTIVITY] Tracked role IDs: ${config?.activityTrackedRoleIds?.join(", ") || "none"}`);
-            if (config?.activityTrackedRoleIds && config.activityTrackedRoleIds.length > 0 && interaction.guild) {
-              // Fetch all members to populate the cache
-              try {
-                await interaction.guild.members.fetch();
-                console.log(`[ACTIVITY] Fetched ${interaction.guild.members.cache.size} members`);
-              } catch (e) {
-                console.log("[ACTIVITY] Could not fetch all members:", e);
+          if (trackedActivityMemberIds) {
+            for (const memberId of trackedActivityMemberIds) {
+              if (!(memberId in combinedStats)) {
+                combinedStats[memberId] = 0;
               }
-
-              let addedCount = 0;
-              for (const roleId of config.activityTrackedRoleIds) {
-                const trackedRole = interaction.guild.roles.cache.get(roleId);
-                console.log(`[ACTIVITY] Role ${roleId}: ${trackedRole ? trackedRole.name + " with " + trackedRole.members.size + " members" : "not found"}`);
-                if (trackedRole) {
-                  trackedRole.members.forEach((member, memberId) => {
-                    if (!(memberId in combinedStats)) {
-                      combinedStats[memberId] = 0;
-                      addedCount++;
-                    }
-                  });
-                }
-              }
-              console.log(`[ACTIVITY] Added ${addedCount} members with 0 activity from tracked roles`);
             }
-          } catch (e) {
-            console.log("Could not add tracked role members:", e);
+            filterCombinedActivityStatsToTrackedMembers(combinedStats, trackedActivityMemberIds);
           }
 
           const leaderboard = Object.entries(combinedStats)
@@ -8855,7 +8876,7 @@ client.on("interactionCreate", async (interaction) => {
 
           if (roles.length > 0) {
             await interaction.editReply({
-              content: `Activity tracking roles set to: ${roleNames.map(r => `**${r}**`).join(", ")}. All members with these roles will appear on the activity leaderboard.`,
+              content: `Activity tracking roles set to: ${roleNames.map(r => `**${r}**`).join(", ")}. Only members with these roles will show on \/activity. If they lose the role, they are hidden until they get it back, and then their saved stats will show again.`,
             });
           } else {
             await interaction.editReply({
@@ -13971,6 +13992,8 @@ client.on("interactionCreate", async (interaction) => {
             const fromDays = parts[5] === "none" ? undefined : parseInt(parts[5]);
             const toDays = parts[6] === "none" ? undefined : parseInt(parts[6]);
             const useAllGuilds = scope === "all";
+            const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
+            const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
 
             // Reuse the activity command logic
             const now = new Date();
@@ -14096,19 +14119,12 @@ client.on("interactionCreate", async (interaction) => {
             delete combinedStats["staff_report_entry"];
             delete combinedStats["manual_entry"];
 
-            try {
-              const config = await storage.getGuildConfig(interaction.guildId!);
-              if (config?.activityTrackedRoleIds && config.activityTrackedRoleIds.length > 0 && interaction.guild) {
-                for (const roleId of config.activityTrackedRoleIds) {
-                  const trackedRole = interaction.guild.roles.cache.get(roleId);
-                  if (trackedRole) {
-                    trackedRole.members.forEach((member, memberId) => {
-                      if (!(memberId in combinedStats)) combinedStats[memberId] = 0;
-                    });
-                  }
-                }
+            if (trackedActivityMemberIds) {
+              for (const memberId of trackedActivityMemberIds) {
+                if (!(memberId in combinedStats)) combinedStats[memberId] = 0;
               }
-            } catch (e) {}
+              filterCombinedActivityStatsToTrackedMembers(combinedStats, trackedActivityMemberIds);
+            }
 
             const leaderboard = Object.entries(combinedStats)
               .map(([userId, count]) => ({ userId, count }))
