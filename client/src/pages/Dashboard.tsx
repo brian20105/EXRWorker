@@ -200,7 +200,7 @@ interface SnippetItem {
   updatedAt: string;
 }
 
-type FeaturePostChannelKey = "modmail" | "appeals" | "staff-intro" | "inactivity" | "payouts";
+type FeaturePostChannelKey = "modmail" | "appeals" | "staff-intro" | "inactivity" | "payouts" | "reaction-roles";
 type DashboardFeaturePostChannels = Partial<Record<FeaturePostChannelKey, string>>;
 
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
@@ -242,6 +242,35 @@ interface DashboardBotPresenceSettings {
   status: "online" | "idle" | "dnd" | "invisible";
   activityType: "playing" | "listening" | "watching" | "competing";
   activityText: string;
+}
+
+type AutoRoleMode = "add" | "remove";
+
+interface AutoRoleRule {
+  id: string;
+  roleId: string;
+  type: AutoRoleMode;
+  delayMinutes: number;
+}
+
+type ReactionRoleMode = "both" | "add_only" | "remove_only";
+
+interface ReactionRoleItem {
+  id: string;
+  emoji: string;
+  roleId: string;
+  mode: ReactionRoleMode;
+}
+
+interface DashboardReactionRoleSetup {
+  name: string;
+  channelId: string;
+  useExistingMessage: boolean;
+  existingMessageInput: string;
+  messageId: string | null;
+  embedTitle: string;
+  embedDescription: string;
+  items: ReactionRoleItem[];
 }
 
 type SecurityPunishmentType = "ban" | "kick" | "clear_roles";
@@ -377,6 +406,8 @@ const FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const QUICK_SETTINGS_KEY = "__dashboardQuickSettings";
 const FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
 const SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
+const AUTO_ROLES_KEY = "__autoRoles";
+const REACTION_ROLE_SETUP_KEY = "__reactionRoleSetup";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
 const DEFAULT_TOP_FADE_COLOR = "#5865f2";
@@ -384,6 +415,26 @@ const DEFAULT_ENABLED_STATUS_COLOR = "#00ff7b";
 const DEFAULT_DISABLED_STATUS_COLOR = "#ff0000";
 const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
 const BACKGROUND_COLOR_PRESETS = ["#ff0000", "#00ff7b", "#0000ff"];
+
+function createLocalDashboardId(prefix: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createDefaultReactionRoleSetup(): DashboardReactionRoleSetup {
+  return {
+    name: "Reaction Roles",
+    channelId: "",
+    useExistingMessage: false,
+    existingMessageInput: "",
+    messageId: null,
+    embedTitle: "Reaction Roles",
+    embedDescription: "React below to manage your roles.",
+    items: [],
+  };
+}
 
 const ROSTER_EMBED_BUTTON_COLORS: Array<{ value: RosterEmbedButtonColor; label: string }> = [
   { value: "blue", label: "Blue" },
@@ -575,6 +626,18 @@ export default function Dashboard() {
   const [viewerHasSecurityAccess, setViewerHasSecurityAccess] = useState(false);
   const [viewerHasBlacklistAccess, setViewerHasBlacklistAccess] = useState(false);
   const [featurePostChannels, setFeaturePostChannels] = useState<DashboardFeaturePostChannels>({});
+  const [autoRoles, setAutoRoles] = useState<AutoRoleRule[]>([]);
+  const [newAutoRole, setNewAutoRole] = useState<{ roleId: string; type: AutoRoleMode; delayMinutes: string }>({
+    roleId: "",
+    type: "add",
+    delayMinutes: "0",
+  });
+  const [reactionRoleSetup, setReactionRoleSetup] = useState<DashboardReactionRoleSetup>(createDefaultReactionRoleSetup());
+  const [newReactionRole, setNewReactionRole] = useState<{ emoji: string; roleId: string; mode: ReactionRoleMode }>({
+    emoji: "",
+    roleId: "",
+    mode: "both",
+  });
   const [securitySettings, setSecuritySettings] = useState<DashboardSecuritySettings>(createDefaultSecuritySettings());
   const [securityWhitelistUserInput, setSecurityWhitelistUserInput] = useState("");
   const [securityRuleWhitelistUserInputs, setSecurityRuleWhitelistUserInputs] = useState<Partial<Record<SecurityRuleKey, string>>>({});
@@ -745,7 +808,8 @@ export default function Dashboard() {
 
     setCustomCategoryPingsText(nextConfig.customCategoryPings || "{}");
     setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
-    setFeaturePostChannels(getFeaturePostChannelsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+    const nextFeaturePostChannels = getFeaturePostChannelsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+    setFeaturePostChannels(nextFeaturePostChannels);
     setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     const nextPermissionSettings = getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     const sanitizedPermissionSettings: DashboardPermissionSettings = { ...nextPermissionSettings };
@@ -755,6 +819,13 @@ export default function Dashboard() {
     setPermissionSettings(sanitizedPermissionSettings);
     setWelcomeEmbedSettings(getWelcomeEmbedSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     setBotPresenceSettings(getBotPresenceSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+    setAutoRoles(getAutoRolesFromCustomCategoryPings(nextConfig.customCategoryPings || "{}").filter((entry) => validRoleIds.has(entry.roleId)));
+    const nextReactionRoleSetup = getReactionRoleSetupFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+    setReactionRoleSetup({
+      ...nextReactionRoleSetup,
+      channelId: nextFeaturePostChannels["reaction-roles"] || nextReactionRoleSetup.channelId || "",
+      items: nextReactionRoleSetup.items.filter((entry) => validRoleIds.has(entry.roleId)),
+    });
     const nextSecuritySettings = getSecuritySettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     setSecuritySettings({
       ...nextSecuritySettings,
@@ -1573,10 +1644,15 @@ export default function Dashboard() {
       if (featureKey === "staff-intro") return String(config.staffIntroChannelId || "");
       if (featureKey === "inactivity") return String(config.inactivityChannelId || "");
       if (featureKey === "payouts") return String(config.requestChannelId || "");
+      if (featureKey === "reaction-roles") return String(reactionRoleSetup.channelId || "");
       return "";
     })().trim();
 
-    if (!selectedChannelId) {
+    const usingExistingReactionMessage = featureKey === "reaction-roles"
+      && reactionRoleSetup.useExistingMessage
+      && reactionRoleSetup.existingMessageInput.trim().length > 0;
+
+    if (!selectedChannelId && !usingExistingReactionMessage) {
       toast({ title: "Channel required", description: "Select a channel for this embed first.", variant: "destructive" });
       return;
     }
@@ -1586,10 +1662,25 @@ export default function Dashboard() {
       const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/feature-embeds/${featureKey}/post`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ channelId: selectedChannelId }),
+        body: JSON.stringify({
+          channelId: selectedChannelId,
+          reactionRoleSetup: featureKey === "reaction-roles"
+            ? {
+                ...reactionRoleSetup,
+                channelId: selectedChannelId,
+              }
+            : undefined,
+        }),
       }, 15000);
       const postedChannelId = String(data?.channelId || selectedChannelId).trim();
-      toast({ title: "Embed posted", description: `Posted in <#${postedChannelId}>.` });
+      if (featureKey === "reaction-roles") {
+        setReactionRoleSetup((prev) => ({
+          ...prev,
+          channelId: postedChannelId || prev.channelId,
+          messageId: typeof data?.messageId === "string" ? data.messageId : prev.messageId,
+        }));
+      }
+      toast({ title: "Embed posted", description: postedChannelId ? `Posted in <#${postedChannelId}>.` : "Applied to the configured message." });
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to post embed.", variant: "destructive" });
     }
@@ -1970,6 +2061,8 @@ export default function Dashboard() {
     roster: true,
     snippets: true,
     sticky: true,
+    "auto-roles": true,
+    "reaction-roles": true,
   });
 
   const parseJsonObjectSafely = (raw: string | null | undefined) => {
@@ -2027,13 +2120,78 @@ export default function Dashboard() {
     }
 
     const next: DashboardFeaturePostChannels = {};
-    for (const key of ["modmail", "appeals", "staff-intro", "inactivity", "payouts"] as FeaturePostChannelKey[]) {
+    for (const key of ["modmail", "appeals", "staff-intro", "inactivity", "payouts", "reaction-roles"] as FeaturePostChannelKey[]) {
       const channelId = (value as Record<string, unknown>)[key];
       if (typeof channelId === "string" && channelId.trim()) {
         next[key] = channelId.trim();
       }
     }
     return next;
+  };
+
+  const getAutoRolesFromCustomCategoryPings = (raw: string | null | undefined): AutoRoleRule[] => {
+    const parsed = parseJsonObjectSafely(raw);
+    const value = parsed[AUTO_ROLES_KEY];
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+        const item = entry as Record<string, unknown>;
+        const roleId = typeof item.roleId === "string" ? item.roleId.trim() : "";
+        const rawType = typeof item.type === "string" ? item.type.toLowerCase() : "add";
+        const delayMinutes = Number(item.delayMinutes || 0);
+        if (!roleId) return null;
+        return {
+          id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : createLocalDashboardId("autorole"),
+          roleId,
+          type: rawType === "remove" ? "remove" : "add",
+          delayMinutes: Number.isFinite(delayMinutes) ? Math.max(0, Math.min(10080, Math.round(delayMinutes))) : 0,
+        } as AutoRoleRule;
+      })
+      .filter((entry): entry is AutoRoleRule => !!entry);
+  };
+
+  const getReactionRoleSetupFromCustomCategoryPings = (raw: string | null | undefined): DashboardReactionRoleSetup => {
+    const parsed = parseJsonObjectSafely(raw);
+    const value = parsed[REACTION_ROLE_SETUP_KEY];
+    const defaultSetup = createDefaultReactionRoleSetup();
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return defaultSetup;
+    }
+
+    const setup = value as Record<string, unknown>;
+    const items = Array.isArray(setup.items)
+      ? setup.items
+          .map((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+            const item = entry as Record<string, unknown>;
+            const roleId = typeof item.roleId === "string" ? item.roleId.trim() : "";
+            const emoji = typeof item.emoji === "string" ? item.emoji.trim() : "";
+            const rawMode = typeof item.mode === "string" ? item.mode.toLowerCase() : "both";
+            if (!roleId || !emoji) return null;
+            return {
+              id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : createLocalDashboardId("reaction"),
+              roleId,
+              emoji,
+              mode: rawMode === "add_only" || rawMode === "remove_only" ? rawMode : "both",
+            } as ReactionRoleItem;
+          })
+          .filter((entry): entry is ReactionRoleItem => !!entry)
+      : [];
+
+    return {
+      name: typeof setup.name === "string" && setup.name.trim() ? setup.name.trim() : defaultSetup.name,
+      channelId: typeof setup.channelId === "string" ? setup.channelId.trim() : "",
+      useExistingMessage: setup.useExistingMessage === true,
+      existingMessageInput: typeof setup.existingMessageInput === "string" ? setup.existingMessageInput : "",
+      messageId: typeof setup.messageId === "string" && setup.messageId.trim() ? setup.messageId.trim() : null,
+      embedTitle: typeof setup.embedTitle === "string" && setup.embedTitle.trim() ? setup.embedTitle : defaultSetup.embedTitle,
+      embedDescription: typeof setup.embedDescription === "string" && setup.embedDescription.trim() ? setup.embedDescription : defaultSetup.embedDescription,
+      items,
+    };
   };
 
   const getSecuritySettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardSecuritySettings => {
@@ -2238,6 +2396,70 @@ export default function Dashboard() {
       });
       return next as DashboardFeaturePostChannels;
     });
+    if (featureKey === "reaction-roles") {
+      setReactionRoleSetup((prev) => ({ ...prev, channelId: normalized }));
+    }
+  };
+
+  const addAutoRoleRule = () => {
+    const roleId = newAutoRole.roleId.trim();
+    const delayMinutes = Number(newAutoRole.delayMinutes || 0);
+
+    if (!roleId) {
+      toast({ title: "Role required", description: "Choose a role for the auto role rule.", variant: "destructive" });
+      return;
+    }
+
+    setAutoRoles((prev) => ([
+      ...prev,
+      {
+        id: createLocalDashboardId("autorole"),
+        roleId,
+        type: newAutoRole.type,
+        delayMinutes: Number.isFinite(delayMinutes) ? Math.max(0, Math.min(10080, Math.round(delayMinutes))) : 0,
+      },
+    ]));
+    setNewAutoRole({ roleId: "", type: "add", delayMinutes: "0" });
+  };
+
+  const removeAutoRoleRule = (ruleId: string) => {
+    setAutoRoles((prev) => prev.filter((entry) => entry.id !== ruleId));
+  };
+
+  const addReactionRoleItem = () => {
+    const emoji = newReactionRole.emoji.trim();
+    const roleId = newReactionRole.roleId.trim();
+
+    if (!emoji) {
+      toast({ title: "Emoji required", description: "Enter or paste the emoji to use for this role.", variant: "destructive" });
+      return;
+    }
+
+    if (!roleId) {
+      toast({ title: "Role required", description: "Choose a role for this reaction role entry.", variant: "destructive" });
+      return;
+    }
+
+    setReactionRoleSetup((prev) => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          id: createLocalDashboardId("reaction"),
+          emoji,
+          roleId,
+          mode: newReactionRole.mode,
+        },
+      ],
+    }));
+    setNewReactionRole({ emoji: "", roleId: "", mode: "both" });
+  };
+
+  const removeReactionRoleItem = (itemId: string) => {
+    setReactionRoleSetup((prev) => ({
+      ...prev,
+      items: prev.items.filter((entry) => entry.id !== itemId),
+    }));
   };
 
   const togglePermissionRole = (key: keyof DashboardPermissionSettings, roleId: string) => {
@@ -2683,6 +2905,23 @@ export default function Dashboard() {
       activityText: botPresenceSettings.activityText,
       updatedAt: Date.now(),
     };
+    categoryPingsObject[AUTO_ROLES_KEY] = autoRoles.map((entry) => ({
+      id: entry.id,
+      roleId: entry.roleId,
+      type: entry.type,
+      delayMinutes: Math.max(0, Math.min(10080, Math.round(Number(entry.delayMinutes || 0)))),
+    }));
+    categoryPingsObject[REACTION_ROLE_SETUP_KEY] = {
+      ...reactionRoleSetup,
+      channelId: (featurePostChannels["reaction-roles"] || reactionRoleSetup.channelId || "").trim(),
+      messageId: reactionRoleSetup.messageId || null,
+      items: reactionRoleSetup.items.map((entry) => ({
+        id: entry.id,
+        emoji: entry.emoji.trim(),
+        roleId: entry.roleId,
+        mode: entry.mode,
+      })).filter((entry) => entry.emoji && entry.roleId),
+    };
 
     const parsedCategoryPings = JSON.stringify(categoryPingsObject, null, 2);
 
@@ -2980,6 +3219,22 @@ export default function Dashboard() {
       area: "messaging",
       includes: ["Sticky setup", "Auto re-post", "Channel stickies"],
       tab: "roles",
+    },
+    {
+      id: "auto-roles",
+      name: "Auto Roles",
+      description: "Give or remove roles automatically when members join.",
+      area: "operations",
+      includes: ["Join automation", "Add/remove roles", "Delayed role assignment"],
+      tab: "roles",
+    },
+    {
+      id: "reaction-roles",
+      name: "Reaction Roles",
+      description: "Let members react on a message to manage their server roles.",
+      area: "messaging",
+      includes: ["Emoji role mapping", "Both ways / add only / remove only", "Post configured embed"],
+      tab: "embeds",
     },
   ];
 
@@ -3748,6 +4003,203 @@ export default function Dashboard() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {moduleId === "auto-roles" && (
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Join Role Automation</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Automatically add or remove roles when someone joins the server. Delays are set in minutes.</p>
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <div className="rounded-md border border-border/60 bg-muted/10 p-4 space-y-4">
+                  <div>
+                    <h4 className="text-sm font-medium">Add Rule</h4>
+                    <p className="mt-1 text-xs text-muted-foreground">Choose a role, delay, and whether it should be added or removed on join.</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Role</Label>
+                    <Select value={newAutoRole.roleId || NONE_VALUE} onValueChange={(value) => setNewAutoRole((prev) => ({ ...prev, roleId: value === NONE_VALUE ? "" : value }))}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select role" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE_VALUE}>Select role</SelectItem>
+                        {roles.map((role) => (
+                          <SelectItem key={`autorole-${role.id}`} value={role.id}>{role.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Delay (minutes)</Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={newAutoRole.delayMinutes}
+                      onChange={(event) => setNewAutoRole((prev) => ({ ...prev, delayMinutes: event.target.value.replace(/[^0-9]/g, "") || "0" }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Type</Label>
+                    <Select value={newAutoRole.type} onValueChange={(value) => setNewAutoRole((prev) => ({ ...prev, type: value as AutoRoleMode }))}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="add">Add Role</SelectItem>
+                        <SelectItem value="remove">Remove Role</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button onClick={addAutoRoleRule} className="w-fit">Add</Button>
+                </div>
+
+                <div className="rounded-md border border-border/60 bg-muted/10 p-4 space-y-3">
+                  <div>
+                    <h4 className="text-sm font-medium">Auto Role List</h4>
+                    <p className="mt-1 text-xs text-muted-foreground">These rules run whenever a member joins this server.</p>
+                  </div>
+                  {autoRoles.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No auto role rules yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {autoRoles.map((entry) => {
+                        const roleName = roles.find((role) => role.id === entry.roleId)?.name || entry.roleId;
+                        return (
+                          <div key={entry.id} className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-2">
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-medium truncate">{roleName}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {entry.type === "add" ? "Add" : "Remove"} • {entry.delayMinutes} minute{entry.delayMinutes === 1 ? "" : "s"}
+                              </p>
+                            </div>
+                            <Button variant="destructive" size="sm" onClick={() => removeAutoRoleRule(entry.id)}>Remove</Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {moduleId === "reaction-roles" && (
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Reaction Role Message</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Create a reaction role embed or attach these roles to an existing message, then use the post button below to publish/apply it.</p>
+              </div>
+
+              <div className="rounded-md border border-border/60 bg-muted/10 p-4 space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Panel Name</Label>
+                    <Input value={reactionRoleSetup.name} onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, name: event.target.value }))} placeholder="Reaction Roles" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Embed Title</Label>
+                    <Input value={reactionRoleSetup.embedTitle} onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, embedTitle: event.target.value }))} placeholder="Reaction Roles" />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Embed Description</Label>
+                    <Textarea value={reactionRoleSetup.embedDescription} onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, embedDescription: event.target.value }))} placeholder="React below to manage your roles." />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
+                      <div>
+                        <p className="text-sm font-medium">Use Existing Message</p>
+                        <p className="text-xs text-muted-foreground">Turn this on if you want to attach the reaction roles to a message ID or Discord message link.</p>
+                      </div>
+                      <Switch checked={reactionRoleSetup.useExistingMessage} onCheckedChange={(checked) => setReactionRoleSetup((prev) => ({ ...prev, useExistingMessage: checked }))} />
+                    </div>
+                  </div>
+                  {reactionRoleSetup.useExistingMessage && (
+                    <div className="space-y-2 md:col-span-2">
+                      <Label>Message ID or Message Link</Label>
+                      <Input
+                        value={reactionRoleSetup.existingMessageInput}
+                        onChange={(event) => setReactionRoleSetup((prev) => ({ ...prev, existingMessageInput: event.target.value }))}
+                        placeholder="Message ID / Message Link"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  {renderFeaturePostSection("reaction-roles", "Post Channel", "Choose the channel for a new reaction role embed. If you are using an existing message, this channel is only needed when you enter a raw message ID instead of a full Discord link.", reactionRoleSetup.useExistingMessage ? "Apply To Message" : "Post Configured Embed")}
+                </div>
+
+                {reactionRoleSetup.messageId && (
+                  <p className="text-xs text-muted-foreground">Current linked message ID: <code>{reactionRoleSetup.messageId}</code></p>
+                )}
+              </div>
+
+              <div className="rounded-md border border-border/60 bg-muted/10 p-4 space-y-4">
+                <div>
+                  <h4 className="text-sm font-medium">Reaction Settings</h4>
+                  <p className="mt-1 text-xs text-muted-foreground">Map each emoji to a role and choose whether reacting should add, remove, or fully toggle the role.</p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-[140px_1fr_180px_auto] md:items-end">
+                  <div className="space-y-2">
+                    <Label>Reaction</Label>
+                    <Input value={newReactionRole.emoji} onChange={(event) => setNewReactionRole((prev) => ({ ...prev, emoji: event.target.value }))} placeholder="✅" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Role</Label>
+                    <Select value={newReactionRole.roleId || NONE_VALUE} onValueChange={(value) => setNewReactionRole((prev) => ({ ...prev, roleId: value === NONE_VALUE ? "" : value }))}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select role" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE_VALUE}>Select role</SelectItem>
+                        {roles.map((role) => (
+                          <SelectItem key={`reaction-role-${role.id}`} value={role.id}>{role.name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Type</Label>
+                    <Select value={newReactionRole.mode} onValueChange={(value) => setNewReactionRole((prev) => ({ ...prev, mode: value as ReactionRoleMode }))}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="both">Both Ways</SelectItem>
+                        <SelectItem value="add_only">Add Only</SelectItem>
+                        <SelectItem value="remove_only">Remove Only</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button onClick={addReactionRoleItem}>Add Reaction</Button>
+                </div>
+
+                {reactionRoleSetup.items.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No reaction role mappings yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {reactionRoleSetup.items.map((entry) => {
+                      const roleName = roles.find((role) => role.id === entry.roleId)?.name || entry.roleId;
+                      const typeLabel = entry.mode === "both" ? "Both Ways" : entry.mode === "add_only" ? "Add Only" : "Remove Only";
+                      return (
+                        <div key={entry.id} className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-background/40 px-3 py-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium">{entry.emoji} → {roleName}</p>
+                            <p className="text-xs text-muted-foreground">{typeLabel}</p>
+                          </div>
+                          <Button variant="destructive" size="sm" onClick={() => removeReactionRoleItem(entry.id)}>Remove</Button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

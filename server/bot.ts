@@ -230,6 +230,8 @@ function getDashboardDefaultFeatureEnabledMap(_config?: any): Record<string, boo
     roster: true,
     snippets: true,
     sticky: true,
+    "auto-roles": true,
+    "reaction-roles": true,
   };
 }
 
@@ -932,11 +934,12 @@ export const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.DirectMessageTyping,
     GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Channel, Partials.Message],
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
 });
 
 interface QuizState {
@@ -3074,6 +3077,240 @@ function buildWelcomeJoinEmbed(member: any, setup: WelcomeSetupConfig): EmbedBui
   }
 
   return embed;
+}
+
+type AutoRoleMode = "add" | "remove";
+
+interface AutoRoleRuleConfig {
+  id: string;
+  roleId: string;
+  type: AutoRoleMode;
+  delayMinutes: number;
+}
+
+type ReactionRoleMode = "both" | "add_only" | "remove_only";
+
+interface ReactionRoleEntryConfig {
+  id: string;
+  emoji: string;
+  roleId: string;
+  mode: ReactionRoleMode;
+}
+
+interface ReactionRoleSetupConfig {
+  name: string;
+  channelId: string | null;
+  useExistingMessage: boolean;
+  existingMessageInput: string;
+  messageId: string | null;
+  embedTitle: string;
+  embedDescription: string;
+  items: ReactionRoleEntryConfig[];
+}
+
+const DEFAULT_REACTION_ROLE_SETUP: ReactionRoleSetupConfig = {
+  name: "Reaction Roles",
+  channelId: null,
+  useExistingMessage: false,
+  existingMessageInput: "",
+  messageId: null,
+  embedTitle: "Reaction Roles",
+  embedDescription: "React below to manage your roles.",
+  items: [],
+};
+
+function getAutoRolesFromGuildConfig(config?: any): AutoRoleRuleConfig[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = Array.isArray(root?.__autoRoles) ? root.__autoRoles : [];
+
+  return raw
+    .map((entry: any) => {
+      const roleId = typeof entry?.roleId === "string" ? entry.roleId.trim() : "";
+      const rawType = typeof entry?.type === "string" ? entry.type.toLowerCase() : "add";
+      const delayMinutes = Number(entry?.delayMinutes || 0);
+      if (!roleId) return null;
+      return {
+        id: typeof entry?.id === "string" && entry.id.trim().length > 0 ? entry.id.trim() : `${roleId}-${rawType}`,
+        roleId,
+        type: rawType === "remove" ? "remove" : "add",
+        delayMinutes: Number.isFinite(delayMinutes) ? Math.max(0, Math.min(10080, Math.round(delayMinutes))) : 0,
+      } as AutoRoleRuleConfig;
+    })
+    .filter((entry): entry is AutoRoleRuleConfig => !!entry);
+}
+
+function getReactionRoleSetupFromGuildConfig(config?: any): ReactionRoleSetupConfig {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__reactionRoleSetup;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...DEFAULT_REACTION_ROLE_SETUP };
+  }
+
+  const items = Array.isArray(raw.items)
+    ? raw.items
+        .map((entry: any) => {
+          const emoji = typeof entry?.emoji === "string" ? entry.emoji.trim() : "";
+          const roleId = typeof entry?.roleId === "string" ? entry.roleId.trim() : "";
+          const rawMode = typeof entry?.mode === "string" ? entry.mode.toLowerCase() : "both";
+          if (!emoji || !roleId) return null;
+          return {
+            id: typeof entry?.id === "string" && entry.id.trim().length > 0 ? entry.id.trim() : `${roleId}-${emoji}`,
+            emoji,
+            roleId,
+            mode: rawMode === "add_only" || rawMode === "remove_only" ? rawMode : "both",
+          } as ReactionRoleEntryConfig;
+        })
+        .filter((entry: ReactionRoleEntryConfig | null): entry is ReactionRoleEntryConfig => !!entry)
+    : [];
+
+  return {
+    name: typeof raw.name === "string" && raw.name.trim().length > 0 ? raw.name.trim() : DEFAULT_REACTION_ROLE_SETUP.name,
+    channelId: typeof raw.channelId === "string" && raw.channelId.trim().length > 0 ? raw.channelId.trim() : null,
+    useExistingMessage: raw.useExistingMessage === true,
+    existingMessageInput: typeof raw.existingMessageInput === "string" ? raw.existingMessageInput : "",
+    messageId: typeof raw.messageId === "string" && raw.messageId.trim().length > 0 ? raw.messageId.trim() : null,
+    embedTitle: typeof raw.embedTitle === "string" && raw.embedTitle.trim().length > 0 ? raw.embedTitle : DEFAULT_REACTION_ROLE_SETUP.embedTitle,
+    embedDescription: typeof raw.embedDescription === "string" && raw.embedDescription.trim().length > 0 ? raw.embedDescription : DEFAULT_REACTION_ROLE_SETUP.embedDescription,
+    items,
+  };
+}
+
+function normalizeReactionEmojiInput(value?: string | null): string {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+
+  const customMatch = trimmed.match(/^<a?:([^:>]+):(\d{17,20})>$/);
+  if (customMatch) {
+    return `${customMatch[1]}:${customMatch[2]}`;
+  }
+
+  const emojiById = trimmed.match(/^(\d{17,20})$/);
+  if (emojiById?.[1]) {
+    const emoji = client.emojis.cache.get(emojiById[1]);
+    if (emoji?.name) {
+      return `${emoji.name}:${emoji.id}`;
+    }
+  }
+
+  return trimmed;
+}
+
+function getReactionEmojiKey(reaction: any): string {
+  const emoji = reaction?.emoji;
+  if (!emoji) return "";
+  if (emoji.id) {
+    return `${emoji.name}:${emoji.id}`;
+  }
+  return String(emoji.name || "").trim();
+}
+
+async function applyAutoRoleRule(member: any, rule: AutoRoleRuleConfig): Promise<void> {
+  if (!member?.guild || !rule?.roleId) return;
+
+  const me = member.guild.members.me ?? await member.guild.members.fetchMe().catch(() => null);
+  if (!me?.permissions?.has(PermissionFlagsBits.ManageRoles)) return;
+
+  const role = member.guild.roles.cache.get(rule.roleId);
+  if (!role) return;
+  if (role.position >= me.roles.highest.position) return;
+
+  if (rule.type === "add") {
+    if (!member.roles?.cache?.has(role.id)) {
+      await member.roles.add(role.id, `Auto role on join${rule.delayMinutes > 0 ? ` after ${rule.delayMinutes} minute(s)` : ""}`).catch(() => undefined);
+    }
+    return;
+  }
+
+  if (member.roles?.cache?.has(role.id)) {
+    await member.roles.remove(role.id, `Auto role removal on join${rule.delayMinutes > 0 ? ` after ${rule.delayMinutes} minute(s)` : ""}`).catch(() => undefined);
+  }
+}
+
+async function applyConfiguredAutoRoles(member: any, guildConfig?: any): Promise<void> {
+  if (!isDashboardFeatureEnabled(guildConfig, "auto-roles")) return;
+
+  const autoRoles = getAutoRolesFromGuildConfig(guildConfig);
+  if (autoRoles.length === 0) return;
+
+  for (const rule of autoRoles) {
+    if (rule.delayMinutes > 0) {
+      setTimeout(async () => {
+        try {
+          const refreshedMember = await member.guild.members.fetch(member.id).catch(() => null);
+          if (!refreshedMember) return;
+          await applyAutoRoleRule(refreshedMember, rule);
+        } catch {
+          // ignore delayed auto role failures
+        }
+      }, rule.delayMinutes * 60 * 1000);
+    } else {
+      await applyAutoRoleRule(member, rule);
+    }
+  }
+}
+
+async function handleReactionRoleEvent(reaction: any, user: any, action: "add" | "remove"): Promise<void> {
+  if (!user || user.bot) return;
+
+  try {
+    if (reaction?.partial) {
+      await reaction.fetch().catch(() => null);
+    }
+
+    if (reaction?.message?.partial) {
+      await reaction.message.fetch().catch(() => null);
+    }
+
+    const message = reaction?.message;
+    const guild = message?.guild;
+    if (!guild) return;
+
+    const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    if (!isDashboardFeatureEnabled(guildConfig, "reaction-roles")) return;
+
+    const setup = getReactionRoleSetupFromGuildConfig(guildConfig);
+    if (!setup.items.length) return;
+
+    const configuredMessageId = String(setup.messageId || "").trim();
+    if (!configuredMessageId || configuredMessageId !== String(message.id || "").trim()) {
+      return;
+    }
+
+    const emojiKey = getReactionEmojiKey(reaction);
+    if (!emojiKey) return;
+
+    const matchingEntries = setup.items.filter((entry) => normalizeReactionEmojiInput(entry.emoji) === emojiKey);
+    if (matchingEntries.length === 0) return;
+
+    const member = await guild.members.fetch(user.id).catch(() => null);
+    if (!member) return;
+
+    const me = guild.members.me ?? await guild.members.fetchMe().catch(() => null);
+    if (!me?.permissions?.has(PermissionFlagsBits.ManageRoles)) return;
+
+    for (const entry of matchingEntries) {
+      const role = guild.roles.cache.get(entry.roleId);
+      if (!role) continue;
+      if (role.position >= me.roles.highest.position) continue;
+
+      if (action === "add") {
+        if (entry.mode === "remove_only") {
+          if (member.roles?.cache?.has(role.id)) {
+            await member.roles.remove(role.id, `Reaction role remove via ${emojiKey}`).catch(() => undefined);
+          }
+        } else if (!member.roles?.cache?.has(role.id)) {
+          await member.roles.add(role.id, `Reaction role add via ${emojiKey}`).catch(() => undefined);
+        }
+        continue;
+      }
+
+      if (entry.mode === "both" && member.roles?.cache?.has(role.id)) {
+        await member.roles.remove(role.id, `Reaction role remove via ${emojiKey}`).catch(() => undefined);
+      }
+    }
+  } catch (error) {
+    console.log("Error in reaction role handler:", error);
+  }
 }
 
 function buildStickyListEmbed(
@@ -23285,6 +23522,14 @@ client.on("guildMemberRemove", async (member) => {
   }
 });
 
+client.on("messageReactionAdd", async (reaction, user) => {
+  await handleReactionRoleEvent(reaction, user, "add");
+});
+
+client.on("messageReactionRemove", async (reaction, user) => {
+  await handleReactionRoleEvent(reaction, user, "remove");
+});
+
 client.on("guildMemberAdd", async (member) => {
   try {
     const guildConfig = await storage.getGuildConfig(member.guild.id).catch(() => undefined);
@@ -23418,6 +23663,12 @@ client.on("guildMemberAdd", async (member) => {
           console.log(`Could not notify channel ${channelId} about user join:`, e);
         }
       }
+    }
+
+    try {
+      await applyConfiguredAutoRoles(member, guildConfig);
+    } catch (autoRoleError) {
+      console.log("Could not apply auto roles:", autoRoleError);
     }
 
     try {

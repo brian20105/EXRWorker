@@ -57,6 +57,8 @@ const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const DASHBOARD_SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
 const DASHBOARD_BLACKLIST_USERS_KEY = "__dashboardBlacklistedUsers";
+const DASHBOARD_FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
+const DASHBOARD_REACTION_ROLE_SETUP_KEY = "__reactionRoleSetup";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -1323,6 +1325,8 @@ const FEATURE_LABELS: Record<string, string> = {
   roster: "Roster Management",
   snippets: "Snippets",
   sticky: "Sticky Messages",
+  "auto-roles": "Auto Roles",
+  "reaction-roles": "Reaction Roles",
 };
 
 const LATEST_BOT_UPDATE_HIGHLIGHTS = [
@@ -1574,6 +1578,129 @@ function writeSavedRosterEmbeds(raw: unknown, embeds: SavedRosterEmbedConfig[]):
   const parsed = parseJsonObject(raw);
   parsed[ROSTER_EMBEDS_KEY] = embeds;
   return JSON.stringify(parsed);
+}
+
+type DashboardReactionRoleMode = "both" | "add_only" | "remove_only";
+
+type DashboardReactionRoleItem = {
+  id: string;
+  emoji: string;
+  roleId: string;
+  mode: DashboardReactionRoleMode;
+};
+
+type DashboardReactionRoleSetup = {
+  name: string;
+  channelId: string | null;
+  useExistingMessage: boolean;
+  existingMessageInput: string;
+  messageId: string | null;
+  embedTitle: string;
+  embedDescription: string;
+  items: DashboardReactionRoleItem[];
+};
+
+const DEFAULT_REACTION_ROLE_SETUP: DashboardReactionRoleSetup = {
+  name: "Reaction Roles",
+  channelId: null,
+  useExistingMessage: false,
+  existingMessageInput: "",
+  messageId: null,
+  embedTitle: "Reaction Roles",
+  embedDescription: "React below to manage your roles.",
+  items: [],
+};
+
+function normalizeReactionRoleSetup(input: unknown): DashboardReactionRoleSetup {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ...DEFAULT_REACTION_ROLE_SETUP };
+  }
+
+  const value = input as Record<string, unknown>;
+  const items = Array.isArray(value.items)
+    ? value.items.map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+        const item = entry as Record<string, unknown>;
+        const emoji = String(item.emoji || "").trim();
+        const roleId = String(item.roleId || "").trim();
+        const rawMode = String(item.mode || "both").toLowerCase();
+        if (!emoji || !roleId) return null;
+        return {
+          id: String(item.id || `${roleId}-${emoji}`).trim() || `${roleId}-${emoji}`,
+          emoji,
+          roleId,
+          mode: rawMode === "add_only" || rawMode === "remove_only" ? rawMode : "both",
+        } as DashboardReactionRoleItem;
+      }).filter(Boolean) as DashboardReactionRoleItem[]
+    : [];
+
+  return {
+    name: String(value.name || DEFAULT_REACTION_ROLE_SETUP.name).trim() || DEFAULT_REACTION_ROLE_SETUP.name,
+    channelId: String(value.channelId || "").trim() || null,
+    useExistingMessage: value.useExistingMessage === true,
+    existingMessageInput: typeof value.existingMessageInput === "string" ? value.existingMessageInput : "",
+    messageId: String(value.messageId || "").trim() || null,
+    embedTitle: String(value.embedTitle || DEFAULT_REACTION_ROLE_SETUP.embedTitle).trim() || DEFAULT_REACTION_ROLE_SETUP.embedTitle,
+    embedDescription: String(value.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription).trim() || DEFAULT_REACTION_ROLE_SETUP.embedDescription,
+    items,
+  };
+}
+
+function getReactionRoleSetup(raw: unknown): DashboardReactionRoleSetup {
+  const parsed = parseJsonObject(raw);
+  return normalizeReactionRoleSetup(parsed[DASHBOARD_REACTION_ROLE_SETUP_KEY]);
+}
+
+function writeReactionRoleSetup(raw: unknown, setup: DashboardReactionRoleSetup, channelId?: string | null): string {
+  const parsed = parseJsonObject(raw);
+  const normalizedChannelId = String(channelId || setup.channelId || "").trim() || null;
+  parsed[DASHBOARD_REACTION_ROLE_SETUP_KEY] = {
+    ...setup,
+    channelId: normalizedChannelId,
+    messageId: String(setup.messageId || "").trim() || null,
+    items: setup.items,
+  };
+
+  const currentPostChannels = parsed[DASHBOARD_FEATURE_POST_CHANNELS_KEY];
+  const nextPostChannels = currentPostChannels && typeof currentPostChannels === "object" && !Array.isArray(currentPostChannels)
+    ? { ...(currentPostChannels as Record<string, unknown>) }
+    : {};
+
+  if (normalizedChannelId) {
+    nextPostChannels["reaction-roles"] = normalizedChannelId;
+    parsed[DASHBOARD_FEATURE_POST_CHANNELS_KEY] = nextPostChannels;
+  }
+
+  return JSON.stringify(parsed);
+}
+
+function extractDiscordMessageTarget(value?: string | null): { channelId: string | null; messageId: string | null } {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return { channelId: null, messageId: null };
+
+  const linkMatch = trimmed.match(/^https?:\/\/(?:canary\.)?discord(?:app)?\.com\/channels\/\d+\/(\d{17,20})\/(\d{17,20})$/i);
+  if (linkMatch) {
+    return {
+      channelId: linkMatch[1] || null,
+      messageId: linkMatch[2] || null,
+    };
+  }
+
+  if (/^\d{17,20}$/.test(trimmed)) {
+    return { channelId: null, messageId: trimmed };
+  }
+
+  return { channelId: null, messageId: null };
+}
+
+function normalizeReactionEmojiValue(value?: string | null): string {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  const customMatch = trimmed.match(/^<a?:([^:>]+):(\d{17,20})>$/);
+  if (customMatch) {
+    return `${customMatch[1]}:${customMatch[2]}`;
+  }
+  return trimmed;
 }
 
 function convertLegacyRosterEmbedConfigsToSaved(raw: unknown): SavedRosterEmbedConfig[] {
@@ -3174,6 +3301,7 @@ export async function registerRoutes(
       const config = await storage.getGuildConfig(guildId);
       let targetChannelId = String(req.body?.channelId || "").trim();
       let messagePayload: any = null;
+      let sentMessage: any = null;
 
       if (featureKey === "modmail") {
         targetChannelId = targetChannelId || String(config?.modmailEmbedChannelId || "").trim();
@@ -3286,25 +3414,109 @@ export async function registerRoutes(
           new ButtonBuilder().setCustomId("request_payout").setLabel("Request Payout").setStyle(ButtonStyle.Primary)
         );
         messagePayload = { embeds: [embed], components: [row] };
+      } else if (featureKey === "reaction-roles") {
+        const hasOverride = req.body?.reactionRoleSetup && typeof req.body.reactionRoleSetup === "object" && !Array.isArray(req.body.reactionRoleSetup);
+        const reactionRoleSetup = hasOverride
+          ? normalizeReactionRoleSetup(req.body.reactionRoleSetup)
+          : getReactionRoleSetup(config?.customCategoryPings);
+        const configuredItems = reactionRoleSetup.items.filter((entry) => entry.emoji && entry.roleId);
+
+        if (configuredItems.length === 0) {
+          return res.status(400).json({ error: "Add at least one reaction role entry first." });
+        }
+
+        const linkedMessage = extractDiscordMessageTarget(reactionRoleSetup.existingMessageInput);
+        const linkedChannelId = linkedMessage.channelId || reactionRoleSetup.channelId || targetChannelId;
+        const linkedMessageId = linkedMessage.messageId || reactionRoleSetup.messageId;
+
+        if (reactionRoleSetup.useExistingMessage) {
+          if (!linkedMessageId) {
+            return res.status(400).json({ error: "Enter a valid message ID or Discord message link first." });
+          }
+
+          if (!linkedChannelId) {
+            return res.status(400).json({ error: "Choose the channel that contains the existing message." });
+          }
+
+          targetChannelId = String(linkedChannelId).trim();
+          sentMessage = hasBotToken
+            ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages/${linkedMessageId}`, {
+                method: "GET",
+              })
+            : await (async () => {
+                const channel = await client.channels.fetch(targetChannelId).catch(() => null);
+                if (!channel || !("messages" in channel)) {
+                  throw new Error("Could not access the target channel.");
+                }
+                return await (channel as any).messages.fetch(linkedMessageId);
+              })();
+        } else {
+          targetChannelId = targetChannelId || reactionRoleSetup.channelId || "";
+          if (!targetChannelId) {
+            return res.status(400).json({ error: "Choose a channel for the reaction role embed first." });
+          }
+
+          const embed = new EmbedBuilder()
+            .setTitle(reactionRoleSetup.embedTitle || DEFAULT_REACTION_ROLE_SETUP.embedTitle)
+            .setDescription(reactionRoleSetup.embedDescription || DEFAULT_REACTION_ROLE_SETUP.embedDescription)
+            .setColor(0x5865f2)
+            .setFooter({ text: reactionRoleSetup.name || DEFAULT_REACTION_ROLE_SETUP.name });
+
+          messagePayload = { embeds: [embed], components: [] };
+        }
       } else {
         return res.status(400).json({ error: "That embed type is not supported yet from the dashboard." });
       }
 
-      const sentMessage = hasBotToken
-        ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages`, {
-            method: "POST",
-            body: JSON.stringify({
-              embeds: (messagePayload?.embeds || []).map((embed: any) => typeof embed?.toJSON === "function" ? embed.toJSON() : embed),
-              components: (messagePayload?.components || []).map((component: any) => typeof component?.toJSON === "function" ? component.toJSON() : component),
-            }),
-          })
-        : await (async () => {
-            const channel = await client.channels.fetch(targetChannelId).catch(() => null);
-            if (!channel || !("send" in channel)) {
-              throw new Error("Could not access the target channel.");
+      if (!sentMessage) {
+        sentMessage = hasBotToken
+          ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                embeds: (messagePayload?.embeds || []).map((embed: any) => typeof embed?.toJSON === "function" ? embed.toJSON() : embed),
+                components: (messagePayload?.components || []).map((component: any) => typeof component?.toJSON === "function" ? component.toJSON() : component),
+              }),
+            })
+          : await (async () => {
+              const channel = await client.channels.fetch(targetChannelId).catch(() => null);
+              if (!channel || !("send" in channel)) {
+                throw new Error("Could not access the target channel.");
+              }
+              return await (channel as any).send(messagePayload);
+            })();
+      }
+
+      if (featureKey === "reaction-roles") {
+        const hasOverride = req.body?.reactionRoleSetup && typeof req.body.reactionRoleSetup === "object" && !Array.isArray(req.body.reactionRoleSetup);
+        const reactionRoleSetup = hasOverride
+          ? normalizeReactionRoleSetup(req.body.reactionRoleSetup)
+          : getReactionRoleSetup(config?.customCategoryPings);
+
+        for (const entry of reactionRoleSetup.items) {
+          const reactionValue = normalizeReactionEmojiValue(entry.emoji);
+          if (!reactionValue) continue;
+          try {
+            if (hasBotToken) {
+              await discordBotApiRequest(`/channels/${targetChannelId}/messages/${sentMessage.id}/reactions/${encodeURIComponent(reactionValue)}/@me`, {
+                method: "PUT",
+              });
+            } else if (typeof (sentMessage as any)?.react === "function") {
+              await (sentMessage as any).react(reactionValue);
             }
-            return await (channel as any).send(messagePayload);
-          })();
+          } catch {
+            // Ignore individual emoji failures so one bad emoji does not block the rest.
+          }
+        }
+
+        await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: writeReactionRoleSetup(config?.customCategoryPings, {
+            ...reactionRoleSetup,
+            channelId: targetChannelId,
+            messageId: String(sentMessage.id || "").trim() || null,
+          }, targetChannelId),
+        });
+      }
 
       if (featureKey === "modmail") {
         await storage.upsertGuildConfig({
