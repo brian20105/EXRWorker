@@ -3586,6 +3586,9 @@ export async function registerRoutes(
         const linkedMessage = extractDiscordMessageTarget(reactionRoleSetup.existingMessageInput);
         const linkedChannelId = linkedMessage.channelId || reactionRoleSetup.channelId || targetChannelId;
         const linkedMessageId = linkedMessage.messageId || reactionRoleSetup.messageId;
+        const managedMessageId = !reactionRoleSetup.useExistingMessage
+          ? String(reactionRoleSetup.messageId || "").trim()
+          : "";
         const { components: reactionRoleComponents, note: componentNote } = await buildReactionRoleComponents(guildId, configuredItems, reactionRoleSetup.pickerStyle);
         const guildForEmbed = client.guilds.cache.get(guildId) ?? await client.guilds.fetch(guildId).catch(() => null);
         const guildIconUrl = normalizeReactionRoleAssetUrl(guildForEmbed?.iconURL({ size: 256 }) || undefined);
@@ -3629,38 +3632,47 @@ export async function registerRoutes(
           reactionRoleEmbed.setImage(imageUrl);
         }
 
-        if (reactionRoleSetup.useExistingMessage) {
-          if (!linkedMessageId) {
+        const shouldUpdateLinkedMessage = !reactionRoleSetup.useExistingMessage && !!managedMessageId;
+
+        if (reactionRoleSetup.useExistingMessage || shouldUpdateLinkedMessage) {
+          const targetMessageId = reactionRoleSetup.useExistingMessage ? linkedMessageId : managedMessageId;
+          const targetMessageChannelId = reactionRoleSetup.useExistingMessage
+            ? linkedChannelId
+            : (targetChannelId || reactionRoleSetup.channelId || "");
+
+          if (!targetMessageId && reactionRoleSetup.useExistingMessage) {
             return res.status(400).json({ error: "Enter a valid message ID or Discord message link first." });
           }
 
-          if (!linkedChannelId) {
+          if (!targetMessageChannelId) {
             return res.status(400).json({ error: "Choose the channel that contains the existing message." });
           }
 
-          targetChannelId = String(linkedChannelId).trim();
-          sentMessage = hasBotToken
-            ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages/${linkedMessageId}`, {
-                method: "GET",
-              })
-            : await (async () => {
-                const channel = await client.channels.fetch(targetChannelId).catch(() => null);
-                if (!channel || !("messages" in channel)) {
-                  throw new Error("Could not access the target channel.");
-                }
-                return await (channel as any).messages.fetch(linkedMessageId);
-              })();
+          targetChannelId = String(targetMessageChannelId).trim();
+          if (targetMessageId) {
+            sentMessage = hasBotToken
+              ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages/${targetMessageId}`, {
+                  method: "GET",
+                }).catch(() => null)
+              : await (async () => {
+                  const channel = await client.channels.fetch(targetChannelId).catch(() => null);
+                  if (!channel || !("messages" in channel)) {
+                    return null;
+                  }
+                  return await (channel as any).messages.fetch(targetMessageId).catch(() => null);
+                })();
+          }
 
-          const botUserId = String(client.user?.id || "").trim();
+          const botUserId = String((sentMessage as any)?.application_id || client.user?.id || "").trim();
           const messageAuthorId = String((sentMessage as any)?.author?.id || "").trim();
           const canEditExistingMessage = !!botUserId && messageAuthorId === botUserId;
-          if (reactionRoleSetup.pickerStyle !== "reactions" && !canEditExistingMessage) {
+          if (reactionRoleSetup.useExistingMessage && reactionRoleSetup.pickerStyle !== "reactions" && !canEditExistingMessage) {
             return res.status(400).json({ error: "Buttons and dropdown menus can only be attached to a message sent by the bot. Use reactions or post a new embed instead." });
           }
 
-          if (canEditExistingMessage) {
+          if (sentMessage && canEditExistingMessage) {
             sentMessage = hasBotToken
-              ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages/${linkedMessageId}`, {
+              ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages/${targetMessageId}`, {
                   method: "PATCH",
                   body: JSON.stringify({
                     embeds: [reactionRoleEmbed.toJSON()],
@@ -3672,7 +3684,7 @@ export async function registerRoutes(
             if (reactionRoleSetup.pickerStyle !== "reactions") {
               try {
                 if (hasBotToken) {
-                  await discordBotApiRequest(`/channels/${targetChannelId}/messages/${linkedMessageId}/reactions`, {
+                  await discordBotApiRequest(`/channels/${targetChannelId}/messages/${targetMessageId}/reactions`, {
                     method: "DELETE",
                   });
                 } else if (typeof (sentMessage as any)?.reactions?.removeAll === "function") {
@@ -3682,8 +3694,14 @@ export async function registerRoutes(
                 // Ignore stale reaction cleanup failures when switching picker styles.
               }
             }
+          } else if (reactionRoleSetup.useExistingMessage && !sentMessage) {
+            return res.status(404).json({ error: "Could not find the existing reaction role message to update." });
+          } else {
+            sentMessage = null;
           }
-        } else {
+        }
+
+        if (!sentMessage) {
           targetChannelId = targetChannelId || reactionRoleSetup.channelId || "";
           if (!targetChannelId) {
             return res.status(400).json({ error: "Choose a channel for the reaction role embed first." });
