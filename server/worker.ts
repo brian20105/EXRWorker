@@ -39,6 +39,10 @@ function buildProxyInit(request: Request, url: URL): RequestInit {
   return init;
 }
 
+function shouldProxyToBackend(url: URL): boolean {
+  return url.pathname.startsWith("/api/");
+}
+
 async function pingBackend(env: WorkerEnv): Promise<void> {
   const backendOrigin = normalizeBackendOrigin(env.BACKEND_ORIGIN);
   if (!backendOrigin) return;
@@ -75,30 +79,28 @@ export default {
       return fetch(proxyUrl, buildProxyInit(request, url));
     };
 
-    if (backendOrigin) {
-      try {
-        return await proxyToBackend();
-      } catch (error) {
-        if (!assets) {
-          throw error;
-        }
+    if (shouldProxyToBackend(url)) {
+      return proxyToBackend();
+    }
+
+    if (assets) {
+      const assetResponse = await assets.fetch(request);
+      if (assetResponse.status !== 404) return assetResponse;
+
+      if (!url.pathname.includes(".")) {
+        const spaUrl = new URL(request.url);
+        spaUrl.pathname = "/index.html";
+        return assets.fetch(new Request(spaUrl.toString(), request));
       }
+
+      return assetResponse;
     }
 
-    if (!assets) {
-      return new Response("Worker has no static assets or backend origin configured.", { status: 500 });
+    if (backendOrigin) {
+      return proxyToBackend();
     }
 
-    const assetResponse = await assets.fetch(request);
-    if (assetResponse.status !== 404) return assetResponse;
-
-    if (!url.pathname.includes(".")) {
-      const spaUrl = new URL(request.url);
-      spaUrl.pathname = "/index.html";
-      return assets.fetch(new Request(spaUrl.toString(), request));
-    }
-
-    return assetResponse;
+    return new Response("Worker has no static assets or backend origin configured.", { status: 500 });
   },
 
   async scheduled(_controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
