@@ -419,6 +419,9 @@ const AUTO_ROLES_KEY = "__autoRoles";
 const REACTION_ROLE_SETUP_KEY = "__reactionRoleSetup";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
+const DASHBOARD_LAST_GUILD_STORAGE_KEY = "dashboardLastSelectedGuild";
+const REACTION_ROLE_DRAFT_STORAGE_KEY = "dashboardReactionRoleDrafts";
+const REACTION_ROLE_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
 const DEFAULT_TOP_FADE_COLOR = "#5865f2";
 const DEFAULT_ENABLED_STATUS_COLOR = "#00ff7b";
 const DEFAULT_DISABLED_STATUS_COLOR = "#ff0000";
@@ -544,6 +547,59 @@ function applyDashboardColorOverrides(_backgroundHex: string, buttonHex: string)
   rootStyle.setProperty("--color-discord-blurple-hover", buttonHover);
   rootStyle.setProperty("--color-primary", button);
   rootStyle.setProperty("--color-ring", button);
+}
+
+function readReactionRoleDrafts(): Record<string, { updatedAt: number; setup: DashboardReactionRoleSetup }> {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const raw = window.localStorage.getItem(REACTION_ROLE_DRAFT_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, { updatedAt: number; setup: DashboardReactionRoleSetup }>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function getReactionRoleDraft(guildId: string | null | undefined): DashboardReactionRoleSetup | null {
+  const normalizedGuildId = String(guildId || "").trim();
+  if (!normalizedGuildId) return null;
+
+  const drafts = readReactionRoleDrafts();
+  const draft = drafts[normalizedGuildId];
+  if (!draft || typeof draft !== "object") return null;
+
+  const updatedAt = Number(draft.updatedAt || 0);
+  if (!Number.isFinite(updatedAt) || (Date.now() - updatedAt) > REACTION_ROLE_DRAFT_MAX_AGE_MS) {
+    return null;
+  }
+
+  return draft.setup && typeof draft.setup === "object" ? draft.setup : null;
+}
+
+function writeReactionRoleDraft(guildId: string | null | undefined, setup: DashboardReactionRoleSetup): void {
+  const normalizedGuildId = String(guildId || "").trim();
+  if (!normalizedGuildId || typeof window === "undefined") return;
+
+  const drafts = readReactionRoleDrafts();
+  drafts[normalizedGuildId] = {
+    updatedAt: Date.now(),
+    setup,
+  };
+  window.localStorage.setItem(REACTION_ROLE_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
+}
+
+function clearReactionRoleDraft(guildId: string | null | undefined): void {
+  const normalizedGuildId = String(guildId || "").trim();
+  if (!normalizedGuildId || typeof window === "undefined") return;
+
+  const drafts = readReactionRoleDrafts();
+  if (!drafts[normalizedGuildId]) return;
+  delete drafts[normalizedGuildId];
+  window.localStorage.setItem(REACTION_ROLE_DRAFT_STORAGE_KEY, JSON.stringify(drafts));
 }
 
 function getReadableTextColor(backgroundHex: string): string {
@@ -741,6 +797,7 @@ export default function Dashboard() {
   const [postingLatestUpdate, setPostingLatestUpdate] = useState(false);
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
+  const reactionRoleDraftReadyRef = useRef(false);
   const [rosterEmbedModalMode, setRosterEmbedModalMode] = useState<"create" | "edit">("create");
   const [rosterEmbedSaving, setRosterEmbedSaving] = useState(false);
   const [rosterEmbedEditingId, setRosterEmbedEditingId] = useState("");
@@ -846,12 +903,21 @@ export default function Dashboard() {
     setWelcomeEmbedSettings(getWelcomeEmbedSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     setBotPresenceSettings(getBotPresenceSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
     setAutoRoles(getAutoRolesFromCustomCategoryPings(nextConfig.customCategoryPings || "{}").filter((entry) => validRoleIds.has(entry.roleId)));
-    const nextReactionRoleSetup = getReactionRoleSetupFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+    const savedReactionRoleSetup = getReactionRoleSetupFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+    const draftReactionRoleSetup = getReactionRoleDraft(selectedGuild);
+    const nextReactionRoleSetup = draftReactionRoleSetup
+      ? {
+          ...savedReactionRoleSetup,
+          ...draftReactionRoleSetup,
+          items: Array.isArray(draftReactionRoleSetup.items) ? draftReactionRoleSetup.items : savedReactionRoleSetup.items,
+        }
+      : savedReactionRoleSetup;
     setReactionRoleSetup({
       ...nextReactionRoleSetup,
       channelId: nextFeaturePostChannels["reaction-roles"] || nextReactionRoleSetup.channelId || "",
       items: nextReactionRoleSetup.items.filter((entry) => validRoleIds.has(entry.roleId)),
     });
+    reactionRoleDraftReadyRef.current = true;
     const nextSecuritySettings = getSecuritySettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     setSecuritySettings({
       ...nextSecuritySettings,
@@ -964,6 +1030,7 @@ export default function Dashboard() {
   useEffect(() => {
     if (!selectedGuild) return;
 
+    reactionRoleDraftReadyRef.current = false;
     setLoading(true);
     fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/config`, undefined, 15000)
       .then((data) => {
@@ -983,6 +1050,30 @@ export default function Dashboard() {
         });
       });
   }, [selectedGuild]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || selectedGuild || guilds.length === 0 || moduleRouteMatch) return;
+
+    const storedGuildId = window.localStorage.getItem(DASHBOARD_LAST_GUILD_STORAGE_KEY);
+    if (!storedGuildId) return;
+    if (guilds.some((guild) => guild.id === storedGuildId)) {
+      setSelectedGuild(storedGuildId);
+    }
+  }, [selectedGuild, guilds, moduleRouteMatch]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (selectedGuild) {
+      window.localStorage.setItem(DASHBOARD_LAST_GUILD_STORAGE_KEY, selectedGuild);
+    } else {
+      window.localStorage.removeItem(DASHBOARD_LAST_GUILD_STORAGE_KEY);
+    }
+  }, [selectedGuild]);
+
+  useEffect(() => {
+    if (!selectedGuild || !reactionRoleDraftReadyRef.current) return;
+    writeReactionRoleDraft(selectedGuild, reactionRoleSetup);
+  }, [selectedGuild, reactionRoleSetup]);
 
   useEffect(() => {
     if (!selectedGuild) return;
@@ -1705,6 +1796,7 @@ export default function Dashboard() {
           channelId: postedChannelId || prev.channelId,
           messageId: typeof data?.messageId === "string" ? data.messageId : prev.messageId,
         }));
+        clearReactionRoleDraft(selectedGuild);
       }
       const note = typeof data?.note === "string" && data.note.trim()
         ? `${postedChannelId ? `Posted in <#${postedChannelId}>. ` : ""}${data.note.trim()}`.trim()
@@ -3002,6 +3094,7 @@ export default function Dashboard() {
         toast({ title: "Save failed", description: data.error || `Could not save config (HTTP ${res.status}).`, variant: "destructive" });
       } else {
         setConfig((data.config || payload) as GuildConfig);
+        clearReactionRoleDraft(selectedGuild);
         toast({ title: "Saved", description: "Dashboard configuration updated." });
       }
     } catch (error) {
