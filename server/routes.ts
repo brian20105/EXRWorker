@@ -1330,10 +1330,10 @@ const FEATURE_LABELS: Record<string, string> = {
 };
 
 const LATEST_BOT_UPDATE_HIGHLIGHTS = [
-  "New command: `/announce message:<text>` sends a quick announcement in the channel where you run it.",
-  "Dashboard cleanup: the duplicate Bot Permissions section in Settings has been removed.",
-  "New control: the Updates Channel now has its own `Post Latest Update` button for quick testing.",
-  "Update posts now announce dashboard changes and newly enabled features more reliably.",
+  "New dashboard feature: `Auto Roles` can add or remove roles when members join, with optional delays.",
+  "New dashboard feature: `Reaction Roles` lets members react to get or remove server roles.",
+  "Reaction Roles now support `Both Ways`, `Add Only`, and `Remove Only`, plus existing message links/IDs.",
+  "The `Post Configured Embed` button can now publish or attach the latest reaction role setup directly from the dashboard.",
 ];
 
 function getNewlyEnabledFeatureLabels(previousRaw: unknown, currentRaw: unknown): string[] {
