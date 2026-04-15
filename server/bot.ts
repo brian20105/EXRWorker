@@ -62,6 +62,9 @@ const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
   payout: "payouts",
   setup_moderation: "permissions",
   setup_moderation_logs: "moderation",
+  setup_promotion_logs: "moderation",
+  setup_promotion_requests: "moderation",
+  promotion_demotion: "moderation",
   setup_moderation_command_logs: "moderation",
   setup_command_logs: "moderation",
   setup_role_requests: "role-requests",
@@ -764,6 +767,10 @@ function getRequiredDashboardFeatureForCustomId(customId: string | null | undefi
     ban_request_modal: "ban-requests",
     unban_request_modal: "ban-requests",
     kick_request_modal: "ban-requests",
+    promotion_request_open_promotion: "moderation",
+    promotion_request_open_demotion: "moderation",
+    promotion_request_modal_promotion: "moderation",
+    promotion_request_modal_demotion: "moderation",
   };
 
   if (exactMatches[normalized]) {
@@ -811,6 +818,8 @@ function getRequiredDashboardFeatureForCustomId(customId: string | null | undefi
     ["kick_deny_", "ban-requests"],
     ["unban_approve_", "ban-requests"],
     ["unban_deny_", "ban-requests"],
+    ["promotion_request_", "moderation"],
+    ["promotion_request_action_", "moderation"],
     ["config_modmail_modal_", "modmail"],
     ["config_welcome_modal_", "embeds"],
     ["send_embed_modal_", "embeds"],
@@ -949,6 +958,32 @@ export const client = new Client({
   partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
 });
 
+function buildTicketClosedEmbed(isAppeal: boolean): EmbedBuilder {
+  return new EmbedBuilder()
+    .setTitle(isAppeal ? "Appeal Closed" : "Ticket Closed")
+    .setDescription(isAppeal ? "Your appeal has been closed by staff." : "Your ticket has been closed by staff.")
+    .setColor(0xed4245)
+    .setTimestamp();
+}
+
+async function notifyClosedTicketParticipants(
+  thread: { userId: string; addedMemberIds?: string[] | null | undefined },
+  isAppeal: boolean,
+): Promise<void> {
+  const extraParticipantIds = !isAppeal && Array.isArray(thread.addedMemberIds) ? thread.addedMemberIds : [];
+  const participantIds = Array.from(new Set([thread.userId, ...extraParticipantIds].filter((id): id is string => Boolean(id))));
+  const closeEmbed = buildTicketClosedEmbed(isAppeal);
+
+  for (const participantId of participantIds) {
+    try {
+      const participant = await client.users.fetch(participantId);
+      await participant.send({ embeds: [new EmbedBuilder(closeEmbed.data)] });
+    } catch {
+      // Could not DM participant about ticket close
+    }
+  }
+}
+
 interface QuizState {
   guildId: string;
   currentQuestion: number;
@@ -980,6 +1015,18 @@ type PendingModmailTypingNotice = {
 
 const pendingModmailTypingNotices = new Map<string, PendingModmailTypingNotice>();
 const MODMAIL_TYPING_NOTICE_TTL_MS = 12000;
+
+interface RecentRemovedModmailParticipant {
+  guildId: string;
+  guildName?: string;
+  ticketCreatorId: string;
+  ticketCreatorName: string;
+  reason?: string;
+  removedAt: number;
+}
+
+const recentlyRemovedModmailParticipants = new Map<string, RecentRemovedModmailParticipant>();
+const RECENTLY_REMOVED_MODMAIL_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Cache for modmail copy button content (message ID -> content + attachments)
 interface ModmailCopyData {
@@ -1368,6 +1415,25 @@ async function getOpenModmailThreadForParticipant(userId: string): Promise<{ thr
   }
 
   return { thread: undefined, isAddedMember: false };
+}
+
+function rememberRecentlyRemovedModmailParticipant(
+  userId: string,
+  entry: Omit<RecentRemovedModmailParticipant, "removedAt">
+): void {
+  recentlyRemovedModmailParticipants.set(userId, { ...entry, removedAt: Date.now() });
+}
+
+function getRecentlyRemovedModmailParticipant(userId: string): RecentRemovedModmailParticipant | undefined {
+  const entry = recentlyRemovedModmailParticipants.get(userId);
+  if (!entry) return undefined;
+
+  if (Date.now() - entry.removedAt > RECENTLY_REMOVED_MODMAIL_TTL_MS) {
+    recentlyRemovedModmailParticipants.delete(userId);
+    return undefined;
+  }
+
+  return entry;
 }
 
 function clearPendingModmailTypingNotice(key: string): void {
@@ -2288,6 +2354,40 @@ function getRoleRequestRoleIdsFromGuildConfig(config?: any): string[] {
   return normalizeStringArray(root?.__roleRequestRoleIds);
 }
 
+function getPromotionDemotionChannelIdFromGuildConfig(config?: any): string | null {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const channelId = root?.__promotionDemotionChannelId;
+  return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
+}
+
+function getPromotionDemotionRoleIdsFromGuildConfig(config?: any): string[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  return normalizeStringArray(root?.__promotionDemotionRoleIds);
+}
+
+function getPromotionLogChannelIdFromGuildConfig(config?: any): string | null {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const channelId = root?.__promotionLogChannelId;
+  return typeof channelId === "string" && channelId.trim().length > 0 ? channelId.trim() : null;
+}
+
+function writePromotionDemotionSettingsToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  updates: { channelId?: string | null; logChannelId?: string | null; roleIds?: string[] },
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  if (Object.prototype.hasOwnProperty.call(updates, "channelId")) {
+    root.__promotionDemotionChannelId = updates.channelId || null;
+  }
+  if (Object.prototype.hasOwnProperty.call(updates, "logChannelId")) {
+    root.__promotionLogChannelId = updates.logChannelId || null;
+  }
+  if (updates.roleIds) {
+    root.__promotionDemotionRoleIds = updates.roleIds;
+  }
+  return JSON.stringify(root);
+}
+
 function getUnbanAllRoleIdsFromGuildConfig(config?: any): string[] {
   const root = parseJsonObject(config?.customCategoryPings);
   return normalizeStringArray(root?.__unbanAllRoleIds);
@@ -2841,6 +2941,7 @@ type RequestPingTarget =
   | "staff_submissions"
   | "role_requests"
   | "pro_role_requests"
+  | "promotion_demotion_requests"
   | "modmail_tickets"
   | "appeal_tickets";
 
@@ -2854,6 +2955,7 @@ const REQUEST_PING_TARGET_LABELS: Record<RequestPingTarget, string> = {
   staff_submissions: "Staff Application Submissions",
   role_requests: "Role Requests",
   pro_role_requests: "Pro Role Requests",
+  promotion_demotion_requests: "Promotion/Demotion Requests",
   modmail_tickets: "Modmail Tickets",
   appeal_tickets: "Appeal Tickets",
 };
@@ -4241,11 +4343,10 @@ async function safeDeferReply(interaction: any, ephemeral: boolean = true): Prom
     console.log(`[safeDeferReply] Success for ${interaction.commandName || interaction.customId} (age: ${age}ms)`);
     return true;
   } catch (e: any) {
-    // Ignore "Unknown interaction" errors (interaction expired) - they're expected for slow handlers
-    if (e.message?.includes("Unknown interaction") || e.code === 10062) {
-      console.log(`[safeDeferReply] Interaction expired/unknown for ${interaction.commandName || interaction.customId} (age: ${age}ms), continuing anyway`);
-      // Still return true since we can try editReply instead
-      return true;
+    // Interaction expired or already acknowledged — bail out so callers don't call editReply on an undeferred interaction
+    if (e.code === 10062 || e.code === 40060 || e.message?.includes("Unknown interaction") || e.message?.includes("already been acknowledged")) {
+      console.log(`[safeDeferReply] Interaction expired/acknowledged for ${interaction.commandName || interaction.customId} (age: ${age}ms), bailing out`);
+      return false;
     }
     console.error(`[safeDeferReply] Failed for ${interaction.commandName || interaction.customId} (age: ${age}ms): ${e.message}`);
     return false;
@@ -4795,6 +4896,26 @@ const commands = [
       option
         .setName("channel")
         .setDescription("The channel where moderation logs will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_promotion_logs")
+    .setDescription("Set the channel where promotion/demotion requests are sent")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where promotion/demotion requests will be sent")
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName("setup_promotion_requests")
+    .setDescription("Set the channel where promotion/demotion requests are sent")
+    .setDefaultMemberPermissions(0)
+    .addChannelOption((option) =>
+      option
+        .setName("channel")
+        .setDescription("The channel where promotion/demotion requests will be sent")
         .setRequired(true)
     ),
   new SlashCommandBuilder()
@@ -5388,6 +5509,7 @@ const commands = [
               { name: "Staff Application Submissions", value: "staff_submissions" },
               { name: "Role Requests", value: "role_requests" },
               { name: "Pro Role Requests", value: "pro_role_requests" },
+              { name: "Promotion/Demotion Requests", value: "promotion_demotion_requests" },
               { name: "Modmail Tickets", value: "modmail_tickets" },
               { name: "Appeal Tickets", value: "appeal_tickets" },
             )
@@ -5593,6 +5715,7 @@ const commands = [
           { name: "Role Commands", value: "role_commands" },
           { name: "Sticky Commands", value: "sticky_commands" },
           { name: "Role Request Commands", value: "role_request_commands" },
+          { name: "Promotion/Demotion Approvals", value: "promotion_demotion_logs" },
           { name: "Unban All Command", value: "unban_all_command" },
           { name: "Prefix Ban Command", value: "prefix_ban" },
           { name: "Prefix Fullban Command", value: "prefix_fullban" },
@@ -5603,8 +5726,7 @@ const commands = [
           { name: "Prefix Modlogs Command", value: "prefix_modlogs" },
           { name: "Prefix Reason Command", value: "prefix_reason" },
           { name: "Prefix Retime Command", value: "prefix_retime" },
-          { name: "Prefix Clean Command", value: "prefix_clean" },
-          { name: "Prefix Command", value: "prefix_command" }
+          { name: "Prefix Clean Command", value: "prefix_clean" }
         )
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
@@ -5658,6 +5780,10 @@ const commands = [
     .addStringOption((option) =>
       option.setName("message").setDescription("The message to send").setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName("promotion_demotion")
+    .setDescription("Post the promotion/demotion request panel in this channel")
+    .setDefaultMemberPermissions(0),
   new SlashCommandBuilder()
     .setName("send")
     .setDescription("Send content")
@@ -6121,6 +6247,26 @@ async function hasRoleRequestPermission(
   return allowedRoleIds.some(roleId => memberRoles.includes(roleId));
 }
 
+async function hasPromotionDemotionPermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+  const allowedRoleIds = getPromotionDemotionRoleIdsFromGuildConfig(config);
+
+  if (!allowedRoleIds || allowedRoleIds.length === 0) {
+    const permBits = typeof memberPermissions === 'string'
+      ? BigInt(memberPermissions)
+      : (memberPermissions ?? BigInt(0));
+    const ADMINISTRATOR = BigInt(1) << BigInt(3);
+    return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return allowedRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
 async function hasUnbanAllPermission(
   memberRoles: string[] | undefined,
   memberPermissions: bigint | string | undefined,
@@ -6267,7 +6413,7 @@ async function sendDMToStaff(staffUserId: string, status: "approved" | "denied",
   }
 }
 
-async function logCommand(guildId: string, commandName: string, userId: string, username: string, options?: any): Promise<void> {
+async function logCommand(guildId: string, channelId: string, commandName: string, userId: string, username: string, options?: any): Promise<void> {
   try {
     const config = await storage.getGuildConfig(guildId);
     if (!config?.commandLogChannelId) return;
@@ -6305,6 +6451,7 @@ async function logCommand(guildId: string, commandName: string, userId: string, 
       .addFields(
         { name: "Command", value: `\`/${commandName}\``, inline: true },
         { name: "User", value: `<@${userId}> (${username})`, inline: true },
+        { name: "Channel", value: `<#${channelId}>`, inline: true },
         { name: "Options", value: optionsText, inline: false }
       )
       .setTimestamp();
@@ -6820,7 +6967,7 @@ client.on("interactionCreate", async (interaction) => {
             optionsData[option.name] = `@${option.user.username}`;
           }
         }
-        logCommand(interaction.guildId, commandName, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
+        logCommand(interaction.guildId, interaction.channelId, commandName, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
       }
 
       if (commandName === "setup_pay_request") {
@@ -7662,6 +7809,38 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({
           content: `✅ Configuration saved! Moderation request logs will be sent to <#${channel.id}>.`,
+        });
+      } else if (commandName === "setup_promotion_logs") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writePromotionDemotionSettingsToConfig(config?.customCategoryPings, {
+            logChannelId: channel.id,
+          }),
+        });
+
+        await interaction.editReply({
+          content: `✅ Promotion/demotion approved/denied logs will be posted to <#${channel.id}>.`,
+        });
+      } else if (commandName === "setup_promotion_requests") {
+        if (!await safeDeferReply(interaction)) return;
+
+        const channel = interaction.options.getChannel("channel", true);
+        const config = await storage.getGuildConfig(interaction.guildId!);
+
+        await storage.upsertGuildConfig({
+          guildId: interaction.guildId!,
+          customCategoryPings: writePromotionDemotionSettingsToConfig(config?.customCategoryPings, {
+            channelId: channel.id,
+          }),
+        });
+
+        await interaction.editReply({
+          content: `✅ Promotion/demotion requests will be sent to <#${channel.id}>.`,
         });
       } else if (commandName === "setup_role_requests") {
         if (!await safeDeferReply(interaction)) return;
@@ -10229,6 +10408,7 @@ client.on("interactionCreate", async (interaction) => {
           role_commands: "Role Commands",
           sticky_commands: "Sticky Commands",
           role_request_commands: "Role Request Commands",
+          promotion_demotion_logs: "Promotion/Demotion Approvals",
           unban_all_command: "Unban All Command",
           prefix_ban: "Prefix Ban Command",
           prefix_fullban: "Prefix Fullban Command",
@@ -10269,6 +10449,9 @@ client.on("interactionCreate", async (interaction) => {
 
           const updatedSetup: ModerationSetupConfig = {
             ...currentSetup,
+            enabledActions: action
+              ? uniqueStrings([...currentSetup.enabledActions, action]) as PrefixModerationAction[]
+              : currentSetup.enabledActions,
             purgeRoleIds: permType === "prefix_purge" ? roles : currentSetup.purgeRoleIds,
             modlogsRoleIds: permType === "prefix_modlogs" || permType === "prefix_clean" ? roles : currentSetup.modlogsRoleIds,
             reasonRoleIds: permType === "prefix_reason" ? roles : currentSetup.reasonRoleIds,
@@ -10318,6 +10501,22 @@ client.on("interactionCreate", async (interaction) => {
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
           const labelName = typeLabels[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /setup_role_requests to set the destination channel.`, ephemeral: true });
+          return;
+        }
+
+        if (permType === "promotion_demotion_logs") {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writePromotionDemotionSettingsToConfig(config?.customCategoryPings, {
+              roleIds: roles,
+            }),
+          });
+
+          const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
+          const labelName = typeLabels[permType] || permType;
+          await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /setup_promotion_requests to set the destination channel.`, ephemeral: true });
           return;
         }
 
@@ -10428,18 +10627,8 @@ client.on("interactionCreate", async (interaction) => {
             }
           }
 
-          // Try to notify user
-          try {
-            const user = await client.users.fetch(thread.userId);
-            const closeEmbed = new EmbedBuilder()
-              .setTitle("Ticket Closed")
-              .setDescription("Your ticket has been closed by staff.")
-              .setColor(0xed4245)
-              .setTimestamp();
-            await user.send({ embeds: [closeEmbed] });
-          } catch (e) {
-            // Could not DM user
-          }
+          // Notify everyone included in the ticket
+          await notifyClosedTicketParticipants(thread, false);
         }
 
         await interaction.editReply({ 
@@ -10620,113 +10809,46 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         await interaction.editReply({ content: `✅ Role DM complete! Sent: **${sentCount}**, Failed: **${failCount}** (DMs disabled or blocked).` });
+      } else if (commandName === "promotion_demotion") {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const panelEmbed = new EmbedBuilder()
+          .setTitle("📊 Promotion & Demotion Requests")
+          .setDescription("Use one of the buttons below to submit a request.")
+          .setColor(0x5865f2)
+          .addFields(
+            { name: "Promotion", value: "User ID + Reason + Role promoting to", inline: false },
+            { name: "Demotion", value: "User ID + Reason", inline: false }
+          )
+          .setFooter({ text: "Requests are reviewed by authorized staff." })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId("promotion_request_open_promotion")
+            .setLabel("Promotion Request")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("📈"),
+          new ButtonBuilder()
+            .setCustomId("promotion_request_open_demotion")
+            .setLabel("Demotion Request")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("📉")
+        );
+
+        if (interaction.channel && "send" in interaction.channel) {
+          await interaction.channel.send({ embeds: [panelEmbed], components: [row] });
+          await interaction.editReply({ content: `✅ Promotion/demotion request panel posted in <#${interaction.channelId}>.` });
+        } else {
+          await interaction.editReply({ content: "❌ Could not access this channel to post the panel." });
+        }
       } else if (commandName === "block_list") {
         if (!await safeDeferReply(interaction, true)) return;
 
-        const page = 1;
         const ITEMS_PER_PAGE = 10;
-
-        // Get all blocked users from modmail and appeals
-        const modmailBlocks = await storage.getAllModmailBlocksGlobal();
-        const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
-        
-        const appealBlocks = await storage.getAllAppealBlocksGlobal();
-        const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
-
-        const staffApplicationBlocked: Array<{ userId: string; type: "staff_applications"; reason: string | null; expiresAt: Date | null; blockedById: string | null }> = [];
-        for (const guild of client.guilds.cache.values()) {
-          const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
-          const staffAppBlocks = getStaffApplicationBlocksFromGuildConfig(guildConfig);
-
-          for (const [userId, block] of Object.entries(staffAppBlocks)) {
-            const expiresAt = block.expiresAt ? new Date(block.expiresAt) : null;
-            if (expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) {
-              continue;
-            }
-
-            staffApplicationBlocked.push({
-              userId,
-              type: "staff_applications",
-              reason: block.reason,
-              expiresAt,
-              blockedById: block.blockedById || null,
-            });
-          }
-        }
-
-        // Combine and deduplicate
-        const blockedMap = new Map<string, { userId: string; types: string[]; reasons: Map<string, string | null>; expireTimes: Map<string, Date | null>; blockedByIds: Map<string, string | null> }>();
-        for (const b of [...modmailBlocked, ...appealBlocked, ...staffApplicationBlocked]) {
-          if (blockedMap.has(b.userId)) {
-            const existing = blockedMap.get(b.userId)!;
-            if (!existing.types.includes(b.type)) {
-              existing.types.push(b.type);
-              existing.reasons.set(b.type, b.reason);
-              existing.expireTimes.set(b.type, b.expiresAt);
-              existing.blockedByIds.set(b.type, b.blockedById);
-            }
-          } else {
-            const reasons = new Map<string, string | null>();
-            const expireTimes = new Map<string, Date | null>();
-            const blockedByIds = new Map<string, string | null>();
-            reasons.set(b.type, b.reason);
-            expireTimes.set(b.type, b.expiresAt);
-            blockedByIds.set(b.type, b.blockedById);
-            blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes, blockedByIds });
-          }
-        }
-
-        const blockedList = Array.from(blockedMap.values());
-        const totalPages = Math.max(1, Math.ceil(blockedList.length / ITEMS_PER_PAGE));
-
-        if (blockedList.length === 0) {
-          await interaction.editReply({ content: "📋 No blocked users found." });
-          return;
-        }
-
-        const startIdx = (page - 1) * ITEMS_PER_PAGE;
-        const pageItems = blockedList.slice(startIdx, startIdx + ITEMS_PER_PAGE);
-
-        let listText = "";
-        for (let i = 0; i < pageItems.length; i++) {
-          const item = pageItems[i];
-          const typeLabel = item.types.join(", ");
-          const details: string[] = [];
-          
-          for (const type of item.types) {
-            const reason = item.reasons.get(type);
-            const expiresAt = item.expireTimes.get(type);
-            const blockedById = item.blockedByIds.get(type);
-            const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
-            const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
-            const blockedByText = blockedById ? `Blocked by: <@${blockedById}>` : "Blocked by: Unknown";
-            details.push(`${type}: ${reasonText} (${durationText}; ${blockedByText})`);
-          }
-          
-          listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
-        }
-
-        const embed = new EmbedBuilder()
-          .setTitle("Blocked Users")
-          .setDescription(listText)
-          .setColor(0xed4245)
-          .setFooter({ text: `Page ${page}/${totalPages} • Total: ${blockedList.length} blocked users` })
-          .setTimestamp();
-
-        const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`block_list_prev_${interaction.user.id}_${page}`)
-            .setLabel("◀")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(page <= 1),
-          new ButtonBuilder()
-            .setCustomId(`block_list_next_${interaction.user.id}_${page}`)
-            .setLabel("▶")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(page >= totalPages)
-        );
-
-        await interaction.editReply({ embeds: [embed], components: totalPages > 1 ? [buttonRow] : [] });
+        const blockedMap = await fetchAllBlocksMap();
+        const { embed, components } = buildBlockListResponse(blockedMap, "active", 1, interaction.user.id, ITEMS_PER_PAGE);
+        await interaction.editReply({ embeds: [embed], components });
       } else if (commandName === "modmail-category") {
         console.log(`[modmail-category] Command called with subcommand attempt...`);
         const subcommand = interaction.options.getSubcommand();
@@ -11623,20 +11745,21 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           if (group === "administration") {
-            const [modmailCount, inviteCount, roleRequestsReviewed, kickRequestsReviewed, staffAccepted] = await Promise.all([
+            const [modmailCount, inviteCount, partnerships, roleRequestsReviewed, kickRequestsReviewed, staffAccepted] = await Promise.all([
               storage.getModmailStatsForUserAllGuilds(userId, fromDays, toDays),
               storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", userId, true),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", userId, true),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", userId, true),
               getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", userId, true),
             ]);
             const banUnbanKickReviewed = (banMap.get(userId) || 0) + (unbanMap.get(userId) || 0) + kickRequestsReviewed;
-            const total = modmailCount + inviteCount + roleRequestsReviewed + banUnbanKickReviewed + staffAccepted + modBanCount + modKickCount;
+            const total = modmailCount + inviteCount + partnerships + roleRequestsReviewed + banUnbanKickReviewed + staffAccepted + modBanCount + modKickCount;
 
             rows.push({
               userId,
               total,
-              line: `<@${userId}> | ${modmailCount} | ${inviteCount} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount} | ${total}`,
+              line: `<@${userId}> | ${modmailCount} | ${inviteCount} | ${partnerships} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount} | ${total}`,
             });
             continue;
           }
@@ -11670,7 +11793,7 @@ client.on("interactionCreate", async (interaction) => {
           group === "staff"
             ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Mutes | Invites | Staff Reports | Appeals | Total`
             : group === "administration"
-              ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Invites | Role Requests | Ban/Unban/Kick Reviews | Staff Accepted | Mod Bans | Mod Kicks | Total`
+              ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Invites | Partnerships | Role Requests | Ban/Unban/Kick Reviews | Staff Accepted | Mod Bans | Mod Kicks | Total`
               : `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Invites | Partnerships | Accepted Semi Pros & Pros | Mod Bans | Mod Kicks | Total`;
 
         const body = rows.map((entry, index) => `${index + 1}. ${entry.line}`).join("\n") || "No entries found.";
@@ -12049,6 +12172,9 @@ client.on("interactionCreate", async (interaction) => {
                     const currentThread = await safeGetModmailThreadByChannel(channelId);
                     if (!currentThread || currentThread.status !== "open") return;
                     if (currentThread.claimedById !== claimerId) return;
+                    const latestMessages = await storage.getModmailMessages(currentThread.id);
+                    const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
+                    if (!latestMessage || latestMessage.isStaff === "true") return;
                     await storage.updateModmailThread(currentThread.id, { claimedById: null });
                     const channel = await client.channels.fetch(channelId);
                     await sendAutoUnclaimEmbed(channel, claimerId);
@@ -12152,15 +12278,7 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.editReply({ content: "Ticket closed. Deleting channel..." });
 
             (async () => {
-              try {
-                const user = await client.users.fetch(thread.userId);
-                const closeEmbed = new EmbedBuilder()
-                  .setTitle("Ticket Closed")
-                  .setDescription("Your ticket has been closed by staff.")
-                  .setColor(0xed4245)
-                  .setTimestamp();
-                await user.send({ embeds: [closeEmbed] });
-              } catch (e) {}
+              await notifyClosedTicketParticipants(thread, false);
               if (interaction.channel?.id) {
                 try {
                   const chan = await client.channels.fetch(interaction.channel.id);
@@ -13545,11 +13663,27 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         // Handle block_list pagination
-        if (customId.startsWith("block_list_prev_") || customId.startsWith("block_list_next_")) {
+        if (customId.startsWith("block_list_prev_") || customId.startsWith("block_list_next_") || customId.startsWith("block_list_tab_")) {
           const parts = customId.split("_");
-          const direction = parts[2]; // "prev" or "next"
-          const requesterId = parts.length >= 5 ? parts[3] : null;
-          const currentPage = parseInt(parts.length >= 5 ? parts[4] : parts[3]);
+          let newPage = 1;
+          let tab: "active" | "expired" = "active";
+          let requesterId: string | null = null;
+
+          if (customId.startsWith("block_list_tab_")) {
+            // Format: block_list_tab_{active|expired}_{requesterId}_{page}
+            const tabValue = parts[3]; // "active" or "expired"
+            tab = tabValue === "expired" ? "expired" : "active";
+            requesterId = parts[4] || null;
+            newPage = 1;
+          } else {
+            // Format: block_list_{prev|next}_{requesterId}_{page}_{tab}
+            const direction = parts[2]; // "prev" or "next"
+            requesterId = parts[3] || null;
+            const currentPage = parseInt(parts[4] || "1", 10);
+            const tabStr = parts[5] || "active";
+            tab = tabStr === "expired" ? "expired" : "active";
+            newPage = direction === "prev" ? currentPage - 1 : currentPage + 1;
+          }
 
           if (requesterId && interaction.user.id !== requesterId) {
             await replyInteractionFailed(interaction);
@@ -13559,103 +13693,9 @@ client.on("interactionCreate", async (interaction) => {
           if (!await safeDeferUpdate(interaction)) return;
 
           const ITEMS_PER_PAGE = 10;
-
-          const newPage = direction === "prev" ? currentPage - 1 : currentPage + 1;
-
-          // Get all blocked users from modmail and appeals
-          const modmailBlocks = await storage.getAllModmailBlocksGlobal();
-          const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
-          
-          const appealBlocks = await storage.getAllAppealBlocksGlobal();
-          const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
-
-          const staffApplicationBlocked: Array<{ userId: string; type: "staff_applications"; reason: string | null; expiresAt: Date | null; blockedById: string | null }> = [];
-          for (const guild of client.guilds.cache.values()) {
-            const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
-            const staffAppBlocks = getStaffApplicationBlocksFromGuildConfig(guildConfig);
-
-            for (const [userId, block] of Object.entries(staffAppBlocks)) {
-              const expiresAt = block.expiresAt ? new Date(block.expiresAt) : null;
-              if (expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() <= Date.now()) continue;
-
-              staffApplicationBlocked.push({
-                userId,
-                type: "staff_applications",
-                reason: block.reason,
-                expiresAt,
-                blockedById: block.blockedById || null,
-              });
-            }
-          }
-
-          // Combine and deduplicate
-          const blockedMap = new Map<string, { userId: string; types: string[]; reasons: Map<string, string | null>; expireTimes: Map<string, Date | null>; blockedByIds: Map<string, string | null> }>();
-          for (const b of [...modmailBlocked, ...appealBlocked, ...staffApplicationBlocked]) {
-            if (blockedMap.has(b.userId)) {
-              const existing = blockedMap.get(b.userId)!;
-              if (!existing.types.includes(b.type)) {
-                existing.types.push(b.type);
-                existing.reasons.set(b.type, b.reason);
-                existing.expireTimes.set(b.type, b.expiresAt);
-                existing.blockedByIds.set(b.type, b.blockedById);
-              }
-            } else {
-              const reasons = new Map<string, string | null>();
-              const expireTimes = new Map<string, Date | null>();
-              const blockedByIds = new Map<string, string | null>();
-              reasons.set(b.type, b.reason);
-              expireTimes.set(b.type, b.expiresAt);
-              blockedByIds.set(b.type, b.blockedById);
-              blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes, blockedByIds });
-            }
-          }
-
-          const blockedList = Array.from(blockedMap.values());
-          const totalPages = Math.max(1, Math.ceil(blockedList.length / ITEMS_PER_PAGE));
-
-          const startIdx = (newPage - 1) * ITEMS_PER_PAGE;
-          const pageItems = blockedList.slice(startIdx, startIdx + ITEMS_PER_PAGE);
-
-          let listText = "";
-          for (let i = 0; i < pageItems.length; i++) {
-            const item = pageItems[i];
-            const typeLabel = item.types.join(", ");
-            const details: string[] = [];
-            
-            for (const type of item.types) {
-              const reason = item.reasons.get(type);
-              const expiresAt = item.expireTimes.get(type);
-              const blockedById = item.blockedByIds.get(type);
-              const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
-              const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
-              const blockedByText = blockedById ? `Blocked by: <@${blockedById}>` : "Blocked by: Unknown";
-              details.push(`${type}: ${reasonText} (${durationText}; ${blockedByText})`);
-            }
-            
-            listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
-          }
-
-          const embed = new EmbedBuilder()
-            .setTitle("Blocked Users")
-            .setDescription(listText || "No blocked users on this page.")
-            .setColor(0xed4245)
-            .setFooter({ text: `Page ${newPage}/${totalPages} • Total: ${blockedList.length} blocked users` })
-            .setTimestamp();
-
-          const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(requesterId ? `block_list_prev_${requesterId}_${newPage}` : `block_list_prev_${newPage}`)
-              .setLabel("◀")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(newPage <= 1),
-            new ButtonBuilder()
-              .setCustomId(requesterId ? `block_list_next_${requesterId}_${newPage}` : `block_list_next_${newPage}`)
-              .setLabel("▶")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(newPage >= totalPages)
-          );
-
-          await interaction.editReply({ embeds: [embed], components: totalPages > 1 ? [buttonRow] : [] });
+          const blockedMap = await fetchAllBlocksMap();
+          const { embed, components } = buildBlockListResponse(blockedMap, tab, newPage, requesterId || interaction.user.id, ITEMS_PER_PAGE);
+          await interaction.editReply({ embeds: [embed], components });
           return;
         }
 
@@ -14409,6 +14449,9 @@ client.on("interactionCreate", async (interaction) => {
                   const currentThread = await safeGetModmailThreadByChannel(channelId);
                   if (!currentThread || currentThread.status !== "open") return;
                   if (currentThread.claimedById !== claimerId) return;
+                  const latestMessages = await storage.getModmailMessages(currentThread.id);
+                  const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
+                  if (!latestMessage || latestMessage.isStaff === "true") return;
 
                   await storage.updateModmailThread(currentThread.id, { claimedById: null });
                   const channel = await client.channels.fetch(channelId);
@@ -14811,20 +14854,9 @@ client.on("interactionCreate", async (interaction) => {
             }
           } catch (e) {}
 
-        // Background: DM user and delete channel
+        // Background: notify ticket participants and delete channel
         (async () => {
-          // DM user notification
-          try {
-            const user = await client.users.fetch(threadUserId);
-            const closeEmbed = new EmbedBuilder()
-              .setTitle("Ticket Closed")
-              .setDescription("Your ticket has been closed by staff.")
-              .setColor(0xed4245)
-              .setTimestamp();
-            await user.send({ embeds: [closeEmbed] });
-          } catch (e) {
-            // console.log("[MODMAIL] Could not DM user about ticket close");
-          }
+          await notifyClosedTicketParticipants(thread, false);
 
           // Delete channel immediately (no delay)
           if (channelId) {
@@ -15069,6 +15101,9 @@ client.on("interactionCreate", async (interaction) => {
                   const currentThread = await storage.getAppealThreadByChannel(channelId);
                   if (!currentThread || currentThread.status !== "open") return;
                   if (currentThread.claimedById !== claimerId) return;
+                  const latestMessages = await storage.getAppealMessages(currentThread.id);
+                  const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
+                  if (!latestMessage || latestMessage.isStaff === "true") return;
 
                   await storage.updateAppealThread(currentThread.id, { claimedById: null });
                   const channel = await client.channels.fetch(channelId);
@@ -15678,6 +15713,110 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
         return;
+      } else if (interaction.customId.startsWith("promotion_request_approve_") || interaction.customId.startsWith("promotion_request_deny_")) {
+        try {
+          const match = interaction.customId.match(/^promotion_request_(approve|deny)_([a-z0-9]+)$/i);
+          if (!match) {
+            await interaction.reply({ content: "Invalid promotion/demotion request action.", flags: 64 });
+            return;
+          }
+
+          const action = match[1];
+          const requestId = match[2];
+
+          const sourceEmbed = interaction.message?.embeds?.[0];
+          const sourceFields = sourceEmbed?.fields || [];
+          const requestedByValue = sourceFields.find((f) => f.name === "Requested by")?.value || "";
+          const targetUserValue = sourceFields.find((f) => f.name === "User")?.value || "";
+          const requestTypeValue = sourceFields.find((f) => f.name === "Request Type")?.value || "";
+          const roleValue = sourceFields.find((f) => f.name === "Role to Promote To")?.value || "";
+
+          const requestedById = requestedByValue.match(/\d{17,20}/)?.[0] || "";
+          const targetUserId = targetUserValue.match(/\d{17,20}/)?.[0] || "";
+          const requestType = /demotion/i.test(requestTypeValue) ? "demotion" : "promotion";
+          const roleId = requestType === "promotion"
+            ? (roleValue.match(/\d{17,20}/)?.[0] || "none")
+            : "none";
+
+          if (!requestedById || !targetUserId) {
+            await interaction.reply({ content: "Unable to read request metadata from this message.", flags: 64 });
+            return;
+          }
+
+          const modal = new ModalBuilder()
+            .setCustomId(`promotion_request_action_${action}_${requestId}`)
+            .setTitle(action === "approve" ? "Approve Request" : "Deny Request");
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("action_reason")
+            .setLabel("Reason (optional)")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Enter a reason for this decision...")
+            .setRequired(false);
+
+          modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput));
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code !== 10062 && error.code !== 40060) {
+            console.log("Error showing promotion/demotion action modal:", error.message);
+          }
+        }
+        return;
+      } else if (interaction.customId === "promotion_request_open_promotion" || interaction.customId === "promotion_request_open_demotion") {
+        try {
+          const isPromotion = interaction.customId === "promotion_request_open_promotion";
+          const modal = new ModalBuilder()
+            .setCustomId(isPromotion ? "promotion_request_modal_promotion" : "promotion_request_modal_demotion")
+            .setTitle(isPromotion ? "Promotion Request" : "Demotion Request");
+
+          const userIdInput = new TextInputBuilder()
+            .setCustomId("user_id")
+            .setLabel("User ID")
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder("Enter the Discord user ID")
+            .setRequired(true);
+
+          const reasonInput = new TextInputBuilder()
+            .setCustomId("reason")
+            .setLabel("Reason for Promotion/Demotion")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Explain why this request should be approved")
+            .setMaxLength(1000)
+            .setRequired(true);
+
+          const activityInput = new TextInputBuilder()
+            .setCustomId("activity_last_7_days")
+            .setLabel("Activity Last 7 Days")
+            .setStyle(TextInputStyle.Paragraph)
+            .setPlaceholder("Summarize activity from the past 7 days")
+            .setMaxLength(1000)
+            .setRequired(true);
+
+          const rows: ActionRowBuilder<TextInputBuilder>[] = [
+            new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(activityInput),
+          ];
+
+          if (isPromotion) {
+            const roleIdInput = new TextInputBuilder()
+              .setCustomId("role_id")
+              .setLabel("Role to Promote To (Role ID or Name)")
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder("Enter role ID or role name")
+              .setMaxLength(100)
+              .setRequired(true);
+            rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(roleIdInput));
+          }
+
+          modal.addComponents(...rows);
+          await interaction.showModal(modal);
+        } catch (error: any) {
+          if (error.code !== 10062 && error.code !== 40060) {
+            console.log("Error showing promotion/demotion request modal:", error.message);
+          }
+        }
+        return;
       } else if (interaction.customId === "submit_ban_request") {
         try {
           const modal = new ModalBuilder()
@@ -16209,12 +16348,25 @@ client.on("interactionCreate", async (interaction) => {
             const newMembers = currentMembers.filter((id: string) => id !== userId);
             await storage.updateModmailThread(threadId, { addedMemberIds: newMembers });
 
-            // DM the removed user
+            let ticketCreatorName = "the ticket creator";
             try {
               const ticketCreator = await client.users.fetch(thread.userId);
+              ticketCreatorName = ticketCreator.username || ticketCreatorName;
+            } catch {}
+
+            rememberRecentlyRemovedModmailParticipant(userId, {
+              guildId: thread.guildId,
+              guildName: interaction.guild?.name || undefined,
+              ticketCreatorId: thread.userId,
+              ticketCreatorName,
+              reason: reason || undefined,
+            });
+
+            // DM the removed user
+            try {
               const removeEmbed = new EmbedBuilder()
-                .setTitle("Removed from Ticket")
-                .setDescription(`You have been removed from **${ticketCreator.username}**'s ticket.\n\nYou will no longer see their messages.`)
+                .setTitle("Removed from Modmail Ticket")
+                .setDescription(`You have been removed from **${ticketCreatorName}**'s modmail ticket.\n\nReplies in this DM will no longer go to staff or the other ticket members.`)
                 .setColor(0xed4245)
                 .setTimestamp();
               await targetUser.send({ embeds: [removeEmbed] });
@@ -18130,6 +18282,146 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: "Your kick request has been submitted!",
         });
+      } else if (interaction.customId === "promotion_request_modal_promotion" || interaction.customId === "promotion_request_modal_demotion") {
+        try {
+          if (!await safeDeferReply(interaction)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+
+        const type = interaction.customId.endsWith("_promotion") ? "promotion" : "demotion";
+        const userId = interaction.fields.getTextInputValue("user_id").trim();
+        const reason = interaction.fields.getTextInputValue("reason").trim();
+        const activityLast7Days = interaction.fields.getTextInputValue("activity_last_7_days").trim();
+        const clampEmbedField = (value: string, max = 1024) => {
+          const trimmed = value.trim();
+          if (trimmed.length <= max) return trimmed;
+          return `${trimmed.slice(0, max - 3)}...`;
+        };
+        const safeReason = clampEmbedField(reason);
+        const safeActivityLast7Days = clampEmbedField(activityLast7Days);
+        const rawRoleInput = type === "promotion"
+          ? (interaction.fields.getTextInputValue("role_id") || "").trim()
+          : "";
+        let roleId = "none";
+        let roleDisplay = "N/A";
+
+        if (!/^\d{17,20}$/.test(userId)) {
+          await interaction.editReply({ content: "❌ Invalid user ID format." });
+          return;
+        }
+
+        if (type === "promotion") {
+          const guild = interaction.guild;
+          if (!guild) {
+            await interaction.editReply({ content: "❌ This request must be submitted in a server." });
+            return;
+          }
+
+          await guild.roles.fetch().catch(() => null);
+          let resolvedRole: any = null;
+
+          if (/^\d{17,20}$/.test(rawRoleInput)) {
+            resolvedRole = guild.roles.cache.get(rawRoleInput) || null;
+          } else {
+            const normalizedInput = rawRoleInput.toLowerCase();
+            const allRoles = Array.from(guild.roles.cache.values()) as any[];
+            const exactMatch = allRoles.find((r: any) => String(r.name || "").trim().toLowerCase() === normalizedInput) || null;
+            const startsWithMatch = allRoles.find((r: any) => String(r.name || "").trim().toLowerCase().startsWith(normalizedInput)) || null;
+            const includesMatch = allRoles.find((r: any) => String(r.name || "").trim().toLowerCase().includes(normalizedInput)) || null;
+            resolvedRole = exactMatch || startsWithMatch || includesMatch || null;
+          }
+
+          if (!resolvedRole) {
+            await interaction.editReply({ content: "❌ Could not resolve that role. Provide a valid role ID or role name." });
+            return;
+          }
+
+          roleId = resolvedRole.id;
+          roleDisplay = `<@&${resolvedRole.id}> (${resolvedRole.id})`;
+        }
+
+        const targetUser = await client.users.fetch(userId).catch(() => null);
+        if (!targetUser) {
+          await interaction.editReply({ content: "❌ Could not find a user with that ID." });
+          return;
+        }
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const configuredChannelId = getPromotionDemotionChannelIdFromGuildConfig(config);
+        const destinationChannelId = configuredChannelId || config?.modLogChannelId || interaction.channelId;
+
+        if (!destinationChannelId) {
+          await interaction.editReply({ content: "❌ Could not determine a destination channel. Configure one with /setup_promotion_requests." });
+          return;
+        }
+
+        const destinationChannel = await client.channels.fetch(destinationChannelId).catch(() => null);
+        if (!destinationChannel || !("send" in destinationChannel)) {
+          await interaction.editReply({ content: "❌ The configured promotion/demotion channel is not accessible." });
+          return;
+        }
+
+        const requestId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        const actionLabel = type === "promotion" ? "Promotion" : "Demotion";
+
+        const requestFields: any[] = [
+          { name: "User", value: `<@${targetUser.id}>\n(${targetUser.id})`, inline: true },
+          { name: "Moderator", value: "Pending", inline: true },
+          { name: "Status", value: "⏳ Pending", inline: true },
+          { name: "Requested by", value: `<@${interaction.user.id}>`, inline: false },
+          { name: "Request Type", value: actionLabel, inline: true },
+        ];
+
+        if (type === "promotion") {
+          requestFields.push({ name: "Role to Promote To", value: `<@&${roleId}> (${roleId})`, inline: true });
+        }
+
+        requestFields.push({ name: "Reason for Promotion/Demotion", value: safeReason, inline: false });
+        requestFields.push({ name: "Activity Last 7 Days", value: safeActivityLast7Days, inline: false });
+
+        const requestEmbed = new EmbedBuilder()
+          .setTitle(type === "promotion" ? "📈 Promotion Request" : "📉 Demotion Request")
+          .setColor(type === "promotion" ? 0x57f287 : 0xed4245)
+          .addFields(requestFields)
+          .setFooter({ text: `Pending Review • Request ID: ${requestId}` })
+          .setTimestamp();
+
+        if (type === "promotion") {
+          const roleFieldIndex = requestFields.findIndex((f: any) => f.name === "Role to Promote To");
+          if (roleFieldIndex !== -1) {
+            requestFields[roleFieldIndex] = { name: "Role to Promote To", value: roleDisplay, inline: true };
+            requestEmbed.setFields(requestFields);
+          }
+        }
+
+        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`promotion_request_approve_${requestId}`)
+            .setLabel("Approve")
+            .setStyle(ButtonStyle.Success)
+            .setEmoji("✅"),
+          new ButtonBuilder()
+            .setCustomId(`promotion_request_deny_${requestId}`)
+            .setLabel("Deny")
+            .setStyle(ButtonStyle.Danger)
+            .setEmoji("❌")
+        );
+
+        const promotionPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "promotion_demotion_requests");
+        const promotionPingContent = promotionPingRoles.length > 0 ? promotionPingRoles.map(id => `<@&${id}>`).join(" ") : undefined;
+
+        await destinationChannel.send({
+          content: promotionPingContent,
+          embeds: [requestEmbed],
+          components: [row],
+          allowedMentions: { roles: promotionPingRoles, parse: [] },
+        });
+
+        await interaction.editReply({
+          content: `✅ ${actionLabel} request submitted in <#${destinationChannelId}>.`,
+        });
       } else if (interaction.customId.startsWith("kick_action_")) {
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -18545,6 +18837,142 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) { console.log("[UNBAN] Failed to post to log channel:", e); }
           }
         })().catch(e => console.log("[UNBAN] Background task error:", e));
+      } else if (interaction.customId.startsWith("promotion_request_action_")) {
+        try {
+          if (!await safeDeferReply(interaction)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) return;
+          throw error;
+        }
+
+        const match = interaction.customId.match(/^promotion_request_action_(approve|deny)_([a-z0-9]+)$/i);
+        if (!match) {
+          await interaction.editReply({ content: "Invalid promotion/demotion request action." });
+          return;
+        }
+
+        const action = match[1];
+        const requestId = match[2];
+        const actionReason = interaction.fields.getTextInputValue("action_reason") || "";
+
+        const sourceEmbed = interaction.message?.embeds?.[0];
+        const sourceFields = sourceEmbed?.fields || [];
+        const requestedByValue = sourceFields.find((field) => field.name === "Requested by")?.value || "";
+        const targetUserValue = sourceFields.find((field) => field.name === "User")?.value || "";
+        const requestTypeValue = sourceFields.find((field) => field.name === "Request Type")?.value || "";
+        const requestedRoleValue = sourceFields.find((field) => field.name === "Role to Promote To")?.value || "N/A";
+        const requestReason = sourceFields.find((field) => field.name === "Reason for Promotion/Demotion")?.value || "No reason provided";
+        const activityLast7Days = sourceFields.find((field) => field.name === "Activity Last 7 Days")?.value || "Not provided";
+
+        const requestedById = requestedByValue.match(/\d{17,20}/)?.[0] || "";
+        const targetUserId = targetUserValue.match(/\d{17,20}/)?.[0] || "";
+        const requestType = (/demotion/i.test(requestTypeValue) ? "demotion" : "promotion") as "promotion" | "demotion";
+        const roleId = requestType === "promotion"
+          ? (requestedRoleValue.match(/\d{17,20}/)?.[0] || "none")
+          : "none";
+
+        if (!requestedById || !targetUserId) {
+          await interaction.editReply({ content: "Unable to read request metadata from this message." });
+          return;
+        }
+
+        const { memberRoles, memberPermissions } = getInteractionMemberContext(interaction);
+        const hasPermission = await hasPromotionDemotionPermission(memberRoles, memberPermissions, interaction.guildId!);
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You don't have permission to approve or deny promotion/demotion requests." });
+          return;
+        }
+
+        const config = await storage.getGuildConfig(interaction.guildId!);
+        const message = interaction.message;
+
+        const status = action === "approve" ? "✅ Approved" : "❌ Denied";
+        const color = action === "approve" ? 0x23a559 : 0xda373c;
+
+        const reviewFields: any[] = [
+          { name: "User", value: `<@${targetUserId}>\n(${targetUserId})`, inline: true },
+          { name: "Moderator", value: `<@${interaction.user.id}>`, inline: true },
+          { name: "Status", value: status, inline: true },
+          { name: "Requested by", value: `<@${requestedById}>`, inline: false },
+          { name: "Request Type", value: requestType === "promotion" ? "Promotion" : "Demotion", inline: true },
+        ];
+
+        if (requestType === "promotion") {
+          reviewFields.push({ name: "Role to Promote To", value: roleId === "none" ? requestedRoleValue : `<@&${roleId}> (${roleId})`, inline: true });
+        }
+
+        reviewFields.push({ name: "Reason for Promotion/Demotion", value: requestReason, inline: false });
+        reviewFields.push({ name: "Activity Last 7 Days", value: activityLast7Days, inline: false });
+
+        const updatedEmbed = new EmbedBuilder()
+          .setTitle(requestType === "promotion" ? "📈 Promotion Request" : "📉 Demotion Request")
+          .setColor(color)
+          .addFields(reviewFields)
+          .setFooter({ text: `Request ID: ${requestId}` })
+          .setTimestamp();
+
+        if (actionReason) {
+          updatedEmbed.addFields({ name: "Review Note", value: actionReason, inline: false });
+        }
+
+        if (message) {
+          await message.edit({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+        }
+
+        await interaction.editReply({
+          content: `Promotion/demotion request ${action === "approve" ? "approved" : "denied"} successfully.`,
+        });
+
+        const guildName = interaction.guild?.name || "Unknown";
+        (async () => {
+          try {
+            const requester = await client.users.fetch(requestedById);
+            const requesterDm = new EmbedBuilder()
+              .setTitle(`Promotion/Demotion Request ${action === "approve" ? "Approved" : "Denied"}`)
+              .setDescription(`Your ${requestType} request has been **${action === "approve" ? "approved" : "denied"}**.`)
+              .setColor(color)
+              .addFields(
+                { name: "Reviewed by", value: interaction.user.username, inline: true },
+                { name: "Server", value: guildName, inline: true },
+                { name: "Reason", value: actionReason || "No reason provided", inline: false }
+              )
+              .setTimestamp();
+            await requester.send({ embeds: [requesterDm] });
+          } catch {}
+
+          // Post to promotion log channel
+          try {
+            const promotionLogChannelId = getPromotionLogChannelIdFromGuildConfig(config);
+            if (promotionLogChannelId) {
+              const logChannel = await client.channels.fetch(promotionLogChannelId);
+              if (logChannel && "send" in logChannel) {
+                const logFields: any[] = [
+                  { name: "User", value: `<@${targetUserId}> (${targetUserId})`, inline: true },
+                  { name: "Requested by", value: `<@${requestedById}>`, inline: true },
+                  { name: "Reviewed by", value: `<@${interaction.user.id}>`, inline: true },
+                  { name: "Request Type", value: requestType === "promotion" ? "Promotion" : "Demotion", inline: true },
+                  { name: "Status", value: action === "approve" ? "✅ Approved" : "❌ Denied", inline: true },
+                ];
+                if (requestType === "promotion" && roleId !== "none") {
+                  logFields.push({ name: "Role to Promote To", value: `<@&${roleId}> (${roleId})`, inline: true });
+                }
+                logFields.push({ name: "Reason", value: requestReason, inline: false });
+                if (actionReason) {
+                  logFields.push({ name: "Review Note", value: actionReason, inline: false });
+                }
+                const logEmbed = new EmbedBuilder()
+                  .setTitle(action === "approve"
+                    ? (requestType === "promotion" ? "📈 Promotion Approved" : "📉 Demotion Approved")
+                    : (requestType === "promotion" ? "📈 Promotion Denied" : "📉 Demotion Denied"))
+                  .setColor(action === "approve" ? 0x23a559 : 0xda373c)
+                  .addFields(logFields)
+                  .setFooter({ text: `Request ID: ${requestId}` })
+                  .setTimestamp();
+                await logChannel.send({ embeds: [logEmbed] });
+              }
+            }
+          } catch (e) { console.log("[PROMO] Failed to post to log channel:", e); }
+        })().catch(() => {});
       } else if (interaction.customId.startsWith("inactivity_review_")) {
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -19117,6 +19545,139 @@ async function sendTicketCommandEmbed(message: any, description: string, color =
     .setTimestamp();
 
   await message.reply({ embeds: [embed] });
+}
+
+type BlockEntry = {
+  userId: string;
+  types: string[];
+  reasons: Map<string, string | null>;
+  expireTimes: Map<string, Date | null>;
+  blockedByIds: Map<string, string | null>;
+};
+
+async function fetchAllBlocksMap(): Promise<Map<string, BlockEntry>> {
+  const modmailBlocks = await storage.getAllModmailBlocksGlobal();
+  const modmailBlocked = modmailBlocks.map(b => ({ userId: b.userId, type: "modmail" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
+
+  const appealBlocks = await storage.getAllAppealBlocksGlobal();
+  const appealBlocked = appealBlocks.map(b => ({ userId: b.userId, type: "appeal" as const, reason: b.reason, expiresAt: b.expiresAt, blockedById: (b as any).blockedById || null }));
+
+  const staffApplicationBlocked: Array<{ userId: string; type: "staff_applications"; reason: string | null; expiresAt: Date | null; blockedById: string | null }> = [];
+  for (const guild of client.guilds.cache.values()) {
+    const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    const staffAppBlocks = getStaffApplicationBlocksFromGuildConfig(guildConfig);
+    for (const [userId, block] of Object.entries(staffAppBlocks)) {
+      const expiresAt = block.expiresAt ? new Date(block.expiresAt) : null;
+      staffApplicationBlocked.push({ userId, type: "staff_applications", reason: block.reason, expiresAt, blockedById: block.blockedById || null });
+    }
+  }
+
+  const blockedMap = new Map<string, BlockEntry>();
+  for (const b of [...modmailBlocked, ...appealBlocked, ...staffApplicationBlocked]) {
+    if (blockedMap.has(b.userId)) {
+      const existing = blockedMap.get(b.userId)!;
+      if (!existing.types.includes(b.type)) {
+        existing.types.push(b.type);
+        existing.reasons.set(b.type, b.reason);
+        existing.expireTimes.set(b.type, b.expiresAt);
+        existing.blockedByIds.set(b.type, b.blockedById);
+      }
+    } else {
+      const reasons = new Map<string, string | null>();
+      const expireTimes = new Map<string, Date | null>();
+      const blockedByIds = new Map<string, string | null>();
+      reasons.set(b.type, b.reason);
+      expireTimes.set(b.type, b.expiresAt);
+      blockedByIds.set(b.type, b.blockedById);
+      blockedMap.set(b.userId, { userId: b.userId, types: [b.type], reasons, expireTimes, blockedByIds });
+    }
+  }
+  return blockedMap;
+}
+
+function buildBlockListResponse(
+  blockedMap: Map<string, BlockEntry>,
+  tab: "active" | "expired",
+  page: number,
+  requesterId: string,
+  ITEMS_PER_PAGE: number
+): { embed: EmbedBuilder; components: ActionRowBuilder<ButtonBuilder>[] } {
+  const now = Date.now();
+  const isBlockActive = (expiresAt: Date | null) => !expiresAt || expiresAt.getTime() > now;
+  const isBlockExpired = (expiresAt: Date | null) => expiresAt !== null && expiresAt.getTime() <= now;
+
+  const tabEntries: BlockEntry[] = [];
+  for (const entry of blockedMap.values()) {
+    const relevantTypes = entry.types.filter(type => {
+      const expiresAt = entry.expireTimes.get(type) ?? null;
+      return tab === "active" ? isBlockActive(expiresAt) : isBlockExpired(expiresAt);
+    });
+    if (relevantTypes.length > 0) {
+      tabEntries.push({ ...entry, types: relevantTypes });
+    }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(tabEntries.length / ITEMS_PER_PAGE));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const startIdx = (safePage - 1) * ITEMS_PER_PAGE;
+  const pageItems = tabEntries.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+
+  let listText = "";
+  for (let i = 0; i < pageItems.length; i++) {
+    const item = pageItems[i];
+    const details: string[] = [];
+    for (const type of item.types) {
+      const reason = item.reasons.get(type);
+      const expiresAt = item.expireTimes.get(type);
+      const blockedById = item.blockedByIds.get(type);
+      const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
+      const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
+      const blockedByText = blockedById ? `Blocked by: <@${blockedById}>` : "Blocked by: Unknown";
+      details.push(`${type}: ${reasonText} (${durationText}; ${blockedByText})`);
+    }
+    listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
+  }
+
+  const tabLabel = tab === "active" ? "Active Blocked Users" : "Expired Blocked Users";
+  const embed = new EmbedBuilder()
+    .setTitle(tabLabel)
+    .setDescription(listText || `No ${tab} blocks found.`)
+    .setColor(tab === "active" ? 0xed4245 : 0x95a5a6)
+    .setFooter({ text: `Page ${safePage}/${totalPages} \u2022 Total: ${tabEntries.length} ${tab} block${tabEntries.length !== 1 ? "s" : ""}` })
+    .setTimestamp();
+
+  const tabRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`block_list_tab_active_${requesterId}_1`)
+      .setLabel("Active Blocks")
+      .setStyle(tab === "active" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(tab === "active"),
+    new ButtonBuilder()
+      .setCustomId(`block_list_tab_expired_${requesterId}_1`)
+      .setLabel("Expired Blocks")
+      .setStyle(tab === "expired" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(tab === "expired"),
+  );
+
+  const components: ActionRowBuilder<ButtonBuilder>[] = [tabRow];
+
+  if (totalPages > 1) {
+    const pageRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`block_list_prev_${requesterId}_${safePage}_${tab}`)
+        .setLabel("\u25c4")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage <= 1),
+      new ButtonBuilder()
+        .setCustomId(`block_list_next_${requesterId}_${safePage}_${tab}`)
+        .setLabel("\u25ba")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage >= totalPages),
+    );
+    components.push(pageRow);
+  }
+
+  return { embed, components };
 }
 
 async function sendAutoUnclaimEmbed(channelLike: any, claimerId: string): Promise<void> {
@@ -20117,9 +20678,6 @@ client.on("messageCreate", async (message) => {
 
     if (isBanLikeCommand || command === "unban" || command === "mute" || command === "unmute" || command === "kick") {
       const configAction = command === "unban" || isBanLikeCommand ? "ban" : command === "unmute" ? "mute" : command as PrefixModerationAction;
-      if (!modSetup.enabledActions.includes(configAction)) {
-        return;
-      }
 
       const successEmoji = modSetup.statusEmojis.success;
       const errorEmoji = modSetup.statusEmojis.error;
@@ -20261,26 +20819,19 @@ client.on("messageCreate", async (message) => {
       const hasMutePerm = !!memberPerms?.has(PermissionFlagsBits.ModerateMembers);
 
       const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
-      const configuredRoles = modSetup.rolePermissions[configAction] || [];
-      const hasConfiguredRole = configuredRoles.length > 0 && configuredRoles.some((roleId) => memberRoleIds.includes(roleId));
+      const configuredRoles = uniqueStrings(modSetup.rolePermissions[configAction] || []);
+      const fallbackModRoles = uniqueStrings(guildConfig?.modRoleIds || []);
+      const hasConfiguredRole = configuredRoles.some((roleId) => memberRoleIds.includes(roleId));
+      const hasFallbackModRole = fallbackModRoles.some((roleId) => memberRoleIds.includes(roleId));
+      const hasNativeActionPermission = (isBanLikeCommand || command === "unban")
+        ? hasBanPerm
+        : command === "kick"
+          ? hasKickPerm
+          : hasMutePerm;
+      const isActionEnabled = modSetup.enabledActions.includes(configAction) || isAdmin || hasConfiguredRole || hasFallbackModRole || hasNativeActionPermission;
+      const hasPermissionForAction = isAdmin || hasConfiguredRole || hasFallbackModRole || hasNativeActionPermission;
 
-      if (!isAdmin && !hasConfiguredRole) {
-        return;
-      }
-
-      if (isBanLikeCommand && !isAdmin && !hasBanPerm) {
-        return;
-      }
-      if (command === "unban" && !isAdmin && !hasBanPerm) {
-        return;
-      }
-      if (command === "kick" && !isAdmin && !hasKickPerm) {
-        return;
-      }
-      if (command === "mute" && !isAdmin && !hasMutePerm) {
-        return;
-      }
-      if (command === "unmute" && !isAdmin && !hasMutePerm) {
+      if (!isActionEnabled || !hasPermissionForAction) {
         return;
       }
 
@@ -20804,18 +21355,8 @@ client.on("messageCreate", async (message) => {
           }
         }
 
-        // Notify user via DM
-        try {
-          const user = await client.users.fetch(currentThread.userId);
-          const closeEmbed = new EmbedBuilder()
-            .setTitle(timedIsAppeal ? "Appeal Closed" : "Ticket Closed")
-            .setDescription(timedIsAppeal ? "Your appeal has been closed by staff." : "Your ticket has been closed by staff.")
-            .setColor(0xed4245)
-            .setTimestamp();
-          await user.send({ embeds: [closeEmbed] });
-        } catch (e) {
-          // console.log("Could not DM user about timed ticket close");
-        }
+        // Notify everyone included in the ticket via DM
+        await notifyClosedTicketParticipants(currentThread as any, timedIsAppeal);
 
         // Send log BEFORE replying or deleting (critical to ensure it happens)
         try {
@@ -20907,18 +21448,8 @@ client.on("messageCreate", async (message) => {
     const closerId = message.author.id;
     const guildId = message.guild.id;
 
-    // Notify user
-    try {
-      const user = await client.users.fetch(threadUserId);
-      const closeEmbed = new EmbedBuilder()
-        .setTitle(isAppeal ? "Appeal Closed" : "Ticket Closed")
-        .setDescription(isAppeal ? "Your appeal has been closed by staff." : "Your ticket has been closed by staff.")
-        .setColor(0xed4245)
-        .setTimestamp();
-      await user.send({ embeds: [closeEmbed] });
-    } catch (e) {
-      // console.log("Could not DM user about ticket close");
-    }
+    // Notify everyone included in the ticket
+    await notifyClosedTicketParticipants(thread as any, isAppeal);
 
     // Log to log channel
     try {
@@ -21127,6 +21658,11 @@ client.on("messageCreate", async (message) => {
         const currentThread = claimIsAppeal ? currentAppeal : currentModmail;
         if (!currentThread || currentThread.status !== "open") return;
         if (currentThread.claimedById !== claimerId) return;
+        const latestMessages = claimIsAppeal
+          ? await storage.getAppealMessages(currentThread.id)
+          : await storage.getModmailMessages(currentThread.id);
+        const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
+        if (!latestMessage || latestMessage.isStaff === "true") return;
 
         if (claimIsAppeal) {
           await storage.updateAppealThread(currentThread.id, { claimedById: null });
@@ -21942,6 +22478,16 @@ client.on("messageCreate", async (message) => {
           await message.reply(DISABLED_MESSAGE).catch(() => {});
           return;
         }
+
+        const recentRemoval = getRecentlyRemovedModmailParticipant(message.author.id);
+        if (recentRemoval) {
+          const reasonSuffix = recentRemoval.reason ? `\n\nReason: ${recentRemoval.reason}` : "";
+          await message.reply(
+            `You were removed from **${recentRemoval.ticketCreatorName}**'s modmail ticket, so replies in this DM are no longer sent to staff or the other ticket members.${reasonSuffix}`
+          ).catch(() => {});
+          return;
+        }
+
         // No existing open ticket - ignore the DM silently
         // Tickets must be created via the dropdown menu or button in the server
         console.log(`[DM] User ${message.author.id} has no open modmail/appeal/quiz - ignoring DM`);
@@ -22008,6 +22554,11 @@ client.on("messageCreate", async (message) => {
                   : await safeGetModmailThreadByChannel(channelId);
                 if (!currentThread || currentThread.status !== "open") return;
                 if (currentThread.claimedById !== claimerId) return;
+                const latestMessages = isAppealThread
+                  ? await storage.getAppealMessages(currentThread.id)
+                  : await storage.getModmailMessages(currentThread.id);
+                const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
+                if (!latestMessage || latestMessage.isStaff === "true") return;
 
                 if (isAppealThread) {
                   await storage.updateAppealThread(currentThread.id, { claimedById: null });
@@ -22412,6 +22963,8 @@ client.on("messageCreate", async (message) => {
               closedAt: new Date(),
             });
 
+            await notifyClosedTicketParticipants(threadToClose as any, false);
+
             // Award 1 activity point to the staff member who handled it
             if (guildId) {
               await storage.addModmailActivityEntries(guildId, staffId, 1);
@@ -22749,17 +23302,7 @@ client.on("messageCreate", async (message) => {
 
             await storage.updateModmailThread(threadToClose.id, { status: "closed" });
 
-            try {
-              const closedUser = await client.users.fetch(threadToClose.userId);
-              const closeEmbed = new EmbedBuilder()
-                .setTitle("Ticket Closed")
-                .setDescription("Your ticket has been closed by staff.")
-                .setColor(0xed4245)
-                .setTimestamp();
-              await closedUser.send({ embeds: [closeEmbed] });
-            } catch (e) {
-              console.log("Could not notify user of ticket closure");
-            }
+            await notifyClosedTicketParticipants(threadToClose as any, false);
 
             try {
               const closeChannel = await client.channels.fetch(channelId);
