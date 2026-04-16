@@ -3125,7 +3125,7 @@ export async function registerRoutes(
         });
       }
 
-      const threads = await Promise.all(
+      let threads = await Promise.all(
         filtered.map(async ({ thread, category }) => {
           const messages = category === "appeal"
             ? await storage.getAppealMessages(thread.id).catch(() => [])
@@ -3173,6 +3173,179 @@ export async function registerRoutes(
           };
         }),
       );
+
+      const existingThreadIds = new Set(threads.map((thread) => String(thread.id || "")).filter(Boolean));
+      const existingChannelIds = new Set(threads.map((thread) => String(thread.channelId || "")).filter(Boolean));
+      const config = await storage.getGuildConfig(guildId).catch(() => undefined);
+
+      // Fallback 1: include currently open ticket channels directly from Discord in case DB history is missing.
+      try {
+        let guildChannels: any[] = [];
+        if (getBotToken()) {
+          guildChannels = await discordBotApiRequest<any[]>(`/guilds/${guildId}/channels`).catch(() => []);
+        } else if (client.isReady()) {
+          const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+          guildChannels = guild ? Array.from(guild.channels.cache.values()).map((channel: any) => ({
+            id: channel.id,
+            name: channel.name,
+            type: channel.type,
+            parent_id: channel.parentId,
+            topic: channel.topic || "",
+            last_message_id: channel.lastMessageId || null,
+          })) : [];
+        }
+
+        const modmailCategoryId = String(config?.modmailCategoryId || "").trim();
+        const appealCategoryId = String(config?.appealCategoryId || "").trim();
+        const validParentIds = new Set([modmailCategoryId, appealCategoryId].filter(Boolean));
+
+        const liveTicketChannels = guildChannels.filter((channel: any) => {
+          const channelType = Number(channel?.type);
+          const isTextChannel = channelType === 0 || channelType === 5;
+          if (!isTextChannel) return false;
+          if (!validParentIds.has(String(channel?.parent_id || ""))) return false;
+          return true;
+        });
+
+        const liveThreads = await Promise.all(
+          liveTicketChannels.map(async (channel: any) => {
+            const channelId = String(channel?.id || "").trim();
+            if (!channelId || existingChannelIds.has(channelId)) {
+              return null;
+            }
+
+            const inferredCategory = String(channel?.parent_id || "") === appealCategoryId ? "appeal" : "modmail";
+            const userIdMatch = String(channel?.topic || "").match(/\b\d{17,20}\b/);
+            const inferredUserId = userIdMatch ? userIdMatch[0] : null;
+            const creatorInfo = await resolveDiscordUserSummary(inferredUserId, guildId);
+
+            let rawMessages: any[] = [];
+            if (getBotToken()) {
+              rawMessages = await discordBotApiRequest<any[]>(`/channels/${channelId}/messages?limit=25`).catch(() => []);
+            }
+
+            const normalizedMessages = (Array.isArray(rawMessages) ? rawMessages : [])
+              .slice()
+              .reverse()
+              .map((msg: any) => ({
+                id: String(msg?.id || crypto.randomUUID()),
+                authorId: String(msg?.author?.id || ""),
+                content: String(msg?.content || "").trim() || "(embed/attachment only)",
+                isStaff: !!msg?.author && !msg.author.bot,
+                createdAt: String(msg?.timestamp || new Date().toISOString()),
+              }));
+
+            const latestMessage = normalizedMessages.length > 0 ? normalizedMessages[normalizedMessages.length - 1] : null;
+
+            return {
+              id: `live-${channelId}`,
+              userId: creatorInfo.userId || "unknown",
+              username: creatorInfo.username || String(channel?.name || "Unknown user"),
+              avatarUrl: creatorInfo.avatarUrl,
+              status: "open",
+              category: inferredCategory,
+              channelId,
+              createdAt: new Date().toISOString(),
+              closedAt: null,
+              closeReason: null,
+              claimedById: null,
+              claimedByUsername: null,
+              claimedByAvatarUrl: null,
+              messageCount: normalizedMessages.length,
+              messages: normalizedMessages,
+              latestMessage: latestMessage
+                ? {
+                    content: latestMessage.content,
+                    authorUsername: latestMessage.isStaff ? "Staff" : "User",
+                    isStaff: latestMessage.isStaff,
+                    sentAt: latestMessage.createdAt,
+                  }
+                : null,
+            };
+          }),
+        );
+
+        const extraLiveThreads = liveThreads.filter((entry): entry is NonNullable<typeof entry> => !!entry);
+        if (extraLiveThreads.length > 0) {
+          for (const entry of extraLiveThreads) {
+            existingThreadIds.add(String(entry.id || ""));
+            if (entry.channelId) existingChannelIds.add(String(entry.channelId));
+          }
+          threads = [...threads, ...extraLiveThreads];
+        }
+      } catch {
+        // Best-effort fallback only.
+      }
+
+      // Fallback 2: include historical closed tickets from modmail log channel when DB rows are unavailable.
+      try {
+        const logChannelId = String(config?.modmailLogChannelId || "").trim();
+        if (logChannelId) {
+          let rawLogMessages: any[] = [];
+          if (getBotToken()) {
+            rawLogMessages = await discordBotApiRequest<any[]>(`/channels/${logChannelId}/messages?limit=100`).catch(() => []);
+          }
+
+          const closedFromLogs = (Array.isArray(rawLogMessages) ? rawLogMessages : [])
+            .filter((message: any) => {
+              const embeds = Array.isArray(message?.embeds) ? message.embeds : [];
+              const firstTitle = String(embeds[0]?.title || "").toLowerCase();
+              return firstTitle.includes("ticket closed");
+            })
+            .map((message: any) => {
+              const embeds = Array.isArray(message?.embeds) ? message.embeds : [];
+              const embed = embeds[0] || {};
+              const fields = Array.isArray(embed?.fields) ? embed.fields : [];
+              const openedByField = fields.find((field: any) => String(field?.name || "").toLowerCase().includes("opened by"));
+              const transcriptField = fields.find((field: any) => String(field?.name || "").toLowerCase().includes("transcript"));
+              const openedByValue = String(openedByField?.value || "");
+              const openedByIdMatch = openedByValue.match(/\d{17,20}/);
+              const transcriptPreview = String(transcriptField?.value || "No transcript preview available.");
+              const syntheticId = `log-${String(message?.id || crypto.randomUUID())}`;
+
+              return {
+                id: syntheticId,
+                userId: openedByIdMatch ? openedByIdMatch[0] : "unknown",
+                username: openedByIdMatch ? `User ${openedByIdMatch[0]}` : "Unknown user",
+                avatarUrl: null,
+                status: "closed",
+                category: "modmail",
+                channelId: null,
+                createdAt: String(message?.timestamp || new Date().toISOString()),
+                closedAt: String(message?.timestamp || new Date().toISOString()),
+                closeReason: null,
+                claimedById: null,
+                claimedByUsername: null,
+                claimedByAvatarUrl: null,
+                messageCount: transcriptPreview ? 1 : 0,
+                messages: transcriptPreview
+                  ? [{
+                      id: `${syntheticId}-preview`,
+                      authorId: "system",
+                      content: transcriptPreview,
+                      isStaff: true,
+                      createdAt: String(message?.timestamp || new Date().toISOString()),
+                    }]
+                  : [],
+                latestMessage: transcriptPreview
+                  ? {
+                      content: transcriptPreview,
+                      authorUsername: "System",
+                      isStaff: true,
+                      sentAt: String(message?.timestamp || new Date().toISOString()),
+                    }
+                  : null,
+              };
+            })
+            .filter((entry) => !existingThreadIds.has(String(entry.id || "")));
+
+          if (closedFromLogs.length > 0) {
+            threads = [...threads, ...closedFromLogs];
+          }
+        }
+      } catch {
+        // Best-effort fallback only.
+      }
 
       const sorted = threads.sort((a, b) => {
         const aTime = new Date(a.createdAt).getTime();
