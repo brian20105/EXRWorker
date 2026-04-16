@@ -6502,7 +6502,68 @@ async function sendDMToStaff(staffUserId: string, status: "approved" | "denied",
   }
 }
 
-async function logCommand(guildId: string, channelId: string, commandName: string, userId: string, username: string, options?: any): Promise<void> {
+function quoteCommandToken(value: string): string {
+  if (!value.includes(" ")) return value;
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function formatCommandOptionValue(option: any): string | null {
+  if (!option || typeof option !== "object") return null;
+
+  if (option.user?.id) return `<@${option.user.id}>`;
+  if (option.member?.user?.id) return `<@${option.member.user.id}>`;
+  if (option.channel?.id) return `<#${option.channel.id}>`;
+  if (option.role?.id) return `<@&${option.role.id}>`;
+  if (option.attachment?.name) return quoteCommandToken(String(option.attachment.name));
+
+  const raw = option.value;
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "string") return quoteCommandToken(raw);
+  return String(raw);
+}
+
+function buildCommandLogData(interaction: any): { commandUsed: string; optionsData: Record<string, string> } {
+  const commandParts: string[] = [`/${interaction.commandName}`];
+  const optionsData: Record<string, string> = {};
+
+  const walk = (options: any[], parentPath: string[] = []): void => {
+    if (!Array.isArray(options)) return;
+    for (const option of options) {
+      if (!option || typeof option !== "object") continue;
+
+      const optionName = String(option.name || "").trim();
+      const currentPath = optionName ? [...parentPath, optionName] : [...parentPath];
+      const type = Number(option.type || 0);
+
+      // 1 = subcommand, 2 = subcommand group
+      if (type === 1 || type === 2) {
+        if (optionName) commandParts.push(optionName);
+        walk(option.options || [], currentPath);
+        continue;
+      }
+
+      const value = formatCommandOptionValue(option);
+      if (!optionName) continue;
+
+      if (value === null) {
+        commandParts.push(optionName);
+        optionsData[currentPath.join(".")] = "(no value)";
+      } else {
+        commandParts.push(`${optionName}:${value}`);
+        optionsData[currentPath.join(".")] = value;
+      }
+    }
+  };
+
+  walk(interaction.options?.data || []);
+
+  return {
+    commandUsed: commandParts.join(" "),
+    optionsData,
+  };
+}
+
+async function logCommand(guildId: string, channelId: string, commandUsed: string, userId: string, username: string, options?: any): Promise<void> {
   try {
     const config = await storage.getGuildConfig(guildId);
     if (!config?.commandLogChannelId) return;
@@ -6538,7 +6599,7 @@ async function logCommand(guildId: string, channelId: string, commandName: strin
       .setTitle("Command Used")
       .setColor(0x5865f2)
       .addFields(
-        { name: "Command", value: `\`/${commandName}\``, inline: true },
+        { name: "Command", value: `\`${commandUsed || "unknown"}\``, inline: true },
         { name: "User", value: `<@${userId}> (${username})`, inline: true },
         { name: "Channel", value: `<#${channelId}>`, inline: true },
         { name: "Options", value: optionsText, inline: false }
@@ -7044,19 +7105,8 @@ client.on("interactionCreate", async (interaction) => {
 
       // Log command usage (fire-and-forget, no await)
       if (interaction.guildId) {
-        const optionsData: any = {};
-        for (const option of interaction.options.data) {
-          if (option.value !== undefined) {
-            optionsData[option.name] = option.value;
-          } else if (option.channel) {
-            optionsData[option.name] = `#${option.channel.name}`;
-          } else if (option.role) {
-            optionsData[option.name] = `@${option.role.name}`;
-          } else if (option.user) {
-            optionsData[option.name] = `@${option.user.username}`;
-          }
-        }
-        logCommand(interaction.guildId, interaction.channelId, commandName, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
+        const { commandUsed, optionsData } = buildCommandLogData(interaction);
+        logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
       }
 
       if (commandName === "setup_pay_request") {
