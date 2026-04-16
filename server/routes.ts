@@ -3086,41 +3086,50 @@ export async function registerRoutes(
       const fromDate = fromDateStr ? new Date(fromDateStr) : new Date("2000-01-01");
       const toDate = toDateStr ? new Date(toDateStr) : new Date();
 
-      const allThreads = await storage.getAllModmailThreads(guildId).catch(() => []);
-      let filtered = allThreads;
+      const allModmailThreads = await storage.getAllModmailThreads(guildId).catch(() => []);
+      const allAppealThreads = await storage.getAllAppealThreads(guildId).catch(() => []);
+
+      const normalizedThreadRows: Array<{ thread: any; category: "modmail" | "appeal" }> = [
+        ...allModmailThreads.map((thread) => ({ thread, category: "modmail" as const })),
+        ...allAppealThreads.map((thread) => ({ thread, category: "appeal" as const })),
+      ];
+
+      let filtered = normalizedThreadRows;
 
       if (statusFilter && statusFilter !== "all") {
-        filtered = filtered.filter((t) => String(t.status || "open").toLowerCase() === statusFilter);
+        filtered = filtered.filter(({ thread }) => String(thread.status || "open").toLowerCase() === statusFilter);
       }
 
       if (userIdFilter) {
-        filtered = filtered.filter((t) => String(t.userId || "") === userIdFilter);
+        filtered = filtered.filter(({ thread }) => String(thread.userId || "") === userIdFilter);
       }
 
       if (categoryFilter && categoryFilter !== "all") {
-          const validCategories = ["modmail", "appeal"];
-          if (validCategories.includes(categoryFilter)) {
-        filtered = filtered.filter((t) => String(t.category || "").toLowerCase() === categoryFilter);
+        const validCategories = ["modmail", "appeal"];
+        if (validCategories.includes(categoryFilter)) {
+          filtered = filtered.filter(({ category }) => category === categoryFilter);
         }
       }
 
       if (fromDate && Number.isFinite(fromDate.getTime())) {
-        filtered = filtered.filter((t) => {
-          const createdAt = t.createdAt ? new Date(t.createdAt) : null;
+        filtered = filtered.filter(({ thread }) => {
+          const createdAt = thread.createdAt ? new Date(thread.createdAt) : null;
           return !createdAt || createdAt >= fromDate;
         });
       }
 
       if (toDate && Number.isFinite(toDate.getTime())) {
-        filtered = filtered.filter((t) => {
-          const createdAt = t.createdAt ? new Date(t.createdAt) : null;
+        filtered = filtered.filter(({ thread }) => {
+          const createdAt = thread.createdAt ? new Date(thread.createdAt) : null;
           return !createdAt || createdAt <= toDate;
         });
       }
 
       const threads = await Promise.all(
-        filtered.map(async (thread) => {
-          const messages = await storage.getModmailMessages(thread.id).catch(() => []);
+        filtered.map(async ({ thread, category }) => {
+          const messages = category === "appeal"
+            ? await storage.getAppealMessages(thread.id).catch(() => [])
+            : await storage.getModmailMessages(thread.id).catch(() => []);
           const creatorInfo = await resolveDiscordUserSummary(thread.userId, guildId);
           const claimedByInfo = thread.claimedById
             ? await resolveDiscordUserSummary(thread.claimedById, guildId)
@@ -3137,7 +3146,7 @@ export async function registerRoutes(
             username: creatorInfo.username,
             avatarUrl: creatorInfo.avatarUrl,
             status: thread.status,
-            category: thread.category || "general",
+            category,
             channelId: thread.channelId,
             createdAt: thread.createdAt?.toISOString() || new Date().toISOString(),
             closedAt: thread.closedAt?.toISOString() || null,
