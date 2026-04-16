@@ -3861,8 +3861,8 @@ function buildModmailLogsComponents(
   logs: any[],
   page: number,
   itemsPerPage = 10,
-): ActionRowBuilder<ButtonBuilder>[] {
-  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+): ActionRowBuilder<any>[] {
+  const rows: ActionRowBuilder<any>[] = [];
   const totalPages = Math.max(1, Math.ceil(logs.length / itemsPerPage));
   const safePage = Math.min(Math.max(1, page), totalPages);
   const start = (safePage - 1) * itemsPerPage;
@@ -3885,19 +3885,24 @@ function buildModmailLogsComponents(
     );
   }
 
-  for (let i = 0; i < pageEntries.length; i += 5) {
-    const chunk = pageEntries.slice(i, i + 5);
-    rows.push(
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        ...chunk.map((entry: any, idx: number) => {
-          const logNumber = String(start + i + idx + 1).padStart(3, "0");
-          return new ButtonBuilder()
-            .setCustomId(`modmail_log_open_${requesterId}_${entry.id}`)
+  if (pageEntries.length > 0) {
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId(`modmail_logs_select_${requesterId}_${targetId}_${safePage}`)
+      .setPlaceholder("Open a modmail log...")
+      .addOptions(
+        pageEntries.map((entry: any, idx: number) => {
+          const logNumber = String(start + idx + 1).padStart(3, "0");
+          const createdAtDate = entry.createdAt ? new Date(entry.createdAt) : null;
+          const status = String(entry.status || "unknown").toLowerCase();
+          const when = createdAtDate ? createdAtDate.toLocaleDateString() : "unknown date";
+          return new StringSelectMenuOptionBuilder()
             .setLabel(`Log ${logNumber}`)
-            .setStyle(ButtonStyle.Secondary);
+            .setDescription(`${status} • ${when}`.slice(0, 100))
+            .setValue(String(entry.id));
         })
-      )
-    );
+      );
+
+    rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu));
   }
 
   return rows;
@@ -3953,8 +3958,8 @@ function buildAppealLogsComponents(
   logs: any[],
   page: number,
   itemsPerPage = 10,
-): ActionRowBuilder<ButtonBuilder>[] {
-  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+): ActionRowBuilder<any>[] {
+  const rows: ActionRowBuilder<any>[] = [];
   const totalPages = Math.max(1, Math.ceil(logs.length / itemsPerPage));
   const safePage = Math.min(Math.max(1, page), totalPages);
   const start = (safePage - 1) * itemsPerPage;
@@ -3977,19 +3982,24 @@ function buildAppealLogsComponents(
     );
   }
 
-  for (let i = 0; i < pageEntries.length; i += 5) {
-    const chunk = pageEntries.slice(i, i + 5);
-    rows.push(
-      new ActionRowBuilder<ButtonBuilder>().addComponents(
-        ...chunk.map((entry: any, idx: number) => {
-          const logNumber = String(start + i + idx + 1).padStart(3, "0");
-          return new ButtonBuilder()
-            .setCustomId(`appeal_log_open_${requesterId}_${entry.id}`)
+  if (pageEntries.length > 0) {
+    const selectMenu = new StringSelectMenuBuilder()
+      .setCustomId(`appeal_logs_select_${requesterId}_${targetId}_${safePage}`)
+      .setPlaceholder("Open an appeal log...")
+      .addOptions(
+        pageEntries.map((entry: any, idx: number) => {
+          const logNumber = String(start + idx + 1).padStart(3, "0");
+          const createdAtDate = entry.createdAt ? new Date(entry.createdAt) : null;
+          const status = String(entry.status || "unknown").toLowerCase();
+          const when = createdAtDate ? createdAtDate.toLocaleDateString() : "unknown date";
+          return new StringSelectMenuOptionBuilder()
             .setLabel(`Log ${logNumber}`)
-            .setStyle(ButtonStyle.Secondary);
+            .setDescription(`${status} • ${when}`.slice(0, 100))
+            .setValue(String(entry.id));
         })
-      )
-    );
+      );
+
+    rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu));
   }
 
   return rows;
@@ -11884,6 +11894,122 @@ client.on("interactionCreate", async (interaction) => {
           }
           throw error;
         }
+      }
+
+      if (interaction.customId.startsWith("modmail_logs_select_")) {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const match = interaction.customId.match(/^modmail_logs_select_(\d+)_(\d+)_(\d+)$/);
+        if (!match) {
+          await interaction.editReply({ content: "Invalid modmail log selection." });
+          return;
+        }
+
+        const requesterId = match[1];
+        const threadId = String(interaction.values[0] || "").trim();
+        if (!threadId) {
+          await interaction.editReply({ content: "No log selected." });
+          return;
+        }
+
+        if (interaction.user.id !== requesterId) {
+          await interaction.editReply({ content: "❌ Only the command author can use this dropdown." });
+          return;
+        }
+
+        const thread = await storage.getModmailThread(threadId);
+        if (!thread) {
+          await interaction.editReply({ content: "Modmail thread not found." });
+          return;
+        }
+
+        const messages = await storage.getModmailMessages(threadId);
+        if (messages.length === 0) {
+          await interaction.editReply({ content: "No messages found for this modmail thread." });
+          return;
+        }
+
+        const transcriptContent = messages
+          .map((m) => {
+            const createdAt = m.createdAt ? new Date(m.createdAt as any) : null;
+            const ts = createdAt ? createdAt.toISOString() : "unknown-time";
+            const actor = m.isStaff === "true" ? "Staff" : "User";
+            return `[${ts}] [${actor}] ${m.authorId}: ${m.content}`;
+          })
+          .join("\n");
+
+        const transcriptBuffer = Buffer.from(transcriptContent, "utf-8");
+        const attachment = new AttachmentBuilder(transcriptBuffer, { name: `modmail-${threadId}.txt` });
+        const { embed, totalPages, safePage } = buildSpecificModmailLogEmbed(thread, messages, 1, 10);
+        const components = buildSpecificModmailLogComponents(requesterId, threadId, safePage, totalPages);
+
+        await interaction.editReply({
+          content: `Full transcript attached as file for thread ${threadId}.`,
+          embeds: [embed],
+          components,
+          files: [attachment],
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith("appeal_logs_select_")) {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const match = interaction.customId.match(/^appeal_logs_select_(\d+)_(\d+)_(\d+)$/);
+        if (!match) {
+          await interaction.editReply({ content: "Invalid appeal log selection." });
+          return;
+        }
+
+        const requesterId = match[1];
+        const threadId = String(interaction.values[0] || "").trim();
+        if (!threadId) {
+          await interaction.editReply({ content: "No log selected." });
+          return;
+        }
+
+        if (interaction.user.id !== requesterId) {
+          const memberPerms = interaction.member?.permissions;
+          const hasPermission = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+          if (!hasPermission) {
+            await replyInteractionFailed(interaction);
+            return;
+          }
+        }
+
+        const thread = await storage.getAppealThread(threadId);
+        if (!thread) {
+          await interaction.editReply({ content: "Appeal thread not found." });
+          return;
+        }
+
+        const messages = await storage.getAppealMessages(threadId);
+        if (messages.length === 0) {
+          await interaction.editReply({ content: "No messages found for this appeal thread." });
+          return;
+        }
+
+        const transcriptContent = messages
+          .map((m) => {
+            const createdAt = m.createdAt ? new Date(m.createdAt as any) : null;
+            const ts = createdAt ? createdAt.toISOString() : "unknown-time";
+            const actor = m.isStaff === "true" ? "Staff" : "User";
+            return `[${ts}] [${actor}] ${m.authorId}: ${m.content}`;
+          })
+          .join("\n");
+
+        const transcriptBuffer = Buffer.from(transcriptContent, "utf-8");
+        const attachment = new AttachmentBuilder(transcriptBuffer, { name: `appeal-${threadId}.txt` });
+        const { embed, totalPages, safePage } = buildSpecificAppealLogEmbed(thread, messages, 1, 10);
+        const components = buildSpecificAppealLogComponents(requesterId, threadId, safePage, totalPages);
+
+        await interaction.editReply({
+          content: `Full transcript attached as file for appeal thread ${threadId}.`,
+          embeds: [embed],
+          components,
+          files: [attachment],
+        });
+        return;
       }
 
       if (interaction.customId.startsWith("activity_check_group_select")) {
