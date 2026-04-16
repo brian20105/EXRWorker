@@ -1744,6 +1744,42 @@ function parseDurationMs(token?: string | null): number | null {
   return value * 24 * 60 * 60 * 1000;
 }
 
+const ACTIVITY_RANGE_MS_PER_DAY = 24 * 60 * 60 * 1000;
+const ACTIVITY_RANGE_UNIX_MIN = 946684800; // 2000-01-01
+const ACTIVITY_RANGE_UNIX_MAX = 4102444800; // 2100-01-01
+
+function isLikelyUnixTimestampSeconds(value?: number): boolean {
+  if (!Number.isFinite(value)) return false;
+  const intValue = Math.trunc(Number(value));
+  return intValue >= ACTIVITY_RANGE_UNIX_MIN && intValue <= ACTIVITY_RANGE_UNIX_MAX;
+}
+
+function normalizeActivityRangeDays(rawValue?: number): number | undefined {
+  if (rawValue === undefined || rawValue === null || !Number.isFinite(rawValue) || rawValue < 0) {
+    return undefined;
+  }
+
+  if (isLikelyUnixTimestampSeconds(rawValue)) {
+    const nowMs = Date.now();
+    const tsMs = Math.trunc(rawValue) * 1000;
+    return Math.max(0, (nowMs - tsMs) / ACTIVITY_RANGE_MS_PER_DAY);
+  }
+
+  return rawValue;
+}
+
+function serializeActivityRangeForCustomId(value?: number): string {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "none";
+  if (Number.isInteger(value)) return String(value);
+  return value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function parseActivityRangeFromCustomId(value?: string): number | undefined {
+  if (!value || value === "none") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 function extractUserIdFromToken(token?: string | null): string | null {
   if (!token) return null;
   const trimmed = token.trim();
@@ -2438,6 +2474,17 @@ interface StaffApplicationBlockEntry {
   expiresAt: string | null;
 }
 
+interface ManualUnblockEntry {
+  userId: string;
+  system: "modmail" | "appeal" | "staff_applications";
+  blockReason: string | null;
+  blockExpiresAt: string | null;
+  blockedById: string | null;
+  unblockedById: string;
+  unblockedAt: string;
+  unblockReason: string | null;
+}
+
 const DEFAULT_STAFF_APPLICATION_QUESTIONS = [
   "How do you handle a difficult moderation situation?",
   "Why do you want to join our staff team?",
@@ -2893,6 +2940,48 @@ function removeStaffApplicationBlockFromConfig(
     delete existing[userId];
   }
   root.__staffApplicationBlocks = existing;
+  return JSON.stringify(root);
+}
+
+function getManualUnblocksFromGuildConfig(config?: any): ManualUnblockEntry[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__manualUnblocks;
+  if (!Array.isArray(raw)) return [];
+
+  const entries: ManualUnblockEntry[] = [];
+  for (const value of raw) {
+    const entry = value as any;
+    if (!entry || typeof entry !== "object") continue;
+    const system = String(entry.system || "").trim();
+    if (system !== "modmail" && system !== "appeal" && system !== "staff_applications") continue;
+    const userId = String(entry.userId || "").trim();
+    const unblockedById = String(entry.unblockedById || "").trim();
+    const unblockedAt = String(entry.unblockedAt || "").trim();
+    if (!userId || !unblockedById || !unblockedAt) continue;
+
+    entries.push({
+      userId,
+      system,
+      blockReason: typeof entry.blockReason === "string" ? entry.blockReason : null,
+      blockExpiresAt: typeof entry.blockExpiresAt === "string" ? entry.blockExpiresAt : null,
+      blockedById: typeof entry.blockedById === "string" ? entry.blockedById : null,
+      unblockedById,
+      unblockedAt,
+      unblockReason: typeof entry.unblockReason === "string" ? entry.unblockReason : null,
+    });
+  }
+
+  return entries;
+}
+
+function appendManualUnblockToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  entry: ManualUnblockEntry,
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  const existing = getManualUnblocksFromGuildConfig({ customCategoryPings: existingCustomCategoryPings });
+  existing.unshift(entry);
+  root.__manualUnblocks = existing.slice(0, 250);
   return JSON.stringify(root);
 }
 
@@ -5035,13 +5124,13 @@ const commands = [
         .addIntegerOption((option) =>
           option
             .setName("from")
-            .setDescription("Start of range in days ago (e.g. 7 = from 7 days ago)")
+            .setDescription("Start of range in days ago or Unix time (e.g. 7 or 1776313800)")
             .setRequired(false)
         )
         .addIntegerOption((option) =>
           option
             .setName("to")
-            .setDescription("End of range in days ago (e.g. 0 = up to now, leave empty for all time)")
+            .setDescription("End of range in days ago or Unix time (e.g. 0 or 1776313800)")
             .setRequired(false)
         )
     )
@@ -5090,13 +5179,13 @@ const commands = [
         .addIntegerOption((option) =>
           option
             .setName("from")
-            .setDescription("Start time in days ago (e.g., 7 for last week)")
+            .setDescription("Start time in days ago or Unix time (e.g. 7 or 1776313800)")
             .setRequired(false)
         )
         .addIntegerOption((option) =>
           option
             .setName("to")
-            .setDescription("End time in days ago (e.g., 0 for today, leave empty for all time)")
+            .setDescription("End time in days ago or Unix time (e.g. 0 or 1776313800)")
             .setRequired(false)
         )
         .addIntegerOption((option) =>
@@ -8077,9 +8166,11 @@ client.on("interactionCreate", async (interaction) => {
 
         const subcommand = interaction.options.getSubcommand(true);
         if (subcommand === "check") {
-          const fromDays = interaction.options.getInteger("from") ?? -1;
-          const toDays = interaction.options.getInteger("to") ?? -1;
-          const selectCustomId = `activity_check_group_select:${fromDays}:${toDays}`;
+          const rawFrom = interaction.options.getInteger("from") ?? undefined;
+          const rawTo = interaction.options.getInteger("to") ?? undefined;
+          const fromDays = normalizeActivityRangeDays(rawFrom);
+          const toDays = normalizeActivityRangeDays(rawTo);
+          const selectCustomId = `activity_check_group_select:${serializeActivityRangeForCustomId(fromDays)}:${serializeActivityRangeForCustomId(toDays)}`;
 
           const groupMenu = new StringSelectMenuBuilder()
             .setCustomId(selectCustomId)
@@ -8092,14 +8183,14 @@ client.on("interactionCreate", async (interaction) => {
 
           const now = new Date();
           let dateHint = "All time";
-          if (fromDays !== -1 && toDays !== -1) {
+          if (fromDays !== undefined && toDays !== undefined) {
             const f = new Date(now.getTime() - fromDays * 86400000);
             const t = new Date(now.getTime() - toDays * 86400000);
             dateHint = `<t:${Math.floor(f.getTime()/1000)}:D> → <t:${Math.floor(t.getTime()/1000)}:D>`;
-          } else if (fromDays !== -1) {
+          } else if (fromDays !== undefined) {
             const f = new Date(now.getTime() - fromDays * 86400000);
             dateHint = `From <t:${Math.floor(f.getTime()/1000)}:D> to now`;
-          } else if (toDays !== -1) {
+          } else if (toDays !== undefined) {
             const t = new Date(now.getTime() - toDays * 86400000);
             dateHint = `Up to <t:${Math.floor(t.getTime()/1000)}:D>`;
           }
@@ -8119,8 +8210,8 @@ client.on("interactionCreate", async (interaction) => {
           const targetMember = interaction.options.getUser("member");
           const category = interaction.options.getString("category");
           const scope = interaction.options.getString("scope") || "all"; // Default to all servers
-          const fromDays = interaction.options.getInteger("from") ?? undefined;
-          const toDays = interaction.options.getInteger("to") ?? undefined;
+          const fromDays = normalizeActivityRangeDays(interaction.options.getInteger("from") ?? undefined);
+          const toDays = normalizeActivityRangeDays(interaction.options.getInteger("to") ?? undefined);
           const useAllGuilds = scope === "all";
           const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
           const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
@@ -8591,12 +8682,12 @@ client.on("interactionCreate", async (interaction) => {
           if (totalPages > 1) {
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
               new ButtonBuilder()
-                .setCustomId(`activity_page_${page - 1}_${category || "all"}_${scope}_${fromDays ?? "none"}_${toDays ?? "none"}`)
+                .setCustomId(`activity_page_${page - 1}_${category || "all"}_${scope}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}`)
                 .setLabel("◀ Previous")
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(page <= 1),
               new ButtonBuilder()
-                .setCustomId(`activity_page_${page + 1}_${category || "all"}_${scope}_${fromDays ?? "none"}_${toDays ?? "none"}`)
+                .setCustomId(`activity_page_${page + 1}_${category || "all"}_${scope}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}`)
                 .setLabel("Next ▶")
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(page >= totalPages)
@@ -10294,17 +10385,67 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        const nowIso = new Date().toISOString();
+
         if (system === "appeal") {
+          const existingBlock = await storage.getActiveAppealBlock(interaction.guildId!, targetUser.id);
           await storage.removeAppealBlock(interaction.guildId!, targetUser.id);
+          if (existingBlock) {
+            const updatedCustomCategoryPings = appendManualUnblockToConfig(config?.customCategoryPings, {
+              userId: targetUser.id,
+              system: "appeal",
+              blockReason: existingBlock.reason || null,
+              blockExpiresAt: existingBlock.expiresAt ? existingBlock.expiresAt.toISOString() : null,
+              blockedById: (existingBlock as any).blockedById || null,
+              unblockedById: interaction.user.id,
+              unblockedAt: nowIso,
+              unblockReason: reason || null,
+            });
+            await storage.upsertGuildConfig({
+              guildId: interaction.guildId!,
+              customCategoryPings: updatedCustomCategoryPings,
+            });
+          }
           await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from ban appeals.${reason ? ` Reason: ${reason}` : ""}` });
         } else if (system === "staff_applications") {
+          const existingStaffBlock = getActiveStaffApplicationBlockFromGuildConfig(config, targetUser.id);
+          let updatedCustomCategoryPings = removeStaffApplicationBlockFromConfig(config?.customCategoryPings, targetUser.id);
+          if (existingStaffBlock) {
+            updatedCustomCategoryPings = appendManualUnblockToConfig(updatedCustomCategoryPings, {
+              userId: targetUser.id,
+              system: "staff_applications",
+              blockReason: existingStaffBlock.reason || null,
+              blockExpiresAt: existingStaffBlock.expiresAt,
+              blockedById: existingStaffBlock.blockedById || null,
+              unblockedById: interaction.user.id,
+              unblockedAt: nowIso,
+              unblockReason: reason || null,
+            });
+          }
           await storage.upsertGuildConfig({
             guildId: interaction.guildId!,
-            customCategoryPings: removeStaffApplicationBlockFromConfig(config?.customCategoryPings, targetUser.id),
+            customCategoryPings: updatedCustomCategoryPings,
           });
           await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from staff applications.${reason ? ` Reason: ${reason}` : ""}` });
         } else {
+          const existingBlock = await storage.getActiveModmailBlock(interaction.guildId!, targetUser.id);
           await storage.removeModmailBlock(interaction.guildId!, targetUser.id);
+          if (existingBlock) {
+            const updatedCustomCategoryPings = appendManualUnblockToConfig(config?.customCategoryPings, {
+              userId: targetUser.id,
+              system: "modmail",
+              blockReason: existingBlock.reason || null,
+              blockExpiresAt: existingBlock.expiresAt ? existingBlock.expiresAt.toISOString() : null,
+              blockedById: (existingBlock as any).blockedById || null,
+              unblockedById: interaction.user.id,
+              unblockedAt: nowIso,
+              unblockReason: reason || null,
+            });
+            await storage.upsertGuildConfig({
+              guildId: interaction.guildId!,
+              customCategoryPings: updatedCustomCategoryPings,
+            });
+          }
           await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.${reason ? ` Reason: ${reason}` : ""}` });
         }
       } else if (commandName === "unban") {
@@ -10847,7 +10988,8 @@ client.on("interactionCreate", async (interaction) => {
 
         const ITEMS_PER_PAGE = 10;
         const blockedMap = await fetchAllBlocksMap();
-        const { embed, components } = buildBlockListResponse(blockedMap, "active", 1, interaction.user.id, ITEMS_PER_PAGE);
+        const manualUnblocks = await fetchManualUnblocks();
+        const { embed, components } = buildBlockListResponse(blockedMap, manualUnblocks, "active", 1, interaction.user.id, ITEMS_PER_PAGE);
         await interaction.editReply({ embeds: [embed], components });
       } else if (commandName === "modmail-category") {
         console.log(`[modmail-category] Command called with subcommand attempt...`);
@@ -11650,10 +11792,8 @@ client.on("interactionCreate", async (interaction) => {
 
         // Parse from/to from custom ID: activity_check_group_select:fromDays:toDays
         const idParts = interaction.customId.split(":");
-        const rawFrom = idParts[1] !== undefined ? parseInt(idParts[1]) : -1;
-        const rawTo = idParts[2] !== undefined ? parseInt(idParts[2]) : -1;
-        const fromDays = rawFrom === -1 ? undefined : rawFrom;
-        const toDays = rawTo === -1 ? undefined : rawTo;
+        const fromDays = parseActivityRangeFromCustomId(idParts[1]);
+        const toDays = parseActivityRangeFromCustomId(idParts[2]);
 
         const roleRefs = await getSyncedActivityCheckRoleGroupValues(interaction.guildId!, group);
         const resolvedRoles = resolveGuildRolesFromStoredValues(guild, roleRefs);
@@ -13666,13 +13806,13 @@ client.on("interactionCreate", async (interaction) => {
         if (customId.startsWith("block_list_prev_") || customId.startsWith("block_list_next_") || customId.startsWith("block_list_tab_")) {
           const parts = customId.split("_");
           let newPage = 1;
-          let tab: "active" | "expired" = "active";
+          let tab: "active" | "expired" | "manual" = "active";
           let requesterId: string | null = null;
 
           if (customId.startsWith("block_list_tab_")) {
             // Format: block_list_tab_{active|expired}_{requesterId}_{page}
             const tabValue = parts[3]; // "active" or "expired"
-            tab = tabValue === "expired" ? "expired" : "active";
+            tab = tabValue === "expired" ? "expired" : tabValue === "manual" ? "manual" : "active";
             requesterId = parts[4] || null;
             newPage = 1;
           } else {
@@ -13681,7 +13821,7 @@ client.on("interactionCreate", async (interaction) => {
             requesterId = parts[3] || null;
             const currentPage = parseInt(parts[4] || "1", 10);
             const tabStr = parts[5] || "active";
-            tab = tabStr === "expired" ? "expired" : "active";
+            tab = tabStr === "expired" ? "expired" : tabStr === "manual" ? "manual" : "active";
             newPage = direction === "prev" ? currentPage - 1 : currentPage + 1;
           }
 
@@ -13694,7 +13834,8 @@ client.on("interactionCreate", async (interaction) => {
 
           const ITEMS_PER_PAGE = 10;
           const blockedMap = await fetchAllBlocksMap();
-          const { embed, components } = buildBlockListResponse(blockedMap, tab, newPage, requesterId || interaction.user.id, ITEMS_PER_PAGE);
+          const manualUnblocks = await fetchManualUnblocks();
+          const { embed, components } = buildBlockListResponse(blockedMap, manualUnblocks, tab, newPage, requesterId || interaction.user.id, ITEMS_PER_PAGE);
           await interaction.editReply({ embeds: [embed], components });
           return;
         }
@@ -14029,8 +14170,8 @@ client.on("interactionCreate", async (interaction) => {
             const page = parseInt(parts[2]);
             const category = parts[3] === "all" ? null : parts[3];
             const scope = parts[4];
-            const fromDays = parts[5] === "none" ? undefined : parseInt(parts[5]);
-            const toDays = parts[6] === "none" ? undefined : parseInt(parts[6]);
+            const fromDays = parseActivityRangeFromCustomId(parts[5]);
+            const toDays = parseActivityRangeFromCustomId(parts[6]);
             const useAllGuilds = scope === "all";
             const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
             const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
@@ -14271,12 +14412,12 @@ client.on("interactionCreate", async (interaction) => {
             if (totalPages > 1) {
               const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder()
-                  .setCustomId(`activity_page_${page - 1}_${category || "all"}_${scope}_${fromDays ?? "none"}_${toDays ?? "none"}`)
+                  .setCustomId(`activity_page_${page - 1}_${category || "all"}_${scope}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}`)
                   .setLabel("◀ Previous")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(page <= 1),
                 new ButtonBuilder()
-                  .setCustomId(`activity_page_${page + 1}_${category || "all"}_${scope}_${fromDays ?? "none"}_${toDays ?? "none"}`)
+                  .setCustomId(`activity_page_${page + 1}_${category || "all"}_${scope}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}`)
                   .setLabel("Next ▶")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(page >= totalPages)
@@ -19595,9 +19736,27 @@ async function fetchAllBlocksMap(): Promise<Map<string, BlockEntry>> {
   return blockedMap;
 }
 
+type ManualUnblockListEntry = ManualUnblockEntry;
+
+async function fetchManualUnblocks(): Promise<ManualUnblockListEntry[]> {
+  const entries: ManualUnblockListEntry[] = [];
+
+  for (const guild of client.guilds.cache.values()) {
+    const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    const guildEntries = getManualUnblocksFromGuildConfig(guildConfig);
+    for (const entry of guildEntries) {
+      entries.push(entry);
+    }
+  }
+
+  entries.sort((a, b) => new Date(b.unblockedAt).getTime() - new Date(a.unblockedAt).getTime());
+  return entries;
+}
+
 function buildBlockListResponse(
   blockedMap: Map<string, BlockEntry>,
-  tab: "active" | "expired",
+  manualUnblocks: ManualUnblockListEntry[],
+  tab: "active" | "expired" | "manual",
   page: number,
   requesterId: string,
   ITEMS_PER_PAGE: number
@@ -19607,43 +19766,70 @@ function buildBlockListResponse(
   const isBlockExpired = (expiresAt: Date | null) => expiresAt !== null && expiresAt.getTime() <= now;
 
   const tabEntries: BlockEntry[] = [];
-  for (const entry of blockedMap.values()) {
-    const relevantTypes = entry.types.filter(type => {
-      const expiresAt = entry.expireTimes.get(type) ?? null;
-      return tab === "active" ? isBlockActive(expiresAt) : isBlockExpired(expiresAt);
-    });
-    if (relevantTypes.length > 0) {
-      tabEntries.push({ ...entry, types: relevantTypes });
+  if (tab !== "manual") {
+    for (const entry of blockedMap.values()) {
+      const relevantTypes = entry.types.filter(type => {
+        const expiresAt = entry.expireTimes.get(type) ?? null;
+        return tab === "active" ? isBlockActive(expiresAt) : isBlockExpired(expiresAt);
+      });
+      if (relevantTypes.length > 0) {
+        tabEntries.push({ ...entry, types: relevantTypes });
+      }
     }
   }
 
-  const totalPages = Math.max(1, Math.ceil(tabEntries.length / ITEMS_PER_PAGE));
+  const sourceCount = tab === "manual" ? manualUnblocks.length : tabEntries.length;
+  const totalPages = Math.max(1, Math.ceil(sourceCount / ITEMS_PER_PAGE));
   const safePage = Math.min(Math.max(1, page), totalPages);
   const startIdx = (safePage - 1) * ITEMS_PER_PAGE;
-  const pageItems = tabEntries.slice(startIdx, startIdx + ITEMS_PER_PAGE);
+  const pageItems = tab === "manual"
+    ? manualUnblocks.slice(startIdx, startIdx + ITEMS_PER_PAGE)
+    : tabEntries.slice(startIdx, startIdx + ITEMS_PER_PAGE);
 
   let listText = "";
-  for (let i = 0; i < pageItems.length; i++) {
-    const item = pageItems[i];
-    const details: string[] = [];
-    for (const type of item.types) {
-      const reason = item.reasons.get(type);
-      const expiresAt = item.expireTimes.get(type);
-      const blockedById = item.blockedByIds.get(type);
-      const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
-      const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
-      const blockedByText = blockedById ? `Blocked by: <@${blockedById}>` : "Blocked by: Unknown";
-      details.push(`${type}: ${reasonText} (${durationText}; ${blockedByText})`);
+  if (tab === "manual") {
+    const manualItems = pageItems as ManualUnblockListEntry[];
+    for (let i = 0; i < manualItems.length; i++) {
+      const item = manualItems[i];
+      const expiresAt = item.blockExpiresAt ? new Date(item.blockExpiresAt) : null;
+      const durationText = expiresAt
+        ? `until <t:${Math.floor(expiresAt.getTime() / 1000)}:F> (<t:${Math.floor(expiresAt.getTime() / 1000)}:R>)`
+        : "permanent";
+      const reasonText = item.blockReason ? item.blockReason : "No reason provided";
+      const blockedByText = item.blockedById ? `<@${item.blockedById}>` : "Unknown";
+      const unblockedAtTs = Math.floor(new Date(item.unblockedAt).getTime() / 1000);
+      const unblockNote = item.unblockReason ? ` | Unblock reason: ${item.unblockReason}` : "";
+
+      listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${item.system}: Reason: ${reasonText} | Duration: ${durationText} | Blocked by: ${blockedByText} | Unblocked by: <@${item.unblockedById}> | Unblocked: <t:${unblockedAtTs}:R>${unblockNote}\n`;
     }
-    listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
+  } else {
+    const blockItems = pageItems as BlockEntry[];
+    for (let i = 0; i < blockItems.length; i++) {
+      const item = blockItems[i];
+      const details: string[] = [];
+      for (const type of item.types) {
+        const reason = item.reasons.get(type);
+        const expiresAt = item.expireTimes.get(type);
+        const blockedById = item.blockedByIds.get(type);
+        const durationText = expiresAt ? `expires <t:${Math.floor(expiresAt.getTime() / 1000)}:R>` : "permanent";
+        const reasonText = reason ? `Reason: ${reason}` : "No reason provided";
+        const blockedByText = blockedById ? `Blocked by: <@${blockedById}>` : "Blocked by: Unknown";
+        details.push(`${type}: ${reasonText} (${durationText}; ${blockedByText})`);
+      }
+      listText += `${startIdx + i + 1}. <@${item.userId}>\n   ${details.join(" | ")}\n`;
+    }
   }
 
-  const tabLabel = tab === "active" ? "Active Blocked Users" : "Expired Blocked Users";
+  const tabLabel = tab === "active"
+    ? "Active Blocked Users"
+    : tab === "expired"
+      ? "Expired Blocked Users"
+      : "Manual Unblocks";
   const embed = new EmbedBuilder()
     .setTitle(tabLabel)
-    .setDescription(listText || `No ${tab} blocks found.`)
-    .setColor(tab === "active" ? 0xed4245 : 0x95a5a6)
-    .setFooter({ text: `Page ${safePage}/${totalPages} \u2022 Total: ${tabEntries.length} ${tab} block${tabEntries.length !== 1 ? "s" : ""}` })
+    .setDescription(listText || (tab === "manual" ? "No manual unblocks found." : `No ${tab} blocks found.`))
+    .setColor(tab === "active" ? 0xed4245 : tab === "expired" ? 0x95a5a6 : 0x3ba55d)
+    .setFooter({ text: `Page ${safePage}/${totalPages} \u2022 Total: ${sourceCount} ${tab === "manual" ? "manual unblock" : `${tab} block`}${sourceCount !== 1 ? "s" : ""}` })
     .setTimestamp();
 
   const tabRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -19657,6 +19843,11 @@ function buildBlockListResponse(
       .setLabel("Expired Blocks")
       .setStyle(tab === "expired" ? ButtonStyle.Primary : ButtonStyle.Secondary)
       .setDisabled(tab === "expired"),
+    new ButtonBuilder()
+      .setCustomId(`block_list_tab_manual_${requesterId}_1`)
+      .setLabel("Manual Unblocks")
+      .setStyle(tab === "manual" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+      .setDisabled(tab === "manual"),
   );
 
   const components: ActionRowBuilder<ButtonBuilder>[] = [tabRow];
