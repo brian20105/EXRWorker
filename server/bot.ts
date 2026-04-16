@@ -6546,10 +6546,8 @@ function buildCommandLogData(interaction: any): { commandUsed: string; optionsDa
       if (!optionName) continue;
 
       if (value === null) {
-        commandParts.push(optionName);
         optionsData[currentPath.join(".")] = "(no value)";
       } else {
-        commandParts.push(`${optionName}:${value}`);
         optionsData[currentPath.join(".")] = value;
       }
     }
