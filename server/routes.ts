@@ -3203,7 +3203,11 @@ export async function registerRoutes(
           const channelType = Number(channel?.type);
           const isTextChannel = channelType === 0 || channelType === 5;
           if (!isTextChannel) return false;
-          if (!validParentIds.has(String(channel?.parent_id || ""))) return false;
+          const parentId = String(channel?.parent_id || "");
+          const channelName = String(channel?.name || "").toLowerCase();
+          const hasKnownParent = validParentIds.has(parentId);
+          const looksLikeTicketName = channelName.startsWith("appeal-") || channelName.startsWith("modmail-") || channelName.startsWith("ticket-");
+          if (!hasKnownParent && !looksLikeTicketName) return false;
           return true;
         });
 
@@ -3214,7 +3218,9 @@ export async function registerRoutes(
               return null;
             }
 
-            const inferredCategory = String(channel?.parent_id || "") === appealCategoryId ? "appeal" : "modmail";
+            const parentId = String(channel?.parent_id || "");
+            const channelName = String(channel?.name || "").toLowerCase();
+            const inferredCategory = parentId === appealCategoryId || channelName.startsWith("appeal-") ? "appeal" : "modmail";
             const userIdMatch = String(channel?.topic || "").match(/\b\d{17,20}\b/);
             const inferredUserId = userIdMatch ? userIdMatch[0] : null;
             const creatorInfo = await resolveDiscordUserSummary(inferredUserId, guildId);
@@ -3277,20 +3283,27 @@ export async function registerRoutes(
         // Best-effort fallback only.
       }
 
-      // Fallback 2: include historical closed tickets from modmail log channel when DB rows are unavailable.
+      // Fallback 2: include historical closed tickets from modmail + appeal log channels when DB rows are unavailable.
       try {
-        const logChannelId = String(config?.modmailLogChannelId || "").trim();
-        if (logChannelId) {
+        const logSources = [
+          { channelId: String(config?.modmailLogChannelId || "").trim(), category: "modmail" as const },
+          { channelId: String(config?.appealLogChannelId || "").trim(), category: "appeal" as const },
+        ].filter((entry) => !!entry.channelId);
+
+        for (const source of logSources) {
           let rawLogMessages: any[] = [];
           if (getBotToken()) {
-            rawLogMessages = await discordBotApiRequest<any[]>(`/channels/${logChannelId}/messages?limit=100`).catch(() => []);
+            rawLogMessages = await discordBotApiRequest<any[]>(`/channels/${source.channelId}/messages?limit=100`).catch(() => []);
           }
 
           const closedFromLogs = (Array.isArray(rawLogMessages) ? rawLogMessages : [])
             .filter((message: any) => {
               const embeds = Array.isArray(message?.embeds) ? message.embeds : [];
               const firstTitle = String(embeds[0]?.title || "").toLowerCase();
-              return firstTitle.includes("ticket closed");
+              if (source.category === "appeal") {
+                return firstTitle.includes("appeal") && firstTitle.includes("closed") || firstTitle.includes("ticket closed");
+              }
+              return firstTitle.includes("ticket closed") || firstTitle.includes("modmail") && firstTitle.includes("closed");
             })
             .map((message: any) => {
               const embeds = Array.isArray(message?.embeds) ? message.embeds : [];
@@ -3301,7 +3314,7 @@ export async function registerRoutes(
               const openedByValue = String(openedByField?.value || "");
               const openedByIdMatch = openedByValue.match(/\d{17,20}/);
               const transcriptPreview = String(transcriptField?.value || "No transcript preview available.");
-              const syntheticId = `log-${String(message?.id || crypto.randomUUID())}`;
+              const syntheticId = `log-${source.category}-${String(message?.id || crypto.randomUUID())}`;
 
               return {
                 id: syntheticId,
@@ -3309,7 +3322,7 @@ export async function registerRoutes(
                 username: openedByIdMatch ? `User ${openedByIdMatch[0]}` : "Unknown user",
                 avatarUrl: null,
                 status: "closed",
-                category: "modmail",
+                category: source.category,
                 channelId: null,
                 createdAt: String(message?.timestamp || new Date().toISOString()),
                 closedAt: String(message?.timestamp || new Date().toISOString()),
@@ -3341,13 +3354,31 @@ export async function registerRoutes(
 
           if (closedFromLogs.length > 0) {
             threads = [...threads, ...closedFromLogs];
+            for (const entry of closedFromLogs) {
+              existingThreadIds.add(String(entry.id || ""));
+            }
           }
         }
       } catch {
         // Best-effort fallback only.
       }
 
-      const sorted = threads.sort((a, b) => {
+      const categoryFilterIsValid = categoryFilter === "modmail" || categoryFilter === "appeal";
+      const fullyFiltered = threads.filter((thread) => {
+        const status = String(thread.status || "open").toLowerCase();
+        const category = String(thread.category || "modmail").toLowerCase();
+        const userId = String(thread.userId || "").trim();
+        const createdAt = thread.createdAt ? new Date(thread.createdAt) : null;
+
+        if (statusFilter && statusFilter !== "all" && status !== statusFilter) return false;
+        if (userIdFilter && userId !== userIdFilter) return false;
+        if (categoryFilter && categoryFilter !== "all" && categoryFilterIsValid && category !== categoryFilter) return false;
+        if (fromDate && Number.isFinite(fromDate.getTime()) && createdAt && createdAt < fromDate) return false;
+        if (toDate && Number.isFinite(toDate.getTime()) && createdAt && createdAt > toDate) return false;
+        return true;
+      });
+
+      const sorted = fullyFiltered.sort((a, b) => {
         const aTime = new Date(a.createdAt).getTime();
         const bTime = new Date(b.createdAt).getTime();
         return bTime - aTime;
