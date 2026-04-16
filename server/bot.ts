@@ -6546,9 +6546,9 @@ function buildCommandLogData(interaction: any): { commandUsed: string; optionsDa
       if (!optionName) continue;
 
       if (value === null) {
-        optionsData[currentPath.join(".")] = "(no value)";
+        optionsData[optionName] = "(no value)";
       } else {
-        optionsData[currentPath.join(".")] = value;
+        optionsData[optionName] = value;
       }
     }
   };
@@ -6559,6 +6559,64 @@ function buildCommandLogData(interaction: any): { commandUsed: string; optionsDa
     commandUsed: commandParts.join(" "),
     optionsData,
   };
+}
+
+type CommandLogMessageSnapshot = {
+  guildId: string;
+  channelId: string;
+  embeds: any[];
+};
+
+const commandLogMessageSnapshots = new Map<string, CommandLogMessageSnapshot>();
+const commandLogMessageSnapshotOrder: string[] = [];
+const COMMAND_LOG_SNAPSHOT_LIMIT = 500;
+
+function rememberCommandLogSnapshot(messageId: string, snapshot: CommandLogMessageSnapshot): void {
+  if (!messageId) return;
+  commandLogMessageSnapshots.set(messageId, snapshot);
+  commandLogMessageSnapshotOrder.push(messageId);
+
+  while (commandLogMessageSnapshotOrder.length > COMMAND_LOG_SNAPSHOT_LIMIT) {
+    const oldestId = commandLogMessageSnapshotOrder.shift();
+    if (oldestId) commandLogMessageSnapshots.delete(oldestId);
+  }
+}
+
+function forgetCommandLogSnapshot(messageId?: string | null): void {
+  if (!messageId) return;
+  commandLogMessageSnapshots.delete(messageId);
+}
+
+async function tryRestoreDeletedCommandLogMessage(message: any): Promise<boolean> {
+  const guildId = String(message?.guildId || "").trim();
+  const channelId = String(message?.channelId || "").trim();
+  const messageId = String(message?.id || "").trim();
+  if (!guildId || !channelId || !messageId) return false;
+
+  const config = await storage.getGuildConfig(guildId).catch(() => undefined);
+  if (!config?.commandLogChannelId || config.commandLogChannelId !== channelId) return false;
+
+  const snapshot = commandLogMessageSnapshots.get(messageId);
+  const embedsFromSnapshot = Array.isArray(snapshot?.embeds) ? snapshot!.embeds : [];
+  const embedsFromEvent = Array.isArray(message?.embeds)
+    ? message.embeds
+        .map((embed: any) => {
+          if (embed && typeof embed.toJSON === "function") return embed.toJSON();
+          return embed?.data || null;
+        })
+        .filter(Boolean)
+    : [];
+
+  const embedsToRestore = embedsFromSnapshot.length > 0 ? embedsFromSnapshot : embedsFromEvent;
+  const firstTitle = String(embedsToRestore?.[0]?.title || "").trim().toLowerCase();
+  if (!embedsToRestore.length || firstTitle !== "command used") return false;
+
+  const logChannel = await client.channels.fetch(channelId).catch(() => null);
+  if (!logChannel || !("send" in logChannel)) return false;
+
+  await (logChannel as any).send({ embeds: embedsToRestore });
+  forgetCommandLogSnapshot(messageId);
+  return true;
 }
 
 async function logCommand(guildId: string, channelId: string, commandUsed: string, userId: string, username: string, options?: any): Promise<void> {
@@ -6604,7 +6662,12 @@ async function logCommand(guildId: string, channelId: string, commandUsed: strin
       )
       .setTimestamp();
 
-    await logChannel.send({ embeds: [embed] });
+    const sentMessage = await logChannel.send({ embeds: [embed] });
+    rememberCommandLogSnapshot(sentMessage.id, {
+      guildId,
+      channelId: String(config.commandLogChannelId),
+      embeds: [embed.toJSON()],
+    });
   } catch (error) {
     console.log("Could not log command:", error);
   }
@@ -20115,6 +20178,15 @@ client.on("messageUpdate", async (oldMessage, newMessage) => {
 });
 
 client.on("messageDelete", async (message) => {
+  try {
+    const restoredCommandLog = await tryRestoreDeletedCommandLogMessage(message);
+    if (restoredCommandLog) {
+      return;
+    }
+  } catch (restoreError) {
+    console.log("[COMMAND LOG RESTORE] Failed to restore deleted command log message:", restoreError);
+  }
+
   // Try to get author info from cache first
   let authorId = message.author?.id;
   let authorTag = message.author?.tag;
