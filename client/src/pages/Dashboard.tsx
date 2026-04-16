@@ -6472,10 +6472,8 @@ export default function Dashboard() {
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="all">All</SelectItem>
-                          <SelectItem value="general">General</SelectItem>
-                          <SelectItem value="report">Report</SelectItem>
+                          <SelectItem value="modmail">Modmail</SelectItem>
                           <SelectItem value="appeal">Appeal</SelectItem>
-                          <SelectItem value="other">Other</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>

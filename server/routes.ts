@@ -3083,8 +3083,8 @@ export async function registerRoutes(
       const fromDateStr = String(req.query.fromDate || "").trim();
       const toDateStr = String(req.query.toDate || "").trim();
 
-      const fromDate = fromDateStr ? new Date(fromDateStr) : null;
-      const toDate = toDateStr ? new Date(toDateStr) : null;
+      const fromDate = fromDateStr ? new Date(fromDateStr) : new Date("2000-01-01");
+      const toDate = toDateStr ? new Date(toDateStr) : new Date();
 
       const allThreads = await storage.getAllModmailThreads(guildId).catch(() => []);
       let filtered = allThreads;
@@ -3098,7 +3098,10 @@ export async function registerRoutes(
       }
 
       if (categoryFilter && categoryFilter !== "all") {
+          const validCategories = ["modmail", "appeal"];
+          if (validCategories.includes(categoryFilter)) {
         filtered = filtered.filter((t) => String(t.category || "").toLowerCase() === categoryFilter);
+        }
       }
 
       if (fromDate && Number.isFinite(fromDate.getTime())) {
