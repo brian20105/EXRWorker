@@ -1726,9 +1726,11 @@ export default function Dashboard() {
     setUnblockingMiscKey(null);
   };
 
-  const loadModmailLogs = async (guildId: string | null = selectedGuild) => {
+  const loadModmailLogs = async (guildId: string | null = selectedGuild, options?: { silent?: boolean }) => {
     if (!guildId) return;
-    setModmailLoading(true);
+    if (!options?.silent) {
+      setModmailLoading(true);
+    }
     try {
       const params = new URLSearchParams();
       if (modmailStatusFilter && modmailStatusFilter !== "all") {
@@ -1756,12 +1758,21 @@ export default function Dashboard() {
         .sort((a: ModmailThread, b: ModmailThread) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
       setModmailThreads(threads);
-      setModmailSelectedThreadId(null);
+      setModmailSelectedThreadId((previous) => (
+        previous && threads.some((thread) => thread.id === previous)
+          ? previous
+          : null
+      ));
     } catch (e: any) {
-      toast({ title: "Error", description: e.message || "Failed to load modmail logs.", variant: "destructive" });
+      if (!options?.silent) {
+        toast({ title: "Error", description: e.message || "Failed to load modmail logs.", variant: "destructive" });
+      }
       setModmailThreads([]);
+      setModmailSelectedThreadId(null);
     }
-    setModmailLoading(false);
+    if (!options?.silent) {
+      setModmailLoading(false);
+    }
   };
 
   const loadSnippets = async (guildId: string | null = selectedGuild) => {
@@ -1931,6 +1942,17 @@ export default function Dashboard() {
   useEffect(() => {
     if (!selectedGuild || activePrimaryTab !== "modmail") return;
     loadModmailLogs(selectedGuild).catch(() => undefined);
+
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      loadModmailLogs(selectedGuild, { silent: true }).catch(() => undefined);
+    }, 30000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
   }, [selectedGuild, activePrimaryTab, modmailStatusFilter, modmailCategoryFilter, modmailUserIdFilter, modmailFromDate, modmailToDate]);
 
   useEffect(() => {
@@ -6440,8 +6462,8 @@ export default function Dashboard() {
 
             <TabsContent value="modmail" className="mt-0 space-y-4">
               <div>
-                <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Modmail Logs</h3>
-                <p className="mt-1 text-sm text-muted-foreground">View modmail transcripts, messages, and access full conversation history.</p>
+                <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Modmail & Appeal Logs</h3>
+                <p className="mt-1 text-sm text-muted-foreground">Tracks all open and closed modmails and appeals in real time, includes historical tickets ever made with the bot, and lets you view transcripts for specific tickets.</p>
               </div>
 
               <Card className="border-border/80 bg-card/90">
@@ -6525,7 +6547,7 @@ export default function Dashboard() {
               <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
                 <Card className="border-border/80 bg-card/90 lg:max-h-[600px] lg:overflow-y-auto">
                   <CardHeader>
-                    <CardTitle className="text-sm">Threads ({modmailThreads.length})</CardTitle>
+                    <CardTitle className="text-sm">Tickets ({modmailThreads.length})</CardTitle>
                   </CardHeader>
                   <CardContent>
                     {modmailLoading ? (
@@ -6533,7 +6555,7 @@ export default function Dashboard() {
                         <div className="text-sm text-muted-foreground">Loading...</div>
                       </div>
                     ) : modmailThreads.length === 0 ? (
-                      <div className="text-sm text-muted-foreground">No modmail threads found</div>
+                      <div className="text-sm text-muted-foreground">No modmail or appeal tickets found</div>
                     ) : (
                       <div className="space-y-2">
                         {modmailThreads.map((thread) => (
