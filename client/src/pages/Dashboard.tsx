@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, ShieldAlert, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X, SlidersHorizontal, Sparkles, ListTree } from "lucide-react";
+import { ArrowLeft, Save, Server, Shield, ShieldAlert, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X, SlidersHorizontal, Sparkles, ListTree, Mail } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useTheme } from "next-themes";
 import { useLocation, useRoute } from "wouter";
@@ -95,7 +95,7 @@ interface AuthUser {
 }
 
 type SettingsTabKey = "channels" | "roles" | "embeds" | "advanced";
-type PrimaryTabKey = "settings" | "features" | "security" | "permissions" | "rosters" | "miscellaneous";
+type PrimaryTabKey = "settings" | "features" | "security" | "permissions" | "rosters" | "modmail" | "miscellaneous";
 
 interface RosterConfig {
   id: string;
@@ -200,6 +200,38 @@ interface SnippetItem {
   updatedAt: string;
 }
 
+interface ModmailMessage {
+  id: string;
+  authorId: string;
+  content: string;
+  isStaff: boolean;
+  createdAt: string;
+}
+
+interface ModmailThread {
+  id: string;
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+  status: string;
+  category: string;
+  channelId: string | null;
+  createdAt: string;
+  closedAt: string | null;
+  closeReason: string | null;
+  claimedById: string | null;
+  claimedByUsername: string | null;
+  claimedByAvatarUrl: string | null;
+  messageCount: number;
+  messages: ModmailMessage[];
+  latestMessage: {
+    content: string;
+    authorUsername: string;
+    isStaff: boolean;
+    sentAt: string;
+  } | null;
+}
+
 type FeaturePostChannelKey = "modmail" | "appeals" | "staff-intro" | "inactivity" | "payouts" | "reaction-roles";
 type DashboardFeaturePostChannels = Partial<Record<FeaturePostChannelKey, string>>;
 
@@ -209,6 +241,7 @@ const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof Slid
   security: { label: "Security", icon: ShieldAlert },
   permissions: { label: "Bot Role Permissions", icon: Shield },
   rosters: { label: "Rosters", icon: ListTree },
+  modmail: { label: "Modmail Logs", icon: Mail },
   miscellaneous: { label: "Miscellaneous", icon: Braces },
 };
 
@@ -793,6 +826,15 @@ export default function Dashboard() {
   const [snippetAliasInput, setSnippetAliasInput] = useState("");
   const [snippetContentInput, setSnippetContentInput] = useState("");
   const [snippetEditingAlias, setSnippetEditingAlias] = useState<string | null>(null);
+  const [modmailThreads, setModmailThreads] = useState<ModmailThread[]>([]);
+  const [modmailLoading, setModmailLoading] = useState(false);
+  const [modmailSelectedThreadId, setModmailSelectedThreadId] = useState<string | null>(null);
+  const [modmailStatusFilter, setModmailStatusFilter] = useState<"all" | "open" | "closed">("all");
+  const [modmailCategoryFilter, setModmailCategoryFilter] = useState<string>("all");
+  const [modmailUserIdFilter, setModmailUserIdFilter] = useState("");
+  const [modmailFromDate, setModmailFromDate] = useState("");
+  const [modmailToDate, setModmailToDate] = useState("");
+  const [modmailSearchQuery, setModmailSearchQuery] = useState("");
   const [postingFeatureEmbed, setPostingFeatureEmbed] = useState<string | null>(null);
   const [postingLatestUpdate, setPostingLatestUpdate] = useState(false);
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
@@ -1684,6 +1726,44 @@ export default function Dashboard() {
     setUnblockingMiscKey(null);
   };
 
+  const loadModmailLogs = async (guildId: string | null = selectedGuild) => {
+    if (!guildId) return;
+    setModmailLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (modmailStatusFilter && modmailStatusFilter !== "all") {
+        params.append("status", modmailStatusFilter);
+      }
+      if (modmailCategoryFilter && modmailCategoryFilter !== "all") {
+        params.append("category", modmailCategoryFilter);
+      }
+      if (modmailUserIdFilter.trim()) {
+        params.append("userId", modmailUserIdFilter.trim());
+      }
+      if (modmailFromDate) {
+        params.append("fromDate", modmailFromDate);
+      }
+      if (modmailToDate) {
+        params.append("toDate", modmailToDate);
+      }
+
+      const queryString = params.toString();
+      const url = `/api/guilds/${guildId}/modmail-logs${queryString ? `?${queryString}` : ""}`;
+      const data = await fetchJsonWithTimeout(url, undefined, 15000);
+
+      const threads = (Array.isArray(data?.threads) ? data.threads : [])
+        .slice()
+        .sort((a: ModmailThread, b: ModmailThread) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      setModmailThreads(threads);
+      setModmailSelectedThreadId(null);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to load modmail logs.", variant: "destructive" });
+      setModmailThreads([]);
+    }
+    setModmailLoading(false);
+  };
+
   const loadSnippets = async (guildId: string | null = selectedGuild) => {
     if (!guildId) return;
     setSnippetLoading(true);
@@ -1847,6 +1927,11 @@ export default function Dashboard() {
       window.clearInterval(intervalId);
     };
   }, [selectedGuild, activePrimaryTab]);
+
+  useEffect(() => {
+    if (!selectedGuild || activePrimaryTab !== "modmail") return;
+    loadModmailLogs(selectedGuild).catch(() => undefined);
+  }, [selectedGuild, activePrimaryTab, modmailStatusFilter, modmailCategoryFilter, modmailUserIdFilter, modmailFromDate, modmailToDate]);
 
   useEffect(() => {
     if (!selectedGuild || moduleRouteParams?.moduleId !== "snippets") return;
@@ -6351,6 +6436,291 @@ export default function Dashboard() {
                   })}
                 </div>
               )}
+            </TabsContent>
+
+            <TabsContent value="modmail" className="mt-0 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Modmail Logs</h3>
+                <p className="mt-1 text-sm text-muted-foreground">View modmail transcripts, messages, and access full conversation history.</p>
+              </div>
+
+              <Card className="border-border/80 bg-card/90">
+                <CardHeader>
+                  <CardTitle className="text-base">Filters</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <div>
+                      <Label className="text-xs">Status</Label>
+                      <Select value={modmailStatusFilter} onValueChange={(val) => setModmailStatusFilter(val as "all" | "open" | "closed")}>
+                        <SelectTrigger className="mt-1 h-9">
+                          <SelectValue placeholder="Filter by status" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All</SelectItem>
+                          <SelectItem value="open">Open</SelectItem>
+                          <SelectItem value="closed">Closed</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label className="text-xs">Category</Label>
+                      <Select value={modmailCategoryFilter} onValueChange={setModmailCategoryFilter}>
+                        <SelectTrigger className="mt-1 h-9">
+                          <SelectValue placeholder="Filter by category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All</SelectItem>
+                          <SelectItem value="general">General</SelectItem>
+                          <SelectItem value="report">Report</SelectItem>
+                          <SelectItem value="appeal">Appeal</SelectItem>
+                          <SelectItem value="other">Other</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label className="text-xs">User ID</Label>
+                      <Input
+                        placeholder="Filter by user ID"
+                        value={modmailUserIdFilter}
+                        onChange={(e) => setModmailUserIdFilter(e.target.value)}
+                        className="mt-1 h-9"
+                      />
+                    </div>
+
+                    <div>
+                      <Label className="text-xs">Search Messages</Label>
+                      <Input
+                        placeholder="Search transcripts"
+                        value={modmailSearchQuery}
+                        onChange={(e) => setModmailSearchQuery(e.target.value.toLowerCase())}
+                        className="mt-1 h-9"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <Label className="text-xs">From Date</Label>
+                      <Input
+                        type="date"
+                        value={modmailFromDate}
+                        onChange={(e) => setModmailFromDate(e.target.value)}
+                        className="mt-1 h-9"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-xs">To Date</Label>
+                      <Input
+                        type="date"
+                        value={modmailToDate}
+                        onChange={(e) => setModmailToDate(e.target.value)}
+                        className="mt-1 h-9"
+                      />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
+                <Card className="border-border/80 bg-card/90 lg:max-h-[600px] lg:overflow-y-auto">
+                  <CardHeader>
+                    <CardTitle className="text-sm">Threads ({modmailThreads.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {modmailLoading ? (
+                      <div className="flex justify-center py-4">
+                        <div className="text-sm text-muted-foreground">Loading...</div>
+                      </div>
+                    ) : modmailThreads.length === 0 ? (
+                      <div className="text-sm text-muted-foreground">No modmail threads found</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {modmailThreads.map((thread) => (
+                          <button
+                            key={thread.id}
+                            onClick={() => setModmailSelectedThreadId(thread.id)}
+                            className={`w-full rounded-lg border p-3 text-left transition-all ${
+                              modmailSelectedThreadId === thread.id
+                                ? "border-primary/50 bg-primary/10"
+                                : "border-border/50 hover:border-border/80 hover:bg-secondary/50"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <img
+                                src={thread.avatarUrl || "https://via.placeholder.com/32"}
+                                alt={thread.username}
+                                className="h-8 w-8 rounded-full"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-medium">{thread.username}</p>
+                                <p className="truncate text-xs text-muted-foreground">
+                                  {thread.messageCount} message{thread.messageCount !== 1 ? "s" : ""}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <Badge
+                                variant="outline"
+                                className={`text-xs ${
+                                  thread.status === "open"
+                                    ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
+                                    : "border-gray-500/30 bg-gray-500/10 text-gray-600 dark:text-gray-400"
+                                }`}
+                              >
+                                {thread.status}
+                              </Badge>
+                              <span className="text-xs text-muted-foreground">
+                                {new Date(thread.createdAt).toLocaleDateString()}
+                              </span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {modmailSelectedThreadId && modmailThreads.find((t) => t.id === modmailSelectedThreadId) ? (
+                  (() => {
+                    const selectedThread = modmailThreads.find((t) => t.id === modmailSelectedThreadId)!;
+                    const filteredMessages = modmailSearchQuery
+                      ? selectedThread.messages.filter((msg) =>
+                          msg.content.toLowerCase().includes(modmailSearchQuery)
+                        )
+                      : selectedThread.messages;
+
+                    return (
+                      <Card className="border-border/80 bg-card/90">
+                        <CardHeader>
+                          <div className="flex items-center justify-between gap-4">
+                            <div>
+                              <CardTitle className="text-base">{selectedThread.username}'s Conversation</CardTitle>
+                              <CardDescription className="mt-1">
+                                {selectedThread.messageCount} total messages
+                                {selectedThread.claimedByUsername && ` • Claimed by ${selectedThread.claimedByUsername}`}
+                              </CardDescription>
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                const transcript = selectedThread.messages
+                                  .map((msg) =>
+                                    `[${new Date(msg.createdAt).toLocaleString()}] ${msg.isStaff ? "[STAFF]" : "[USER]"} ${msg.content}`
+                                  )
+                                  .join("\n\n");
+                                const element = document.createElement("a");
+                                element.setAttribute(
+                                  "href",
+                                  `data:text/plain;charset=utf-8,${encodeURIComponent(transcript)}`
+                                );
+                                element.setAttribute("download", `modmail-${selectedThread.id}.txt`);
+                                element.style.display = "none";
+                                document.body.appendChild(element);
+                                element.click();
+                                document.body.removeChild(element);
+                                toast({ title: "Downloaded", description: "Transcript downloaded successfully." });
+                              }}
+                            >
+                              Download Transcript
+                            </Button>
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="space-y-4">
+                            <div className="rounded-lg border border-border/50 bg-secondary/30 p-3">
+                              <div className="grid gap-2 text-sm">
+                                <div>
+                                  <span className="text-muted-foreground">Status:</span>{" "}
+                                  <Badge
+                                    variant="outline"
+                                    className={`ml-2 text-xs ${
+                                      selectedThread.status === "open"
+                                        ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
+                                        : "border-gray-500/30 bg-gray-500/10 text-gray-600 dark:text-gray-400"
+                                    }`}
+                                  >
+                                    {selectedThread.status}
+                                  </Badge>
+                                </div>
+                                <div>
+                                  <span className="text-muted-foreground">Category:</span>{" "}
+                                  <span className="ml-2 font-medium">{selectedThread.category}</span>
+                                </div>
+                                <div>
+                                  <span className="text-muted-foreground">Created:</span>{" "}
+                                  <span className="ml-2 text-xs">{new Date(selectedThread.createdAt).toLocaleString()}</span>
+                                </div>
+                                {selectedThread.closedAt && (
+                                  <div>
+                                    <span className="text-muted-foreground">Closed:</span>{" "}
+                                    <span className="ml-2 text-xs">{new Date(selectedThread.closedAt).toLocaleString()}</span>
+                                  </div>
+                                )}
+                                {selectedThread.closeReason && (
+                                  <div>
+                                    <span className="text-muted-foreground">Close Reason:</span>{" "}
+                                    <span className="ml-2 text-xs">{selectedThread.closeReason}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="max-h-[400px] space-y-3 overflow-y-auto rounded-lg border border-border/50 bg-secondary/10 p-4">
+                              {filteredMessages.length === 0 ? (
+                                <div className="flex justify-center py-8">
+                                  <p className="text-sm text-muted-foreground">
+                                    {modmailSearchQuery ? "No matching messages" : "No messages"}
+                                  </p>
+                                </div>
+                              ) : (
+                                filteredMessages.map((msg) => (
+                                  <div
+                                    key={msg.id}
+                                    className={`rounded-lg p-3 ${
+                                      msg.isStaff
+                                        ? "border-l-2 border-blue-500 bg-blue-500/5"
+                                        : "border-l-2 border-green-500 bg-green-500/5"
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="flex items-center gap-2">
+                                        <Badge
+                                          variant="outline"
+                                          className={`text-xs ${
+                                            msg.isStaff
+                                              ? "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
+                                              : "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
+                                          }`}
+                                        >
+                                          {msg.isStaff ? "STAFF" : "USER"}
+                                        </Badge>
+                                      </div>
+                                      <span className="text-xs text-muted-foreground">
+                                        {new Date(msg.createdAt).toLocaleString()}
+                                      </span>
+                                    </div>
+                                    <p className="mt-2 break-words text-sm">{msg.content}</p>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })()
+                ) : (
+                  <Card className="border-border/80 bg-card/90">
+                    <CardContent className="flex items-center justify-center py-16">
+                      <p className="text-muted-foreground">Select a thread to view conversation</p>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
             </TabsContent>
 
             <TabsContent value="miscellaneous" className="mt-0 space-y-4">

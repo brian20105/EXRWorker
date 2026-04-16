@@ -3071,6 +3071,109 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/guilds/:guildId/modmail-logs", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      const statusFilter = String(req.query.status || "").trim().toLowerCase();
+      const userIdFilter = String(req.query.userId || "").trim();
+      const categoryFilter = String(req.query.category || "").trim().toLowerCase();
+      const fromDateStr = String(req.query.fromDate || "").trim();
+      const toDateStr = String(req.query.toDate || "").trim();
+
+      const fromDate = fromDateStr ? new Date(fromDateStr) : null;
+      const toDate = toDateStr ? new Date(toDateStr) : null;
+
+      const allThreads = await storage.getAllModmailThreads(guildId).catch(() => []);
+      let filtered = allThreads;
+
+      if (statusFilter && statusFilter !== "all") {
+        filtered = filtered.filter((t) => String(t.status || "open").toLowerCase() === statusFilter);
+      }
+
+      if (userIdFilter) {
+        filtered = filtered.filter((t) => String(t.userId || "") === userIdFilter);
+      }
+
+      if (categoryFilter && categoryFilter !== "all") {
+        filtered = filtered.filter((t) => String(t.category || "").toLowerCase() === categoryFilter);
+      }
+
+      if (fromDate && Number.isFinite(fromDate.getTime())) {
+        filtered = filtered.filter((t) => {
+          const createdAt = t.createdAt ? new Date(t.createdAt) : null;
+          return !createdAt || createdAt >= fromDate;
+        });
+      }
+
+      if (toDate && Number.isFinite(toDate.getTime())) {
+        filtered = filtered.filter((t) => {
+          const createdAt = t.createdAt ? new Date(t.createdAt) : null;
+          return !createdAt || createdAt <= toDate;
+        });
+      }
+
+      const threads = await Promise.all(
+        filtered.map(async (thread) => {
+          const messages = await storage.getModmailMessages(thread.id).catch(() => []);
+          const creatorInfo = await resolveDiscordUserSummary(thread.userId, guildId);
+          const claimedByInfo = thread.claimedById
+            ? await resolveDiscordUserSummary(thread.claimedById, guildId)
+            : null;
+
+          const latestMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+          const latestMessageAuthorInfo = latestMessage
+            ? await resolveDiscordUserSummary(latestMessage.authorId, guildId)
+            : null;
+
+          return {
+            id: thread.id,
+            userId: thread.userId,
+            username: creatorInfo.username,
+            avatarUrl: creatorInfo.avatarUrl,
+            status: thread.status,
+            category: thread.category || "general",
+            channelId: thread.channelId,
+            createdAt: thread.createdAt?.toISOString() || new Date().toISOString(),
+            closedAt: thread.closedAt?.toISOString() || null,
+            closeReason: thread.closeReason,
+            claimedById: thread.claimedById,
+            claimedByUsername: claimedByInfo?.username || null,
+            claimedByAvatarUrl: claimedByInfo?.avatarUrl || null,
+            messageCount: messages.length,
+            messages: messages.map((msg) => ({
+              id: msg.id,
+              authorId: msg.authorId,
+              content: msg.content,
+              isStaff: String(msg.isStaff || "").toLowerCase() === "true",
+              createdAt: msg.createdAt?.toISOString() || new Date().toISOString(),
+            })),
+            latestMessage: latestMessage
+              ? {
+                  content: latestMessage.content,
+                  authorUsername: latestMessageAuthorInfo?.username || "Unknown",
+                  isStaff: String(latestMessage.isStaff || "").toLowerCase() === "true",
+                  sentAt: latestMessage.createdAt?.toISOString() || new Date().toISOString(),
+                }
+              : null,
+          };
+        }),
+      );
+
+      const sorted = threads.sort((a, b) => {
+        const aTime = new Date(a.createdAt).getTime();
+        const bTime = new Date(b.createdAt).getTime();
+        return bTime - aTime;
+      });
+
+      res.json({ threads: sorted });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.delete("/api/guilds/:guildId/bans/:userId", async (req, res) => {
     try {
       const auth = await requireGuildAccess(req, res);
