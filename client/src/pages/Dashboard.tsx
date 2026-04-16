@@ -840,6 +840,7 @@ export default function Dashboard() {
   const [rosterEmbedDeleteConfirm, setRosterEmbedDeleteConfirm] = useState<string | null>(null);
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
   const reactionRoleDraftReadyRef = useRef(false);
+  const suppressLastGuildRestoreRef = useRef(false);
   const [rosterEmbedModalMode, setRosterEmbedModalMode] = useState<"create" | "edit">("create");
   const [rosterEmbedSaving, setRosterEmbedSaving] = useState(false);
   const [rosterEmbedEditingId, setRosterEmbedEditingId] = useState("");
@@ -1095,6 +1096,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (typeof window === "undefined" || selectedGuild || guilds.length === 0 || moduleRouteMatch) return;
+    if (suppressLastGuildRestoreRef.current) return;
 
     const storedGuildId = window.localStorage.getItem(DASHBOARD_LAST_GUILD_STORAGE_KEY);
     if (!storedGuildId) return;
@@ -2077,6 +2079,12 @@ export default function Dashboard() {
     window.location.href = "/api/auth/discord/login";
   };
 
+  const goToGuildList = () => {
+    suppressLastGuildRestoreRef.current = true;
+    setSelectedGuild(null);
+    setLocation("/dashboard");
+  };
+
   const logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     setCurrentUser(null);
@@ -2105,8 +2113,7 @@ export default function Dashboard() {
       setOwnerGuilds((prev) => prev.filter((entry) => entry.id !== guild.id));
       setOwnerGuildCount((prev) => Math.max(0, prev - 1));
       if (selectedGuild === guild.id) {
-        setSelectedGuild(null);
-        setLocation("/dashboard");
+        goToGuildList();
       }
       toast({ title: "Bot left server", description: `${guild.name} removed.` });
     } catch {
@@ -2173,8 +2180,7 @@ export default function Dashboard() {
       )));
 
       if (selectedGuild === guild.id) {
-        setSelectedGuild(null);
-        setLocation("/dashboard");
+        goToGuildList();
       }
 
       toast({ title: disabled ? "Server disabled" : "Server enabled", description: `${guild.name} has been ${disabled ? "disabled" : "re-enabled"}.` });
@@ -5494,6 +5500,7 @@ export default function Dashboard() {
                             });
                             return;
                           }
+                          suppressLastGuildRestoreRef.current = false;
                           setSelectedGuild(guild.id);
                           setLocation("/dashboard");
                         }}
@@ -5545,10 +5552,7 @@ export default function Dashboard() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => {
-                setSelectedGuild(null);
-                setLocation("/dashboard");
-              }}
+              onClick={goToGuildList}
               data-testid="button-back-guilds"
             >
               <ArrowLeft className="mr-1 h-4 w-4 sm:mr-2" />
