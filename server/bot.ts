@@ -22161,6 +22161,11 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
+    if ((thread as any).ignoreInactivity === "true") {
+      await sendTicketCommandEmbed(message, "❌ `.ignore` has already been used for this ticket.", 0xed4245);
+      return;
+    }
+
     await storage.updateModmailThread(thread.id, { ignoreInactivity: "true" });
 
     // Cancel any pending inactivity timers
