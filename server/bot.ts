@@ -19541,9 +19541,63 @@ client.on("interactionCreate", async (interaction) => {
 
         const guildId = interaction.customId.replace("inactivity_submit_", "");
 
-        const fromDate = interaction.fields.getTextInputValue("from_date");
-        const toDate = interaction.fields.getTextInputValue("to_date");
+        const fromDateInput = interaction.fields.getTextInputValue("from_date");
+        const toDateInput = interaction.fields.getTextInputValue("to_date");
         const reason = interaction.fields.getTextInputValue("reason");
+
+        const parseInactivityDateInput = (rawValue: string): Date | null => {
+          const value = String(rawValue || "").trim();
+          if (!value) return null;
+
+          const unixMatch = value.match(/<t:(\d{9,13})/);
+          if (unixMatch) {
+            const rawUnix = Number(unixMatch[1]);
+            if (Number.isFinite(rawUnix)) {
+              const unixMs = rawUnix > 1e12 ? rawUnix : rawUnix * 1000;
+              const parsed = new Date(unixMs);
+              return Number.isFinite(parsed.getTime()) ? parsed : null;
+            }
+          }
+
+          const cleaned = value
+            .replace(/(\d)(st|nd|rd|th)\b/gi, "$1")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const parsedMs = Date.parse(cleaned);
+          if (Number.isFinite(parsedMs)) {
+            return new Date(parsedMs);
+          }
+
+          return null;
+        };
+
+        const formatLocalDateOnly = (date: Date): string => {
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, "0");
+          const day = String(date.getDate()).padStart(2, "0");
+          return `${year}-${month}-${day}`;
+        };
+
+        const fromParsed = parseInactivityDateInput(fromDateInput);
+        const toParsed = parseInactivityDateInput(toDateInput);
+
+        if (!fromParsed || !toParsed) {
+          await interaction.editReply({
+            content: "❌ Invalid date format. Use a valid date like `2026-04-20`, `04/20/2026`, `April 20 2026`, or a Discord timestamp like `<t:1713571200:D>`."
+          });
+          return;
+        }
+
+        if (toParsed.getTime() < fromParsed.getTime()) {
+          await interaction.editReply({
+            content: "❌ Invalid range. `To` date must be on or after the `From` date."
+          });
+          return;
+        }
+
+        const fromDate = formatLocalDateOnly(fromParsed);
+        const toDate = formatLocalDateOnly(toParsed);
 
         const config = await storage.getGuildConfig(guildId);
         if (isGuildConfigDisabled(config)) {
