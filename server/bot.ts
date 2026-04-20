@@ -12174,7 +12174,8 @@ client.on("interactionCreate", async (interaction) => {
         const rows: Array<{ userId: string; total: number; line: string }> = [];
         for (const member of members) {
           const userId = member.id;
-          const memberLabel = `<@${userId}>${usersWithApprovedInactivity.has(userId) ? " - Inactivity" : ""}`;
+          const memberLabel = `<@${userId}>`;
+          const inactivitySuffix = usersWithApprovedInactivity.has(userId) ? " | Inactivity" : "";
           const moderation = moderationMap.get(userId);
           const muteCount = moderation?.mutes || 0;
           const modBanCount = moderation?.bans || 0;
@@ -12192,7 +12193,7 @@ client.on("interactionCreate", async (interaction) => {
             rows.push({
               userId,
               total,
-              line: `${memberLabel} | ${modmailCount} | ${muteCount} | ${inviteCount} | ${staffReportCount} | ${appealCount}`,
+              line: `${memberLabel} | ${modmailCount} | ${muteCount} | ${inviteCount} | ${staffReportCount} | ${appealCount}${inactivitySuffix}`,
             });
             continue;
           }
@@ -12212,7 +12213,7 @@ client.on("interactionCreate", async (interaction) => {
             rows.push({
               userId,
               total,
-              line: `${memberLabel} | ${modmailCount} | ${inviteCount} | ${partnerships} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount}`,
+              line: `${memberLabel} | ${modmailCount} | ${inviteCount} | ${partnerships} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount}${inactivitySuffix}`,
             });
             continue;
           }
@@ -12227,7 +12228,7 @@ client.on("interactionCreate", async (interaction) => {
           rows.push({
             userId,
             total,
-            line: `${memberLabel} | ${inviteCount} | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount}`,
+            line: `${memberLabel} | ${inviteCount} | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount}${inactivitySuffix}`,
           });
         }
 
