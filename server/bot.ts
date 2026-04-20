@@ -1768,6 +1768,25 @@ function normalizeActivityRangeDays(rawValue?: number): number | undefined {
   return rawValue;
 }
 
+function normalizeActivityRangeBounds(rawFrom?: number, rawTo?: number): {
+  fromDays: number | undefined;
+  toDays: number | undefined;
+  wasSwapped: boolean;
+} {
+  let fromDays = normalizeActivityRangeDays(rawFrom);
+  let toDays = normalizeActivityRangeDays(rawTo);
+
+  // from should be older (larger days-ago) and to should be newer (smaller days-ago).
+  if (fromDays !== undefined && toDays !== undefined && fromDays < toDays) {
+    const originalFrom = fromDays;
+    fromDays = toDays;
+    toDays = originalFrom;
+    return { fromDays, toDays, wasSwapped: true };
+  }
+
+  return { fromDays, toDays, wasSwapped: false };
+}
+
 function serializeActivityRangeForCustomId(value?: number): string {
   if (value === undefined || value === null || !Number.isFinite(value)) return "none";
   if (Number.isInteger(value)) return String(value);
@@ -8289,8 +8308,7 @@ client.on("interactionCreate", async (interaction) => {
         if (subcommand === "check") {
           const rawFrom = interaction.options.getInteger("from") ?? undefined;
           const rawTo = interaction.options.getInteger("to") ?? undefined;
-          const fromDays = normalizeActivityRangeDays(rawFrom);
-          const toDays = normalizeActivityRangeDays(rawTo);
+          const { fromDays, toDays } = normalizeActivityRangeBounds(rawFrom, rawTo);
           const selectCustomId = `activity_check_group_select:${serializeActivityRangeForCustomId(fromDays)}:${serializeActivityRangeForCustomId(toDays)}`;
 
           const groupMenu = new StringSelectMenuBuilder()
@@ -8331,8 +8349,10 @@ client.on("interactionCreate", async (interaction) => {
           const targetMember = interaction.options.getUser("member");
           const category = interaction.options.getString("category");
           const scope = interaction.options.getString("scope") || "all"; // Default to all servers
-          const fromDays = normalizeActivityRangeDays(interaction.options.getInteger("from") ?? undefined);
-          const toDays = normalizeActivityRangeDays(interaction.options.getInteger("to") ?? undefined);
+          const { fromDays, toDays } = normalizeActivityRangeBounds(
+            interaction.options.getInteger("from") ?? undefined,
+            interaction.options.getInteger("to") ?? undefined,
+          );
           const useAllGuilds = scope === "all";
           const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
           const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
@@ -12029,8 +12049,10 @@ client.on("interactionCreate", async (interaction) => {
 
         // Parse from/to from custom ID: activity_check_group_select:fromDays:toDays
         const idParts = interaction.customId.split(":");
-        const fromDays = parseActivityRangeFromCustomId(idParts[1]);
-        const toDays = parseActivityRangeFromCustomId(idParts[2]);
+        const { fromDays, toDays } = normalizeActivityRangeBounds(
+          parseActivityRangeFromCustomId(idParts[1]),
+          parseActivityRangeFromCustomId(idParts[2]),
+        );
 
         const roleRefs = await getSyncedActivityCheckRoleGroupValues(interaction.guildId!, group);
         const resolvedRoles = resolveGuildRolesFromStoredValues(guild, roleRefs);
@@ -14488,8 +14510,10 @@ client.on("interactionCreate", async (interaction) => {
             const page = parseInt(parts[2]);
             const category = parts[3] === "all" ? null : parts[3];
             const scope = parts[4];
-            const fromDays = parseActivityRangeFromCustomId(parts[5]);
-            const toDays = parseActivityRangeFromCustomId(parts[6]);
+            const { fromDays, toDays } = normalizeActivityRangeBounds(
+              parseActivityRangeFromCustomId(parts[5]),
+              parseActivityRangeFromCustomId(parts[6]),
+            );
             const useAllGuilds = scope === "all";
             const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
             const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
