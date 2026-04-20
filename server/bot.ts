@@ -12071,6 +12071,51 @@ client.on("interactionCreate", async (interaction) => {
           latestInactivityByUser.set(userId, request);
         }
 
+        const parseInactivityDateInput = (rawValue: unknown, options?: { endOfDayForDateOnly?: boolean }): number | null => {
+          const value = String(rawValue || "").trim();
+          if (!value) return null;
+
+          const normalized = value.toLowerCase();
+          if (normalized === "now" || normalized === "today" || normalized === "current") {
+            return Date.now();
+          }
+
+          const unixMatch = value.match(/<t:(\d{9,13})/);
+          if (unixMatch) {
+            const rawUnix = Number(unixMatch[1]);
+            if (Number.isFinite(rawUnix)) {
+              return rawUnix > 1e12 ? rawUnix : rawUnix * 1000;
+            }
+          }
+
+          const cleaned = value
+            .replace(/(\d)(st|nd|rd|th)\b/gi, "$1")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const parsedDirect = Date.parse(cleaned);
+          if (Number.isFinite(parsedDirect)) {
+            const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(cleaned)
+              || /^\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}$/.test(cleaned)
+              || /^[a-zA-Z]+\s+\d{1,2}(?:,\s*\d{4})?$/.test(cleaned);
+            return dateOnly && options?.endOfDayForDateOnly
+              ? parsedDirect + (24 * 60 * 60 * 1000) - 1
+              : parsedDirect;
+          }
+
+          const dateFragmentMatch = cleaned.match(/\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:,\s*\d{4})?)\b/i);
+          if (dateFragmentMatch) {
+            const parsedFragment = Date.parse(dateFragmentMatch[0]);
+            if (Number.isFinite(parsedFragment)) {
+              return options?.endOfDayForDateOnly
+                ? parsedFragment + (24 * 60 * 60 * 1000) - 1
+                : parsedFragment;
+            }
+          }
+
+          return null;
+        };
+
         const nowMs = Date.now();
         const usersWithApprovedInactivity = new Set<string>();
         for (const [userId, request] of latestInactivityByUser.entries()) {
@@ -12079,15 +12124,16 @@ client.on("interactionCreate", async (interaction) => {
 
           const fromRaw = String((request as any)?.fromDate || "").trim();
           const toRaw = String((request as any)?.toDate || "").trim();
-          const fromMs = Date.parse(fromRaw);
-          const toMs = Date.parse(toRaw);
+          const fromMs = parseInactivityDateInput(fromRaw);
+          const toMs = parseInactivityDateInput(toRaw, { endOfDayForDateOnly: true });
 
-          if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
-            usersWithApprovedInactivity.add(userId);
-            continue;
-          }
+          // If both dates are unparseable, don't mark as active.
+          if (fromMs === null && toMs === null) continue;
 
-          if (nowMs >= fromMs && nowMs <= toMs) {
+          const effectiveFrom = fromMs ?? Number.NEGATIVE_INFINITY;
+          const effectiveTo = toMs ?? Number.POSITIVE_INFINITY;
+
+          if (nowMs >= effectiveFrom && nowMs <= effectiveTo) {
             usersWithApprovedInactivity.add(userId);
           }
         }
@@ -12146,7 +12192,7 @@ client.on("interactionCreate", async (interaction) => {
             rows.push({
               userId,
               total,
-              line: `${memberLabel} | ${modmailCount} | ${muteCount} | ${inviteCount} | ${staffReportCount} | ${appealCount} | ${total}`,
+              line: `${memberLabel} | ${modmailCount} | ${muteCount} | ${inviteCount} | ${staffReportCount} | ${appealCount}`,
             });
             continue;
           }
@@ -12166,7 +12212,7 @@ client.on("interactionCreate", async (interaction) => {
             rows.push({
               userId,
               total,
-              line: `${memberLabel} | ${modmailCount} | ${inviteCount} | ${partnerships} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount} | ${total}`,
+              line: `${memberLabel} | ${modmailCount} | ${inviteCount} | ${partnerships} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount}`,
             });
             continue;
           }
@@ -12181,7 +12227,7 @@ client.on("interactionCreate", async (interaction) => {
           rows.push({
             userId,
             total,
-            line: `${memberLabel} | ${inviteCount} | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount} | ${total}`,
+            line: `${memberLabel} | ${inviteCount} | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount}`,
           });
         }
 
@@ -12198,12 +12244,16 @@ client.on("interactionCreate", async (interaction) => {
 
         const header =
           group === "staff"
-            ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Mutes | Invites | Staff Reports | Appeals | Total`
+            ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Mutes | Invites | Staff Reports | Appeals`
             : group === "administration"
-              ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Invites | Partnerships | Role Requests | Ban/Unban/Kick Reviews | Staff Accepted | Mod Bans | Mod Kicks | Total`
-              : `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Invites | Partnerships | Accepted Semi Pros & Pros | Mod Bans | Mod Kicks | Total`;
+              ? `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Modmails | Invites | Partnerships | Role Requests | Ban/Unban/Kick Reviews | Staff Accepted | Mod Bans | Mod Kicks`
+              : `Activity Check • ${ACTIVITY_CHECK_GROUP_LABELS[group]}\nDate range: ${dateRangeLine}\nCategories: Invites | Partnerships | Accepted Semi Pros & Pros | Mod Bans | Mod Kicks`;
 
-        const body = rows.map((entry, index) => `${index + 1}. ${entry.line}`).join("\n") || "No entries found.";
+        const combinedTotal = rows.reduce((sum, entry) => sum + (entry.total || 0), 0);
+        const rankedRows = rows.map((entry, index) => `${index + 1}. ${entry.line}`).join("\n");
+        const body = rankedRows
+          ? `${rankedRows}\n\nCombined Total Activity: ${combinedTotal}`
+          : "No entries found.";
         const content = `\`\`\`\n${header}\n\n${body}\n\`\`\``;
 
         if (content.length > 3900) {
