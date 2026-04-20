@@ -12063,6 +12063,35 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        const inactivityRequests = await storage.getInactivityRequestsByGuild(interaction.guildId!).catch(() => [] as any[]);
+        const latestInactivityByUser = new Map<string, any>();
+        for (const request of inactivityRequests) {
+          const userId = String((request as any)?.userId || "").trim();
+          if (!userId || latestInactivityByUser.has(userId)) continue;
+          latestInactivityByUser.set(userId, request);
+        }
+
+        const nowMs = Date.now();
+        const usersWithApprovedInactivity = new Set<string>();
+        for (const [userId, request] of latestInactivityByUser.entries()) {
+          const status = String((request as any)?.status || "").toLowerCase();
+          if (status !== "approved") continue;
+
+          const fromRaw = String((request as any)?.fromDate || "").trim();
+          const toRaw = String((request as any)?.toDate || "").trim();
+          const fromMs = Date.parse(fromRaw);
+          const toMs = Date.parse(toRaw);
+
+          if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+            usersWithApprovedInactivity.add(userId);
+            continue;
+          }
+
+          if (nowMs >= fromMs && nowMs <= toMs) {
+            usersWithApprovedInactivity.add(userId);
+          }
+        }
+
         const moderationRowsByGuild = await Promise.all(
           Array.from(client.guilds.cache.values()).map((g) =>
             storage.getModerationStats(g.id, fromDays, toDays).catch(() => [] as { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[])
@@ -12099,6 +12128,7 @@ client.on("interactionCreate", async (interaction) => {
         const rows: Array<{ userId: string; total: number; line: string }> = [];
         for (const member of members) {
           const userId = member.id;
+          const memberLabel = `<@${userId}>${usersWithApprovedInactivity.has(userId) ? " - Inactivity" : ""}`;
           const moderation = moderationMap.get(userId);
           const muteCount = moderation?.mutes || 0;
           const modBanCount = moderation?.bans || 0;
@@ -12116,7 +12146,7 @@ client.on("interactionCreate", async (interaction) => {
             rows.push({
               userId,
               total,
-              line: `<@${userId}> | ${modmailCount} | ${muteCount} | ${inviteCount} | ${staffReportCount} | ${appealCount} | ${total}`,
+              line: `${memberLabel} | ${modmailCount} | ${muteCount} | ${inviteCount} | ${staffReportCount} | ${appealCount} | ${total}`,
             });
             continue;
           }
@@ -12136,7 +12166,7 @@ client.on("interactionCreate", async (interaction) => {
             rows.push({
               userId,
               total,
-              line: `<@${userId}> | ${modmailCount} | ${inviteCount} | ${partnerships} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount} | ${total}`,
+              line: `${memberLabel} | ${modmailCount} | ${inviteCount} | ${partnerships} | ${roleRequestsReviewed} | ${banUnbanKickReviewed} | ${staffAccepted} | ${modBanCount} | ${modKickCount} | ${total}`,
             });
             continue;
           }
@@ -12151,7 +12181,7 @@ client.on("interactionCreate", async (interaction) => {
           rows.push({
             userId,
             total,
-            line: `<@${userId}> | ${inviteCount} | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount} | ${total}`,
+            line: `${memberLabel} | ${inviteCount} | ${partnerships} | ${acceptedSemiProsPros} | ${modBanCount} | ${modKickCount} | ${total}`,
           });
         }
 

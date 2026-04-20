@@ -148,6 +148,7 @@ export interface IStorage {
 
   createInactivityRequest(request: InsertInactivityRequest): Promise<InactivityRequest>;
   getInactivityRequest(id: string): Promise<InactivityRequest | undefined>;
+  getInactivityRequestsByGuild(guildId: string): Promise<InactivityRequest[]>;
   updateInactivityRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<InactivityRequest>;
 
   createModmailThread(thread: InsertModmailThread): Promise<ModmailThread>;
@@ -709,6 +710,14 @@ export class DatabaseStorage implements IStorage {
   async getInactivityRequest(id: string): Promise<InactivityRequest | undefined> {
     const result = await db.select().from(inactivityRequests).where(eq(inactivityRequests.id, id));
     return result[0];
+  }
+
+  async getInactivityRequestsByGuild(guildId: string): Promise<InactivityRequest[]> {
+    return await db
+      .select()
+      .from(inactivityRequests)
+      .where(eq(inactivityRequests.guildId, guildId))
+      .orderBy(desc(inactivityRequests.updatedAt), desc(inactivityRequests.createdAt));
   }
 
   async updateInactivityRequest(id: string, updates: { status?: string; reviewedById?: string; reviewReason?: string; messageId?: string }): Promise<InactivityRequest> {
