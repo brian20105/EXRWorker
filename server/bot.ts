@@ -21506,6 +21506,11 @@ client.on("messageCreate", async (message) => {
 
       if (command === "unban") {
         const reason = tokens.slice(1 + consumedTargetTokens).join(" ").trim() || "No reason given.";
+        const blacklistEntry = getDashboardBlacklistedUsers(guildConfig)[targetUserId];
+        if (blacklistEntry) {
+          await sendPrefixCommandMessage("I cannot unban someone that is blacklisted from this server.", true);
+          return;
+        }
         try {
           await message.guild.members.unban(targetUserId, reason);
           message.guild.bans.cache.delete(targetUserId);
