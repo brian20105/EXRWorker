@@ -6245,7 +6245,6 @@ function buildStatusFilterButtons(
   kind: "payout" | "inactivity",
   requesterId: string,
   selected: StatusFilter,
-  guildId?: string,
 ): ActionRowBuilder<ButtonBuilder> {
   const statuses: StatusFilter[] = ["approved", "pending", "denied"];
   const labels: Record<StatusFilter, string> = {
@@ -6257,13 +6256,14 @@ function buildStatusFilterButtons(
   const row = new ActionRowBuilder<ButtonBuilder>();
   for (const status of statuses) {
     const customId = kind === "payout"
-      ? `payout_list_status_${requesterId}_${guildId || ""}_${status}`
+      ? `payout_list_status_${requesterId}_${status}`
       : `inactivity_list_status_${requesterId}_${status}`;
     row.addComponents(
       new ButtonBuilder()
         .setCustomId(customId)
         .setLabel(labels[status])
-        .setStyle(selected === status ? ButtonStyle.Primary : ButtonStyle.Secondary)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(selected === status)
     );
   }
 
@@ -6276,17 +6276,16 @@ function buildStatusPaginationButtons(
   selected: StatusFilter,
   page: number,
   totalPages: number,
-  guildId?: string,
 ): ActionRowBuilder<ButtonBuilder> {
   const safePage = Math.max(1, Math.min(page, Math.max(1, totalPages)));
   const prevPage = Math.max(1, safePage - 1);
   const nextPage = Math.min(Math.max(1, totalPages), safePage + 1);
 
   const prevId = kind === "payout"
-    ? `payout_list_page_${requesterId}_${guildId || ""}_${selected}_${prevPage}`
+    ? `payout_list_page_${requesterId}_${selected}_${prevPage}`
     : `inactivity_list_page_${requesterId}_${selected}_${prevPage}`;
   const nextId = kind === "payout"
-    ? `payout_list_page_${requesterId}_${guildId || ""}_${selected}_${nextPage}`
+    ? `payout_list_page_${requesterId}_${selected}_${nextPage}`
     : `inactivity_list_page_${requesterId}_${selected}_${nextPage}`;
 
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -6315,7 +6314,7 @@ function buildPayoutSummaryEmbed(allPayouts: any[]): EmbedBuilder {
   return new EmbedBuilder()
     .setTitle("All Payout Requests")
     .setColor(0x5865f2)
-    .setDescription(`Total: **${allPayouts.length}** requests`)
+    .setDescription(`Total: **${allPayouts.length}** requests (server-synced)`)
     .addFields(
       { name: "Pending", value: `**${pending.length}** requests\n$${totalPending.toFixed(2)}`, inline: true },
       { name: "Approved", value: `**${approved.length}** requests\n$${totalApproved.toFixed(2)}`, inline: true },
@@ -6324,12 +6323,27 @@ function buildPayoutSummaryEmbed(allPayouts: any[]): EmbedBuilder {
     .setTimestamp();
 }
 
+async function getAllPayoutsSynced(): Promise<any[]> {
+  const payoutsByGuild = await Promise.all(
+    Array.from(client.guilds.cache.values()).map((g) => storage.getAllPayouts(g.id).catch(() => [] as any[]))
+  );
+
+  return payoutsByGuild
+    .flat()
+    .sort((a: any, b: any) => {
+      const aTime = new Date(a?.updatedAt || a?.createdAt || 0).getTime();
+      const bTime = new Date(b?.updatedAt || b?.createdAt || 0).getTime();
+      return bTime - aTime;
+    });
+}
+
 function buildPayoutStatusEmbed(allPayouts: any[], status: StatusFilter, page = 1): { embed: EmbedBuilder; totalPages: number; safePage: number } {
   const title = status === "approved" ? "Approved Requests" : status === "denied" ? "Denied Requests" : "Pending Requests";
   const color = status === "approved" ? 0x23a559 : status === "denied" ? 0xda373c : 0xf0b232;
   const entries = allPayouts.filter((p) => p.status === status);
   const totalPages = Math.max(1, Math.ceil(entries.length / STATUS_LIST_PAGE_SIZE));
-  const safePage = Math.max(1, Math.min(page, totalPages));
+  const requestedPage = Number.isFinite(page) ? Math.trunc(page) : 1;
+  const safePage = Math.max(1, Math.min(requestedPage, totalPages));
   const start = (safePage - 1) * STATUS_LIST_PAGE_SIZE;
   const pageEntries = entries.slice(start, start + STATUS_LIST_PAGE_SIZE);
 
@@ -6384,7 +6398,8 @@ function buildInactivityStatusEmbed(allRequests: any[], status: StatusFilter, pa
   const color = status === "approved" ? 0x23a559 : status === "denied" ? 0xda373c : 0xf0b232;
   const entries = allRequests.filter((entry) => entry.status === status);
   const totalPages = Math.max(1, Math.ceil(entries.length / STATUS_LIST_PAGE_SIZE));
-  const safePage = Math.max(1, Math.min(page, totalPages));
+  const requestedPage = Number.isFinite(page) ? Math.trunc(page) : 1;
+  const safePage = Math.max(1, Math.min(requestedPage, totalPages));
   const start = (safePage - 1) * STATUS_LIST_PAGE_SIZE;
   const pageEntries = entries.slice(start, start + STATUS_LIST_PAGE_SIZE);
 
@@ -7501,7 +7516,7 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const allPayouts = await storage.getAllPayouts(interaction.guildId!);
+          const allPayouts = await getAllPayoutsSynced();
 
           if (allPayouts.length === 0) {
             await interaction.editReply({
@@ -7513,10 +7528,10 @@ client.on("interactionCreate", async (interaction) => {
           const selected: StatusFilter = "approved";
           const summaryEmbed = buildPayoutSummaryEmbed(allPayouts);
           const { embed: detailsEmbed, totalPages } = buildPayoutStatusEmbed(allPayouts, selected, 1);
-          const statusButtons = buildStatusFilterButtons("payout", interaction.user.id, selected, interaction.guildId!);
+          const statusButtons = buildStatusFilterButtons("payout", interaction.user.id, selected);
           const components: any[] = [statusButtons];
           if (totalPages > 1) {
-            components.push(buildStatusPaginationButtons("payout", interaction.user.id, selected, 1, totalPages, interaction.guildId!));
+            components.push(buildStatusPaginationButtons("payout", interaction.user.id, selected, 1, totalPages));
           }
 
           await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
@@ -10015,6 +10030,10 @@ client.on("interactionCreate", async (interaction) => {
 
           const startOfToday = new Date();
           startOfToday.setHours(0, 0, 0, 0);
+          if (fromParsed.getTime() < startOfToday.getTime()) {
+            await interaction.editReply({ content: "❌ `From` date cannot be in the past." });
+            return;
+          }
           if (toParsed.getTime() < startOfToday.getTime()) {
             await interaction.editReply({ content: "❌ You cannot create inactivity requests for date ranges that have already passed." });
             return;
@@ -14167,8 +14186,7 @@ client.on("interactionCreate", async (interaction) => {
         if (customId.startsWith("payout_list_status_")) {
           const parts = customId.split("_");
           const requesterId = parts[3];
-          const guildId = parts[4];
-          const selected = normalizeStatusFilter(parts[5]);
+          const selected = normalizeStatusFilter(parts[4]);
 
           if (interaction.user.id !== requesterId) {
             await replyInteractionFailed(interaction);
@@ -14177,7 +14195,7 @@ client.on("interactionCreate", async (interaction) => {
 
           if (!await safeDeferUpdate(interaction)) return;
 
-          const allPayouts = await storage.getAllPayouts(guildId).catch(() => [] as any[]);
+          const allPayouts = await getAllPayoutsSynced();
           if (allPayouts.length === 0) {
             await interaction.editReply({ content: "No payout requests found.", embeds: [], components: [] });
             return;
@@ -14185,10 +14203,10 @@ client.on("interactionCreate", async (interaction) => {
 
           const summaryEmbed = buildPayoutSummaryEmbed(allPayouts);
           const { embed: detailsEmbed, totalPages } = buildPayoutStatusEmbed(allPayouts, selected, 1);
-          const statusButtons = buildStatusFilterButtons("payout", requesterId, selected, guildId);
+          const statusButtons = buildStatusFilterButtons("payout", requesterId, selected);
           const components: any[] = [statusButtons];
           if (totalPages > 1) {
-            components.push(buildStatusPaginationButtons("payout", requesterId, selected, 1, totalPages, guildId));
+            components.push(buildStatusPaginationButtons("payout", requesterId, selected, 1, totalPages));
           }
           await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
           return;
@@ -14197,9 +14215,8 @@ client.on("interactionCreate", async (interaction) => {
         if (customId.startsWith("payout_list_page_")) {
           const parts = customId.split("_");
           const requesterId = parts[3];
-          const guildId = parts[4];
-          const selected = normalizeStatusFilter(parts[5]);
-          const requestedPage = Number(parts[6] || "1");
+          const selected = normalizeStatusFilter(parts[4]);
+          const requestedPage = Number(parts[5] || "1");
 
           if (interaction.user.id !== requesterId) {
             await replyInteractionFailed(interaction);
@@ -14208,7 +14225,7 @@ client.on("interactionCreate", async (interaction) => {
 
           if (!await safeDeferUpdate(interaction)) return;
 
-          const allPayouts = await storage.getAllPayouts(guildId).catch(() => [] as any[]);
+          const allPayouts = await getAllPayoutsSynced();
           if (allPayouts.length === 0) {
             await interaction.editReply({ content: "No payout requests found.", embeds: [], components: [] });
             return;
@@ -14216,10 +14233,10 @@ client.on("interactionCreate", async (interaction) => {
 
           const summaryEmbed = buildPayoutSummaryEmbed(allPayouts);
           const { embed: detailsEmbed, totalPages, safePage } = buildPayoutStatusEmbed(allPayouts, selected, requestedPage);
-          const statusButtons = buildStatusFilterButtons("payout", requesterId, selected, guildId);
+          const statusButtons = buildStatusFilterButtons("payout", requesterId, selected);
           const components: any[] = [statusButtons];
           if (totalPages > 1) {
-            components.push(buildStatusPaginationButtons("payout", requesterId, selected, safePage, totalPages, guildId));
+            components.push(buildStatusPaginationButtons("payout", requesterId, selected, safePage, totalPages));
           }
           await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
           return;
@@ -20159,6 +20176,12 @@ client.on("interactionCreate", async (interaction) => {
 
         const startOfToday = new Date();
         startOfToday.setHours(0, 0, 0, 0);
+        if (fromParsed.getTime() < startOfToday.getTime()) {
+          await interaction.editReply({
+            content: "❌ `From` date cannot be in the past."
+          });
+          return;
+        }
         if (toParsed.getTime() < startOfToday.getTime()) {
           await interaction.editReply({
             content: "❌ You cannot submit inactivity for date ranges that have already passed."
