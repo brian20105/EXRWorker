@@ -5632,13 +5632,7 @@ const commands = [
     .addSubcommand((sub) =>
       sub
         .setName("remove")
-        .setDescription("Remove an inactivity request by ID")
-        .addStringOption((option) =>
-          option
-            .setName("request_id")
-            .setDescription("Inactivity request ID")
-            .setRequired(true)
-        )
+        .setDescription("Pick an inactivity request from a dropdown and remove it")
     )
     .addSubcommand((sub) =>
       sub
@@ -6237,6 +6231,130 @@ async function hasPayoutPermission(
 
   if (!memberRoles) return false;
   return config.allowedRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+type StatusFilter = "pending" | "approved" | "denied";
+
+function normalizeStatusFilter(value?: string): StatusFilter {
+  if (value === "approved" || value === "denied") return value;
+  return "pending";
+}
+
+function buildStatusFilterButtons(
+  kind: "payout" | "inactivity",
+  requesterId: string,
+  selected: StatusFilter,
+  guildId?: string,
+): ActionRowBuilder<ButtonBuilder> {
+  const statuses: StatusFilter[] = ["approved", "pending", "denied"];
+  const labels: Record<StatusFilter, string> = {
+    approved: "Approved",
+    pending: "Pending",
+    denied: "Denied",
+  };
+
+  const row = new ActionRowBuilder<ButtonBuilder>();
+  for (const status of statuses) {
+    const customId = kind === "payout"
+      ? `payout_list_status_${requesterId}_${guildId || ""}_${status}`
+      : `inactivity_list_status_${requesterId}_${status}`;
+    row.addComponents(
+      new ButtonBuilder()
+        .setCustomId(customId)
+        .setLabel(labels[status])
+        .setStyle(selected === status ? ButtonStyle.Primary : ButtonStyle.Secondary)
+    );
+  }
+
+  return row;
+}
+
+function buildPayoutSummaryEmbed(allPayouts: any[]): EmbedBuilder {
+  const pending = allPayouts.filter((p) => p.status === "pending");
+  const approved = allPayouts.filter((p) => p.status === "approved");
+  const denied = allPayouts.filter((p) => p.status === "denied");
+
+  const totalPending = pending.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+  const totalApproved = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+  const totalDenied = denied.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
+
+  return new EmbedBuilder()
+    .setTitle("All Payout Requests")
+    .setColor(0x5865f2)
+    .setDescription(`Total: **${allPayouts.length}** requests`)
+    .addFields(
+      { name: "Pending", value: `**${pending.length}** requests\n$${totalPending.toFixed(2)}`, inline: true },
+      { name: "Approved", value: `**${approved.length}** requests\n$${totalApproved.toFixed(2)}`, inline: true },
+      { name: "Denied", value: `**${denied.length}** requests\n$${totalDenied.toFixed(2)}`, inline: true },
+    )
+    .setTimestamp();
+}
+
+function buildPayoutStatusEmbed(allPayouts: any[], status: StatusFilter): EmbedBuilder {
+  const title = status === "approved" ? "Approved Requests" : status === "denied" ? "Denied Requests" : "Pending Requests";
+  const color = status === "approved" ? 0x23a559 : status === "denied" ? 0xda373c : 0xf0b232;
+  const entries = allPayouts.filter((p) => p.status === status);
+
+  let description = "";
+  entries.forEach((payout, index) => {
+    const line = `**${index + 1}.)** <@${payout.userId}>\n> **ID:** ${payout.id}\n> **Reason:** ${payout.reason || "No reason"}\n> **Amount:** $${payout.moneyOwed}\n> **Email:** ${payout.email}\n\n`;
+    if (description.length + line.length < 4000) description += line;
+  });
+
+  return new EmbedBuilder()
+    .setTitle(title)
+    .setColor(color)
+    .setDescription(description || "None");
+}
+
+async function getAllInactivityRequestsSynced(): Promise<any[]> {
+  const requestsByGuild = await Promise.all(
+    Array.from(client.guilds.cache.values()).map((g) => storage.getInactivityRequestsByGuild(g.id).catch(() => [] as any[]))
+  );
+
+  return requestsByGuild
+    .flat()
+    .sort((a: any, b: any) => {
+      const aTime = new Date(a?.updatedAt || a?.createdAt || 0).getTime();
+      const bTime = new Date(b?.updatedAt || b?.createdAt || 0).getTime();
+      return bTime - aTime;
+    });
+}
+
+function buildInactivitySummaryEmbed(allRequests: any[]): EmbedBuilder {
+  const pending = allRequests.filter((entry) => entry.status === "pending");
+  const approved = allRequests.filter((entry) => entry.status === "approved");
+  const denied = allRequests.filter((entry) => entry.status === "denied");
+
+  return new EmbedBuilder()
+    .setTitle("All Inactivity Requests")
+    .setColor(0x5865f2)
+    .setDescription(`Total: **${allRequests.length}** requests (server-synced)`)
+    .addFields(
+      { name: "Pending", value: `**${pending.length}** requests`, inline: true },
+      { name: "Approved", value: `**${approved.length}** requests`, inline: true },
+      { name: "Denied", value: `**${denied.length}** requests`, inline: true },
+    )
+    .setTimestamp();
+}
+
+function buildInactivityStatusEmbed(allRequests: any[], status: StatusFilter): EmbedBuilder {
+  const title = status === "approved" ? "Approved Inactivity Requests" : status === "denied" ? "Denied Inactivity Requests" : "Pending Inactivity Requests";
+  const color = status === "approved" ? 0x23a559 : status === "denied" ? 0xda373c : 0xf0b232;
+  const entries = allRequests.filter((entry) => entry.status === status);
+
+  let description = "";
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const line = `**${index + 1}.)** <@${entry.userId}>\n> **Request ID:** ${entry.id}\n> **From:** ${entry.fromDate}\n> **To:** ${entry.toDate}\n> **Reason:** ${entry.reason || "No reason"}\n\n`;
+    if (description.length + line.length > 4000) break;
+    description += line;
+  }
+
+  return new EmbedBuilder()
+    .setTitle(title)
+    .setColor(color)
+    .setDescription(description || "None");
 }
 
 async function hasSnippetPermission(
@@ -7344,54 +7462,12 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const pending = allPayouts.filter(p => p.status === "pending");
-          const approved = allPayouts.filter(p => p.status === "approved");
-          const denied = allPayouts.filter(p => p.status === "denied");
+          const selected: StatusFilter = "approved";
+          const summaryEmbed = buildPayoutSummaryEmbed(allPayouts);
+          const detailsEmbed = buildPayoutStatusEmbed(allPayouts, selected);
+          const buttons = buildStatusFilterButtons("payout", interaction.user.id, selected, interaction.guildId!);
 
-          const totalPending = pending.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
-          const totalApproved = approved.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
-          const totalDenied = denied.reduce((sum, p) => sum + parseFloat(p.moneyOwed || "0"), 0);
-
-          const embeds: EmbedBuilder[] = [];
-
-          const summaryEmbed = new EmbedBuilder()
-            .setTitle("All Payout Requests")
-            .setColor(0x5865f2)
-            .setDescription(`Total: **${allPayouts.length}** requests`)
-            .addFields(
-              { name: "Pending", value: `**${pending.length}** requests\n$${totalPending.toFixed(2)}`, inline: true },
-              { name: "Approved", value: `**${approved.length}** requests\n$${totalApproved.toFixed(2)}`, inline: true },
-              { name: "Denied", value: `**${denied.length}** requests\n$${totalDenied.toFixed(2)}`, inline: true }
-            )
-            .setTimestamp();
-          embeds.push(summaryEmbed);
-
-          const formatPayoutList = (payouts: typeof allPayouts, title: string, emoji: string, color: number) => {
-            if (payouts.length === 0) return null;
-
-            let description = "";
-            payouts.forEach((payout, index) => {
-              const line = `**${index + 1}.)** <@${payout.userId}>\n> **ID:** ${payout.userId}\n> **Reason:** ${payout.reason || "No reason"}\n> **Amount:** $${payout.moneyOwed}\n> **Email:** ${payout.email}\n\n`;
-              if (description.length + line.length < 4000) {
-                description += line;
-              }
-            });
-
-            return new EmbedBuilder()
-              .setTitle(`${emoji} ${title}`)
-              .setColor(color)
-              .setDescription(description || "None");
-          };
-
-          const pendingEmbed = formatPayoutList(pending, "Pending Requests", "", 0xf0b232);
-          const approvedEmbed = formatPayoutList(approved, "Approved Requests", "", 0x23a559);
-          const deniedEmbed = formatPayoutList(denied, "Denied Requests", "", 0xda373c);
-
-          if (pendingEmbed) embeds.push(pendingEmbed);
-          if (approvedEmbed) embeds.push(approvedEmbed);
-          if (deniedEmbed) embeds.push(deniedEmbed);
-
-          await interaction.editReply({ embeds: embeds.slice(0, 10) });
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components: [buttons] });
         } catch (error: any) {
           console.log("Error in list_payouts:", error.message);
           await interaction.editReply({ content: "Failed to list payouts. Please try again." }).catch(() => {});
@@ -9910,16 +9986,49 @@ client.on("interactionCreate", async (interaction) => {
         if (subcommand === "remove") {
           if (!await safeDeferReply(interaction, true)) return;
 
-          const requestId = interaction.options.getString("request_id", true).trim();
-          const request = await storage.getInactivityRequest(requestId);
-
-          if (!request || request.guildId !== interaction.guildId) {
-            await interaction.editReply({ content: "❌ Inactivity request not found in this server." });
+          const allRequests = await storage.getInactivityRequestsByGuild(interaction.guildId!);
+          if (allRequests.length === 0) {
+            await interaction.editReply({ content: "No inactivity requests found." });
             return;
           }
 
-          await storage.deleteInactivityRequest(requestId);
-          await interaction.editReply({ content: `✅ Removed inactivity request \`${requestId}\`.` });
+          const pickableRequests = allRequests.slice(0, 25);
+          const requesterId = interaction.user.id;
+
+          const selectOptions = pickableRequests.map((request, index) => {
+            const status = String(request.status || "pending").toLowerCase();
+            const statusLabel = status === "approved" ? "Approved" : status === "denied" ? "Denied" : "Pending";
+            const userLabel = request.userId ? `User ${request.userId}` : "Unknown User";
+            const labelBase = `#${index + 1} ${userLabel}`;
+            const label = labelBase.length > 95 ? `${labelBase.slice(0, 95)}...` : labelBase;
+            const descBase = `${statusLabel} | ${request.fromDate} -> ${request.toDate}`;
+            const description = descBase.length > 100 ? descBase.slice(0, 100) : descBase;
+            return new StringSelectMenuOptionBuilder()
+              .setLabel(label)
+              .setDescription(description)
+              .setValue(request.id);
+          });
+
+          const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId(`inactivity_remove_select_${requesterId}`)
+            .setPlaceholder("Select an inactivity request to remove")
+            .addOptions(selectOptions);
+
+          const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(selectMenu);
+
+          const lines = pickableRequests.map((request, index) => {
+            const reason = String(request.reason || "No reason");
+            const clippedReason = reason.length > 120 ? `${reason.slice(0, 120)}...` : reason;
+            return `**${index + 1}.)** <@${request.userId}>\n> **ID:** ${request.id}\n> **Status:** ${request.status}\n> **From:** ${request.fromDate}\n> **To:** ${request.toDate}\n> **Reason:** ${clippedReason}`;
+          });
+
+          const pickerEmbed = new EmbedBuilder()
+            .setTitle("Remove Inactivity Request")
+            .setColor(0xf0b232)
+            .setDescription(lines.join("\n\n").slice(0, 4000))
+            .setFooter({ text: allRequests.length > 25 ? `Showing newest 25 of ${allRequests.length} requests.` : `Total requests: ${allRequests.length}` });
+
+          await interaction.editReply({ embeds: [pickerEmbed], components: [row] });
           return;
         }
 
@@ -9927,57 +10036,18 @@ client.on("interactionCreate", async (interaction) => {
           const isPrivate = interaction.options.getBoolean("private") ?? true;
           if (!await safeDeferReply(interaction, isPrivate)) return;
 
-          const allRequests = await storage.getInactivityRequestsByGuild(interaction.guildId!);
+          const allRequests = await getAllInactivityRequestsSynced();
           if (allRequests.length === 0) {
             await interaction.editReply({ content: "No inactivity requests found." });
             return;
           }
 
-          const pending = allRequests.filter((entry) => entry.status === "pending");
-          const approved = allRequests.filter((entry) => entry.status === "approved");
-          const denied = allRequests.filter((entry) => entry.status === "denied");
+          const selected: StatusFilter = "approved";
+          const summaryEmbed = buildInactivitySummaryEmbed(allRequests);
+          const detailsEmbed = buildInactivityStatusEmbed(allRequests, selected);
+          const buttons = buildStatusFilterButtons("inactivity", interaction.user.id, selected);
 
-          const embeds: EmbedBuilder[] = [];
-
-          embeds.push(
-            new EmbedBuilder()
-              .setTitle("All Inactivity Requests")
-              .setColor(0x5865f2)
-              .setDescription(`Total: **${allRequests.length}** requests`)
-              .addFields(
-                { name: "Pending", value: `**${pending.length}** requests`, inline: true },
-                { name: "Approved", value: `**${approved.length}** requests`, inline: true },
-                { name: "Denied", value: `**${denied.length}** requests`, inline: true },
-              )
-              .setTimestamp()
-          );
-
-          const formatInactivityList = (entries: typeof allRequests, title: string, color: number) => {
-            if (entries.length === 0) return null;
-
-            let description = "";
-            for (let index = 0; index < entries.length; index += 1) {
-              const entry = entries[index];
-              const line = `**${index + 1}.)** <@${entry.userId}>\n> **Request ID:** ${entry.id}\n> **From:** ${entry.fromDate}\n> **To:** ${entry.toDate}\n> **Reason:** ${entry.reason || "No reason"}\n\n`;
-              if (description.length + line.length > 4000) break;
-              description += line;
-            }
-
-            return new EmbedBuilder()
-              .setTitle(title)
-              .setColor(color)
-              .setDescription(description || "None");
-          };
-
-          const pendingEmbed = formatInactivityList(pending, "Pending Inactivity Requests", 0xf0b232);
-          const approvedEmbed = formatInactivityList(approved, "Approved Inactivity Requests", 0x23a559);
-          const deniedEmbed = formatInactivityList(denied, "Denied Inactivity Requests", 0xda373c);
-
-          if (pendingEmbed) embeds.push(pendingEmbed);
-          if (approvedEmbed) embeds.push(approvedEmbed);
-          if (deniedEmbed) embeds.push(deniedEmbed);
-
-          await interaction.editReply({ embeds: embeds.slice(0, 10) });
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components: [buttons] });
           return;
         }
       } else if (commandName === "setup_welcome") {
@@ -12202,6 +12272,46 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (interaction.customId.startsWith("inactivity_remove_select_")) {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const requesterId = interaction.customId.replace("inactivity_remove_select_", "").trim();
+        if (interaction.user.id !== requesterId) {
+          await interaction.editReply({ content: "❌ Only the command author can use this dropdown." });
+          return;
+        }
+
+        const requestId = String(interaction.values[0] || "").trim();
+        if (!requestId) {
+          await interaction.editReply({ content: "❌ No inactivity request selected." });
+          return;
+        }
+
+        const request = await storage.getInactivityRequest(requestId);
+        if (!request || request.guildId !== interaction.guildId) {
+          await interaction.editReply({ content: "❌ Inactivity request not found in this server." });
+          return;
+        }
+
+        await storage.deleteInactivityRequest(requestId);
+
+        const removedEmbed = new EmbedBuilder()
+          .setTitle("Inactivity Request Removed")
+          .setColor(0x23a559)
+          .setDescription(`Removed inactivity request for <@${request.userId}>.`)
+          .addFields(
+            { name: "Request ID", value: request.id, inline: false },
+            { name: "Status", value: String(request.status || "pending"), inline: true },
+            { name: "From", value: String(request.fromDate || "Unknown"), inline: true },
+            { name: "To", value: String(request.toDate || "Unknown"), inline: true },
+            { name: "Reason", value: String(request.reason || "No reason"), inline: false },
+          )
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [removedEmbed], components: [] });
+        return;
+      }
+
       if (interaction.customId.startsWith("appeal_logs_select_")) {
         if (!await safeDeferReply(interaction, true)) return;
 
@@ -13989,6 +14099,57 @@ client.on("interactionCreate", async (interaction) => {
                 : `I couldn't update **${roleLabel}**. Check the bot's role permissions.`;
 
           await interaction.editReply({ content: message });
+          return;
+        }
+
+        if (customId.startsWith("payout_list_status_")) {
+          const parts = customId.split("_");
+          const requesterId = parts[3];
+          const guildId = parts[4];
+          const selected = normalizeStatusFilter(parts[5]);
+
+          if (interaction.user.id !== requesterId) {
+            await replyInteractionFailed(interaction);
+            return;
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const allPayouts = await storage.getAllPayouts(guildId).catch(() => [] as any[]);
+          if (allPayouts.length === 0) {
+            await interaction.editReply({ content: "No payout requests found.", embeds: [], components: [] });
+            return;
+          }
+
+          const summaryEmbed = buildPayoutSummaryEmbed(allPayouts);
+          const detailsEmbed = buildPayoutStatusEmbed(allPayouts, selected);
+          const buttons = buildStatusFilterButtons("payout", requesterId, selected, guildId);
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components: [buttons] });
+          return;
+        }
+
+        if (customId.startsWith("inactivity_list_status_")) {
+          const parts = customId.split("_");
+          const requesterId = parts[3];
+          const selected = normalizeStatusFilter(parts[4]);
+
+          if (interaction.user.id !== requesterId) {
+            await replyInteractionFailed(interaction);
+            return;
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const allRequests = await getAllInactivityRequestsSynced();
+          if (allRequests.length === 0) {
+            await interaction.editReply({ content: "No inactivity requests found.", embeds: [], components: [] });
+            return;
+          }
+
+          const summaryEmbed = buildInactivitySummaryEmbed(allRequests);
+          const detailsEmbed = buildInactivityStatusEmbed(allRequests, selected);
+          const buttons = buildStatusFilterButtons("inactivity", requesterId, selected);
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components: [buttons] });
           return;
         }
         
