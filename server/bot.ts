@@ -6234,6 +6234,7 @@ async function hasPayoutPermission(
 }
 
 type StatusFilter = "pending" | "approved" | "denied";
+const STATUS_LIST_PAGE_SIZE = 5;
 
 function normalizeStatusFilter(value?: string): StatusFilter {
   if (value === "approved" || value === "denied") return value;
@@ -6269,6 +6270,39 @@ function buildStatusFilterButtons(
   return row;
 }
 
+function buildStatusPaginationButtons(
+  kind: "payout" | "inactivity",
+  requesterId: string,
+  selected: StatusFilter,
+  page: number,
+  totalPages: number,
+  guildId?: string,
+): ActionRowBuilder<ButtonBuilder> {
+  const safePage = Math.max(1, Math.min(page, Math.max(1, totalPages)));
+  const prevPage = Math.max(1, safePage - 1);
+  const nextPage = Math.min(Math.max(1, totalPages), safePage + 1);
+
+  const prevId = kind === "payout"
+    ? `payout_list_page_${requesterId}_${guildId || ""}_${selected}_${prevPage}`
+    : `inactivity_list_page_${requesterId}_${selected}_${prevPage}`;
+  const nextId = kind === "payout"
+    ? `payout_list_page_${requesterId}_${guildId || ""}_${selected}_${nextPage}`
+    : `inactivity_list_page_${requesterId}_${selected}_${nextPage}`;
+
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(prevId)
+      .setLabel("◀ Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage <= 1),
+    new ButtonBuilder()
+      .setCustomId(nextId)
+      .setLabel("Next ▶")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(safePage >= Math.max(1, totalPages)),
+  );
+}
+
 function buildPayoutSummaryEmbed(allPayouts: any[]): EmbedBuilder {
   const pending = allPayouts.filter((p) => p.status === "pending");
   const approved = allPayouts.filter((p) => p.status === "approved");
@@ -6290,21 +6324,28 @@ function buildPayoutSummaryEmbed(allPayouts: any[]): EmbedBuilder {
     .setTimestamp();
 }
 
-function buildPayoutStatusEmbed(allPayouts: any[], status: StatusFilter): EmbedBuilder {
+function buildPayoutStatusEmbed(allPayouts: any[], status: StatusFilter, page = 1): { embed: EmbedBuilder; totalPages: number; safePage: number } {
   const title = status === "approved" ? "Approved Requests" : status === "denied" ? "Denied Requests" : "Pending Requests";
   const color = status === "approved" ? 0x23a559 : status === "denied" ? 0xda373c : 0xf0b232;
   const entries = allPayouts.filter((p) => p.status === status);
+  const totalPages = Math.max(1, Math.ceil(entries.length / STATUS_LIST_PAGE_SIZE));
+  const safePage = Math.max(1, Math.min(page, totalPages));
+  const start = (safePage - 1) * STATUS_LIST_PAGE_SIZE;
+  const pageEntries = entries.slice(start, start + STATUS_LIST_PAGE_SIZE);
 
   let description = "";
-  entries.forEach((payout, index) => {
-    const line = `**${index + 1}.)** <@${payout.userId}>\n> **ID:** ${payout.id}\n> **Reason:** ${payout.reason || "No reason"}\n> **Amount:** $${payout.moneyOwed}\n> **Email:** ${payout.email}\n\n`;
+  pageEntries.forEach((payout, index) => {
+    const line = `**${start + index + 1}.)** <@${payout.userId}>\n> **ID:** ${payout.id}\n> **Reason:** ${payout.reason || "No reason"}\n> **Amount:** $${payout.moneyOwed}\n> **Email:** ${payout.email}\n\n`;
     if (description.length + line.length < 4000) description += line;
   });
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle(title)
     .setColor(color)
-    .setDescription(description || "None");
+    .setDescription(description || "None")
+    .setFooter({ text: `Page ${safePage}/${totalPages} • ${entries.length} ${status} request(s)` });
+
+  return { embed, totalPages, safePage };
 }
 
 async function getAllInactivityRequestsSynced(): Promise<any[]> {
@@ -6338,23 +6379,30 @@ function buildInactivitySummaryEmbed(allRequests: any[]): EmbedBuilder {
     .setTimestamp();
 }
 
-function buildInactivityStatusEmbed(allRequests: any[], status: StatusFilter): EmbedBuilder {
+function buildInactivityStatusEmbed(allRequests: any[], status: StatusFilter, page = 1): { embed: EmbedBuilder; totalPages: number; safePage: number } {
   const title = status === "approved" ? "Approved Inactivity Requests" : status === "denied" ? "Denied Inactivity Requests" : "Pending Inactivity Requests";
   const color = status === "approved" ? 0x23a559 : status === "denied" ? 0xda373c : 0xf0b232;
   const entries = allRequests.filter((entry) => entry.status === status);
+  const totalPages = Math.max(1, Math.ceil(entries.length / STATUS_LIST_PAGE_SIZE));
+  const safePage = Math.max(1, Math.min(page, totalPages));
+  const start = (safePage - 1) * STATUS_LIST_PAGE_SIZE;
+  const pageEntries = entries.slice(start, start + STATUS_LIST_PAGE_SIZE);
 
   let description = "";
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
-    const line = `**${index + 1}.)** <@${entry.userId}>\n> **Request ID:** ${entry.id}\n> **From:** ${entry.fromDate}\n> **To:** ${entry.toDate}\n> **Reason:** ${entry.reason || "No reason"}\n\n`;
+  for (let index = 0; index < pageEntries.length; index += 1) {
+    const entry = pageEntries[index];
+    const line = `**${start + index + 1}.)** <@${entry.userId}>\n> **Request ID:** ${entry.id}\n> **From:** ${entry.fromDate}\n> **To:** ${entry.toDate}\n> **Reason:** ${entry.reason || "No reason"}\n\n`;
     if (description.length + line.length > 4000) break;
     description += line;
   }
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setTitle(title)
     .setColor(color)
-    .setDescription(description || "None");
+    .setDescription(description || "None")
+    .setFooter({ text: `Page ${safePage}/${totalPages} • ${entries.length} ${status} request(s)` });
+
+  return { embed, totalPages, safePage };
 }
 
 async function hasSnippetPermission(
@@ -7464,10 +7512,14 @@ client.on("interactionCreate", async (interaction) => {
 
           const selected: StatusFilter = "approved";
           const summaryEmbed = buildPayoutSummaryEmbed(allPayouts);
-          const detailsEmbed = buildPayoutStatusEmbed(allPayouts, selected);
-          const buttons = buildStatusFilterButtons("payout", interaction.user.id, selected, interaction.guildId!);
+          const { embed: detailsEmbed, totalPages } = buildPayoutStatusEmbed(allPayouts, selected, 1);
+          const statusButtons = buildStatusFilterButtons("payout", interaction.user.id, selected, interaction.guildId!);
+          const components: any[] = [statusButtons];
+          if (totalPages > 1) {
+            components.push(buildStatusPaginationButtons("payout", interaction.user.id, selected, 1, totalPages, interaction.guildId!));
+          }
 
-          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components: [buttons] });
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
         } catch (error: any) {
           console.log("Error in list_payouts:", error.message);
           await interaction.editReply({ content: "Failed to list payouts. Please try again." }).catch(() => {});
@@ -8496,6 +8548,7 @@ client.on("interactionCreate", async (interaction) => {
             interaction.options.getInteger("from") ?? undefined,
             interaction.options.getInteger("to") ?? undefined,
           );
+          const includeUndatedExtraCounters = fromDays === undefined && toDays === undefined;
           const useAllGuilds = scope === "all";
           const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
           const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
@@ -8579,14 +8632,16 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) {
               console.log("Could not fetch member appeal stats:", e);
             }
-            try {
-              memberPartnershipsStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", targetMember.id, useAllGuilds);
-              memberAcceptedStaffStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", targetMember.id, useAllGuilds);
-              memberRoleRequestsReviewedStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", targetMember.id, useAllGuilds);
-              memberKickRequestsReviewedStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", targetMember.id, useAllGuilds);
-              memberAcceptedSemiProsProsStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", targetMember.id, useAllGuilds);
-            } catch (e) {
-              console.log("Could not fetch member extra activity stats:", e);
+            if (includeUndatedExtraCounters) {
+              try {
+                memberPartnershipsStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", targetMember.id, useAllGuilds);
+                memberAcceptedStaffStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", targetMember.id, useAllGuilds);
+                memberRoleRequestsReviewedStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", targetMember.id, useAllGuilds);
+                memberKickRequestsReviewedStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", targetMember.id, useAllGuilds);
+                memberAcceptedSemiProsProsStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", targetMember.id, useAllGuilds);
+              } catch (e) {
+                console.log("Could not fetch member extra activity stats:", e);
+              }
             }
 
             const memberModeration = moderationByUser.get(targetMember.id);
@@ -8751,20 +8806,22 @@ client.on("interactionCreate", async (interaction) => {
             console.log("Could not fetch staff report stats:", e);
           }
 
-          if (!category || category === "partnerships") {
-            partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", useAllGuilds);
-          }
-          if (!category || category === "staff_accepted") {
-            acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", useAllGuilds);
-          }
-          if (!category || category === "role_requests_reviewed") {
-            roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", useAllGuilds);
-          }
-          if (!category || category === "kick_requests_reviewed") {
-            kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", useAllGuilds);
-          }
-          if (!category || category === "accepted_semi_pros_pros") {
-            acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", useAllGuilds);
+          if (includeUndatedExtraCounters) {
+            if (!category || category === "partnerships") {
+              partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", useAllGuilds);
+            }
+            if (!category || category === "staff_accepted") {
+              acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", useAllGuilds);
+            }
+            if (!category || category === "role_requests_reviewed") {
+              roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", useAllGuilds);
+            }
+            if (!category || category === "kick_requests_reviewed") {
+              kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", useAllGuilds);
+            }
+            if (!category || category === "accepted_semi_pros_pros") {
+              acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", useAllGuilds);
+            }
           }
 
           try {
@@ -10044,10 +10101,14 @@ client.on("interactionCreate", async (interaction) => {
 
           const selected: StatusFilter = "approved";
           const summaryEmbed = buildInactivitySummaryEmbed(allRequests);
-          const detailsEmbed = buildInactivityStatusEmbed(allRequests, selected);
-          const buttons = buildStatusFilterButtons("inactivity", interaction.user.id, selected);
+          const { embed: detailsEmbed, totalPages } = buildInactivityStatusEmbed(allRequests, selected, 1);
+          const statusButtons = buildStatusFilterButtons("inactivity", interaction.user.id, selected);
+          const components: any[] = [statusButtons];
+          if (totalPages > 1) {
+            components.push(buildStatusPaginationButtons("inactivity", interaction.user.id, selected, 1, totalPages));
+          }
 
-          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components: [buttons] });
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
           return;
         }
       } else if (commandName === "setup_welcome") {
@@ -12393,6 +12454,7 @@ client.on("interactionCreate", async (interaction) => {
           parseActivityRangeFromCustomId(idParts[1]),
           parseActivityRangeFromCustomId(idParts[2]),
         );
+        const includeUndatedExtraCounters = fromDays === undefined && toDays === undefined;
 
         const roleRefs = await getSyncedActivityCheckRoleGroupValues(interaction.guildId!, group);
         const resolvedRoles = resolveGuildRolesFromStoredValues(guild, roleRefs);
@@ -12575,10 +12637,10 @@ client.on("interactionCreate", async (interaction) => {
             const [modmailCount, inviteCount, partnerships, roleRequestsReviewed, kickRequestsReviewed, staffAccepted] = await Promise.all([
               storage.getModmailStatsForUserAllGuilds(userId, fromDays, toDays),
               storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
-              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", userId, true),
-              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", userId, true),
-              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", userId, true),
-              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", userId, true),
+              includeUndatedExtraCounters ? getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", userId, true) : Promise.resolve(0),
+              includeUndatedExtraCounters ? getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", userId, true) : Promise.resolve(0),
+              includeUndatedExtraCounters ? getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", userId, true) : Promise.resolve(0),
+              includeUndatedExtraCounters ? getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", userId, true) : Promise.resolve(0),
             ]);
             const banUnbanKickReviewed = (banMap.get(userId) || 0) + (unbanMap.get(userId) || 0) + kickRequestsReviewed;
             const total = modmailCount + inviteCount + partnerships + roleRequestsReviewed + banUnbanKickReviewed + staffAccepted + modBanCount + modKickCount;
@@ -12593,8 +12655,8 @@ client.on("interactionCreate", async (interaction) => {
 
           const [inviteCount, partnerships, acceptedSemiProsPros] = await Promise.all([
             storage.getInviteStatsForUserAllGuilds(userId, fromDays, toDays),
-            getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", userId, true),
-            getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", userId, true),
+            includeUndatedExtraCounters ? getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", userId, true) : Promise.resolve(0),
+            includeUndatedExtraCounters ? getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", userId, true) : Promise.resolve(0),
           ]);
           const total = inviteCount + partnerships + acceptedSemiProsPros + modBanCount + modKickCount;
 
@@ -14122,9 +14184,44 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           const summaryEmbed = buildPayoutSummaryEmbed(allPayouts);
-          const detailsEmbed = buildPayoutStatusEmbed(allPayouts, selected);
-          const buttons = buildStatusFilterButtons("payout", requesterId, selected, guildId);
-          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components: [buttons] });
+          const { embed: detailsEmbed, totalPages } = buildPayoutStatusEmbed(allPayouts, selected, 1);
+          const statusButtons = buildStatusFilterButtons("payout", requesterId, selected, guildId);
+          const components: any[] = [statusButtons];
+          if (totalPages > 1) {
+            components.push(buildStatusPaginationButtons("payout", requesterId, selected, 1, totalPages, guildId));
+          }
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
+          return;
+        }
+
+        if (customId.startsWith("payout_list_page_")) {
+          const parts = customId.split("_");
+          const requesterId = parts[3];
+          const guildId = parts[4];
+          const selected = normalizeStatusFilter(parts[5]);
+          const requestedPage = Number(parts[6] || "1");
+
+          if (interaction.user.id !== requesterId) {
+            await replyInteractionFailed(interaction);
+            return;
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const allPayouts = await storage.getAllPayouts(guildId).catch(() => [] as any[]);
+          if (allPayouts.length === 0) {
+            await interaction.editReply({ content: "No payout requests found.", embeds: [], components: [] });
+            return;
+          }
+
+          const summaryEmbed = buildPayoutSummaryEmbed(allPayouts);
+          const { embed: detailsEmbed, totalPages, safePage } = buildPayoutStatusEmbed(allPayouts, selected, requestedPage);
+          const statusButtons = buildStatusFilterButtons("payout", requesterId, selected, guildId);
+          const components: any[] = [statusButtons];
+          if (totalPages > 1) {
+            components.push(buildStatusPaginationButtons("payout", requesterId, selected, safePage, totalPages, guildId));
+          }
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
           return;
         }
 
@@ -14147,9 +14244,43 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           const summaryEmbed = buildInactivitySummaryEmbed(allRequests);
-          const detailsEmbed = buildInactivityStatusEmbed(allRequests, selected);
-          const buttons = buildStatusFilterButtons("inactivity", requesterId, selected);
-          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components: [buttons] });
+          const { embed: detailsEmbed, totalPages } = buildInactivityStatusEmbed(allRequests, selected, 1);
+          const statusButtons = buildStatusFilterButtons("inactivity", requesterId, selected);
+          const components: any[] = [statusButtons];
+          if (totalPages > 1) {
+            components.push(buildStatusPaginationButtons("inactivity", requesterId, selected, 1, totalPages));
+          }
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
+          return;
+        }
+
+        if (customId.startsWith("inactivity_list_page_")) {
+          const parts = customId.split("_");
+          const requesterId = parts[3];
+          const selected = normalizeStatusFilter(parts[4]);
+          const requestedPage = Number(parts[5] || "1");
+
+          if (interaction.user.id !== requesterId) {
+            await replyInteractionFailed(interaction);
+            return;
+          }
+
+          if (!await safeDeferUpdate(interaction)) return;
+
+          const allRequests = await getAllInactivityRequestsSynced();
+          if (allRequests.length === 0) {
+            await interaction.editReply({ content: "No inactivity requests found.", embeds: [], components: [] });
+            return;
+          }
+
+          const summaryEmbed = buildInactivitySummaryEmbed(allRequests);
+          const { embed: detailsEmbed, totalPages, safePage } = buildInactivityStatusEmbed(allRequests, selected, requestedPage);
+          const statusButtons = buildStatusFilterButtons("inactivity", requesterId, selected);
+          const components: any[] = [statusButtons];
+          if (totalPages > 1) {
+            components.push(buildStatusPaginationButtons("inactivity", requesterId, selected, safePage, totalPages));
+          }
+          await interaction.editReply({ embeds: [summaryEmbed, detailsEmbed], components });
           return;
         }
         
@@ -14916,6 +15047,7 @@ client.on("interactionCreate", async (interaction) => {
               parseActivityRangeFromCustomId(parts[5]),
               parseActivityRangeFromCustomId(parts[6]),
             );
+            const includeUndatedExtraCounters = fromDays === undefined && toDays === undefined;
             const useAllGuilds = scope === "all";
             const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
             const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
@@ -14998,20 +15130,22 @@ client.on("interactionCreate", async (interaction) => {
               }
             } catch (e) {}
 
-            if (!category || category === "partnerships") {
-              partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", useAllGuilds);
-            }
-            if (!category || category === "staff_accepted") {
-              acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", useAllGuilds);
-            }
-            if (!category || category === "role_requests_reviewed") {
-              roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", useAllGuilds);
-            }
-            if (!category || category === "kick_requests_reviewed") {
-              kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", useAllGuilds);
-            }
-            if (!category || category === "accepted_semi_pros_pros") {
-              acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", useAllGuilds);
+            if (includeUndatedExtraCounters) {
+              if (!category || category === "partnerships") {
+                partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", useAllGuilds);
+              }
+              if (!category || category === "staff_accepted") {
+                acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", useAllGuilds);
+              }
+              if (!category || category === "role_requests_reviewed") {
+                roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", useAllGuilds);
+              }
+              if (!category || category === "kick_requests_reviewed") {
+                kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", useAllGuilds);
+              }
+              if (!category || category === "accepted_semi_pros_pros") {
+                acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", useAllGuilds);
+              }
             }
             try {
               if (!category || category === "modmail") {
