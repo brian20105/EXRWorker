@@ -83,6 +83,7 @@ const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
   setup_inactivity: "inactivity",
   setup_inactivity_submissions: "inactivity",
   setup_inactivity_logs: "inactivity",
+  inactivity: "inactivity",
   setup_welcome: "embeds",
   setup_welcome_message: "embeds",
   setup_modmail: "modmail",
@@ -5585,6 +5586,72 @@ const commands = [
         .setRequired(true)
     ),
   new SlashCommandBuilder()
+    .setName("inactivity")
+    .setDescription("Manage inactivity requests")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub
+        .setName("add")
+        .setDescription("Add an inactivity request")
+        .addUserOption((option) =>
+          option
+            .setName("user")
+            .setDescription("User for this inactivity request")
+            .setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("from")
+            .setDescription("Start date (e.g. 2026-04-22 or <t:1776313800:D>)")
+            .setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("to")
+            .setDescription("End date (e.g. 2026-04-30 or <t:1777005000:D>)")
+            .setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("reason")
+            .setDescription("Reason for inactivity")
+            .setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("status")
+            .setDescription("Initial request status")
+            .setRequired(false)
+            .addChoices(
+              { name: "Pending", value: "pending" },
+              { name: "Approved", value: "approved" },
+              { name: "Denied", value: "denied" },
+            )
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("remove")
+        .setDescription("Remove an inactivity request by ID")
+        .addStringOption((option) =>
+          option
+            .setName("request_id")
+            .setDescription("Inactivity request ID")
+            .setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("list")
+        .setDescription("List inactivity requests")
+        .addBooleanOption((option) =>
+          option
+            .setName("private")
+            .setDescription("Whether only you can see the result (default: true)")
+            .setRequired(false)
+        )
+    ),
+  new SlashCommandBuilder()
     .setName("setup_welcome")
     .setDescription("Set the channel where welcome embeds are sent on member join")
     .setDefaultMemberPermissions(0)
@@ -9750,6 +9817,169 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: `✅ Inactivity logs will be sent to <#${channel.id}>!`,
         });
+      } else if (commandName === "inactivity") {
+        const subcommand = interaction.options.getSubcommand(true);
+
+        const parseInactivityDateInput = (rawValue: string): Date | null => {
+          const value = String(rawValue || "").trim();
+          if (!value) return null;
+
+          const unixMatch = value.match(/<t:(\d{9,13})/);
+          if (unixMatch) {
+            const rawUnix = Number(unixMatch[1]);
+            if (Number.isFinite(rawUnix)) {
+              const unixMs = rawUnix > 1e12 ? rawUnix : rawUnix * 1000;
+              const parsed = new Date(unixMs);
+              return Number.isFinite(parsed.getTime()) ? parsed : null;
+            }
+          }
+
+          const cleaned = value
+            .replace(/(\d)(st|nd|rd|th)\b/gi, "$1")
+            .replace(/\s+/g, " ")
+            .trim();
+
+          const parsedMs = Date.parse(cleaned);
+          if (Number.isFinite(parsedMs)) {
+            return new Date(parsedMs);
+          }
+
+          return null;
+        };
+
+        const formatLocalDateOnly = (date: Date): string => {
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, "0");
+          const day = String(date.getDate()).padStart(2, "0");
+          return `${year}-${month}-${day}`;
+        };
+
+        if (subcommand === "add") {
+          if (!await safeDeferReply(interaction, true)) return;
+
+          const targetUser = interaction.options.getUser("user", true);
+          const fromDateInput = interaction.options.getString("from", true);
+          const toDateInput = interaction.options.getString("to", true);
+          const reason = interaction.options.getString("reason", true).trim();
+          const status = (interaction.options.getString("status") || "approved").toLowerCase();
+
+          if (!["pending", "approved", "denied"].includes(status)) {
+            await interaction.editReply({ content: "❌ Invalid status. Use pending, approved, or denied." });
+            return;
+          }
+
+          const fromParsed = parseInactivityDateInput(fromDateInput);
+          const toParsed = parseInactivityDateInput(toDateInput);
+          if (!fromParsed || !toParsed) {
+            await interaction.editReply({ content: "❌ Invalid date format. Use a valid date or Discord timestamp." });
+            return;
+          }
+
+          if (toParsed.getTime() < fromParsed.getTime()) {
+            await interaction.editReply({ content: "❌ Invalid range. `To` date must be on or after the `From` date." });
+            return;
+          }
+
+          const startOfToday = new Date();
+          startOfToday.setHours(0, 0, 0, 0);
+          if (toParsed.getTime() < startOfToday.getTime()) {
+            await interaction.editReply({ content: "❌ You cannot create inactivity requests for date ranges that have already passed." });
+            return;
+          }
+
+          const fromDate = formatLocalDateOnly(fromParsed);
+          const toDate = formatLocalDateOnly(toParsed);
+
+          const request = await storage.createInactivityRequest({
+            guildId: interaction.guildId!,
+            userId: targetUser.id,
+            fromDate,
+            toDate,
+            reason: reason || "No reason provided.",
+            status,
+            reviewedById: status === "pending" ? null : interaction.user.id,
+            reviewReason: status === "pending" ? null : "Added via /inactivity add",
+          });
+
+          await interaction.editReply({
+            content: `✅ Added inactivity request \`${request.id}\` for <@${targetUser.id}> (${fromDate} → ${toDate}) with status **${status}**.`
+          });
+          return;
+        }
+
+        if (subcommand === "remove") {
+          if (!await safeDeferReply(interaction, true)) return;
+
+          const requestId = interaction.options.getString("request_id", true).trim();
+          const request = await storage.getInactivityRequest(requestId);
+
+          if (!request || request.guildId !== interaction.guildId) {
+            await interaction.editReply({ content: "❌ Inactivity request not found in this server." });
+            return;
+          }
+
+          await storage.deleteInactivityRequest(requestId);
+          await interaction.editReply({ content: `✅ Removed inactivity request \`${requestId}\`.` });
+          return;
+        }
+
+        if (subcommand === "list") {
+          const isPrivate = interaction.options.getBoolean("private") ?? true;
+          if (!await safeDeferReply(interaction, isPrivate)) return;
+
+          const allRequests = await storage.getInactivityRequestsByGuild(interaction.guildId!);
+          if (allRequests.length === 0) {
+            await interaction.editReply({ content: "No inactivity requests found." });
+            return;
+          }
+
+          const pending = allRequests.filter((entry) => entry.status === "pending");
+          const approved = allRequests.filter((entry) => entry.status === "approved");
+          const denied = allRequests.filter((entry) => entry.status === "denied");
+
+          const embeds: EmbedBuilder[] = [];
+
+          embeds.push(
+            new EmbedBuilder()
+              .setTitle("All Inactivity Requests")
+              .setColor(0x5865f2)
+              .setDescription(`Total: **${allRequests.length}** requests`)
+              .addFields(
+                { name: "Pending", value: `**${pending.length}** requests`, inline: true },
+                { name: "Approved", value: `**${approved.length}** requests`, inline: true },
+                { name: "Denied", value: `**${denied.length}** requests`, inline: true },
+              )
+              .setTimestamp()
+          );
+
+          const formatInactivityList = (entries: typeof allRequests, title: string, color: number) => {
+            if (entries.length === 0) return null;
+
+            let description = "";
+            for (let index = 0; index < entries.length; index += 1) {
+              const entry = entries[index];
+              const line = `**${index + 1}.)** <@${entry.userId}>\n> **Request ID:** ${entry.id}\n> **From:** ${entry.fromDate}\n> **To:** ${entry.toDate}\n> **Reason:** ${entry.reason || "No reason"}\n\n`;
+              if (description.length + line.length > 4000) break;
+              description += line;
+            }
+
+            return new EmbedBuilder()
+              .setTitle(title)
+              .setColor(color)
+              .setDescription(description || "None");
+          };
+
+          const pendingEmbed = formatInactivityList(pending, "Pending Inactivity Requests", 0xf0b232);
+          const approvedEmbed = formatInactivityList(approved, "Approved Inactivity Requests", 0x23a559);
+          const deniedEmbed = formatInactivityList(denied, "Denied Inactivity Requests", 0xda373c);
+
+          if (pendingEmbed) embeds.push(pendingEmbed);
+          if (approvedEmbed) embeds.push(approvedEmbed);
+          if (deniedEmbed) embeds.push(deniedEmbed);
+
+          await interaction.editReply({ embeds: embeds.slice(0, 10) });
+          return;
+        }
       } else if (commandName === "setup_welcome") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -12085,7 +12315,18 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        const inactivityRequests = await storage.getInactivityRequestsByGuild(interaction.guildId!).catch(() => [] as any[]);
+        const inactivityRequestsByGuild = await Promise.all(
+          Array.from(client.guilds.cache.values()).map((g) =>
+            storage.getInactivityRequestsByGuild(g.id).catch(() => [] as any[])
+          )
+        );
+        const inactivityRequests = inactivityRequestsByGuild
+          .flat()
+          .sort((a: any, b: any) => {
+            const aTime = new Date((a as any)?.updatedAt || (a as any)?.createdAt || 0).getTime();
+            const bTime = new Date((b as any)?.updatedAt || (b as any)?.createdAt || 0).getTime();
+            return bTime - aTime;
+          });
         const latestInactivityByUser = new Map<string, any>();
         for (const request of inactivityRequests) {
           const userId = String((request as any)?.userId || "").trim();
@@ -19617,6 +19858,15 @@ client.on("interactionCreate", async (interaction) => {
         if (toParsed.getTime() < fromParsed.getTime()) {
           await interaction.editReply({
             content: "❌ Invalid range. `To` date must be on or after the `From` date."
+          });
+          return;
+        }
+
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+        if (toParsed.getTime() < startOfToday.getTime()) {
+          await interaction.editReply({
+            content: "❌ You cannot submit inactivity for date ranges that have already passed."
           });
           return;
         }
