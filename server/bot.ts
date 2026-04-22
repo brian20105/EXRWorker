@@ -10062,7 +10062,7 @@ client.on("interactionCreate", async (interaction) => {
         if (subcommand === "remove") {
           if (!await safeDeferReply(interaction, true)) return;
 
-          const allRequests = await storage.getInactivityRequestsByGuild(interaction.guildId!);
+          const allRequests = await getAllInactivityRequestsSynced();
           if (allRequests.length === 0) {
             await interaction.editReply({ content: "No inactivity requests found." });
             return;
@@ -10077,7 +10077,8 @@ client.on("interactionCreate", async (interaction) => {
             const userLabel = request.userId ? `User ${request.userId}` : "Unknown User";
             const labelBase = `#${index + 1} ${userLabel}`;
             const label = labelBase.length > 95 ? `${labelBase.slice(0, 95)}...` : labelBase;
-            const descBase = `${statusLabel} | ${request.fromDate} -> ${request.toDate}`;
+            const guildTag = String(request.guildId || "").slice(0, 8) || "unknown";
+            const descBase = `${statusLabel} | ${request.fromDate} -> ${request.toDate} | ${guildTag}`;
             const description = descBase.length > 100 ? descBase.slice(0, 100) : descBase;
             return new StringSelectMenuOptionBuilder()
               .setLabel(label)
@@ -10102,7 +10103,7 @@ client.on("interactionCreate", async (interaction) => {
             .setTitle("Remove Inactivity Request")
             .setColor(0xf0b232)
             .setDescription(lines.join("\n\n").slice(0, 4000))
-            .setFooter({ text: allRequests.length > 25 ? `Showing newest 25 of ${allRequests.length} requests.` : `Total requests: ${allRequests.length}` });
+            .setFooter({ text: allRequests.length > 25 ? `Showing newest 25 of ${allRequests.length} synced requests.` : `Total synced requests: ${allRequests.length}` });
 
           await interaction.editReply({ embeds: [pickerEmbed], components: [row] });
           return;
@@ -12368,8 +12369,8 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const request = await storage.getInactivityRequest(requestId);
-        if (!request || request.guildId !== interaction.guildId) {
-          await interaction.editReply({ content: "❌ Inactivity request not found in this server." });
+        if (!request) {
+          await interaction.editReply({ content: "❌ Inactivity request not found." });
           return;
         }
 
