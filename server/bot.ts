@@ -12474,7 +12474,8 @@ client.on("interactionCreate", async (interaction) => {
           parseActivityRangeFromCustomId(idParts[1]),
           parseActivityRangeFromCustomId(idParts[2]),
         );
-        const includeUndatedExtraCounters = fromDays === undefined && toDays === undefined;
+        // Activity-check group output should always include extra counters (partnerships, etc.).
+        const includeUndatedExtraCounters = true;
 
         const roleRefs = await getSyncedActivityCheckRoleGroupValues(interaction.guildId!, group);
         const resolvedRoles = resolveGuildRolesFromStoredValues(guild, roleRefs);
