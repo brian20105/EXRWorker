@@ -22229,6 +22229,23 @@ client.on("messageCreate", async (message) => {
         }
       }
 
+      // Prevent staff from moderating members with an equal or higher role.
+      if ((isBanLikeCommand || command === "mute" || command === "kick") && targetMember?.roles?.highest && message.member?.roles?.highest) {
+        const isGuildOwner = message.guild.ownerId === message.author.id;
+        const actorHighest = message.member.roles.highest.position;
+        const targetHighest = targetMember.roles.highest.position;
+
+        if (!isGuildOwner && targetHighest >= actorHighest) {
+          const actionVerb = command === "mute"
+            ? "mute"
+            : command === "kick"
+              ? "kick"
+              : "ban";
+          await sendPrefixCommandMessage(`${errorEmoji} You cannot ${actionVerb} someone with a higher role than you.`, true);
+          return;
+        }
+      }
+
       if (((isBanLikeCommand && !isFakeBanCommand) || command === "mute" || command === "kick") && targetMember.roles?.cache?.some((role: any) => modSetup.protectedRoleIds.includes(role.id))) {
         if (isBanLikeCommand) {
           const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage, targetMember);
