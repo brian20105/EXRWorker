@@ -24817,11 +24817,32 @@ client.on("messageCreate", async (message) => {
     try {
       const user = await client.users.fetch(thread.userId);
 
+      // Helper: delete any bot attachment-only messages sent right before a given message (within 5s)
+      async function deletePrecedingAttachmentMessages(channel: any, anchorMessageId: string, botId: string) {
+        try {
+          const nearby = await channel.messages.fetch({ before: anchorMessageId, limit: 5 });
+          const anchorSnowflake = BigInt(anchorMessageId);
+          const windowMs = 5000n;
+          for (const [, msg] of nearby) {
+            const msgSnowflake = BigInt(msg.id);
+            const diffMs = (anchorSnowflake - msgSnowflake) >> 22n; // approximate ms diff via Discord epoch shift
+            if (diffMs > windowMs) break;
+            if (msg.author?.id === botId && msg.attachments.size > 0 && msg.embeds.length === 0 && !msg.content) {
+              await msg.delete().catch(() => {});
+            }
+          }
+        } catch (e) {
+          // non-fatal
+        }
+      }
+
       // Delete the channel message if we have its ID
       if (modmailMsg.channelMessageId) {
         try {
           const channelMsg = await (message.channel as any).messages.fetch(modmailMsg.channelMessageId);
           await channelMsg.delete();
+          // Also delete any attachment-only message the bot sent immediately before the embed
+          await deletePrecedingAttachmentMessages(message.channel, modmailMsg.channelMessageId, client.user!.id);
         } catch (e: any) {
           if (e?.code !== 10008) {
             console.log("Could not delete channel message:", e);
@@ -24835,6 +24856,8 @@ client.on("messageCreate", async (message) => {
           const dmChannel = await user.createDM();
           const dmMsg = await dmChannel.messages.fetch(modmailMsg.dmMessageId);
           await dmMsg.delete();
+          // Also delete any attachment-only message the bot sent immediately before the DM embed
+          await deletePrecedingAttachmentMessages(dmChannel, modmailMsg.dmMessageId, client.user!.id);
         } catch (e: any) {
           if (e?.code !== 10008) {
             console.log("Could not delete DM message:", e);
