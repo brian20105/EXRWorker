@@ -13810,10 +13810,12 @@ client.on("interactionCreate", async (interaction) => {
           pingRoles = pingRoles || config.modmailStaffRoleIds || [];
           const staffRoleMentions = pingRoles?.map(id => `<@&${id}>`).join(" ") || "";
 
-          // Get user's roles from the guild
+          // Get user's roles and join timestamp from the guild
           let userRoles = "None";
+          let joinedServerTimestamp: number | null = null;
           try {
             const member = await guild.members.fetch(user.id);
+            joinedServerTimestamp = typeof member.joinedTimestamp === "number" ? member.joinedTimestamp : null;
             const roles = member.roles.cache
               .filter(r => r.id !== guild.id) // Exclude @everyone
               .sort((a, b) => b.position - a.position)
@@ -13822,10 +13824,17 @@ client.on("interactionCreate", async (interaction) => {
             userRoles = roles.length > 0 ? roles.join(", ") : "None";
           } catch (e) {}
 
+          const accountCreatedUnix = Math.floor(user.createdTimestamp / 1000);
+          const joinedServerUnix = joinedServerTimestamp ? Math.floor(joinedServerTimestamp / 1000) : null;
+
           const initialEmbed = new EmbedBuilder()
             .setTitle(`New Ticket: ${categoryLabel}`)
             .setColor(0x5865f2)
-            .setDescription(`**Roles:** ${userRoles}`)
+            .setDescription(
+              `**Roles:** ${userRoles}\n` +
+              `**Account Created:** <t:${accountCreatedUnix}:F>\n` +
+              `**Joined Server:** ${joinedServerUnix ? `<t:${joinedServerUnix}:F>` : "Unknown"}`
+            )
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
               { name: "Category", value: categoryLabel, inline: true }
