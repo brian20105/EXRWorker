@@ -1218,24 +1218,20 @@ async function downloadAttachmentsAsFiles(
           ? Object.values(attachmentsInput)
           : [];
 
-  const results: Array<{ builder: AttachmentBuilder; name: string; isImage: boolean }> = [];
-  for (const att of attachments) {
+  async function downloadOne(att: any): Promise<{ builder: AttachmentBuilder; name: string; isImage: boolean } | null> {
     const primaryUrl = ((att as any)?.url || (att as any)?.proxyURL || "").trim();
     const proxyUrl = ((att as any)?.proxyUrl || (att as any)?.proxyURL || "").trim();
     const contentType = ((att as any)?.contentType || "") as string;
     const candidateUrls = uniqueStrings([primaryUrl, proxyUrl]);
     for (const candidateUrl of candidateUrls) {
       if (!candidateUrl) continue;
-
       try {
         const timeoutSignal = typeof (AbortSignal as any)?.timeout === "function"
-          ? (AbortSignal as any).timeout(12000)
+          ? (AbortSignal as any).timeout(5000)
           : undefined;
-
         const response = timeoutSignal
           ? await fetch(candidateUrl, { signal: timeoutSignal } as any)
           : await fetch(candidateUrl);
-
         if (!response.ok) continue;
         const arrayBuffer = await response.arrayBuffer();
         if (arrayBuffer.byteLength === 0) continue;
@@ -1243,14 +1239,16 @@ async function downloadAttachmentsAsFiles(
         const rawName = candidateUrl.split('/').pop()?.split('?')[0] || 'attachment';
         const name = rawName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'attachment';
         const isImage = /\.(png|jpe?g|gif|webp|bmp)$/i.test(name) || contentType.startsWith('image/');
-        results.push({ builder: new AttachmentBuilder(buffer, { name }), name, isImage });
-        break;
+        return { builder: new AttachmentBuilder(buffer, { name }), name, isImage };
       } catch {
         // try next candidate URL
       }
     }
+    return null;
   }
-  return results;
+
+  const settled = await Promise.all(attachments.map(downloadOne));
+  return settled.filter((r): r is { builder: AttachmentBuilder; name: string; isImage: boolean } => r !== null);
 }
 
 function pickFirstImageUrl(attachments: Array<{ url: string; proxyUrl?: string; contentType?: string }>, embedMediaUrls: string[]): string | undefined {
@@ -24018,15 +24016,11 @@ client.on("messageCreate", async (message) => {
       const uploadedReplyFiles = await downloadAttachmentsAsFiles(message.attachments);
       const replyDmBuilders = uploadedReplyFiles.map(f => f.builder);
 
-      if (attachmentUrls.length > 0) {
-        dmStaffEmbed.setDescription(`${displayReplyContent || "(No text content)"}\n\n(${message.author.tag}) has sent attachment(s).`);
-      }
-
-      // Send files outside the embed first, then send the embed
-      if (replyDmBuilders.length > 0) {
-        await user.send({ files: replyDmBuilders });
-      }
-      const dmMessage = await user.send({ embeds: [dmStaffEmbed] });
+      // Send DM — files and embed in the same message
+      const dmMessage = await user.send({
+        embeds: [dmStaffEmbed],
+        ...(replyDmBuilders.length > 0 ? { files: replyDmBuilders } : {}),
+      });
 
       // Also send to added members if this is a modmail thread
       const addedMemberIds = (thread as any).addedMemberIds as string[] | null | undefined;
@@ -24034,22 +24028,25 @@ client.on("messageCreate", async (message) => {
         for (const memberId of addedMemberIds) {
           try {
             const addedMember = await client.users.fetch(memberId);
-            const addedReplyFiles = await downloadAttachmentsAsFiles(message.attachments);
-            if (addedReplyFiles.length > 0) {
-              await addedMember.send({ files: addedReplyFiles.map(f => f.builder) });
-            }
-            await addedMember.send({ embeds: [dmStaffEmbed] });
+            // Reuse already-downloaded buffers by cloning them — no re-download needed
+            const reusedFiles = replyDmBuilders.length > 0
+              ? uploadedReplyFiles.map(f => new AttachmentBuilder(f.builder.attachment as Buffer, { name: f.name }))
+              : [];
+            await addedMember.send({
+              embeds: [dmStaffEmbed],
+              ...(reusedFiles.length > 0 ? { files: reusedFiles } : {}),
+            });
           } catch {
             // Could not DM added member
           }
         }
       }
 
-      // Send to channel as well
-      if (uploadedReplyFiles.length > 0) {
-        await (message.channel as any).send({ files: uploadedReplyFiles.map(f => f.builder) });
-      }
-      const channelMessage = await (message.channel as any).send({ embeds: [staffEmbed] });
+      // Send to channel — files and embed in the same message
+      const channelMessage = await (message.channel as any).send({
+        embeds: [staffEmbed],
+        ...(uploadedReplyFiles.length > 0 ? { files: uploadedReplyFiles.map(f => f.builder) } : {}),
+      });
 
       // Save message with message IDs
       if (isAppeal) {
@@ -24346,15 +24343,11 @@ client.on("messageCreate", async (message) => {
       const uploadedArFiles = await downloadAttachmentsAsFiles(message.attachments);
       const arDmBuilders = uploadedArFiles.map(f => f.builder);
 
-      if (attachmentUrls.length > 0) {
-        dmStaffEmbed.setDescription(`${displayArReplyContent || "(No text content)"}\n\n(Staff Team) has sent attachment(s).`);
-      }
-
-      // Send files outside the embed first, then send the embed
-      if (arDmBuilders.length > 0) {
-        await user.send({ files: arDmBuilders });
-      }
-      const dmMessage = await user.send({ embeds: [dmStaffEmbed] });
+      // Send DM — files and embed in the same message
+      const dmMessage = await user.send({
+        embeds: [dmStaffEmbed],
+        ...(arDmBuilders.length > 0 ? { files: arDmBuilders } : {}),
+      });
 
       // Also send to added members if this is a modmail thread
       const addedMemberIdsAr = (thread as any).addedMemberIds as string[] | null | undefined;
@@ -24362,11 +24355,14 @@ client.on("messageCreate", async (message) => {
         for (const memberId of addedMemberIdsAr) {
           try {
             const addedMember = await client.users.fetch(memberId);
-            const addedArFiles = await downloadAttachmentsAsFiles(message.attachments);
-            if (addedArFiles.length > 0) {
-              await addedMember.send({ files: addedArFiles.map(f => f.builder) });
-            }
-            await addedMember.send({ embeds: [dmStaffEmbed] });
+            // Reuse already-downloaded buffers — no re-download needed
+            const reusedArFiles = arDmBuilders.length > 0
+              ? uploadedArFiles.map(f => new AttachmentBuilder(f.builder.attachment as Buffer, { name: f.name }))
+              : [];
+            await addedMember.send({
+              embeds: [dmStaffEmbed],
+              ...(reusedArFiles.length > 0 ? { files: reusedArFiles } : {}),
+            });
           } catch {
             // Could not DM added member
           }
@@ -24386,11 +24382,11 @@ client.on("messageCreate", async (message) => {
         channelEmbed.setDescription(`${displayArReplyContent || "(No text content)"}\n\n(Staff Team) has sent attachment(s).`);
       }
 
-      // Send to channel — files outside the embed, then embed
-      if (uploadedArFiles.length > 0) {
-        await (message.channel as any).send({ files: uploadedArFiles.map(f => f.builder) });
-      }
-      const channelMessage = await (message.channel as any).send({ embeds: [channelEmbed] });
+      // Send to channel — files and embed in the same message
+      const channelMessage = await (message.channel as any).send({
+        embeds: [channelEmbed],
+        ...(uploadedArFiles.length > 0 ? { files: uploadedArFiles.map(f => f.builder) } : {}),
+      });
 
       // Save message with message IDs
       if (isAppeal) {
@@ -24673,6 +24669,28 @@ client.on("messageCreate", async (message) => {
         }
       }
 
+      // Helper: delete any bot attachment-only messages sent right before a given message (within 5s)
+      async function deletePrecedingAttachmentMessagesEdit(channel: any, anchorMessageId: string, botId: string) {
+        try {
+          const nearby = await channel.messages.fetch({ before: anchorMessageId, limit: 5 });
+          const anchorSnowflake = BigInt(anchorMessageId);
+          const windowMs = 5000n;
+          for (const [, msg] of nearby) {
+            const msgSnowflake = BigInt(msg.id);
+            const diffMs = (anchorSnowflake - msgSnowflake) >> 22n;
+            if (diffMs > windowMs) break;
+            if (msg.author?.id === botId && msg.attachments.size > 0 && msg.embeds.length === 0 && !msg.content) {
+              await msg.delete().catch(() => {});
+            }
+          }
+        } catch (e) {
+          // non-fatal
+        }
+      }
+
+      const newAttachments = message.attachments;
+      const hadAttachments = modmailMsg.content?.includes("[attachment:") || modmailMsg.content?.includes("http");
+
       // Edit the channel message if we have its ID - preserve original author
       if (modmailMsg.channelMessageId) {
         try {
@@ -24688,6 +24706,10 @@ client.on("messageCreate", async (message) => {
             .setFooter(originalEmbed?.footer ? { text: originalEmbed.footer.text } : { text: "Staff" })
             .setTimestamp();
           await channelMsg.edit({ embeds: [editedEmbed] });
+          // If old message had separate preceding attachment message and new edit has no attachments, clean it up
+          if (newAttachments.size === 0) {
+            await deletePrecedingAttachmentMessagesEdit(message.channel, modmailMsg.channelMessageId, client.user!.id);
+          }
         } catch (e) {
           console.error("Could not edit channel message:", e);
         }
@@ -24709,6 +24731,10 @@ client.on("messageCreate", async (message) => {
             .setFooter(originalEmbed?.footer ? { text: originalEmbed.footer.text } : { text: "Staff" })
             .setTimestamp();
           await dmMsg.edit({ embeds: [editedEmbed] });
+          // If old message had separate preceding attachment message and new edit has no attachments, clean it up
+          if (newAttachments.size === 0) {
+            await deletePrecedingAttachmentMessagesEdit(dmChannel, modmailMsg.dmMessageId, client.user!.id);
+          }
         } catch (e) {
           console.error("Could not edit DM message:", e);
         }
