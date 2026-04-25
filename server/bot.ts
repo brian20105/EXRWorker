@@ -13831,9 +13831,9 @@ client.on("interactionCreate", async (interaction) => {
             .setTitle(`New Ticket: ${categoryLabel}`)
             .setColor(0x5865f2)
             .setDescription(
-              `**Roles:** ${userRoles}\n` +
-              `**Account Created:** <t:${accountCreatedUnix}:F>\n` +
-              `**Joined Server:** ${joinedServerUnix ? `<t:${joinedServerUnix}:F>` : "Unknown"}`
+              `**Roles:** ${userRoles}\n\n` +
+              `**Account Created:** <t:${accountCreatedUnix}:R>\n` +
+              `**Joined Server:** ${joinedServerUnix ? `<t:${joinedServerUnix}:R>` : "Unknown"}`
             )
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true },
