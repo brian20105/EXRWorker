@@ -7449,12 +7449,6 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      // Log command usage (fire-and-forget, no await) - default to access_granted
-      if (interaction.guildId) {
-        const { commandUsed, optionsData } = buildCommandLogData(interaction);
-        logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData, "access_granted").catch(() => {});
-      }
-
       if (commandName === "setup_pay_request") {
         if (!await safeDeferReply(interaction)) return;
         try {
