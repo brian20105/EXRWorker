@@ -928,6 +928,12 @@ async function getInteractionTargetGuildId(interaction: any): Promise<string | n
 async function respondInteractionDisabled(interaction: any): Promise<void> {
   const payload = { content: DISABLED_MESSAGE, flags: 64 as const };
 
+  // Log access denied
+  if (interaction.guildId) {
+    const { commandUsed, optionsData } = buildCommandLogData(interaction);
+    logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData, "access_denied").catch(() => {});
+  }
+
   try {
     if (interaction.deferred) {
       await interaction.editReply({ content: DISABLED_MESSAGE });
@@ -6894,7 +6900,7 @@ async function tryRestoreDeletedCommandLogMessage(message: any): Promise<boolean
   return true;
 }
 
-async function logCommand(guildId: string, channelId: string, commandUsed: string, userId: string, username: string, options?: any): Promise<void> {
+async function logCommand(guildId: string, channelId: string, commandUsed: string, userId: string, username: string, options?: any, status: "access_granted" | "access_denied" = "access_granted"): Promise<void> {
   try {
     const config = await storage.getGuildConfig(guildId);
     if (!config?.commandLogChannelId) return;
@@ -6926,12 +6932,16 @@ async function logCommand(guildId: string, channelId: string, commandUsed: strin
       }
     }
 
+    const statusLabel = status === "access_granted" ? "✅ Access Granted" : "❌ Access Denied";
+    const statusColor = status === "access_granted" ? 0x23a559 : 0xed4245;
+
     const embed = new EmbedBuilder()
       .setTitle("Command Used")
-      .setColor(0x5865f2)
+      .setColor(statusColor)
       .addFields(
         { name: "Command", value: `\`${commandUsed || "unknown"}\``, inline: true },
         { name: "User", value: `<@${userId}> (${username})`, inline: true },
+        { name: "Access", value: statusLabel, inline: true },
         { name: "Channel", value: `<#${channelId}>`, inline: true },
         { name: "Options", value: optionsText, inline: false }
       )
@@ -7439,10 +7449,10 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      // Log command usage (fire-and-forget, no await)
+      // Log command usage (fire-and-forget, no await) - default to access_granted
       if (interaction.guildId) {
         const { commandUsed, optionsData } = buildCommandLogData(interaction);
-        logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
+        logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData, "access_granted").catch(() => {});
       }
 
       if (commandName === "setup_pay_request") {
