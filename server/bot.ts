@@ -928,6 +928,16 @@ async function getInteractionTargetGuildId(interaction: any): Promise<string | n
 async function respondInteractionDisabled(interaction: any): Promise<void> {
   const payload = { content: DISABLED_MESSAGE, flags: 64 as const };
 
+  // Log access denied in background (fire-and-forget)
+  if (interaction.guildId && interaction.isChatInputCommand?.()) {
+    try {
+      const { commandUsed, optionsData } = buildCommandLogData(interaction);
+      logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData, "access_denied").catch(() => {});
+    } catch {
+      // Silently ignore logging errors - don't let them break the response
+    }
+  }
+
   try {
     if (interaction.deferred) {
       await interaction.editReply({ content: DISABLED_MESSAGE });
@@ -7440,6 +7450,16 @@ client.on("interactionCreate", async (interaction) => {
             await respondInteractionDisabled(interaction);
             return;
           }
+        }
+      }
+
+      // Log command as accepted (fire-and-forget)
+      if (interaction.guildId) {
+        try {
+          const { commandUsed, optionsData } = buildCommandLogData(interaction);
+          logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData, "access_granted").catch(() => {});
+        } catch {
+          // Silently ignore logging errors
         }
       }
 
