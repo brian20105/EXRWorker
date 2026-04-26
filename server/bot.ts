@@ -928,16 +928,6 @@ async function getInteractionTargetGuildId(interaction: any): Promise<string | n
 async function respondInteractionDisabled(interaction: any): Promise<void> {
   const payload = { content: DISABLED_MESSAGE, flags: 64 as const };
 
-  // Log access denied in background (fire-and-forget)
-  if (interaction.guildId && interaction.isChatInputCommand?.()) {
-    try {
-      const { commandUsed, optionsData } = buildCommandLogData(interaction);
-      logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData, "access_denied").catch(() => {});
-    } catch {
-      // Silently ignore logging errors - don't let them break the response
-    }
-  }
-
   try {
     if (interaction.deferred) {
       await interaction.editReply({ content: DISABLED_MESSAGE });
@@ -6904,7 +6894,7 @@ async function tryRestoreDeletedCommandLogMessage(message: any): Promise<boolean
   return true;
 }
 
-async function logCommand(guildId: string, channelId: string, commandUsed: string, userId: string, username: string, options?: any, status: "access_granted" | "access_denied" = "access_granted"): Promise<void> {
+async function logCommand(guildId: string, channelId: string, commandUsed: string, userId: string, username: string, options?: any): Promise<void> {
   try {
     const config = await storage.getGuildConfig(guildId);
     if (!config?.commandLogChannelId) return;
@@ -6936,16 +6926,12 @@ async function logCommand(guildId: string, channelId: string, commandUsed: strin
       }
     }
 
-    const statusLabel = status === "access_granted" ? "✅ Access Granted" : "❌ Access Denied";
-    const statusColor = status === "access_granted" ? 0x23a559 : 0xed4245;
-
     const embed = new EmbedBuilder()
       .setTitle("Command Used")
-      .setColor(statusColor)
+      .setColor(0x5865f2)
       .addFields(
         { name: "Command", value: `\`${commandUsed || "unknown"}\``, inline: true },
         { name: "User", value: `<@${userId}> (${username})`, inline: true },
-        { name: "Access", value: statusLabel, inline: true },
         { name: "Channel", value: `<#${channelId}>`, inline: true },
         { name: "Options", value: optionsText, inline: false }
       )
@@ -7453,14 +7439,10 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      // Log command as accepted (fire-and-forget)
+      // Log command usage (fire-and-forget, no await)
       if (interaction.guildId) {
-        try {
-          const { commandUsed, optionsData } = buildCommandLogData(interaction);
-          logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData, "access_granted").catch(() => {});
-        } catch {
-          // Silently ignore logging errors
-        }
+        const { commandUsed, optionsData } = buildCommandLogData(interaction);
+        logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
       }
 
       if (commandName === "setup_pay_request") {
@@ -16018,8 +16000,10 @@ client.on("interactionCreate", async (interaction) => {
 
           // Get user's roles from the guild
           let userRoles = "None";
+          let joinedServerTimestamp: number | null = null;
           try {
             const member = await guild.members.fetch(user.id);
+            joinedServerTimestamp = typeof member.joinedTimestamp === "number" ? member.joinedTimestamp : null;
             const roles = member.roles.cache
               .filter((r: any) => r.id !== guild.id)
               .sort((a: any, b: any) => b.position - a.position)
@@ -16028,10 +16012,17 @@ client.on("interactionCreate", async (interaction) => {
             userRoles = roles.length > 0 ? roles.join(", ") : "None";
           } catch (e) {}
 
+          const accountCreatedUnix = Math.floor(user.createdTimestamp / 1000);
+          const joinedServerUnix = joinedServerTimestamp ? Math.floor(joinedServerTimestamp / 1000) : null;
+
           const initialEmbed = new EmbedBuilder()
             .setTitle("New Ban Appeal")
             .setColor(0xff6b6b)
-            .setDescription(`**Roles:** ${userRoles}`)
+            .setDescription(
+              `**Roles:** ${userRoles}\n\n` +
+              `**Account Created:** <t:${accountCreatedUnix}:R>\n` +
+              `**Joined Server:** ${joinedServerUnix ? `<t:${joinedServerUnix}:R>` : "Unknown"}`
+            )
             .addFields(
               { name: "User", value: `<@${user.id}> (${user.tag})`, inline: true }
             )
