@@ -928,28 +928,6 @@ async function getInteractionTargetGuildId(interaction: any): Promise<string | n
 async function respondInteractionDisabled(interaction: any): Promise<void> {
   const payload = { content: DISABLED_MESSAGE, flags: 64 as const };
 
-  // Log access denied
-  if (interaction.guildId) {
-    try {
-      let commandUsed = "unknown";
-      let optionsData: Record<string, string> = {};
-      
-      // Only try to extract command data if this is a chat input command
-      if (interaction.isChatInputCommand?.()) {
-        const data = buildCommandLogData(interaction);
-        commandUsed = data.commandUsed;
-        optionsData = data.optionsData;
-      } else if (interaction.commandName) {
-        commandUsed = interaction.commandName;
-      }
-      
-      logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData, "access_denied").catch(() => {});
-    } catch (err) {
-      // Log command silently failed, continue with response
-      console.log("[respondInteractionDisabled] Could not log denied command:", err);
-    }
-  }
-
   try {
     if (interaction.deferred) {
       await interaction.editReply({ content: DISABLED_MESSAGE });
