@@ -2593,7 +2593,16 @@ export async function registerRoutes(
       const config = await storage.getGuildConfig(guildId);
 
       if (client.isReady()) {
-        const guild = client.guilds.cache.get(guildId);
+        let guild = client.guilds.cache.get(guildId) as any;
+        if (!guild) {
+          guild = await client.guilds.fetch(guildId).catch(() => null);
+        }
+        if (guild && !guild.roles.cache.size) {
+          await guild.roles.fetch().catch(() => undefined);
+        }
+        if (guild && !guild.channels.cache.size) {
+          await guild.channels.fetch().catch(() => undefined);
+        }
         const member = guild ? await guild.members.fetch(user.id).catch(() => null) : null;
         const channels = guild?.channels.cache
           .map(c => ({ id: c.id, name: c.name, type: c.type })) || [];
