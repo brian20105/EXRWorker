@@ -12859,14 +12859,6 @@ client.on("interactionCreate", async (interaction) => {
               .setColor(0x57f287)
               .setTimestamp();
 
-            // Add attachments if any
-            if (pendingData.attachments.length > 0) {
-              const urls = pendingData.attachments.map((a: any) => a.url);
-              userEmbed.addFields({ name: "Attachments", value: urls.join("\n"), inline: false });
-              const baseDescription = pendingData.messageContent || "(No text content)";
-              userEmbed.setDescription(`${baseDescription}\n\n(${user.tag}) has sent attachment(s).`);
-            }
-
             // Download and re-upload so images never expire
             let selectFileBuilders: Array<{ builder: AttachmentBuilder; name: string; isImage: boolean }> = [];
             try {
@@ -12875,19 +12867,16 @@ client.on("interactionCreate", async (interaction) => {
               }
             } catch {}
             const selectUploadedFiles = selectFileBuilders.map(f => f.builder);
-            if (selectUploadedFiles.length > 0) {
-              await ticketChannel.send({ files: selectUploadedFiles });
-            }
 
-            await ticketChannel.send({ embeds: [userEmbed] });
-
-            // Ping subscribed users
+            // Build subscriber ping content to include in embed message
             const subs = selectedTicket.thread.subscribedUserIds || [];
-            if (subs.length > 0) {
-              const pingContent = subs.map((id: string) => `<@${id}>`).join(" ");
-              const pingMsg = await ticketChannel.send({ content: pingContent });
-              setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
-            }
+            const pingContent = subs.length > 0 ? subs.map((id: string) => `<@${id}>`).join(" ") : "";
+
+            await ticketChannel.send({
+              content: pingContent || undefined,
+              embeds: [userEmbed],
+              ...(selectUploadedFiles.length > 0 ? { files: selectUploadedFiles } : {}),
+            });
 
             // Save message
             if (selectedTicket.isAppeal) {
@@ -13093,9 +13082,6 @@ client.on("interactionCreate", async (interaction) => {
                     const currentThread = await safeGetModmailThreadByChannel(channelId);
                     if (!currentThread || currentThread.status !== "open") return;
                     if (currentThread.claimedById !== claimerId) return;
-                    const latestMessages = await storage.getModmailMessages(currentThread.id);
-                    const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
-                    if (!latestMessage || latestMessage.isStaff === "true") return;
                     await storage.updateModmailThread(currentThread.id, { claimedById: null });
                     const channel = await client.channels.fetch(channelId);
                     await sendAutoUnclaimEmbed(channel, claimerId);
@@ -15512,9 +15498,6 @@ client.on("interactionCreate", async (interaction) => {
                   const currentThread = await safeGetModmailThreadByChannel(channelId);
                   if (!currentThread || currentThread.status !== "open") return;
                   if (currentThread.claimedById !== claimerId) return;
-                  const latestMessages = await storage.getModmailMessages(currentThread.id);
-                  const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
-                  if (!latestMessage || latestMessage.isStaff === "true") return;
 
                   await storage.updateModmailThread(currentThread.id, { claimedById: null });
                   const channel = await client.channels.fetch(channelId);
@@ -16182,9 +16165,6 @@ client.on("interactionCreate", async (interaction) => {
                   const currentThread = await storage.getAppealThreadByChannel(channelId);
                   if (!currentThread || currentThread.status !== "open") return;
                   if (currentThread.claimedById !== claimerId) return;
-                  const latestMessages = await storage.getAppealMessages(currentThread.id);
-                  const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
-                  if (!latestMessage || latestMessage.isStaff === "true") return;
 
                   await storage.updateAppealThread(currentThread.id, { claimedById: null });
                   const channel = await client.channels.fetch(channelId);
@@ -22895,11 +22875,6 @@ client.on("messageCreate", async (message) => {
         const currentThread = claimIsAppeal ? currentAppeal : currentModmail;
         if (!currentThread || currentThread.status !== "open") return;
         if (currentThread.claimedById !== claimerId) return;
-        const latestMessages = claimIsAppeal
-          ? await storage.getAppealMessages(currentThread.id)
-          : await storage.getModmailMessages(currentThread.id);
-        const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
-        if (!latestMessage || latestMessage.isStaff === "true") return;
 
         if (claimIsAppeal) {
           await storage.updateAppealThread(currentThread.id, { claimedById: null });
@@ -23796,11 +23771,6 @@ client.on("messageCreate", async (message) => {
                   : await safeGetModmailThreadByChannel(channelId);
                 if (!currentThread || currentThread.status !== "open") return;
                 if (currentThread.claimedById !== claimerId) return;
-                const latestMessages = isAppealThread
-                  ? await storage.getAppealMessages(currentThread.id)
-                  : await storage.getModmailMessages(currentThread.id);
-                const latestMessage = latestMessages.length > 0 ? latestMessages[latestMessages.length - 1] : null;
-                if (!latestMessage || latestMessage.isStaff === "true") return;
 
                 if (isAppealThread) {
                   await storage.updateAppealThread(currentThread.id, { claimedById: null });
@@ -23848,25 +23818,16 @@ client.on("messageCreate", async (message) => {
           }
           const uploadedFiles = fileBuilders.map(f => f.builder);
 
-          // Add attachment info to embed if there are any
-          if (attachmentUrls.length > 0) {
-            userEmbed.addFields({ name: "Attachments", value: formatUrlListForField(attachmentUrls), inline: false });
-            userEmbed.setDescription(`${embedBodyText}\n\n(${message.author.tag}) has sent attachment(s).`);
-          }
+          // Keep attachment details out of embed text; attachments render as files.
           if (relayPayload.imageUrl) {
             userEmbed.setImage(relayPayload.imageUrl);
           }
 
           const actionRow = buildModmailActionRow(targetThread.id, message.id, message.author.id, isAppealThread);
 
-          // Ping subscribers before posting the user message so the ping appears above it.
+          // Build subscriber ping content to include in embed message
           const subs = targetThread.subscribedUserIds || [];
-          if (subs.length > 0) {
-            const pingContent = subs.map((id: string) => `<@${id}>`).join(" ");
-            const pingMsg = await modmailChannel.send({ content: pingContent });
-            // Delete ping message after a short delay to keep channel clean
-            setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
-          }
+          const pingContent = subs.length > 0 ? subs.map((id: string) => `<@${id}>`).join(" ") : "";
 
           // Dedupe: avoid sending the same relay embed multiple times in quick succession
           let channelMsg: any = null;
@@ -23888,6 +23849,7 @@ client.on("messageCreate", async (message) => {
                   await typingMsg.edit({
                     embeds: [userEmbed],
                     components: [actionRow],
+                    ...(pingContent ? { content: pingContent } : {}),
                     ...(uploadedFiles.length > 0 ? { files: uploadedFiles } : {}),
                   });
                   clearPendingModmailTypingNotice(typingNoticeKey);
@@ -23896,6 +23858,7 @@ client.on("messageCreate", async (message) => {
               }
               if (!channelMsg) {
                 channelMsg = await modmailChannel.send({
+                  content: pingContent || undefined,
                   embeds: [userEmbed],
                   components: [actionRow],
                   ...(uploadedFiles.length > 0 ? { files: uploadedFiles } : {}),
@@ -23913,6 +23876,7 @@ client.on("messageCreate", async (message) => {
                 await typingMsg.edit({
                   embeds: [userEmbed],
                   components: [actionRow],
+                  ...(pingContent ? { content: pingContent } : {}),
                   ...(uploadedFiles.length > 0 ? { files: uploadedFiles } : {}),
                 });
                 clearPendingModmailTypingNotice(typingNoticeKey);
@@ -23921,6 +23885,7 @@ client.on("messageCreate", async (message) => {
             }
             if (!channelMsg) {
               channelMsg = await modmailChannel.send({
+                content: pingContent || undefined,
                 embeds: [userEmbed],
                 components: [actionRow],
                 ...(uploadedFiles.length > 0 ? { files: uploadedFiles } : {}),
