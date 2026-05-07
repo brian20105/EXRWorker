@@ -13182,7 +13182,11 @@ client.on("interactionCreate", async (interaction) => {
               }
             } catch (e) {}
 
-            await interaction.editReply({ content: "Ticket closed. Deleting channel..." });
+            const closedEmbed = new EmbedBuilder()
+              .setDescription("✅ Ticket closed. Deleting channel...")
+              .setColor(0xed4245)
+              .setTimestamp();
+            await interaction.editReply({ embeds: [closedEmbed] });
 
             (async () => {
               await notifyClosedTicketParticipants(thread, false);
@@ -15892,7 +15896,11 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Reply to user
-          await interaction.editReply({ content: "Ticket closed. Deleting channel..." });
+          const closedEmbed = new EmbedBuilder()
+            .setDescription("✅ Ticket closed. Deleting channel...")
+            .setColor(0xed4245)
+            .setTimestamp();
+          await interaction.editReply({ embeds: [closedEmbed] });
 
           // Attempt to remove components from other ticket header/control messages in this channel
           try {
@@ -22412,6 +22420,89 @@ client.on("messageCreate", async (message) => {
     }
   }
 
+  // Handle prefix commands (cancelclose, cc) in guild channels
+  if (message.guild && (lowerContent === `${lowerPrefix}cancelclose` || lowerContent === `${lowerPrefix}cc`)) {
+    // Check for modmail thread first, then appeal thread
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
+    let thread = modmailThread || appealThread;
+
+    if (!thread) {
+      // Fallbacks: try to find a thread for this channel by scanning guild threads
+      try {
+        const allThreads = await storage.getAllModmailThreads(message.guild.id);
+        const byChannel = allThreads.find((t: any) => t.channelId === message.channel.id);
+        if (byChannel) {
+          thread = byChannel;
+        }
+      } catch (e) {}
+    }
+
+    if (!thread) {
+      // Try to find a thread by checking recent channel messages mapped to stored modmail messages
+      try {
+        const recent = await (message.channel as any).messages.fetch({ limit: 25 }).catch(() => null);
+        if (recent) {
+          for (const m of recent.values()) {
+            try {
+              const mm = await storage.getModmailMessageByChannelMessageId(String(m.id));
+              if (mm) {
+                const t = await storage.getModmailThread(mm.threadId);
+                if (t) {
+                  thread = t;
+                  break;
+                }
+              }
+            } catch (e) { }
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (!thread) {
+      return;
+    }
+
+    if (thread.status !== "open") {
+      await message.reply("This ticket is already closed.");
+      return;
+    }
+
+    // If ticket is claimed, only the claimer can cancel scheduled close
+    if (thread.claimedById && thread.claimedById !== message.author.id) {
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setDescription(`Only <@${thread.claimedById}> can cancel a scheduled close.`)
+        .setTimestamp();
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    const existingTimeout = pendingTimedCloses.get(message.channel.id);
+    if (!existingTimeout) {
+      const noScheduleEmbed = new EmbedBuilder()
+        .setDescription("❌ There is no scheduled close for this ticket.")
+        .setColor(0xed4245)
+        .setTimestamp();
+      await message.reply({ embeds: [noScheduleEmbed] });
+      return;
+    }
+
+    clearTimeout(existingTimeout);
+    pendingTimedCloses.delete(message.channel.id);
+
+    try {
+      await message.delete();
+    } catch (e) {}
+
+    const cancelledEmbed = new EmbedBuilder()
+      .setDescription("✅ Scheduled close cancelled.")
+      .setColor(0x57f287)
+      .setTimestamp();
+    await (message.channel as any).send({ embeds: [cancelledEmbed] });
+    return;
+  }
+
   // Handle prefix commands (close, c) with optional time argument in guild channels
   if (message.guild && (lowerContent === `${lowerPrefix}close` || lowerContent === `${lowerPrefix}c` || lowerContent.startsWith(`${lowerPrefix}close `) || lowerContent.startsWith(`${lowerPrefix}c `))) {
     // Check for modmail thread first, then appeal thread
@@ -22721,7 +22812,11 @@ client.on("messageCreate", async (message) => {
     }
 
     // Delete channel immediately
-    await message.reply("Ticket closed.");
+    const closeEmbed = new EmbedBuilder()
+      .setDescription(isAppeal ? "✅ Appeal closed. Deleting channel..." : "✅ Ticket closed. Deleting channel...")
+      .setColor(0xed4245)
+      .setTimestamp();
+    await message.reply({ embeds: [closeEmbed] });
     try {
       await (message.channel as any).delete();
     } catch (e) {}
@@ -24243,7 +24338,11 @@ client.on("messageCreate", async (message) => {
             try {
               const closeChannel = await client.channels.fetch(channelId);
               if (closeChannel && "send" in closeChannel) {
-                await (closeChannel as any).send({ content: "Ticket closed. Deleting channel..." }).catch(() => {});
+                const closedEmbed = new EmbedBuilder()
+                  .setDescription("✅ Ticket closed. Deleting channel...")
+                  .setColor(0xed4245)
+                  .setTimestamp();
+                await (closeChannel as any).send({ embeds: [closedEmbed] }).catch(() => {});
               }
             } catch (e) { }
 
@@ -24526,7 +24625,11 @@ client.on("messageCreate", async (message) => {
             try {
               const closeChannel = await client.channels.fetch(channelId);
               if (closeChannel && "send" in closeChannel) {
-                await (closeChannel as any).send({ content: "Ticket closed. Deleting channel..." }).catch(() => {});
+                const closedEmbed = new EmbedBuilder()
+                  .setDescription("✅ Ticket closed. Deleting channel...")
+                  .setColor(0xed4245)
+                  .setTimestamp();
+                await (closeChannel as any).send({ embeds: [closedEmbed] }).catch(() => {});
               }
             } catch (e) { }
 
