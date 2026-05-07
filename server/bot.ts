@@ -1460,11 +1460,12 @@ function schedulePendingModmailTypingNoticeCleanup(key: string, channelId: strin
   }, MODMAIL_TYPING_NOTICE_TTL_MS);
 }
 
-function buildModmailActionRow(threadId: string, dmMessageId: string, authorId: string) {
+function buildModmailActionRow(threadId: string, dmMessageId: string, authorId: string, isAppeal = false) {
   const actionMenu = new StringSelectMenuBuilder()
     .setCustomId(`modmail_action_${threadId}_${dmMessageId}_${authorId}`)
-    .setPlaceholder("Select an action...")
-    .addOptions(
+    .setPlaceholder("Select an action...");
+
+  const options: StringSelectMenuOptionBuilder[] = [
       new StringSelectMenuOptionBuilder()
         .setLabel("Send Message")
         .setDescription("Show this message content for copy/paste")
@@ -1481,11 +1482,6 @@ function buildModmailActionRow(threadId: string, dmMessageId: string, authorId: 
         .setValue("toggle_member")
         .setEmoji("👥"),
       new StringSelectMenuOptionBuilder()
-        .setLabel("Request A Role")
-        .setDescription("Create a role request from this ticket")
-        .setValue("request_role")
-        .setEmoji("🛡️"),
-      new StringSelectMenuOptionBuilder()
         .setLabel("User Modlogs")
         .setDescription("Show modlogs for this user")
         .setValue("user_modlogs")
@@ -1494,8 +1490,22 @@ function buildModmailActionRow(threadId: string, dmMessageId: string, authorId: 
         .setLabel("Modmail Logs")
         .setDescription("Show modmail logs for this user")
         .setValue("user_modmail_logs")
-        .setEmoji("📝")
+        .setEmoji("📝"),
+  ];
+
+  if (!isAppeal) {
+    options.splice(
+      3,
+      0,
+      new StringSelectMenuOptionBuilder()
+        .setLabel("Request A Role")
+        .setDescription("Create a role request from this ticket")
+        .setValue("request_role")
+        .setEmoji("🛡️")
     );
+  }
+
+  actionMenu.addOptions(...options);
 
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
 }
@@ -13327,6 +13337,15 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (selectedAction === "request_role") {
+          const appealThread = await storage.getAppealThread(threadId).catch(() => null);
+          if (appealThread) {
+            await interaction.reply({
+              content: "Role requests are not available in appeal tickets.",
+              flags: 64,
+            });
+            return;
+          }
+
           const roleSelect = new RoleSelectMenuBuilder()
             .setCustomId(`modmail_request_role_select_${threadId}`)
             .setPlaceholder("Select the role to request")
@@ -15645,6 +15664,15 @@ client.on("interactionCreate", async (interaction) => {
         return;
       } else if (interaction.customId.startsWith("modmail_request_role_")) {
         const threadId = interaction.customId.replace("modmail_request_role_", "");
+
+        const appealThread = await storage.getAppealThread(threadId).catch(() => null);
+        if (appealThread) {
+          await interaction.reply({
+            content: "Role requests are not available in appeal tickets.",
+            flags: 64,
+          });
+          return;
+        }
 
         const roleSelect = new RoleSelectMenuBuilder()
           .setCustomId(`modmail_request_role_select_${threadId}`)
@@ -20647,6 +20675,12 @@ function buildStoredTranscriptContent(content: string, attachmentUrls?: string[]
   return `${normalized}\n\n${attachmentBlock}`;
 }
 
+function buildInternalStoredTranscriptContent(content: string, attachmentUrls?: string[]): string {
+  const normalized = (content || "").trim();
+  const prefixed = normalized.length > 0 ? `[internal] ${normalized}` : "[internal]";
+  return buildStoredTranscriptContent(prefixed, attachmentUrls);
+}
+
 async function sendUnclaimedTicketReplyNotice(message: any, wasPreviouslyClaimed: boolean): Promise<void> {
   const description = wasPreviouslyClaimed
     ? "The ticket is unclaimed, please claim it using .claim as your messages will not be sent until you have claimed."
@@ -23819,8 +23853,21 @@ client.on("messageCreate", async (message) => {
             userEmbed.addFields({ name: "Attachments", value: formatUrlListForField(attachmentUrls), inline: false });
             userEmbed.setDescription(`${embedBodyText}\n\n(${message.author.tag}) has sent attachment(s).`);
           }
+          if (relayPayload.imageUrl) {
+            userEmbed.setImage(relayPayload.imageUrl);
+          }
 
-          const actionRow = buildModmailActionRow(targetThread.id, message.id, message.author.id);
+          const actionRow = buildModmailActionRow(targetThread.id, message.id, message.author.id, isAppealThread);
+
+          // Ping subscribers before posting the user message so the ping appears above it.
+          const subs = targetThread.subscribedUserIds || [];
+          if (subs.length > 0) {
+            const pingContent = subs.map((id: string) => `<@${id}>`).join(" ");
+            const pingMsg = await modmailChannel.send({ content: pingContent });
+            // Delete ping message after a short delay to keep channel clean
+            setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
+          }
+
           // Dedupe: avoid sending the same relay embed multiple times in quick succession
           let channelMsg: any = null;
           const typingNoticeKey = getPendingModmailTypingNoticeKey(targetThread.id, message.author.id);
@@ -23835,19 +23882,24 @@ client.on("messageCreate", async (message) => {
               return emb.description === userEmbed.data.description && emb.author?.name === message.author.tag && Date.now() - new Date(m.createdTimestamp).getTime() < 10000;
             });
             if (!duplicate) {
-              if (uploadedFiles.length > 0) {
-                await modmailChannel.send({ files: uploadedFiles });
-              }
               if (pendingTypingNotice) {
                 const typingMsg = await (modmailChannel as any).messages.fetch(pendingTypingNotice.messageId).catch(() => null);
                 if (typingMsg && typingMsg.editable) {
-                  await typingMsg.edit({ embeds: [userEmbed], components: [actionRow] });
+                  await typingMsg.edit({
+                    embeds: [userEmbed],
+                    components: [actionRow],
+                    ...(uploadedFiles.length > 0 ? { files: uploadedFiles } : {}),
+                  });
                   clearPendingModmailTypingNotice(typingNoticeKey);
                   channelMsg = typingMsg;
                 }
               }
               if (!channelMsg) {
-                channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+                channelMsg = await modmailChannel.send({
+                  embeds: [userEmbed],
+                  components: [actionRow],
+                  ...(uploadedFiles.length > 0 ? { files: uploadedFiles } : {}),
+                });
               }
             } else {
               channelMsg = duplicate;
@@ -23855,34 +23907,30 @@ client.on("messageCreate", async (message) => {
             }
           } catch (e) {
             // fallback to sending if fetch fails
-            if (uploadedFiles.length > 0) {
-              await modmailChannel.send({ files: uploadedFiles });
-            }
             if (pendingTypingNotice) {
               const typingMsg = await (modmailChannel as any).messages.fetch(pendingTypingNotice.messageId).catch(() => null);
               if (typingMsg && typingMsg.editable) {
-                await typingMsg.edit({ embeds: [userEmbed], components: [actionRow] });
+                await typingMsg.edit({
+                  embeds: [userEmbed],
+                  components: [actionRow],
+                  ...(uploadedFiles.length > 0 ? { files: uploadedFiles } : {}),
+                });
                 clearPendingModmailTypingNotice(typingNoticeKey);
                 channelMsg = typingMsg;
               }
             }
             if (!channelMsg) {
-              channelMsg = await modmailChannel.send({ embeds: [userEmbed], components: [actionRow] });
+              channelMsg = await modmailChannel.send({
+                embeds: [userEmbed],
+                components: [actionRow],
+                ...(uploadedFiles.length > 0 ? { files: uploadedFiles } : {}),
+              });
             }
           }
 
           // Store the message content and attachments for the copy button
           const storedRelayText = relayPayload.plainText || description;
           storeModmailCopyContent(message.id, storedRelayText, attachmentUrls.length > 0 ? attachmentUrls : undefined);
-
-          // Ping subscribed users
-          const subs = targetThread.subscribedUserIds || [];
-          if (subs.length > 0) {
-            const pingContent = subs.map((id: string) => `<@${id}>`).join(" ");
-            const pingMsg = await modmailChannel.send({ content: pingContent });
-            // Delete ping message after a short delay to keep channel clean
-            setTimeout(() => pingMsg.delete().catch(() => {}), 3000);
-          }
 
           // Save message with both DM message ID and channel message ID for edit/delete tracking
           if (isAppealThread) {
@@ -25032,12 +25080,43 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  // Staff messages in modmail channels WITHOUT .r prefix are NOT sent to user
-  // This allows staff to discuss in the channel privately
-  // Clear claim expiry timer only if the CLAIMER sends any message in the channel
+  // Staff messages in ticket channels WITHOUT .r/.ar are internal messages.
+  // They are not relayed to users, but are stored as [internal] for transcripts/logs.
   if (message.guild && !message.author.bot) {
-    const thread = await safeGetModmailThreadByChannel(message.channel.id);
+    const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
+    const appealThread = await storage.getAppealThreadByChannel(message.channel.id).catch(() => undefined);
+    const thread = modmailThread || appealThread;
+    const isAppealThread = !modmailThread && !!appealThread;
+
     if (thread && thread.status === "open") {
+      const isCommandMessage = lowerContent.startsWith(lowerPrefix);
+      if (!isCommandMessage) {
+        const attachmentUrls = message.attachments.map((a: any) => a.url).filter(Boolean);
+        const hasText = (message.content || "").trim().length > 0;
+
+        if (hasText || attachmentUrls.length > 0) {
+          const internalContent = buildInternalStoredTranscriptContent(message.content || "", attachmentUrls);
+          if (isAppealThread) {
+            await storage.addAppealMessage({
+              threadId: thread.id,
+              authorId: message.author.id,
+              content: internalContent,
+              isStaff: "true",
+              channelMessageId: message.id,
+            });
+          } else {
+            await storage.addModmailMessage({
+              threadId: thread.id,
+              authorId: message.author.id,
+              content: internalContent,
+              isStaff: "true",
+              channelMessageId: message.id,
+            });
+          }
+        }
+      }
+
+      // Clear claim expiry timer only if the claimer sends any message in the channel.
       const existingClaimTimer = pendingClaimExpiry.get(message.channel.id);
       if (existingClaimTimer && existingClaimTimer.claimerId === message.author.id) {
         clearTimeout(existingClaimTimer.timeout);
