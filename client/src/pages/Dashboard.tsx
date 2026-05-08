@@ -7083,7 +7083,7 @@ export default function Dashboard() {
                     ) : miscBlacklistedUsers.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No users are currently on the instant re-ban blacklist.</p>
                     ) : (
-                      <div className="space-y-2">
+                      <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
                         {miscBlacklistedUsers.map((entry) => (
                           <div key={`misc-blacklist-${entry.userId}`} className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
                             <div className="flex min-w-0 flex-1 items-start gap-3">
