@@ -5916,6 +5916,7 @@ const commands = [
           { name: "Role Commands", value: "role_commands" },
           { name: "Sticky Commands", value: "sticky_commands" },
           { name: "Role Request Commands", value: "role_request_commands" },
+          { name: "Ticket Override", value: "override" },
           { name: "Promotion/Demotion Approvals", value: "promotion_demotion_logs" },
           { name: "Unban All Command", value: "unban_all_command" },
           { name: "Prefix Ban Command", value: "prefix_ban" },
@@ -11117,6 +11118,7 @@ client.on("interactionCreate", async (interaction) => {
           role_commands: "Role Commands",
           sticky_commands: "Sticky Commands",
           role_request_commands: "Role Request Commands",
+          override: "Ticket Override",
           promotion_demotion_logs: "Promotion/Demotion Approvals",
           unban_all_command: "Unban All Command",
           prefix_ban: "Prefix Ban Command",
@@ -11210,6 +11212,20 @@ client.on("interactionCreate", async (interaction) => {
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
           const labelName = typeLabels[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /setup_role_requests to set the destination channel.`, ephemeral: true });
+          return;
+        }
+
+        if (permType === "override") {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: writeTicketOverridePermissionToConfig(config?.customCategoryPings, roles),
+          });
+
+          const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
+          const labelName = typeLabels[permType] || permType;
+          await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}`, ephemeral: true });
           return;
         }
 
