@@ -3092,8 +3092,27 @@ export async function registerRoutes(
       const fromDateStr = String(req.query.fromDate || "").trim();
       const toDateStr = String(req.query.toDate || "").trim();
 
-      const fromDate = fromDateStr ? new Date(fromDateStr) : new Date("2000-01-01");
-      const toDate = toDateStr ? new Date(toDateStr) : new Date();
+      const parseThreadDate = (value: unknown): Date | null => {
+        if (!value) return null;
+        const parsed = new Date(value as any);
+        return Number.isFinite(parsed.getTime()) ? parsed : null;
+      };
+
+      const parseFilterDate = (value: string, mode: "from" | "to"): Date | null => {
+        if (!value) return null;
+        const parsed = new Date(value);
+        if (!Number.isFinite(parsed.getTime())) return null;
+
+        // Date inputs are yyyy-mm-dd; make "to" inclusive through end of that day.
+        if (mode === "to" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+          parsed.setHours(23, 59, 59, 999);
+        }
+
+        return parsed;
+      };
+
+      const fromDate = parseFilterDate(fromDateStr, "from");
+      const toDate = parseFilterDate(toDateStr, "to");
 
       const allModmailThreads = await storage.getAllModmailThreads(guildId).catch(() => []);
       const allAppealThreads = await storage.getAllAppealThreads(guildId).catch(() => []);
@@ -3120,16 +3139,16 @@ export async function registerRoutes(
         }
       }
 
-      if (fromDate && Number.isFinite(fromDate.getTime())) {
+      if (fromDate) {
         filtered = filtered.filter(({ thread }) => {
-          const createdAt = thread.createdAt ? new Date(thread.createdAt) : null;
+          const createdAt = parseThreadDate(thread.createdAt);
           return !createdAt || createdAt >= fromDate;
         });
       }
 
-      if (toDate && Number.isFinite(toDate.getTime())) {
+      if (toDate) {
         filtered = filtered.filter(({ thread }) => {
-          const createdAt = thread.createdAt ? new Date(thread.createdAt) : null;
+          const createdAt = parseThreadDate(thread.createdAt);
           return !createdAt || createdAt <= toDate;
         });
       }
