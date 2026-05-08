@@ -78,6 +78,11 @@ const inMemoryStore = {
 const GUILD_CONFIG_SQL_BACKOFF_MS = 15000;
 let guildConfigSqlBackoffUntil = 0;
 
+// Short-lived TTL cache so repeated getGuildConfig calls within one interaction
+// don't each fire a DB round trip.
+const GUILD_CONFIG_CACHE_TTL_MS = 15_000; // 15 seconds
+const guildConfigTtlCache = new Map<string, { value: GuildConfig; expiresAt: number }>();
+
 function normalizeScopeGuildIds(guildIds?: string[]): string[] {
   return Array.from(new Set((guildIds || []).map((entry) => String(entry || "").trim()).filter(Boolean)));
 }
@@ -267,6 +272,12 @@ export interface IStorage {
 
 export class DatabaseStorage implements IStorage {
   async getGuildConfig(guildId: string): Promise<GuildConfig | undefined> {
+    // Serve from TTL cache when fresh
+    const cached = guildConfigTtlCache.get(guildId);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.value;
+    }
+
     const memoryConfig = inMemoryStore.guildConfigs.get(guildId);
 
     if (Date.now() < guildConfigSqlBackoffUntil) {
@@ -287,6 +298,7 @@ export class DatabaseStorage implements IStorage {
       );
       if (result && result.length > 0) {
         inMemoryStore.guildConfigs.set(guildId, result[0]);
+        guildConfigTtlCache.set(guildId, { value: result[0], expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
         return result[0];
       }
       guildConfigSqlBackoffUntil = 0;
@@ -313,12 +325,14 @@ export class DatabaseStorage implements IStorage {
           .returning();
         if (updated && updated.length > 0) {
           inMemoryStore.guildConfigs.set(config.guildId, updated[0]);
+          guildConfigTtlCache.set(config.guildId, { value: updated[0], expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
           return updated[0];
         }
       } else {
         const inserted = await db.insert(guildConfigs).values(config).returning();
         if (inserted && inserted.length > 0) {
           inMemoryStore.guildConfigs.set(config.guildId, inserted[0]);
+          guildConfigTtlCache.set(config.guildId, { value: inserted[0], expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
           return inserted[0];
         }
       }
@@ -329,6 +343,7 @@ export class DatabaseStorage implements IStorage {
     const existing = inMemoryStore.guildConfigs.get(config.guildId);
     const fullConfig = { ...existing, ...config, updatedAt: new Date() } as GuildConfig;
     inMemoryStore.guildConfigs.set(config.guildId, fullConfig);
+    guildConfigTtlCache.set(config.guildId, { value: fullConfig, expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
     return fullConfig;
   }
 

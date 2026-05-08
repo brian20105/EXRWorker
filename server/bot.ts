@@ -2774,6 +2774,10 @@ async function getExtraActivityCountForUserAcrossScope(
   return match?.count || 0;
 }
 
+// Per-guild cooldown so we don't re-fetch all members more than once per 60s.
+const memberFetchLastAttempt = new Map<string, number>();
+const MEMBER_FETCH_COOLDOWN_MS = 60_000;
+
 async function getTrackedActivityMemberIds(
   guild: any,
   trackedRoleIds: string[] | null | undefined,
@@ -2781,10 +2785,15 @@ async function getTrackedActivityMemberIds(
   const normalizedRoleIds = Array.from(new Set((trackedRoleIds || []).map((entry) => String(entry || "").trim()).filter(Boolean)));
   if (!guild || normalizedRoleIds.length === 0) return null;
 
-  try {
-    await guild.members.fetch();
-  } catch {
-    // Ignore member fetch failures and use whatever is already cached.
+  const now = Date.now();
+  const last = memberFetchLastAttempt.get(guild.id) ?? 0;
+  if (now - last >= MEMBER_FETCH_COOLDOWN_MS) {
+    memberFetchLastAttempt.set(guild.id, now);
+    try {
+      await guild.members.fetch();
+    } catch {
+      // Ignore member fetch failures and use whatever is already cached.
+    }
   }
 
   const memberIds = new Set<string>();
@@ -4868,6 +4877,41 @@ async function processStaffApplicationAnswer(userId: string, answer: string, dmC
   });
 }
 
+const PERMISSION_TYPE_CHOICES = [
+  { name: "Payout Approval", value: "payout" },
+  { name: "Ban/Unban + Kick Approval", value: "moderation" },
+  { name: "Modmail Block", value: "block" },
+  { name: "Modmail Claim", value: "claim" },
+  { name: "Activity Reset", value: "activity_reset" },
+  { name: "Appeal Claim", value: "appeal_claim" },
+  { name: "Snippets", value: "snippets" },
+  { name: "Activity", value: "activity" },
+  { name: "Message Commands", value: "message_commands" },
+  { name: "Roster Commands", value: "roster_commands" },
+  { name: "Role Commands", value: "role_commands" },
+  { name: "Sticky Commands", value: "sticky_commands" },
+  { name: "Role Request Commands", value: "role_request_commands" },
+  { name: "Ticket Override", value: "override" },
+  { name: "Promotion/Demotion Approvals", value: "promotion_demotion_logs" },
+  { name: "Unban All Command", value: "unban_all_command" },
+  { name: "Prefix Ban Command", value: "prefix_ban" },
+  { name: "Prefix Fullban Command", value: "prefix_fullban" },
+  { name: "Prefix Fakeban Command", value: "prefix_fakeban" },
+  { name: "Prefix Mute Command", value: "prefix_mute" },
+  { name: "Prefix Kick Command", value: "prefix_kick" },
+  { name: "Prefix Purge Command", value: "prefix_purge" },
+  { name: "Prefix Modlogs Command", value: "prefix_modlogs" },
+  { name: "Prefix Reason Command", value: "prefix_reason" },
+  { name: "Prefix Retime Command", value: "prefix_retime" },
+  { name: "Prefix Clean Command", value: "prefix_clean" },
+] as const;
+
+const PERMISSION_TYPE_LABELS: Record<string, string> = {
+  ...Object.fromEntries(PERMISSION_TYPE_CHOICES.map((choice) => [choice.value, choice.name])),
+  kick_approval: "Kick Approval",
+  prefix_command: "Prefix Command",
+};
+
 
 const commands = [
   new SlashCommandBuilder()
@@ -5910,35 +5954,7 @@ const commands = [
     .setDescription("Set permission roles for various features")
     .setDefaultMemberPermissions(0)
     .addStringOption((option) =>
-      option.setName("type").setDescription("Permission type").setRequired(true)
-        .addChoices(
-          { name: "Payout Approval", value: "payout" },
-          { name: "Ban/Unban + Kick Approval", value: "moderation" },
-          { name: "Modmail Block", value: "block" },
-          { name: "Modmail Claim", value: "claim" },
-          { name: "Activity Reset", value: "activity_reset" },
-          { name: "Appeal Claim", value: "appeal_claim" },
-          { name: "Snippets", value: "snippets" },
-          { name: "Activity", value: "activity" },
-          { name: "Message Commands", value: "message_commands" },
-          { name: "Roster Commands", value: "roster_commands" },
-          { name: "Role Commands", value: "role_commands" },
-          { name: "Sticky Commands", value: "sticky_commands" },
-          { name: "Role Request Commands", value: "role_request_commands" },
-          { name: "Ticket Override", value: "override" },
-          { name: "Promotion/Demotion Approvals", value: "promotion_demotion_logs" },
-          { name: "Unban All Command", value: "unban_all_command" },
-          { name: "Prefix Ban Command", value: "prefix_ban" },
-          { name: "Prefix Fullban Command", value: "prefix_fullban" },
-          { name: "Prefix Fakeban Command", value: "prefix_fakeban" },
-          { name: "Prefix Mute Command", value: "prefix_mute" },
-          { name: "Prefix Kick Command", value: "prefix_kick" },
-          { name: "Prefix Purge Command", value: "prefix_purge" },
-          { name: "Prefix Modlogs Command", value: "prefix_modlogs" },
-          { name: "Prefix Reason Command", value: "prefix_reason" },
-          { name: "Prefix Retime Command", value: "prefix_retime" },
-          { name: "Prefix Clean Command", value: "prefix_clean" }
-        )
+      option.setName("type").setDescription("Permission type").setRequired(true).setAutocomplete(true)
     )
     .addRoleOption((option) => option.setName("role1").setDescription("Role 1").setRequired(false))
     .addRoleOption((option) => option.setName("role2").setDescription("Role 2").setRequired(false))
@@ -7462,6 +7478,21 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (commandName === "permissions" && focusedOption.name === "type") {
+        try {
+          const query = String(focusedOption.value || "").toLowerCase();
+          const choices = PERMISSION_TYPE_CHOICES
+            .filter((choice) => choice.name.toLowerCase().includes(query) || choice.value.includes(query))
+            .slice(0, 25)
+            .map((choice) => ({ name: choice.name, value: choice.value }));
+
+          await interaction.respond(choices);
+        } catch {
+          await interaction.respond([]).catch(() => {});
+        }
+        return;
+      }
+
       return;
     }
 
@@ -8625,6 +8656,7 @@ client.on("interactionCreate", async (interaction) => {
           const useAllGuilds = scope === "all";
           const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
           const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
+          const activityRoleMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityRoleIds);
 
           // Build time range description with Discord timestamps (hammer times)
           const now = new Date();
@@ -8651,6 +8683,12 @@ client.on("interactionCreate", async (interaction) => {
             if (trackedActivityMemberIds && !trackedActivityMemberIds.has(targetMember.id)) {
               await interaction.editReply({
                 content: `**${targetMember.tag}** does not currently have one of the tracked activity roles, so they are hidden from \/activity until the role is added back.`,
+              });
+              return;
+            }
+            if (activityRoleMemberIds && !activityRoleMemberIds.has(targetMember.id)) {
+              await interaction.editReply({
+                content: `**${targetMember.tag}** does not currently have the required activity role, so they are hidden from \/activity until the role is restored.`,
               });
               return;
             }
@@ -8966,6 +9004,9 @@ client.on("interactionCreate", async (interaction) => {
               }
             }
             filterCombinedActivityStatsToTrackedMembers(combinedStats, trackedActivityMemberIds);
+          }
+          if (activityRoleMemberIds) {
+            filterCombinedActivityStatsToTrackedMembers(combinedStats, activityRoleMemberIds);
           }
 
           const leaderboard = Object.entries(combinedStats)
@@ -11099,6 +11140,13 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const permType = interaction.options.getString("type", true);
+        if (!(permType in PERMISSION_TYPE_LABELS)) {
+          await interaction.reply({
+            content: "Invalid permission type. Select a value from the autocomplete list.",
+            ephemeral: true,
+          });
+          return;
+        }
 
         if (permType === "prefix_command") {
           await interaction.reply({
@@ -11113,37 +11161,6 @@ client.on("interactionCreate", async (interaction) => {
           const role = interaction.options.getRole(`role${i}`);
           if (role) roles.push(role.id);
         }
-
-        const typeLabels: Record<string, string> = {
-          payout: "Payout Approval",
-          moderation: "Ban/Unban + Kick Approval",
-          kick_approval: "Kick Approval",
-          block: "Modmail Block",
-          claim: "Modmail Claim",
-          activity_reset: "Activity Reset",
-          appeal_claim: "Appeal Claim",
-          snippets: "Snippets",
-          activity: "Activity",
-          message_commands: "Message Commands",
-          roster_commands: "Roster Commands",
-          role_commands: "Role Commands",
-          sticky_commands: "Sticky Commands",
-          role_request_commands: "Role Request Commands",
-          override: "Ticket Override",
-          promotion_demotion_logs: "Promotion/Demotion Approvals",
-          unban_all_command: "Unban All Command",
-          prefix_ban: "Prefix Ban Command",
-          prefix_fullban: "Prefix Fullban Command",
-          prefix_fakeban: "Prefix Fakeban Command",
-          prefix_mute: "Prefix Mute Command",
-          prefix_kick: "Prefix Kick Command",
-          prefix_purge: "Prefix Purge Command",
-          prefix_modlogs: "Prefix Modlogs Command",
-          prefix_reason: "Prefix Reason Command",
-          prefix_retime: "Prefix Retime Command",
-          prefix_clean: "Prefix Clean Command",
-          prefix_command: "Prefix Command",
-        };
 
         const fieldMap: Record<string, string> = {
           payout: "allowedRoleIds",
@@ -11206,7 +11223,7 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-          const labelName = typeLabels[permType] || permType;
+          const labelName = PERMISSION_TYPE_LABELS[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nConfigure command style with /setup`, ephemeral: true });
           return;
         }
@@ -11221,7 +11238,7 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-          const labelName = typeLabels[permType] || permType;
+          const labelName = PERMISSION_TYPE_LABELS[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /sticky set to create sticky messages.`, ephemeral: true });
           return;
         }
@@ -11237,7 +11254,7 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-          const labelName = typeLabels[permType] || permType;
+          const labelName = PERMISSION_TYPE_LABELS[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /setup_role_requests to set the destination channel.`, ephemeral: true });
           return;
         }
@@ -11251,7 +11268,7 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-          const labelName = typeLabels[permType] || permType;
+          const labelName = PERMISSION_TYPE_LABELS[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}`, ephemeral: true });
           return;
         }
@@ -11267,7 +11284,7 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-          const labelName = typeLabels[permType] || permType;
+          const labelName = PERMISSION_TYPE_LABELS[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /setup_promotion_requests to set the destination channel.`, ephemeral: true });
           return;
         }
@@ -11281,7 +11298,7 @@ client.on("interactionCreate", async (interaction) => {
           });
 
           const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-          const labelName = typeLabels[permType] || permType;
+          const labelName = PERMISSION_TYPE_LABELS[permType] || permType;
           await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nUse /unban all to unban everyone in this server.`, ephemeral: true });
           return;
         }
@@ -11292,7 +11309,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const roleMentions = roles.length > 0 ? roles.map(id => `<@&${id}>`).join(", ") : "None (admins only)";
-        const labelName = typeLabels[permType] || permType;
+        const labelName = PERMISSION_TYPE_LABELS[permType] || permType;
         await interaction.reply({ content: `✅ **${labelName}** permissions updated!\nRoles: ${roleMentions}\n\nChange the command prefix with /prefix`, ephemeral: true });
       } else if (commandName === "close_all_tickets") {
         if (!await safeDeferReply(interaction)) return;
@@ -15166,6 +15183,7 @@ client.on("interactionCreate", async (interaction) => {
             const useAllGuilds = scope === "all";
             const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
             const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
+            const activityRoleMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityRoleIds);
 
             // Reuse the activity command logic
             const now = new Date();
@@ -15298,6 +15316,9 @@ client.on("interactionCreate", async (interaction) => {
                 if (!(memberId in combinedStats)) combinedStats[memberId] = 0;
               }
               filterCombinedActivityStatsToTrackedMembers(combinedStats, trackedActivityMemberIds);
+            }
+            if (activityRoleMemberIds) {
+              filterCombinedActivityStatsToTrackedMembers(combinedStats, activityRoleMemberIds);
             }
 
             const leaderboard = Object.entries(combinedStats)
