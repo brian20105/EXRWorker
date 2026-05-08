@@ -41,7 +41,7 @@ if (!process.env.DISCORD_BOT_TOKEN) {
 }
 
 const APPLICATION_ID = process.env.DISCORD_APPLICATION_ID;
-const PREFIX_COMMAND_ALLOWED_USER_ID = "948598563359817728";
+const PREFIX_COMMAND_ALLOWED_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const BOT_INSTANCE_LOCK_FILE = path.resolve(process.cwd(), ".discord-bot.lock");
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
@@ -172,7 +172,7 @@ function releaseBotInstanceLock(): void {
 }
 
 function canUsePrefixCommand(interaction: any): boolean {
-  if (interaction.user?.id === PREFIX_COMMAND_ALLOWED_USER_ID) return true;
+  if (interaction.user?.id && PREFIX_COMMAND_ALLOWED_USER_IDS.has(interaction.user.id)) return true;
 
   const username = (interaction.user?.username || "").toLowerCase();
   const globalName = (interaction.user?.globalName || "").toLowerCase();
@@ -2455,6 +2455,20 @@ function writePromotionDemotionSettingsToConfig(
 function getUnbanAllRoleIdsFromGuildConfig(config?: any): string[] {
   const root = parseJsonObject(config?.customCategoryPings);
   return normalizeStringArray(root?.__unbanAllRoleIds);
+}
+
+function getTicketOverrideRoleIdsFromGuildConfig(config?: any): string[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  return normalizeStringArray(root?.__ticketOverrideRoleIds);
+}
+
+function writeTicketOverridePermissionToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  roleIds: string[],
+): string {
+  const root = parseJsonObject(existingCustomCategoryPings);
+  root.__ticketOverrideRoleIds = roleIds;
+  return JSON.stringify(root);
 }
 
 type ActivityCheckGroup = "staff" | "administration" | "maximum_authority";
@@ -6655,6 +6669,30 @@ async function hasUnbanAllPermission(
       : (memberPermissions ?? BigInt(0));
     const ADMINISTRATOR = BigInt(1) << BigInt(3);
     return (permBits & ADMINISTRATOR) === ADMINISTRATOR;
+  }
+
+  if (!memberRoles) return false;
+  return allowedRoleIds.some(roleId => memberRoles.includes(roleId));
+}
+
+async function hasTicketOverridePermission(
+  memberRoles: string[] | undefined,
+  memberPermissions: bigint | string | undefined,
+  guildId: string
+): Promise<boolean> {
+  const config = await storage.getGuildConfig(guildId);
+  const allowedRoleIds = getTicketOverrideRoleIdsFromGuildConfig(config);
+
+  const permBits = typeof memberPermissions === 'string'
+    ? BigInt(memberPermissions)
+    : (memberPermissions ?? BigInt(0));
+  const ADMINISTRATOR = BigInt(1) << BigInt(3);
+  if ((permBits & ADMINISTRATOR) === ADMINISTRATOR) {
+    return true;
+  }
+
+  if (!allowedRoleIds || allowedRoleIds.length === 0) {
+    return false;
   }
 
   if (!memberRoles) return false;
@@ -13214,11 +13252,11 @@ client.on("interactionCreate", async (interaction) => {
               return;
             }
 
-            const member = interaction.member;
-            const hasAdminPermission = member && (member as any).permissions?.has && (member as any).permissions.has("Administrator");
+            const { memberRoles, memberPermissions } = getInteractionMemberContext(interaction);
+            const hasOverridePermission = await hasTicketOverridePermission(memberRoles, memberPermissions, interaction.guildId!);
             const isClaimedByUser = thread.claimedById === interaction.user.id;
-            if (!hasAdminPermission && !isClaimedByUser) {
-              await interaction.followUp({ content: "❌ Only the staff member who claimed this ticket (or an Administrator) can unclaim/override it.", flags: 64 });
+            if (!hasOverridePermission && !isClaimedByUser) {
+              await interaction.followUp({ content: "❌ Only the staff member who claimed this ticket (or a configured Override role) can unclaim/override it.", flags: 64 });
               return;
             }
 
@@ -23086,11 +23124,12 @@ client.on("messageCreate", async (message) => {
       return;
     }
 
-    const member = message.member;
-    const hasAdminPermission = member && member.permissions.has("Administrator");
+    const memberRoles = message.member?.roles?.cache?.map((r: any) => r.id) as string[] | undefined;
+    const memberPermissions = message.member?.permissions?.bitfield as bigint | string | undefined;
+    const hasOverridePermission = await hasTicketOverridePermission(memberRoles, memberPermissions, message.guild.id);
     const isClaimedByUser = thread.claimedById === message.author.id;
 
-    if (isOverrideCommand && !hasAdminPermission) {
+    if (isOverrideCommand && !hasOverridePermission) {
       await sendTicketCommandEmbed(message, "❌ You do not have permission to use this.", 0xed4245);
       return;
     }

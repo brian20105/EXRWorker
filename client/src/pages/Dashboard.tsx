@@ -254,9 +254,13 @@ interface DashboardQuickSettings {
 interface DashboardPermissionSettings {
   stickyCommandRoleIds: string[];
   roleRequestCommandRoleIds: string[];
+  ticketOverrideRoleIds: string[];
+  promotionDemotionRoleIds: string[];
+  unbanAllCommandRoleIds: string[];
   prefixBanRoleIds: string[];
   prefixMuteRoleIds: string[];
   prefixKickRoleIds: string[];
+  prefixPurgeRoleIds: string[];
   prefixModlogsRoleIds: string[];
   prefixReasonRoleIds: string[];
   prefixRetimeRoleIds: string[];
@@ -433,9 +437,13 @@ const GUILD_ROLE_CONFIG_KEYS: Array<keyof GuildConfig> = [
 const PERMISSION_ROLE_KEYS: Array<keyof DashboardPermissionSettings> = [
   "stickyCommandRoleIds",
   "roleRequestCommandRoleIds",
+  "ticketOverrideRoleIds",
+  "promotionDemotionRoleIds",
+  "unbanAllCommandRoleIds",
   "prefixBanRoleIds",
   "prefixMuteRoleIds",
   "prefixKickRoleIds",
+  "prefixPurgeRoleIds",
   "prefixModlogsRoleIds",
   "prefixReasonRoleIds",
   "prefixRetimeRoleIds",
@@ -866,9 +874,13 @@ export default function Dashboard() {
   const [permissionSettings, setPermissionSettings] = useState<DashboardPermissionSettings>({
     stickyCommandRoleIds: [],
     roleRequestCommandRoleIds: [],
+    ticketOverrideRoleIds: [],
+    promotionDemotionRoleIds: [],
+    unbanAllCommandRoleIds: [],
     prefixBanRoleIds: [],
     prefixMuteRoleIds: [],
     prefixKickRoleIds: [],
+    prefixPurgeRoleIds: [],
     prefixModlogsRoleIds: [],
     prefixReasonRoleIds: [],
     prefixRetimeRoleIds: [],
@@ -2546,9 +2558,13 @@ export default function Dashboard() {
     return {
       stickyCommandRoleIds: normalizeStringArray(parsed.__stickyRoleIds),
       roleRequestCommandRoleIds: normalizeStringArray(parsed.__roleRequestRoleIds),
+      ticketOverrideRoleIds: normalizeStringArray(parsed.__ticketOverrideRoleIds),
+      promotionDemotionRoleIds: normalizeStringArray(parsed.__promotionDemotionRoleIds),
+      unbanAllCommandRoleIds: normalizeStringArray(parsed.__unbanAllRoleIds),
       prefixBanRoleIds: normalizeStringArray(rolePermissions.ban),
       prefixMuteRoleIds: normalizeStringArray(rolePermissions.mute),
       prefixKickRoleIds: normalizeStringArray(rolePermissions.kick),
+      prefixPurgeRoleIds: normalizeStringArray(moderationSetup.purgeRoleIds),
       prefixModlogsRoleIds: normalizeStringArray(moderationSetup.modlogsRoleIds),
       prefixReasonRoleIds: normalizeStringArray(moderationSetup.reasonRoleIds),
       prefixRetimeRoleIds: normalizeStringArray(moderationSetup.retimeRoleIds),
@@ -3118,6 +3134,7 @@ export default function Dashboard() {
 
     categoryPingsObject.__moderationSetup = {
       ...currentModerationSetup,
+      purgeRoleIds: permissionSettings.prefixPurgeRoleIds,
       modlogsRoleIds: permissionSettings.prefixModlogsRoleIds,
       reasonRoleIds: permissionSettings.prefixReasonRoleIds,
       retimeRoleIds: permissionSettings.prefixRetimeRoleIds,
@@ -3130,6 +3147,9 @@ export default function Dashboard() {
     };
     categoryPingsObject.__stickyRoleIds = permissionSettings.stickyCommandRoleIds;
     categoryPingsObject.__roleRequestRoleIds = permissionSettings.roleRequestCommandRoleIds;
+    categoryPingsObject.__ticketOverrideRoleIds = permissionSettings.ticketOverrideRoleIds;
+    categoryPingsObject.__promotionDemotionRoleIds = permissionSettings.promotionDemotionRoleIds;
+    categoryPingsObject.__unbanAllRoleIds = permissionSettings.unbanAllCommandRoleIds;
     categoryPingsObject.__welcomeSetup = {
       ...(categoryPingsObject.__welcomeSetup && typeof categoryPingsObject.__welcomeSetup === "object" && !Array.isArray(categoryPingsObject.__welcomeSetup)
         ? categoryPingsObject.__welcomeSetup
@@ -4601,9 +4621,13 @@ export default function Dashboard() {
       {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "module-role-command-role")}
       {renderPermissionRoleSection("Sticky Command Roles", "stickyCommandRoleIds", "module-sticky-command-role")}
       {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "module-role-request-command-role")}
+      {renderPermissionRoleSection("Ticket Override Roles", "ticketOverrideRoleIds", "module-ticket-override-role")}
+      {renderPermissionRoleSection("Promotion/Demotion Approval Roles", "promotionDemotionRoleIds", "module-promotion-demotion-role")}
+      {renderPermissionRoleSection("Unban All Command Roles", "unbanAllCommandRoleIds", "module-unban-all-role")}
       {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "module-prefix-ban-role")}
       {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "module-prefix-mute-role")}
       {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "module-prefix-kick-role")}
+      {renderPermissionRoleSection("Prefix Purge Roles", "prefixPurgeRoleIds", "module-prefix-purge-role")}
       {renderPermissionRoleSection("Prefix Modlogs/Clean Roles", "prefixModlogsRoleIds", "module-prefix-modlogs-role")}
       {renderPermissionRoleSection("Prefix Reason Roles", "prefixReasonRoleIds", "module-prefix-reason-role")}
       {renderPermissionRoleSection("Prefix Retime Roles", "prefixRetimeRoleIds", "module-prefix-retime-role")}
@@ -6205,6 +6229,9 @@ export default function Dashboard() {
                   {renderRoleSection("Role Command Roles", "roleCommandRoleIds", "perm-tab-role-command-role")}
                   {renderPermissionRoleSection("Sticky Command Roles", "stickyCommandRoleIds", "perm-tab-sticky-command-role")}
                   {renderPermissionRoleSection("Role Request Command Roles", "roleRequestCommandRoleIds", "perm-tab-role-request-command-role")}
+                  {renderPermissionRoleSection("Ticket Override Roles", "ticketOverrideRoleIds", "perm-tab-ticket-override-role")}
+                  {renderPermissionRoleSection("Promotion/Demotion Approval Roles", "promotionDemotionRoleIds", "perm-tab-promotion-demotion-role")}
+                  {renderPermissionRoleSection("Unban All Command Roles", "unbanAllCommandRoleIds", "perm-tab-unban-all-role")}
                 </CardContent>
               </Card>
               <Card className="border-border/80 bg-card/90">
@@ -6216,6 +6243,7 @@ export default function Dashboard() {
                   {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "perm-tab-prefix-ban-role")}
                   {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "perm-tab-prefix-mute-role")}
                   {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "perm-tab-prefix-kick-role")}
+                  {renderPermissionRoleSection("Prefix Purge Roles", "prefixPurgeRoleIds", "perm-tab-prefix-purge-role")}
                   {renderPermissionRoleSection("Prefix Modlogs/Clean Roles", "prefixModlogsRoleIds", "perm-tab-prefix-modlogs-role")}
                   {renderPermissionRoleSection("Prefix Reason Roles", "prefixReasonRoleIds", "perm-tab-prefix-reason-role")}
                   {renderPermissionRoleSection("Prefix Retime Roles", "prefixRetimeRoleIds", "perm-tab-prefix-retime-role")}
