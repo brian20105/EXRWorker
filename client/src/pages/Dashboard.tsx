@@ -279,6 +279,8 @@ interface DashboardPermissionSettings {
   promotionDemotionRoleIds: string[];
   unbanAllCommandRoleIds: string[];
   prefixBanRoleIds: string[];
+  prefixFullbanRoleIds: string[];
+  prefixFakebanRoleIds: string[];
   prefixMuteRoleIds: string[];
   prefixKickRoleIds: string[];
   prefixPurgeRoleIds: string[];
@@ -462,6 +464,8 @@ const PERMISSION_ROLE_KEYS: Array<keyof DashboardPermissionSettings> = [
   "promotionDemotionRoleIds",
   "unbanAllCommandRoleIds",
   "prefixBanRoleIds",
+  "prefixFullbanRoleIds",
+  "prefixFakebanRoleIds",
   "prefixMuteRoleIds",
   "prefixKickRoleIds",
   "prefixPurgeRoleIds",
@@ -907,6 +911,8 @@ export default function Dashboard() {
     promotionDemotionRoleIds: [],
     unbanAllCommandRoleIds: [],
     prefixBanRoleIds: [],
+    prefixFullbanRoleIds: [],
+    prefixFakebanRoleIds: [],
     prefixMuteRoleIds: [],
     prefixKickRoleIds: [],
     prefixPurgeRoleIds: [],
@@ -2613,6 +2619,12 @@ export default function Dashboard() {
       promotionDemotionRoleIds: normalizeStringArray(parsed.__promotionDemotionRoleIds),
       unbanAllCommandRoleIds: normalizeStringArray(parsed.__unbanAllRoleIds),
       prefixBanRoleIds: normalizeStringArray(rolePermissions.ban),
+      prefixFullbanRoleIds: normalizeStringArray(rolePermissions.fullban).length > 0
+        ? normalizeStringArray(rolePermissions.fullban)
+        : normalizeStringArray(rolePermissions.ban),
+      prefixFakebanRoleIds: normalizeStringArray(rolePermissions.fakeban).length > 0
+        ? normalizeStringArray(rolePermissions.fakeban)
+        : normalizeStringArray(rolePermissions.ban),
       prefixMuteRoleIds: normalizeStringArray(rolePermissions.mute),
       prefixKickRoleIds: normalizeStringArray(rolePermissions.kick),
       prefixPurgeRoleIds: normalizeStringArray(moderationSetup.purgeRoleIds),
@@ -3192,6 +3204,8 @@ export default function Dashboard() {
       rolePermissions: {
         ...currentRolePermissions,
         ban: permissionSettings.prefixBanRoleIds,
+        fullban: permissionSettings.prefixFullbanRoleIds,
+        fakeban: permissionSettings.prefixFakebanRoleIds,
         mute: permissionSettings.prefixMuteRoleIds,
         kick: permissionSettings.prefixKickRoleIds,
       },
@@ -3329,7 +3343,14 @@ export default function Dashboard() {
         return dedupe(config.allowedRoleIds || []);
       case "moderation":
       case "ban-requests":
-        return dedupe([...(config.modRoleIds || []), ...permissionSettings.prefixBanRoleIds, ...permissionSettings.prefixMuteRoleIds, ...permissionSettings.prefixKickRoleIds]);
+        return dedupe([
+          ...(config.modRoleIds || []),
+          ...permissionSettings.prefixBanRoleIds,
+          ...permissionSettings.prefixFullbanRoleIds,
+          ...permissionSettings.prefixFakebanRoleIds,
+          ...permissionSettings.prefixMuteRoleIds,
+          ...permissionSettings.prefixKickRoleIds,
+        ]);
       case "role-requests":
         return dedupe([...(config.roleCommandRoleIds || []), ...permissionSettings.roleRequestCommandRoleIds]);
       case "activity":
@@ -3898,7 +3919,9 @@ export default function Dashboard() {
               </div>
               <div className="space-y-5">
                 {renderRoleSection("Ban/Unban + Kick Approval Roles", "modRoleIds", "module-settings-moderation-role")}
-                {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "module-settings-prefix-ban-role")}
+                {renderPermissionRoleSection("Prefix Ban Roles", "prefixBanRoleIds", "module-settings-prefix-ban-role")}
+                {renderPermissionRoleSection("Prefix Fullban Roles", "prefixFullbanRoleIds", "module-settings-prefix-fullban-role")}
+                {renderPermissionRoleSection("Prefix Fakeban Roles", "prefixFakebanRoleIds", "module-settings-prefix-fakeban-role")}
                 {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "module-settings-prefix-mute-role")}
                 {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "module-settings-prefix-kick-role")}
                 {renderPermissionRoleSection("Prefix Modlogs/Clean Roles", "prefixModlogsRoleIds", "module-settings-prefix-modlogs-role")}
@@ -4675,7 +4698,9 @@ export default function Dashboard() {
       {renderPermissionRoleSection("Ticket Override Roles", "ticketOverrideRoleIds", "module-ticket-override-role")}
       {renderPermissionRoleSection("Promotion/Demotion Approval Roles", "promotionDemotionRoleIds", "module-promotion-demotion-role")}
       {renderPermissionRoleSection("Unban All Command Roles", "unbanAllCommandRoleIds", "module-unban-all-role")}
-      {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "module-prefix-ban-role")}
+      {renderPermissionRoleSection("Prefix Ban Roles", "prefixBanRoleIds", "module-prefix-ban-role")}
+      {renderPermissionRoleSection("Prefix Fullban Roles", "prefixFullbanRoleIds", "module-prefix-fullban-role")}
+      {renderPermissionRoleSection("Prefix Fakeban Roles", "prefixFakebanRoleIds", "module-prefix-fakeban-role")}
       {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "module-prefix-mute-role")}
       {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "module-prefix-kick-role")}
       {renderPermissionRoleSection("Prefix Purge Roles", "prefixPurgeRoleIds", "module-prefix-purge-role")}
@@ -6291,7 +6316,9 @@ export default function Dashboard() {
                   <CardDescription>Roles that can use prefix-based moderation commands (ban, mute, kick, etc.).</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-5">
-                  {renderPermissionRoleSection("Prefix Ban/Fullban/Fakeban Roles", "prefixBanRoleIds", "perm-tab-prefix-ban-role")}
+                  {renderPermissionRoleSection("Prefix Ban Roles", "prefixBanRoleIds", "perm-tab-prefix-ban-role")}
+                  {renderPermissionRoleSection("Prefix Fullban Roles", "prefixFullbanRoleIds", "perm-tab-prefix-fullban-role")}
+                  {renderPermissionRoleSection("Prefix Fakeban Roles", "prefixFakebanRoleIds", "perm-tab-prefix-fakeban-role")}
                   {renderPermissionRoleSection("Prefix Mute Roles", "prefixMuteRoleIds", "perm-tab-prefix-mute-role")}
                   {renderPermissionRoleSection("Prefix Kick Roles", "prefixKickRoleIds", "perm-tab-prefix-kick-role")}
                   {renderPermissionRoleSection("Prefix Purge Roles", "prefixPurgeRoleIds", "perm-tab-prefix-purge-role")}

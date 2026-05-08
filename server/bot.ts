@@ -1964,6 +1964,7 @@ async function resolveModerationTargetFromArgs(
 }
 
 type PrefixModerationAction = "ban" | "mute" | "kick";
+type PrefixPermissionAction = PrefixModerationAction | "fullban" | "fakeban";
 
 interface ModerationSetupConfig {
   enabledActions: PrefixModerationAction[];
@@ -1974,7 +1975,7 @@ interface ModerationSetupConfig {
   reasonRoleIds: string[];
   retimeRoleIds: string[];
   banDmMessage: string;
-  rolePermissions: Record<PrefixModerationAction, string[]>;
+  rolePermissions: Record<PrefixPermissionAction, string[]>;
   actionEmojis: Record<PrefixModerationAction, string>;
   statusEmojis: {
     success: string;
@@ -1994,6 +1995,8 @@ const DEFAULT_MOD_SETUP: ModerationSetupConfig = {
   banDmMessage: "You have been banned from this server.",
   rolePermissions: {
     ban: [],
+    fullban: [],
+    fakeban: [],
     mute: [],
     kick: [],
   },
@@ -2201,6 +2204,12 @@ function getModerationSetupFromConfig(config?: any): ModerationSetupConfig {
     banDmMessage: typeof raw?.banDmMessage === "string" && raw.banDmMessage.trim().length > 0 ? raw.banDmMessage.trim() : DEFAULT_MOD_SETUP.banDmMessage,
     rolePermissions: {
       ban: normalizeStringArray(raw?.rolePermissions?.ban),
+      fullban: normalizeStringArray(raw?.rolePermissions?.fullban).length > 0
+        ? normalizeStringArray(raw?.rolePermissions?.fullban)
+        : normalizeStringArray(raw?.rolePermissions?.ban),
+      fakeban: normalizeStringArray(raw?.rolePermissions?.fakeban).length > 0
+        ? normalizeStringArray(raw?.rolePermissions?.fakeban)
+        : normalizeStringArray(raw?.rolePermissions?.ban),
       mute: normalizeStringArray(raw?.rolePermissions?.mute),
       kick: normalizeStringArray(raw?.rolePermissions?.kick),
     },
@@ -8489,6 +8498,8 @@ client.on("interactionCreate", async (interaction) => {
           mutedRoleId: mutedRole?.id || currentSetup.mutedRoleId,
           rolePermissions: {
             ban: currentSetup.rolePermissions.ban,
+            fullban: currentSetup.rolePermissions.fullban,
+            fakeban: currentSetup.rolePermissions.fakeban,
             mute: currentSetup.rolePermissions.mute,
             kick: currentSetup.rolePermissions.kick,
           },
@@ -11152,10 +11163,26 @@ client.on("interactionCreate", async (interaction) => {
         if (permType === "prefix_ban" || permType === "prefix_fullban" || permType === "prefix_fakeban" || permType === "prefix_mute" || permType === "prefix_kick" || permType === "prefix_purge" || permType === "prefix_modlogs" || permType === "prefix_reason" || permType === "prefix_retime" || permType === "prefix_clean") {
           const config = await storage.getGuildConfig(interaction.guildId!);
           const currentSetup = getModerationSetupFromConfig(config);
-          const action = permType === "prefix_ban" || permType === "prefix_fullban" || permType === "prefix_fakeban"
+          const action = permType === "prefix_ban"
+            ? "ban" as PrefixModerationAction
+            : permType === "prefix_fullban"
+            ? "ban" as PrefixModerationAction
+            : permType === "prefix_fakeban"
             ? "ban" as PrefixModerationAction
             : permType === "prefix_mute" || permType === "prefix_kick"
             ? permType.replace("prefix_", "") as PrefixModerationAction
+            : null;
+
+          const permissionAction = permType === "prefix_ban"
+            ? "ban" as PrefixPermissionAction
+            : permType === "prefix_fullban"
+            ? "fullban" as PrefixPermissionAction
+            : permType === "prefix_fakeban"
+            ? "fakeban" as PrefixPermissionAction
+            : permType === "prefix_mute"
+            ? "mute" as PrefixPermissionAction
+            : permType === "prefix_kick"
+            ? "kick" as PrefixPermissionAction
             : null;
 
           const updatedSetup: ModerationSetupConfig = {
@@ -11169,7 +11196,7 @@ client.on("interactionCreate", async (interaction) => {
             retimeRoleIds: permType === "prefix_retime" ? roles : currentSetup.retimeRoleIds,
             rolePermissions: {
               ...currentSetup.rolePermissions,
-              ...(action ? { [action]: roles } : {}),
+              ...(permissionAction ? { [permissionAction]: roles } : {}),
             },
           };
 
@@ -21934,7 +21961,17 @@ client.on("messageCreate", async (message) => {
     const isBanLikeCommand = command === "ban" || isFullBanCommand || isFakeBanCommand;
 
     if (isBanLikeCommand || command === "unban" || command === "mute" || command === "unmute" || command === "kick") {
-      const configAction = command === "unban" || isBanLikeCommand ? "ban" : command === "unmute" ? "mute" : command as PrefixModerationAction;
+      const configAction: PrefixPermissionAction = command === "unban"
+        ? "ban"
+        : isFakeBanCommand
+        ? "fakeban"
+        : isFullBanCommand
+        ? "fullban"
+        : command === "ban"
+        ? "ban"
+        : command === "unmute"
+        ? "mute"
+        : command as PrefixPermissionAction;
 
       const successEmoji = modSetup.statusEmojis.success;
       const errorEmoji = modSetup.statusEmojis.error;
