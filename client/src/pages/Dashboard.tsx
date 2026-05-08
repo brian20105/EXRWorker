@@ -7083,48 +7083,50 @@ export default function Dashboard() {
                     ) : miscBlacklistedUsers.length === 0 ? (
                       <p className="text-sm text-muted-foreground">No users are currently on the instant re-ban blacklist.</p>
                     ) : (
-                      <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
-                        {miscBlacklistedUsers.map((entry) => (
-                          <div key={`misc-blacklist-${entry.userId}`} className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
-                            <div className="flex min-w-0 flex-1 items-start gap-3">
-                              {entry.avatarUrl ? (
-                                <img src={entry.avatarUrl} alt={entry.username} className="h-9 w-9 rounded-full object-cover" />
-                              ) : (
-                                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
-                                  {entry.username.slice(0, 2).toUpperCase()}
-                                </div>
-                              )}
-                              <div className="min-w-0 flex-1 text-sm">
-                                <p className="truncate font-medium">{entry.username}</p>
-                                <p className="text-[11px] text-muted-foreground">User ID: {entry.userId}</p>
-                                <p className="mt-1 text-xs text-muted-foreground">
-                                  <span className="font-medium text-foreground">Blacklisted by:</span>{" "}
-                                  {entry.blacklistedByUsername || entry.blacklistedById || "Unknown user"}
-                                  {entry.blacklistedById ? ` (${entry.blacklistedById})` : ""}
-                                </p>
-                                {entry.createdAt && (
-                                  <p className="text-xs text-muted-foreground">
-                                    <span className="font-medium text-foreground">Added:</span>{" "}
-                                    {new Date(entry.createdAt).toLocaleString()}
-                                  </p>
+                      <div className="overflow-hidden rounded-md border border-border/60 bg-muted/10">
+                        <div className="max-h-[420px] space-y-2 overflow-y-auto p-2 pr-1">
+                          {miscBlacklistedUsers.map((entry) => (
+                            <div key={`misc-blacklist-${entry.userId}`} className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                              <div className="flex min-w-0 flex-1 items-start gap-3">
+                                {entry.avatarUrl ? (
+                                  <img src={entry.avatarUrl} alt={entry.username} className="h-9 w-9 rounded-full object-cover" />
+                                ) : (
+                                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                                    {entry.username.slice(0, 2).toUpperCase()}
+                                  </div>
                                 )}
-                                <p className="mt-1 text-xs text-muted-foreground">
-                                  <span className="font-medium text-foreground">Reason:</span>{" "}
-                                  {entry.reason || "No reason provided."}
-                                </p>
+                                <div className="min-w-0 flex-1 text-sm">
+                                  <p className="truncate font-medium">{entry.username}</p>
+                                  <p className="text-[11px] text-muted-foreground">User ID: {entry.userId}</p>
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    <span className="font-medium text-foreground">Blacklisted by:</span>{" "}
+                                    {entry.blacklistedByUsername || entry.blacklistedById || "Unknown user"}
+                                    {entry.blacklistedById ? ` (${entry.blacklistedById})` : ""}
+                                  </p>
+                                  {entry.createdAt && (
+                                    <p className="text-xs text-muted-foreground">
+                                      <span className="font-medium text-foreground">Added:</span>{" "}
+                                      {new Date(entry.createdAt).toLocaleString()}
+                                    </p>
+                                  )}
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    <span className="font-medium text-foreground">Reason:</span>{" "}
+                                    {entry.reason || "No reason provided."}
+                                  </p>
+                                </div>
                               </div>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                className="shrink-0"
+                                disabled={!viewerHasBlacklistAccess || unblacklistingMiscUserId === entry.userId}
+                                onClick={() => unblacklistMiscUser(entry.userId, entry.username)}
+                              >
+                                {unblacklistingMiscUserId === entry.userId ? "Removing…" : "Remove"}
+                              </Button>
                             </div>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              className="shrink-0"
-                              disabled={!viewerHasBlacklistAccess || unblacklistingMiscUserId === entry.userId}
-                              onClick={() => unblacklistMiscUser(entry.userId, entry.username)}
-                            >
-                              {unblacklistingMiscUserId === entry.userId ? "Removing…" : "Remove"}
-                            </Button>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
                     )}
                   </CardContent>
