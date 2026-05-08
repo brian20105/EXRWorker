@@ -232,6 +232,27 @@ interface ModmailThread {
   } | null;
 }
 
+interface ModmailLogEvent {
+  id: string;
+  ticketId: string;
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+  category: "modmail" | "appeal" | string;
+  type: "created" | "closed";
+  status: "open" | "closed";
+  timestamp: string;
+  closeReason: string | null;
+}
+
+interface ModmailLogSummary {
+  totalTickets: number;
+  openTickets: number;
+  closedTickets: number;
+  createdEvents: number;
+  closedEvents: number;
+}
+
 type FeaturePostChannelKey = "modmail" | "appeals" | "staff-intro" | "inactivity" | "payouts" | "reaction-roles";
 type DashboardFeaturePostChannels = Partial<Record<FeaturePostChannelKey, string>>;
 
@@ -835,6 +856,14 @@ export default function Dashboard() {
   const [snippetContentInput, setSnippetContentInput] = useState("");
   const [snippetEditingAlias, setSnippetEditingAlias] = useState<string | null>(null);
   const [modmailThreads, setModmailThreads] = useState<ModmailThread[]>([]);
+  const [modmailEvents, setModmailEvents] = useState<ModmailLogEvent[]>([]);
+  const [modmailSummary, setModmailSummary] = useState<ModmailLogSummary>({
+    totalTickets: 0,
+    openTickets: 0,
+    closedTickets: 0,
+    createdEvents: 0,
+    closedEvents: 0,
+  });
   const [modmailLoading, setModmailLoading] = useState(false);
   const [modmailSelectedThreadId, setModmailSelectedThreadId] = useState<string | null>(null);
   const [modmailStatusFilter, setModmailStatusFilter] = useState<"all" | "open" | "closed">("all");
@@ -1771,9 +1800,23 @@ export default function Dashboard() {
         .slice()
         .sort((a: ModmailThread, b: ModmailThread) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
+      const events = (Array.isArray(data?.events) ? data.events : [])
+        .slice()
+        .sort((a: ModmailLogEvent, b: ModmailLogEvent) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      const summary: ModmailLogSummary = {
+        totalTickets: Number(data?.summary?.totalTickets ?? threads.length) || 0,
+        openTickets: Number(data?.summary?.openTickets ?? threads.filter((thread: ModmailThread) => String(thread.status || "open").toLowerCase() !== "closed").length) || 0,
+        closedTickets: Number(data?.summary?.closedTickets ?? threads.filter((thread: ModmailThread) => String(thread.status || "open").toLowerCase() === "closed").length) || 0,
+        createdEvents: Number(data?.summary?.createdEvents ?? events.filter((event: ModmailLogEvent) => event.type === "created").length) || 0,
+        closedEvents: Number(data?.summary?.closedEvents ?? events.filter((event: ModmailLogEvent) => event.type === "closed").length) || 0,
+      };
+
       setModmailThreads(threads);
+      setModmailEvents(events);
+      setModmailSummary(summary);
       setModmailSelectedThreadId((previous) => (
-        previous && threads.some((thread) => thread.id === previous)
+        previous && threads.some((thread: ModmailThread) => thread.id === previous)
           ? previous
           : null
       ));
@@ -1782,6 +1825,14 @@ export default function Dashboard() {
         toast({ title: "Error", description: e.message || "Failed to load modmail logs.", variant: "destructive" });
       }
       setModmailThreads([]);
+      setModmailEvents([]);
+      setModmailSummary({
+        totalTickets: 0,
+        openTickets: 0,
+        closedTickets: 0,
+        createdEvents: 0,
+        closedEvents: 0,
+      });
       setModmailSelectedThreadId(null);
     }
     if (!options?.silent) {
@@ -6495,7 +6546,7 @@ export default function Dashboard() {
             <TabsContent value="modmail" className="mt-0 space-y-4">
               <div>
                 <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Modmail & Appeal Logs</h3>
-                <p className="mt-1 text-sm text-muted-foreground">Tracks all open and closed modmails and appeals in real time, includes historical tickets ever made with the bot, and lets you view transcripts for specific tickets.</p>
+                <p className="mt-1 text-sm text-muted-foreground">Tracks ticket events from the server for both modmail and appeals, including exactly when tickets are created and closed.</p>
               </div>
 
               <Card className="border-border/80 bg-card/90">
@@ -6543,9 +6594,9 @@ export default function Dashboard() {
                     </div>
 
                     <div>
-                      <Label className="text-xs">Search Messages</Label>
+                      <Label className="text-xs">Search Events</Label>
                       <Input
-                        placeholder="Search transcripts"
+                        placeholder="Search by user, ID, or close reason"
                         value={modmailSearchQuery}
                         onChange={(e) => setModmailSearchQuery(e.target.value.toLowerCase())}
                         className="mt-1 h-9"
@@ -6576,203 +6627,128 @@ export default function Dashboard() {
                 </CardContent>
               </Card>
 
-              <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]">
-                <Card className="border-border/80 bg-card/90 lg:max-h-[600px] lg:overflow-y-auto">
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <Card className="border-border/80 bg-card/90">
                   <CardHeader>
-                    <CardTitle className="text-sm">Tickets ({modmailThreads.length})</CardTitle>
+                    <CardTitle className="text-sm">Total Tickets</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {modmailLoading ? (
-                      <div className="flex justify-center py-4">
-                        <div className="text-sm text-muted-foreground">Loading...</div>
-                      </div>
-                    ) : modmailThreads.length === 0 ? (
-                      <div className="text-sm text-muted-foreground">No modmail or appeal tickets found</div>
-                    ) : (
-                      <div className="space-y-2">
-                        {modmailThreads.map((thread) => (
-                          <button
-                            key={thread.id}
-                            onClick={() => setModmailSelectedThreadId(thread.id)}
-                            className={`w-full rounded-lg border p-3 text-left transition-all ${
-                              modmailSelectedThreadId === thread.id
-                                ? "border-primary/50 bg-primary/10"
-                                : "border-border/50 hover:border-border/80 hover:bg-secondary/50"
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <img
-                                src={thread.avatarUrl || "https://via.placeholder.com/32"}
-                                alt={thread.username}
-                                className="h-8 w-8 rounded-full"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-xs font-medium">{thread.username}</p>
-                                <p className="truncate text-xs text-muted-foreground">
-                                  {thread.messageCount} message{thread.messageCount !== 1 ? "s" : ""}
-                                </p>
-                              </div>
-                            </div>
-                            <div className="mt-2 flex items-center justify-between gap-2">
-                              <Badge
-                                variant="outline"
-                                className={`text-xs ${
-                                  thread.status === "open"
-                                    ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
-                                    : "border-gray-500/30 bg-gray-500/10 text-gray-600 dark:text-gray-400"
-                                }`}
-                              >
-                                {thread.status}
-                              </Badge>
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(thread.createdAt).toLocaleDateString()}
-                              </span>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    <p className="text-2xl font-semibold">{modmailSummary.totalTickets}</p>
                   </CardContent>
                 </Card>
 
-                {modmailSelectedThreadId && modmailThreads.find((t) => t.id === modmailSelectedThreadId) ? (
-                  (() => {
-                    const selectedThread = modmailThreads.find((t) => t.id === modmailSelectedThreadId)!;
-                    const filteredMessages = modmailSearchQuery
-                      ? selectedThread.messages.filter((msg) =>
-                          msg.content.toLowerCase().includes(modmailSearchQuery)
-                        )
-                      : selectedThread.messages;
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader>
+                    <CardTitle className="text-sm">Open Tickets</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-semibold text-green-600 dark:text-green-400">{modmailSummary.openTickets}</p>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader>
+                    <CardTitle className="text-sm">Closed Tickets</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-semibold text-slate-600 dark:text-slate-300">{modmailSummary.closedTickets}</p>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader>
+                    <CardTitle className="text-sm">Created Events</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-semibold text-blue-600 dark:text-blue-400">{modmailSummary.createdEvents}</p>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-border/80 bg-card/90">
+                  <CardHeader>
+                    <CardTitle className="text-sm">Closed Events</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-2xl font-semibold text-amber-600 dark:text-amber-400">{modmailSummary.closedEvents}</p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Card className="border-border/80 bg-card/90">
+                <CardHeader>
+                  <CardTitle className="text-base">Event Timeline</CardTitle>
+                  <CardDescription>
+                    Every ticket creation and closure event from modmail and appeals.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {(() => {
+                    const filteredEvents = modmailEvents.filter((event) => {
+                      if (!modmailSearchQuery) return true;
+                      const query = modmailSearchQuery.trim().toLowerCase();
+                      if (!query) return true;
+                      return [
+                        event.username,
+                        event.userId,
+                        event.ticketId,
+                        event.closeReason || "",
+                        event.category,
+                        event.type,
+                      ].some((value) => String(value || "").toLowerCase().includes(query));
+                    });
+
+                    if (modmailLoading) {
+                      return (
+                        <div className="py-10 text-center text-sm text-muted-foreground">Loading event timeline...</div>
+                      );
+                    }
+
+                    if (filteredEvents.length === 0) {
+                      return (
+                        <div className="py-10 text-center text-sm text-muted-foreground">
+                          {modmailSearchQuery ? "No matching events found" : "No modmail or appeal events found"}
+                        </div>
+                      );
+                    }
 
                     return (
-                      <Card className="border-border/80 bg-card/90">
-                        <CardHeader>
-                          <div className="flex items-center justify-between gap-4">
-                            <div>
-                              <CardTitle className="text-base">{selectedThread.username}'s Conversation</CardTitle>
-                              <CardDescription className="mt-1">
-                                {selectedThread.messageCount} total messages
-                                {selectedThread.claimedByUsername && ` • Claimed by ${selectedThread.claimedByUsername}`}
-                              </CardDescription>
-                            </div>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                const transcript = selectedThread.messages
-                                  .map((msg) =>
-                                    `[${new Date(msg.createdAt).toLocaleString()}] ${msg.isStaff ? "[STAFF]" : "[USER]"} ${msg.content}`
-                                  )
-                                  .join("\n\n");
-                                const element = document.createElement("a");
-                                element.setAttribute(
-                                  "href",
-                                  `data:text/plain;charset=utf-8,${encodeURIComponent(transcript)}`
-                                );
-                                element.setAttribute("download", `modmail-${selectedThread.id}.txt`);
-                                element.style.display = "none";
-                                document.body.appendChild(element);
-                                element.click();
-                                document.body.removeChild(element);
-                                toast({ title: "Downloaded", description: "Transcript downloaded successfully." });
-                              }}
-                            >
-                              Download Transcript
-                            </Button>
-                          </div>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-4">
-                            <div className="rounded-lg border border-border/50 bg-secondary/30 p-3">
-                              <div className="grid gap-2 text-sm">
-                                <div>
-                                  <span className="text-muted-foreground">Status:</span>{" "}
-                                  <Badge
-                                    variant="outline"
-                                    className={`ml-2 text-xs ${
-                                      selectedThread.status === "open"
-                                        ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
-                                        : "border-gray-500/30 bg-gray-500/10 text-gray-600 dark:text-gray-400"
-                                    }`}
-                                  >
-                                    {selectedThread.status}
-                                  </Badge>
-                                </div>
-                                <div>
-                                  <span className="text-muted-foreground">Category:</span>{" "}
-                                  <span className="ml-2 font-medium">{selectedThread.category}</span>
-                                </div>
-                                <div>
-                                  <span className="text-muted-foreground">Created:</span>{" "}
-                                  <span className="ml-2 text-xs">{new Date(selectedThread.createdAt).toLocaleString()}</span>
-                                </div>
-                                {selectedThread.closedAt && (
-                                  <div>
-                                    <span className="text-muted-foreground">Closed:</span>{" "}
-                                    <span className="ml-2 text-xs">{new Date(selectedThread.closedAt).toLocaleString()}</span>
-                                  </div>
-                                )}
-                                {selectedThread.closeReason && (
-                                  <div>
-                                    <span className="text-muted-foreground">Close Reason:</span>{" "}
-                                    <span className="ml-2 text-xs">{selectedThread.closeReason}</span>
-                                  </div>
-                                )}
-                              </div>
+                      <div className="max-h-[560px] space-y-2 overflow-y-auto pr-1">
+                        {filteredEvents.map((event) => (
+                          <div key={event.id} className="rounded-lg border border-border/60 bg-secondary/20 p-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge
+                                variant="outline"
+                                className={event.type === "created"
+                                  ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
+                                  : "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400"}
+                              >
+                                {event.type === "created" ? "Created" : "Closed"}
+                              </Badge>
+                              <Badge variant="secondary" className="text-xs uppercase">{event.category}</Badge>
+                              <span className="text-xs text-muted-foreground">Ticket {event.ticketId}</span>
                             </div>
 
-                            <div className="max-h-[400px] space-y-3 overflow-y-auto rounded-lg border border-border/50 bg-secondary/10 p-4">
-                              {filteredMessages.length === 0 ? (
-                                <div className="flex justify-center py-8">
-                                  <p className="text-sm text-muted-foreground">
-                                    {modmailSearchQuery ? "No matching messages" : "No messages"}
-                                  </p>
-                                </div>
-                              ) : (
-                                filteredMessages.map((msg) => (
-                                  <div
-                                    key={msg.id}
-                                    className={`rounded-lg p-3 ${
-                                      msg.isStaff
-                                        ? "border-l-2 border-blue-500 bg-blue-500/5"
-                                        : "border-l-2 border-green-500 bg-green-500/5"
-                                    }`}
-                                  >
-                                    <div className="flex items-center justify-between gap-2">
-                                      <div className="flex items-center gap-2">
-                                        <Badge
-                                          variant="outline"
-                                          className={`text-xs ${
-                                            msg.isStaff
-                                              ? "border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400"
-                                              : "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
-                                          }`}
-                                        >
-                                          {msg.isStaff ? "STAFF" : "USER"}
-                                        </Badge>
-                                      </div>
-                                      <span className="text-xs text-muted-foreground">
-                                        {new Date(msg.createdAt).toLocaleString()}
-                                      </span>
-                                    </div>
-                                    <p className="mt-2 break-words text-sm">{msg.content}</p>
-                                  </div>
-                                ))
-                              )}
+                            <div className="mt-2 flex items-center gap-2">
+                              <img
+                                src={event.avatarUrl || "https://via.placeholder.com/24"}
+                                alt={event.username}
+                                className="h-6 w-6 rounded-full"
+                              />
+                              <p className="text-sm font-medium">{event.username}</p>
+                              <span className="text-xs text-muted-foreground">({event.userId})</span>
+                            </div>
+
+                            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                              <span>{new Date(event.timestamp).toLocaleString()}</span>
+                              {event.closeReason && <span>Reason: {event.closeReason}</span>}
                             </div>
                           </div>
-                        </CardContent>
-                      </Card>
+                        ))}
+                      </div>
                     );
-                  })()
-                ) : (
-                  <Card className="border-border/80 bg-card/90">
-                    <CardContent className="flex items-center justify-center py-16">
-                      <p className="text-muted-foreground">Select a thread to view conversation</p>
-                    </CardContent>
-                  </Card>
-                )}
-              </div>
+                  })()}
+                </CardContent>
+              </Card>
             </TabsContent>
 
             <TabsContent value="miscellaneous" className="mt-0 space-y-4">

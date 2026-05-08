@@ -3248,7 +3248,7 @@ export async function registerRoutes(
 
             const parentId = String(channel?.parent_id || "");
             const channelName = String(channel?.name || "").toLowerCase();
-            const inferredCategory = parentId === appealCategoryId || channelName.startsWith("appeal-") ? "appeal" : "modmail";
+            const inferredCategory: "modmail" | "appeal" = parentId === appealCategoryId || channelName.startsWith("appeal-") ? "appeal" : "modmail";
             const userIdMatch = String(channel?.topic || "").match(/\b\d{17,20}\b/);
             const inferredUserId = userIdMatch ? userIdMatch[0] : null;
             const creatorInfo = await resolveDiscordUserSummary(inferredUserId, guildId);
@@ -3412,7 +3412,71 @@ export async function registerRoutes(
         return bTime - aTime;
       });
 
-      res.json({ threads: sorted });
+      const parseEventDate = (value: unknown): Date | null => {
+        if (!value) return null;
+        const parsed = new Date(value as any);
+        return Number.isFinite(parsed.getTime()) ? parsed : null;
+      };
+
+      const events = sorted
+        .flatMap((thread) => {
+          const createdEvent = {
+            id: `${String(thread.id || "unknown")}:created`,
+            ticketId: String(thread.id || "unknown"),
+            userId: String(thread.userId || ""),
+            username: String(thread.username || "Unknown"),
+            avatarUrl: thread.avatarUrl || null,
+            category: String(thread.category || "modmail").toLowerCase(),
+            type: "created" as const,
+            status: "open" as const,
+            timestamp: String(thread.createdAt || new Date().toISOString()),
+            closeReason: null as string | null,
+          };
+
+          const closedEvent = thread.closedAt
+            ? {
+                id: `${String(thread.id || "unknown")}:closed`,
+                ticketId: String(thread.id || "unknown"),
+                userId: String(thread.userId || ""),
+                username: String(thread.username || "Unknown"),
+                avatarUrl: thread.avatarUrl || null,
+                category: String(thread.category || "modmail").toLowerCase(),
+                type: "closed" as const,
+                status: "closed" as const,
+                timestamp: String(thread.closedAt),
+                closeReason: thread.closeReason || null,
+              }
+            : null;
+
+          return closedEvent ? [createdEvent, closedEvent] : [createdEvent];
+        })
+        .filter((event) => {
+          if (statusFilter === "open") return event.type === "created";
+          if (statusFilter === "closed") return event.type === "closed";
+          return true;
+        })
+        .filter((event) => {
+          const eventDate = parseEventDate(event.timestamp);
+          if (!eventDate) return true;
+          if (fromDate && eventDate < fromDate) return false;
+          if (toDate && eventDate > toDate) return false;
+          return true;
+        })
+        .sort((a, b) => {
+          const aTime = parseEventDate(a.timestamp)?.getTime() || 0;
+          const bTime = parseEventDate(b.timestamp)?.getTime() || 0;
+          return bTime - aTime;
+        });
+
+      const summary = {
+        totalTickets: sorted.length,
+        openTickets: sorted.filter((thread) => String(thread.status || "open").toLowerCase() !== "closed").length,
+        closedTickets: sorted.filter((thread) => String(thread.status || "open").toLowerCase() === "closed").length,
+        createdEvents: events.filter((event) => event.type === "created").length,
+        closedEvents: events.filter((event) => event.type === "closed").length,
+      };
+
+      res.json({ threads: sorted, events, summary });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
