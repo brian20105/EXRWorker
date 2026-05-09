@@ -24210,7 +24210,7 @@ client.on("messageCreate", async (message) => {
       }
 
       const normalizedReplyContent = (replyContent || "").replace(/\u200b/g, "").trim();
-      const hasMeaningfulReplyContent = /[\p{L}\p{N}]/u.test(normalizedReplyContent);
+      const hasMeaningfulReplyContent = normalizedReplyContent.length > 0;
       const displayReplyContent = hasMeaningfulReplyContent ? normalizedReplyContent : "";
 
       const staffEmbed = new EmbedBuilder()
@@ -24542,7 +24542,7 @@ client.on("messageCreate", async (message) => {
 
       // Anonymous reply - use "Staff Team" instead of individual staff info
       const normalizedArReplyContent = (replyContent || "").replace(/\u200b/g, "").trim();
-      const hasMeaningfulArReplyContent = /[\p{L}\p{N}]/u.test(normalizedArReplyContent);
+      const hasMeaningfulArReplyContent = normalizedArReplyContent.length > 0;
       const displayArReplyContent = hasMeaningfulArReplyContent ? normalizedArReplyContent : "";
 
       const staffEmbed = new EmbedBuilder()
@@ -24824,8 +24824,10 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
+  const commandName = lowerContent.split(/\s+/)[0];
+
   // Handle .edit (message_id) (new_message) or .edit (new_message) for most recent
-  if (message.guild && lowerContent.startsWith(`${lowerPrefix}edit `)) {
+  if (message.guild && commandName === `${lowerPrefix}edit`) {
     // Check for modmail thread first, then appeal thread
     const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
@@ -25021,7 +25023,7 @@ client.on("messageCreate", async (message) => {
   }
 
   // Handle .delete (message_id) or .delete for most recent
-  if (message.guild && lowerContent.startsWith(`${lowerPrefix}delete`)) {
+  if (message.guild && commandName === `${lowerPrefix}delete`) {
     // Check for modmail thread first, then appeal thread
     const modmailThread = await safeGetModmailThreadByChannel(message.channel.id);
     const appealThread = await storage.getAppealThreadByChannel(message.channel.id);
