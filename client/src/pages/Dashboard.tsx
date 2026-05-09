@@ -860,7 +860,7 @@ export default function Dashboard() {
   const [blacklistingMiscUser, setBlacklistingMiscUser] = useState(false);
   const [unblacklistingMiscUserId, setUnblacklistingMiscUserId] = useState<string | null>(null);
   const [miscBlockUserIdInput, setMiscBlockUserIdInput] = useState("");
-  const [miscBlockSystem, setMiscBlockSystem] = useState<MiscBlockSystem>("modmail");
+  const [miscBlockSystem, setMiscBlockSystem] = useState<MiscBlockSystem>("staff_applications");
   const [miscBlockDurationValue, setMiscBlockDurationValue] = useState("1");
   const [miscBlockDurationUnit, setMiscBlockDurationUnit] = useState<"minutes" | "hours" | "days" | "weeks" | "permanent">("days");
   const [miscBlockReason, setMiscBlockReason] = useState("");
