@@ -25051,28 +25051,8 @@ client.on("messageCreate", async (message) => {
       // Discord message ID (snowflake)
       modmailMsg = isAppeal ? await storage.getAppealMessageByChannelMessageId(args) : await storage.getModmailMessageByChannelMessageId(args);
     } else {
-      // No ID provided, use the most recent stored staff message that still exists in the channel.
-      const recentChannelMessages = await (message.channel as any).messages.fetch({ limit: 25 }).catch(() => null);
-      if (recentChannelMessages) {
-        for (const candidate of recentChannelMessages.values()) {
-          if (candidate.id === message.id) {
-            continue;
-          }
-
-          const candidateRecord = isAppeal
-            ? await storage.getAppealMessageByChannelMessageId(String(candidate.id))
-            : await storage.getModmailMessageByChannelMessageId(String(candidate.id));
-
-          if (candidateRecord?.threadId === thread.id && candidateRecord.isStaff === "true") {
-            modmailMsg = candidateRecord;
-            break;
-          }
-        }
-      }
-
-      if (!modmailMsg) {
-        modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
-      }
+      // No ID provided: use the latest stored staff message for this thread.
+      modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
     }
 
     if (!modmailMsg || modmailMsg.threadId !== thread.id || modmailMsg.isStaff !== "true") {
