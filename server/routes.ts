@@ -63,11 +63,18 @@ const DASHBOARD_FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
 const DASHBOARD_REACTION_ROLE_SETUP_KEY = "__reactionRoleSetup";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
+const USER_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
+const MISC_OVERVIEW_CACHE_TTL_MS = 15 * 1000;
 
 let cachedGuildSummaries: DashboardGuildSummary[] = [];
 let cachedGuildSummariesAt = 0;
 const accessDecisionCache = new Map<string, { allowed: boolean; checkedAt: number }>();
 const guildConfigMutationLocks = new Map<string, Promise<void>>();
+const userSummaryCache = new Map<string, {
+  value: { userId: string | null; username: string; avatarUrl: string | null };
+  expiresAt: number;
+}>();
+const miscOverviewCache = new Map<string, { payload: any; expiresAt: number }>();
 
 function getAuthSecret(): string {
   return (process.env.DASHBOARD_AUTH_SECRET || process.env.DISCORD_CLIENT_SECRET || "change-me").trim();
@@ -484,6 +491,33 @@ function isBlockStillActive(expiresAt: string | Date | null | undefined): boolea
   return Number.isFinite(expiresMs) && expiresMs > Date.now();
 }
 
+async function withTimeoutFallback<T>(task: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => resolve(fallback), timeoutMs);
+    task
+      .then((result) => resolve(result))
+      .catch(() => resolve(fallback))
+      .finally(() => clearTimeout(timer));
+  });
+}
+
+function getCachedMiscOverview(guildId: string): any | null {
+  const cached = miscOverviewCache.get(guildId);
+  if (!cached) return null;
+  if (Date.now() >= cached.expiresAt) {
+    miscOverviewCache.delete(guildId);
+    return null;
+  }
+  return cached.payload;
+}
+
+function setCachedMiscOverview(guildId: string, payload: any): void {
+  miscOverviewCache.set(guildId, {
+    payload,
+    expiresAt: Date.now() + MISC_OVERVIEW_CACHE_TTL_MS,
+  });
+}
+
 async function resolveDiscordUserSummary(userId: string | null | undefined, guildId?: string): Promise<{ userId: string | null; username: string; avatarUrl: string | null }> {
   const normalizedUserId = String(userId || "").trim();
   if (!normalizedUserId) {
@@ -524,6 +558,26 @@ async function resolveDiscordUserSummary(userId: string | null | undefined, guil
     username: normalizedUserId,
     avatarUrl: null,
   };
+}
+
+async function resolveDiscordUserSummaryCached(userId: string | null | undefined, guildId?: string): Promise<{ userId: string | null; username: string; avatarUrl: string | null }> {
+  const normalizedUserId = String(userId || "").trim();
+  if (!normalizedUserId) {
+    return { userId: null, username: "Unknown user", avatarUrl: null };
+  }
+
+  const key = `${guildId || "global"}:${normalizedUserId}`;
+  const cached = userSummaryCache.get(key);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.value;
+  }
+
+  const resolved = await resolveDiscordUserSummary(normalizedUserId, guildId);
+  userSummaryCache.set(key, {
+    value: resolved,
+    expiresAt: Date.now() + USER_SUMMARY_CACHE_TTL_MS,
+  });
+  return resolved;
 }
 
 function readOwnerBotPid(): number | null {
@@ -2820,6 +2874,14 @@ export async function registerRoutes(
       if (!auth) return;
       const { guildId } = auth;
 
+      const useCache = String(req.query.cache || "").trim() === "1";
+      if (useCache) {
+        const cachedPayload = getCachedMiscOverview(guildId);
+        if (cachedPayload) {
+          return res.json(cachedPayload);
+        }
+      }
+
       const config = await storage.getGuildConfig(guildId);
       const hasBotToken = !!getDiscordBotToken();
       const canUseGatewayClient = client.isReady();
@@ -2967,11 +3029,15 @@ export async function registerRoutes(
 
         let messages: any[] = [];
         if (hasBotToken) {
-          messages = await discordBotApiRequest<any[]>(`/channels/${channelId}/messages?limit=20`).catch(() => []);
+          messages = await withTimeoutFallback(
+            discordBotApiRequest<any[]>(`/channels/${channelId}/messages?limit=20`),
+            4500,
+            [],
+          );
         } else if (canUseGatewayClient) {
           const channel = await client.channels.fetch(channelId).catch(() => null);
           if (channel && "messages" in channel) {
-            const fetched = await (channel as any).messages.fetch({ limit: 20 }).catch(() => null);
+            const fetched = await withTimeoutFallback((channel as any).messages.fetch({ limit: 20 }), 4500, null);
             messages = fetched ? Array.from((fetched as any).values()) as any[] : [];
           }
         }
@@ -3012,17 +3078,20 @@ export async function registerRoutes(
         return items;
       };
 
-      const [banCollection, auditLogs, commandActivity, moderationActivity, modmailBlockRows, appealBlockRows] = await Promise.all([
+      const [banCollection, auditLogs, commandActivity, moderationActivity, modmailBlockRows, appealBlockRows, guildRoles] = await Promise.all([
         hasBotToken
-          ? discordBotApiRequest<any[]>(`/guilds/${guildId}/bans?limit=1000`).catch(() => [])
+          ? withTimeoutFallback(discordBotApiRequest<any[]>(`/guilds/${guildId}/bans?limit=250`), 6500, [])
           : Promise.resolve([]),
         hasBotToken
-          ? discordBotApiRequest<any>(`/guilds/${guildId}/audit-logs?limit=20`).catch(() => null)
+          ? withTimeoutFallback(discordBotApiRequest<any>(`/guilds/${guildId}/audit-logs?limit=20`), 6500, null)
           : Promise.resolve(null),
         collectChannelActivity(config?.commandLogChannelId, "commands"),
         collectChannelActivity(config?.modLogChannelId, "moderation"),
         storage.getAllModmailBlocks(guildId).catch(() => []),
         storage.getAllAppealBlocks(guildId).catch(() => []),
+        hasBotToken
+          ? withTimeoutFallback(discordBotApiRequest<any[]>(`/guilds/${guildId}/roles`), 6500, [])
+          : Promise.resolve([]),
       ]);
 
       const bans = Array.isArray(banCollection)
@@ -3045,7 +3114,7 @@ export async function registerRoutes(
         }
         const cached = userSummaryCache.get(normalizedUserId);
         if (cached) return cached;
-        const resolved = await resolveDiscordUserSummary(normalizedUserId, guildId);
+        const resolved = await resolveDiscordUserSummaryCached(normalizedUserId, guildId);
         userSummaryCache.set(normalizedUserId, resolved);
         return resolved;
       };
@@ -3181,7 +3250,9 @@ export async function registerRoutes(
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, 40);
 
-      res.json({ bans, blacklistedUsers, blocks, roleBlocks: roleBlocksResolved, bypassUsers, activity, unavailableReason });
+      const payload = { bans, blacklistedUsers, blocks, roleBlocks: roleBlocksResolved, bypassUsers, activity, unavailableReason };
+      setCachedMiscOverview(guildId, payload);
+      res.json(payload);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }

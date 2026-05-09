@@ -1582,7 +1582,7 @@ export default function Dashboard() {
     }
 
     try {
-      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview`, undefined, 15000);
+      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview${silent ? "?cache=1" : ""}`, undefined, 15000);
       setMiscBans(Array.isArray(data?.bans) ? data.bans : []);
       setMiscBlacklistedUsers(Array.isArray(data?.blacklistedUsers) ? data.blacklistedUsers : []);
       setMiscBlocks(Array.isArray(data?.blocks) ? data.blocks : []);
