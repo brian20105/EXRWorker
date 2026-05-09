@@ -351,6 +351,7 @@ export const appealThreads = pgTable("appeal_threads", {
   closedById: text("closed_by_id"),
   closeReason: text("close_reason"),
   subscribedUserIds: text("subscribed_user_ids").array().default([]),
+  addedMemberIds: text("added_member_ids").array().default([]),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   closedAt: timestamp("closed_at"),
 });

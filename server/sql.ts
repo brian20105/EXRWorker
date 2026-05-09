@@ -2,6 +2,8 @@ import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 export const sqlEnabled = Boolean(process.env.DATABASE_URL);
+const allowInMemoryFallback = process.env.ALLOW_INMEMORY_STORAGE === "true";
+const requirePersistentStorage = process.env.NODE_ENV === "production" && !allowInMemoryFallback;
 
 let db: any = null;
 
@@ -19,7 +21,13 @@ if (process.env.DATABASE_URL) {
   db = drizzle(pool);
   console.log("SQL client initialized. db.select:", typeof (db as any).select);
 } else {
-  console.log("DATABASE_URL not set — running in MongoDB-only mode (SQL disabled).");
+  if (requirePersistentStorage) {
+    throw new Error(
+      "DATABASE_URL is required in production. Set DATABASE_URL for persistent bot storage, or set ALLOW_INMEMORY_STORAGE=true to explicitly allow volatile in-memory mode."
+    );
+  }
+
+  console.log("DATABASE_URL not set — running in volatile in-memory mode (SQL disabled).");
 
   class FakeQuery {
     constructor(private result: any[] = []) {}

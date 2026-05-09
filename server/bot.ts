@@ -971,7 +971,7 @@ async function notifyClosedTicketParticipants(
   thread: { userId: string; addedMemberIds?: string[] | null | undefined },
   isAppeal: boolean,
 ): Promise<void> {
-  const extraParticipantIds = !isAppeal && Array.isArray(thread.addedMemberIds) ? thread.addedMemberIds : [];
+  const extraParticipantIds = Array.isArray(thread.addedMemberIds) ? thread.addedMemberIds : [];
   const participantIds = Array.from(new Set([thread.userId, ...extraParticipantIds].filter((id): id is string => Boolean(id))));
   const closeEmbed = buildTicketClosedEmbed(isAppeal);
 
@@ -1460,6 +1460,21 @@ function schedulePendingModmailTypingNoticeCleanup(key: string, channelId: strin
   }, MODMAIL_TYPING_NOTICE_TTL_MS);
 }
 
+const DM_REQUIRED_FOR_TICKETS_MESSAGE = "❌ I can't DM you. Please enable Direct Messages from server members, then try again.";
+
+async function canDeliverTicketDm(user: any): Promise<boolean> {
+  try {
+    const dmChannel = await user.createDM();
+    if (dmChannel && typeof dmChannel.send === "function") {
+      const probe = await dmChannel.send({ content: "\u200b" });
+      await probe.delete().catch(() => undefined);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function buildModmailActionRow(threadId: string, dmMessageId: string, authorId: string, isAppeal = false) {
   const actionMenu = new StringSelectMenuBuilder()
     .setCustomId(`modmail_action_${threadId}_${dmMessageId}_${authorId}`)
@@ -1567,6 +1582,7 @@ interface PendingTicketInvite {
   invitedById: string;
   reason: string;
   createdAt: number;
+  isAppeal?: boolean;
 }
 const pendingTicketInvites = new Map<string, PendingTicketInvite>();
 const INVITE_EXPIRY_TIME = 24 * 60 * 60 * 1000; // 24 hours
@@ -2525,6 +2541,8 @@ interface StaffApplicationBlockEntry {
   expiresAt: string | null;
 }
 
+type RoleBasedBlockSystem = "modmail" | "appeal" | "staff_applications";
+
 interface ManualUnblockEntry {
   userId: string;
   system: "modmail" | "appeal" | "staff_applications";
@@ -2774,9 +2792,21 @@ async function getExtraActivityCountForUserAcrossScope(
   return match?.count || 0;
 }
 
-// Per-guild cooldown so we don't re-fetch all members more than once per 60s.
-const memberFetchLastAttempt = new Map<string, number>();
-const MEMBER_FETCH_COOLDOWN_MS = 60_000;
+// Cache full member fetches per guild to avoid redundant Discord API calls.
+// Entries expire after 60 seconds and are re-fetched on next use.
+const memberFetchCache = new Map<string, { expiresAt: number }>();
+
+async function ensureGuildMembersFetched(guild: any): Promise<void> {
+  if (!guild?.id) return;
+  const entry = memberFetchCache.get(guild.id);
+  if (entry && Date.now() < entry.expiresAt) return; // still fresh
+  try {
+    await guild.members.fetch();
+    memberFetchCache.set(guild.id, { expiresAt: Date.now() + 60_000 });
+  } catch {
+    // Ignore fetch failures and use whatever is already cached.
+  }
+}
 
 async function getTrackedActivityMemberIds(
   guild: any,
@@ -2785,16 +2815,7 @@ async function getTrackedActivityMemberIds(
   const normalizedRoleIds = Array.from(new Set((trackedRoleIds || []).map((entry) => String(entry || "").trim()).filter(Boolean)));
   if (!guild || normalizedRoleIds.length === 0) return null;
 
-  const now = Date.now();
-  const last = memberFetchLastAttempt.get(guild.id) ?? 0;
-  if (now - last >= MEMBER_FETCH_COOLDOWN_MS) {
-    memberFetchLastAttempt.set(guild.id, now);
-    try {
-      await guild.members.fetch();
-    } catch {
-      // Ignore member fetch failures and use whatever is already cached.
-    }
-  }
+  await ensureGuildMembersFetched(guild);
 
   const memberIds = new Set<string>();
   for (const roleId of normalizedRoleIds) {
@@ -2974,6 +2995,57 @@ function getActiveStaffApplicationBlockFromGuildConfig(config: any, userId: stri
   if (!Number.isFinite(expiresAtMs)) return undefined;
   if (Date.now() >= expiresAtMs) return undefined;
   return entry;
+}
+
+function getRoleBasedBlocksFromGuildConfig(config?: any): Record<RoleBasedBlockSystem, string[]> {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__dashboardMiscRoleBlocks;
+  const parsed = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+
+  return {
+    modmail: normalizeStringArray(parsed.modmail),
+    appeal: normalizeStringArray(parsed.appeal),
+    staff_applications: normalizeStringArray(parsed.staff_applications),
+  };
+}
+
+function getRoleBasedBlockBypassUserIdsFromGuildConfig(config?: any): string[] {
+  const root = parseJsonObject(config?.customCategoryPings);
+  return normalizeStringArray(root?.__dashboardMiscRoleBlockBypassUsers);
+}
+
+async function getActiveRoleBasedSystemBlock(options: {
+  guild: any;
+  userId: string;
+  system: RoleBasedBlockSystem;
+  config: any;
+  interactionMember?: any;
+}): Promise<{ blocked: boolean; roleId: string | null }> {
+  const bypassUserIds = getRoleBasedBlockBypassUserIdsFromGuildConfig(options.config);
+  if (bypassUserIds.includes(options.userId)) {
+    return { blocked: false, roleId: null };
+  }
+
+  const roleBlocks = getRoleBasedBlocksFromGuildConfig(options.config)[options.system] || [];
+  if (roleBlocks.length === 0) {
+    return { blocked: false, roleId: null };
+  }
+
+  const interactionRoles = options.interactionMember?.roles;
+  let memberRoleIds: string[] = [];
+  if (Array.isArray(interactionRoles)) {
+    memberRoleIds = normalizeStringArray(interactionRoles);
+  } else if (interactionRoles?.cache && typeof interactionRoles.cache.keys === "function") {
+    memberRoleIds = Array.from(interactionRoles.cache.keys()).map((entry: any) => String(entry));
+  } else {
+    const member = await options.guild?.members?.fetch(options.userId).catch(() => null);
+    memberRoleIds = member?.roles?.cache ? Array.from(member.roles.cache.keys()).map((entry: any) => String(entry)) : [];
+  }
+
+  const blockedRoleId = roleBlocks.find((roleId) => memberRoleIds.includes(roleId)) || null;
+  return { blocked: Boolean(blockedRoleId), roleId: blockedRoleId };
 }
 
 function writeStaffApplicationBlockToConfig(
@@ -5243,44 +5315,6 @@ const commands = [
       sub
         .setName("leaderboard")
         .setDescription("View the activity leaderboard")
-        .addUserOption((option) =>
-          option
-            .setName("member")
-            .setDescription("View activity for a specific member")
-            .setRequired(false)
-        )
-        .addStringOption((option) =>
-          option
-            .setName("category")
-            .setDescription("Filter by request type")
-            .setRequired(false)
-            .addChoices(
-              { name: "Ban Requests", value: "ban" },
-              { name: "Moderation Bans", value: "modban" },
-              { name: "Moderation Kicks", value: "kick" },
-              { name: "Moderation Mutes", value: "mute" },
-              { name: "Unban Requests", value: "unban" },
-              { name: "Invites", value: "invites" },
-              { name: "Modmails handled", value: "modmail" },
-              { name: "Appeals handled", value: "appeal" },
-              { name: "Staff Reports", value: "staffreport" },
-              { name: "Partnerships", value: "partnerships" },
-              { name: "Accepted Staff", value: "staff_accepted" },
-              { name: "Role Requests Reviewed", value: "role_requests_reviewed" },
-              { name: "Kick Requests Reviewed", value: "kick_requests_reviewed" },
-              { name: "Accepted Semi Pros & Pros", value: "accepted_semi_pros_pros" }
-            )
-        )
-        .addStringOption((option) =>
-          option
-            .setName("scope")
-            .setDescription("Show stats from this server only or all servers")
-            .setRequired(false)
-            .addChoices(
-              { name: "All Servers", value: "all" },
-              { name: "This Server Only", value: "guild" }
-            )
-        )
         .addIntegerOption((option) =>
           option
             .setName("from")
@@ -5293,10 +5327,49 @@ const commands = [
             .setDescription("End time in days ago or Unix time (e.g. 0 or 1776313800)")
             .setRequired(false)
         )
+        .addStringOption((option) =>
+          option
+            .setName("category")
+            .setDescription("Filter by a specific activity category")
+            .setRequired(false)
+            .addChoices(
+              { name: "Ban Requests", value: "ban" },
+                { name: "Bans", value: "modban" },
+                { name: "Kicks", value: "kick" },
+                { name: "Mutes", value: "mute" },
+              { name: "Unban Requests", value: "unban" },
+              { name: "Invites", value: "invites" },
+              { name: "Modmails Handled", value: "modmail" },
+              { name: "Appeals Handled", value: "appeal" },
+              { name: "Staff Reports", value: "staffreport" },
+              { name: "Partnerships", value: "partnerships" },
+              { name: "Accepted Staff", value: "staff_accepted" },
+              { name: "Role Requests Reviewed", value: "role_requests_reviewed" },
+              { name: "Kick Requests Reviewed", value: "kick_requests_reviewed" },
+              { name: "Accepted Semi Pros & Pros", value: "accepted_semi_pros_pros" }
+            )
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName("member")
+        .setDescription("View activity stats for a specific member")
+        .addUserOption((option) =>
+          option
+            .setName("user")
+            .setDescription("The member to view stats for")
+            .setRequired(true)
+        )
         .addIntegerOption((option) =>
           option
-            .setName("page")
-            .setDescription("Page number (for leaderboard)")
+            .setName("from")
+            .setDescription("Start time in days ago or Unix time (e.g. 7 or 1776313800)")
+            .setRequired(false)
+        )
+        .addIntegerOption((option) =>
+          option
+            .setName("to")
+            .setDescription("End time in days ago or Unix time (e.g. 0 or 1776313800)")
             .setRequired(false)
         )
     ),
@@ -5342,9 +5415,9 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Ban Requests", value: "ban" },
-          { name: "Moderation Bans", value: "modban" },
-          { name: "Moderation Kicks", value: "kick" },
-          { name: "Moderation Mutes", value: "mute" },
+            { name: "Bans", value: "modban" },
+            { name: "Kicks", value: "kick" },
+            { name: "Mutes", value: "mute" },
           { name: "Unban Requests", value: "unban" },
           { name: "Invites", value: "invites" },
           { name: "Modmails Handled", value: "modmail" },
@@ -5390,9 +5463,9 @@ const commands = [
         .setRequired(true)
         .addChoices(
           { name: "Ban Requests", value: "ban" },
-          { name: "Moderation Bans", value: "modban" },
-          { name: "Moderation Kicks", value: "kick" },
-          { name: "Moderation Mutes", value: "mute" },
+            { name: "Bans", value: "modban" },
+            { name: "Kicks", value: "kick" },
+            { name: "Mutes", value: "mute" },
           { name: "Unban Requests", value: "unban" },
           { name: "Invites", value: "invites" },
           { name: "Modmails Handled", value: "modmail" },
@@ -7124,12 +7197,7 @@ async function updateRosterMessages(guildId: string): Promise<void> {
     }
 
     // Always fetch fresh member data
-    try {
-      await guild.members.fetch({ time: 30000 });
-      // console.log("[ROSTER] Fetched all members for roster update");
-    } catch (error) {
-      // console.log("[ROSTER] Could not fetch all members, using cached");
-    }
+    await ensureGuildMembersFetched(guild);
 
     // Update player roster
     if (config.playerRosterChannelId) {
@@ -8213,11 +8281,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        try {
-          await guild.members.fetch({ time: 30000 });
-        } catch (error) {
-          console.log("Could not fully fetch members");
-        }
+        await ensureGuildMembersFetched(guild);
 
         const guildRole = guild.roles.cache.get(role.id);
         if (!guildRole) {
@@ -8642,28 +8706,121 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        if (subcommand === "member") {
+          if (!await safeDeferReply(interaction, false)) return;
+          try {
+            const targetUser = interaction.options.getUser("user", true);
+            const { fromDays, toDays } = normalizeActivityRangeBounds(
+              interaction.options.getInteger("from") ?? undefined,
+              interaction.options.getInteger("to") ?? undefined,
+            );
+
+            const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
+            const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
+            if (trackedActivityMemberIds && !trackedActivityMemberIds.has(targetUser.id)) {
+              await interaction.editReply({ content: `❌ <@${targetUser.id}> is not tracked in this server's activity system.` });
+              return;
+            }
+
+            const now = new Date();
+            const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
+            const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
+            let timeRangeDesc = "📊 **All Servers**";
+            if (fromDate || toDays !== undefined) {
+              const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
+              const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
+              timeRangeDesc += "\n" + (fromTimestamp ? `From ${fromTimestamp} to ${toTimestamp}` : `Up to ${toTimestamp}`);
+            }
+
+            const includeUndatedExtraCounters = fromDays === undefined && toDays === undefined;
+
+            const [banCount, unbanCount, inviteCount, modmailCount, appealCount, staffReportCount] = await Promise.all([
+              storage.getActivityStatsForUserAllGuilds(targetUser.id, "ban", fromDays, toDays).catch(() => 0),
+              storage.getActivityStatsForUserAllGuilds(targetUser.id, "unban", fromDays, toDays).catch(() => 0),
+              storage.getInviteStatsForUserAllGuilds(targetUser.id, fromDays, toDays).catch(() => 0),
+              storage.getModmailStatsForUserAllGuilds(targetUser.id, fromDays, toDays).catch(() => 0),
+              storage.getAppealStatsForUserAllGuilds(targetUser.id, fromDays, toDays).catch(() => 0),
+              storage.getStaffReportStatsForUserAllGuilds(targetUser.id, fromDays, toDays).catch(() => 0),
+            ]);
+
+            let moderationStats = { bans: 0, kicks: 0, mutes: 0 };
+            try {
+              const modRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays);
+              const modRow = modRows.find(r => r.moderatorId === targetUser.id);
+              if (modRow) {
+                moderationStats.bans = modRow.bans;
+                moderationStats.kicks = modRow.kicks;
+                moderationStats.mutes = modRow.mutes;
+              }
+            } catch {}
+
+            let partnershipsCount = 0, acceptedStaffCount = 0, roleRequestsCount = 0, kickRequestsCount = 0, acceptedSemiProsCount = 0;
+            if (includeUndatedExtraCounters) {
+              [partnershipsCount, acceptedStaffCount, roleRequestsCount, kickRequestsCount, acceptedSemiProsCount] = await Promise.all([
+                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", targetUser.id, true).catch(() => 0),
+                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", targetUser.id, true).catch(() => 0),
+                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", targetUser.id, true).catch(() => 0),
+                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", targetUser.id, true).catch(() => 0),
+                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", targetUser.id, true).catch(() => 0),
+              ]);
+            }
+
+            const total = banCount + unbanCount + inviteCount + modmailCount + appealCount + staffReportCount +
+              moderationStats.bans + moderationStats.kicks + moderationStats.mutes +
+              partnershipsCount + acceptedStaffCount + roleRequestsCount + kickRequestsCount + acceptedSemiProsCount;
+
+            const embed = new EmbedBuilder()
+              .setTitle(`Activity — ${targetUser.username}`)
+              .setColor(0x5865f2)
+              .setThumbnail(targetUser.displayAvatarURL())
+              .setDescription(timeRangeDesc);
+
+            let statsText = `**Total:** ${total}`;
+            statsText += `\nBan Requests: ${banCount}`;
+            statsText += `\nUnban Requests: ${unbanCount}`;
+            statsText += `\nInvites: ${inviteCount}`;
+            statsText += `\nModmails Handled: ${modmailCount}`;
+            statsText += `\nAppeals Handled: ${appealCount}`;
+            statsText += `\nStaff Reports: ${staffReportCount}`;
+            statsText += `\nMod Bans: ${moderationStats.bans}`;
+            statsText += `\nMod Kicks: ${moderationStats.kicks}`;
+            statsText += `\nMod Mutes: ${moderationStats.mutes}`;
+            if (includeUndatedExtraCounters) {
+              statsText += `\nPartnerships: ${partnershipsCount}`;
+              statsText += `\nAccepted Staff: ${acceptedStaffCount}`;
+              statsText += `\nRole Requests Reviewed: ${roleRequestsCount}`;
+              statsText += `\nKick Requests Reviewed: ${kickRequestsCount}`;
+              statsText += `\nAccepted Semi Pros & Pros: ${acceptedSemiProsCount}`;
+            }
+
+            embed.addFields({ name: "Stats", value: statsText, inline: false });
+            await interaction.editReply({ embeds: [embed] });
+          } catch (error: any) {
+            console.log("Error in /activity member command:", error.message, error.stack);
+            await interaction.editReply({ content: "❌ Failed to fetch member activity. Please try again." }).catch(() => {});
+          }
+          return;
+        }
+
         if (!await safeDeferReply(interaction, false)) return;
 
         try {
-          const targetMember = interaction.options.getUser("member");
-          const category = interaction.options.getString("category");
-          const scope = interaction.options.getString("scope") || "all"; // Default to all servers
           const { fromDays, toDays } = normalizeActivityRangeBounds(
             interaction.options.getInteger("from") ?? undefined,
             interaction.options.getInteger("to") ?? undefined,
           );
+          const category = interaction.options.getString("category") ?? null;
           const includeUndatedExtraCounters = fromDays === undefined && toDays === undefined;
-          const useAllGuilds = scope === "all";
+          const extraCategories = ["partnerships", "staff_accepted", "role_requests_reviewed", "kick_requests_reviewed", "accepted_semi_pros_pros"];
           const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
           const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
-          const activityRoleMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityRoleIds);
 
           // Build time range description with Discord timestamps (hammer times)
           const now = new Date();
           const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
           const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
 
-          let timeRangeDesc = useAllGuilds ? "📊 **All Servers**" : "📊 **This Server Only**";
+          let timeRangeDesc = "📊 **All Servers**";
           if (fromDate || toDays !== undefined) {
             const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
             const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
@@ -8676,163 +8833,8 @@ client.on("interactionCreate", async (interaction) => {
           } catch (e) {
             console.log("Could not fetch moderation action stats:", e);
           }
-          const moderationByUser = new Map(moderationStatsRows.map((entry) => [entry.moderatorId, entry]));
 
-          // If a specific member is requested, show their individual stats
-          if (targetMember) {
-            if (trackedActivityMemberIds && !trackedActivityMemberIds.has(targetMember.id)) {
-              await interaction.editReply({
-                content: `**${targetMember.tag}** does not currently have one of the tracked activity roles, so they are hidden from \/activity until the role is added back.`,
-              });
-              return;
-            }
-            if (activityRoleMemberIds && !activityRoleMemberIds.has(targetMember.id)) {
-              await interaction.editReply({
-                content: `**${targetMember.tag}** does not currently have the required activity role, so they are hidden from \/activity until the role is restored.`,
-              });
-              return;
-            }
-
-            let memberBanStats = 0;
-            let memberUnbanStats = 0;
-            let memberModmailStats = 0;
-            let memberAppealStats = 0;
-            let memberMuteStats = 0;
-            let memberKickStats = 0;
-            let memberModerationBanStats = 0;
-            let memberInviteStats = 0;
-            let memberPartnershipsStats = 0;
-            let memberAcceptedStaffStats = 0;
-            let memberRoleRequestsReviewedStats = 0;
-            let memberKickRequestsReviewedStats = 0;
-            let memberAcceptedSemiProsProsStats = 0;
-            let memberModmailCategoryStats: { category: string; count: number }[] = [];
-
-            try {
-              memberBanStats = useAllGuilds 
-                ? await storage.getActivityStatsForUserAllGuilds(targetMember.id, "ban", fromDays, toDays)
-                : await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "ban", fromDays, toDays);
-            } catch (e) {
-              console.log("Could not fetch member ban stats:", e);
-            }
-            try {
-              memberUnbanStats = useAllGuilds
-                ? await storage.getActivityStatsForUserAllGuilds(targetMember.id, "unban", fromDays, toDays)
-                : await storage.getActivityStatsForUser(interaction.guildId!, targetMember.id, "unban", fromDays, toDays);
-            } catch (e) {
-              console.log("Could not fetch member unban stats:", e);
-            }
-            try {
-              memberInviteStats = useAllGuilds
-                ? await storage.getInviteStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
-                : await storage.getInviteStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
-            } catch (e) {
-              console.log("Could not fetch member invite stats:", e);
-            }
-            try {
-              memberModmailStats = useAllGuilds
-                ? await storage.getModmailStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
-                : await storage.getModmailStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
-            } catch (e) {
-              console.log("Could not fetch member modmail stats:", e);
-            }
-            try {
-              memberAppealStats = useAllGuilds
-                ? await storage.getAppealStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
-                : await storage.getAppealStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
-            } catch (e) {
-              console.log("Could not fetch member appeal stats:", e);
-            }
-            if (includeUndatedExtraCounters) {
-              try {
-                memberPartnershipsStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", targetMember.id, useAllGuilds);
-                memberAcceptedStaffStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", targetMember.id, useAllGuilds);
-                memberRoleRequestsReviewedStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", targetMember.id, useAllGuilds);
-                memberKickRequestsReviewedStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", targetMember.id, useAllGuilds);
-                memberAcceptedSemiProsProsStats = await getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", targetMember.id, useAllGuilds);
-              } catch (e) {
-                console.log("Could not fetch member extra activity stats:", e);
-              }
-            }
-
-            const memberModeration = moderationByUser.get(targetMember.id);
-            memberMuteStats = memberModeration?.mutes || 0;
-            memberKickStats = memberModeration?.kicks || 0;
-            memberModerationBanStats = memberModeration?.bans || 0;
-            try {
-              memberModmailCategoryStats = useAllGuilds
-                ? await storage.getModmailStatsByCategoryForUserAllGuilds(targetMember.id, fromDays, toDays)
-                : await storage.getModmailStatsByCategoryForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
-            } catch (e) {
-              console.log("Could not fetch member modmail category stats:", e);
-            }
-
-            const totalActivity = memberBanStats + memberUnbanStats + memberModmailStats + memberAppealStats + memberMuteStats + memberKickStats + memberModerationBanStats;
-
-            const embed = new EmbedBuilder()
-              .setTitle(`Activity for ${targetMember.tag}`)
-              .setThumbnail(targetMember.displayAvatarURL())
-              .setColor(0x5865f2)
-              .setDescription(timeRangeDesc);
-
-            // Also get staff report stats for the user
-            let memberStaffReportStats = 0;
-            try {
-              memberStaffReportStats = useAllGuilds
-                ? await storage.getStaffReportStatsForUserAllGuilds(targetMember.id, fromDays, toDays)
-                : await storage.getStaffReportStatsForUser(interaction.guildId!, targetMember.id, fromDays, toDays);
-            } catch (e) {
-              console.log("Could not fetch member staff report stats:", e);
-            }
-
-            const totalActivityWithStaffReports = memberBanStats + memberUnbanStats + memberInviteStats + memberModmailStats + memberAppealStats + memberMuteStats + memberKickStats + memberModerationBanStats + memberStaffReportStats + memberPartnershipsStats + memberAcceptedStaffStats + memberRoleRequestsReviewedStats + memberKickRequestsReviewedStats + memberAcceptedSemiProsProsStats;
-
-            let statsText = `**Total Activity:** ${totalActivityWithStaffReports}\n\n`;
-            statsText += `**Ban Requests:** ${memberBanStats}\n`;
-            statsText += `**Moderation Bans:** ${memberModerationBanStats}\n`;
-            statsText += `**Moderation Kicks:** ${memberKickStats}\n`;
-            statsText += `**Moderation Mutes:** ${memberMuteStats}\n`;
-            statsText += `**Unban Requests:** ${memberUnbanStats}\n`;
-            statsText += `**Invites:** ${memberInviteStats}\n`;
-            statsText += `**Modmails Handled:** ${memberModmailStats}\n`;
-            statsText += `**Appeals Handled:** ${memberAppealStats}\n`;
-            statsText += `**Staff Reports:** ${memberStaffReportStats}\n`;
-            statsText += `**Partnerships:** ${memberPartnershipsStats}\n`;
-            statsText += `**Accepted Staff:** ${memberAcceptedStaffStats}\n`;
-            statsText += `**Role Requests Reviewed:** ${memberRoleRequestsReviewedStats}\n`;
-            statsText += `**Kick Requests Reviewed:** ${memberKickRequestsReviewedStats}\n`;
-            statsText += `**Accepted Semi Pros & Pros:** ${memberAcceptedSemiProsProsStats}`;
-
-            // Add modmail category breakdown if available
-            if (memberModmailStats > 0 && memberModmailCategoryStats.length > 0) {
-              // Build category labels from custom categories in config
-              const categoryLabels: { [key: string]: string } = {};
-              const activityConfig = await storage.getGuildConfig(interaction.guildId!);
-              if (activityConfig?.customModmailCategories) {
-                try {
-                  const cats = JSON.parse(activityConfig.customModmailCategories);
-                  for (const cat of cats) {
-                    categoryLabels[cat.id] = cat.label;
-                  }
-                } catch (e) {}
-              }
-              statsText += "\n\n**Modmail Category Breakdown:**";
-              for (const catStat of memberModmailCategoryStats) {
-                // Skip unknown/null categories
-                if (catStat.category === "unknown" || !catStat.category) continue;
-                const label = categoryLabels[catStat.category] || catStat.category;
-                statsText += `\n• ${label}: ${catStat.count}`;
-              }
-            }
-
-            embed.addFields({ name: "\u200B", value: statsText, inline: false });
-            embed.setFooter({ text: `${now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}` });
-
-            await interaction.editReply({ embeds: [embed] });
-            return;
-          }
-
-          // Otherwise show the leaderboard - fetch each stat type independently
+          // Show the leaderboard - fetch all stat types
           let banStats: { userId: string; count: number }[] = [];
           let moderationBanStats: { userId: string; count: number }[] = [];
           let moderationKickStats: { userId: string; count: number }[] = [];
@@ -8847,150 +8849,80 @@ client.on("interactionCreate", async (interaction) => {
           let roleRequestsReviewedStats: { userId: string; count: number }[] = [];
           let kickRequestsReviewedStats: { userId: string; count: number }[] = [];
           let acceptedSemiProsProsStats: { userId: string; count: number }[] = [];
-          let modmailCategoryStats: { category: string; count: number }[] = [];
 
           try {
-            if (!category || category === "ban") {
-              banStats = useAllGuilds
-                ? await storage.getAllGuildsBanStats(fromDays, toDays)
-                : await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
-            }
+            banStats = await storage.getAllGuildsBanStats(fromDays, toDays);
           } catch (e) {
             console.log("Could not fetch ban stats:", e);
           }
 
           try {
-            if (!category || category === "modban" || category === "kick" || category === "mute") {
-              moderationBanStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.bans }));
-              moderationKickStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.kicks }));
-              moderationMuteStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.mutes }));
-            }
+            moderationBanStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.bans }));
+            moderationKickStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.kicks }));
+            moderationMuteStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.mutes }));
           } catch (e) {
             console.log("Could not map moderation stats:", e);
           }
 
           try {
-            if (!category || category === "unban") {
-              unbanStats = useAllGuilds
-                ? await storage.getAllGuildsUnbanStats(fromDays, toDays)
-                : await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
-            }
+            unbanStats = await storage.getAllGuildsUnbanStats(fromDays, toDays);
           } catch (e) {
             console.log("Could not fetch unban stats:", e);
           }
 
           try {
-            if (!category || category === "invites") {
-              inviteStats = useAllGuilds
-                ? await storage.getAllGuildsInviteStats(fromDays, toDays)
-                : await storage.getInviteStats(interaction.guildId!, fromDays, toDays);
-            }
+            inviteStats = await storage.getAllGuildsInviteStats(fromDays, toDays);
           } catch (e) {
             console.log("Could not fetch invite stats:", e);
           }
 
           try {
-            if (!category || category === "modmail") {
-              modmailStats = useAllGuilds
-                ? await storage.getAllGuildsModmailStats(fromDays, toDays)
-                : await storage.getModmailStats(interaction.guildId!, fromDays, toDays);
-            }
+            modmailStats = await storage.getAllGuildsModmailStats(fromDays, toDays);
           } catch (e) {
             console.log("Could not fetch modmail stats:", e);
           }
 
           try {
-            if (!category || category === "appeal") {
-              appealStats = useAllGuilds
-                ? await storage.getAllGuildsAppealStats(fromDays, toDays)
-                : await storage.getAppealStats(interaction.guildId!, fromDays, toDays);
-            }
+            appealStats = await storage.getAllGuildsAppealStats(fromDays, toDays);
           } catch (e) {
             console.log("Could not fetch appeal stats:", e);
           }
 
           try {
-            if (!category || category === "staffreport") {
-              staffReportStats = await storage.getStaffReportStats(interaction.guildId!, fromDays, toDays);
-            }
+            staffReportStats = await storage.getStaffReportStats(interaction.guildId!, fromDays, toDays);
           } catch (e) {
             console.log("Could not fetch staff report stats:", e);
           }
 
-          if (includeUndatedExtraCounters) {
-            if (!category || category === "partnerships") {
-              partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", useAllGuilds);
-            }
-            if (!category || category === "staff_accepted") {
-              acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", useAllGuilds);
-            }
-            if (!category || category === "role_requests_reviewed") {
-              roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", useAllGuilds);
-            }
-            if (!category || category === "kick_requests_reviewed") {
-              kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", useAllGuilds);
-            }
-            if (!category || category === "accepted_semi_pros_pros") {
-              acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", useAllGuilds);
-            }
-          }
-
-          try {
-            if (!category || category === "modmail") {
-              modmailCategoryStats = await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays);
-            }
-          } catch (e) {
-            console.log("Could not fetch modmail category stats:", e);
+          if (includeUndatedExtraCounters || (category !== null && extraCategories.includes(category))) {
+            if (!category || category === "partnerships") partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", true);
+            if (!category || category === "staff_accepted") acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", true);
+            if (!category || category === "role_requests_reviewed") roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", true);
+            if (!category || category === "kick_requests_reviewed") kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", true);
+            if (!category || category === "accepted_semi_pros_pros") acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", true);
           }
 
           const combinedStats: { [userId: string]: number } = {};
-          for (const stat of banStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of moderationBanStats) {
-            if (!category || category === "modban") {
-              combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+          const allStatArrays: { key: string; stats: { userId: string; count: number }[] }[] = [
+            { key: "ban", stats: banStats },
+            { key: "modban", stats: moderationBanStats },
+            { key: "kick", stats: moderationKickStats },
+            { key: "mute", stats: moderationMuteStats },
+            { key: "unban", stats: unbanStats },
+            { key: "invites", stats: inviteStats },
+            { key: "modmail", stats: modmailStats },
+            { key: "appeal", stats: appealStats },
+            { key: "staffreport", stats: staffReportStats },
+            { key: "partnerships", stats: partnershipsStats },
+            { key: "staff_accepted", stats: acceptedStaffStats },
+            { key: "role_requests_reviewed", stats: roleRequestsReviewedStats },
+            { key: "kick_requests_reviewed", stats: kickRequestsReviewedStats },
+            { key: "accepted_semi_pros_pros", stats: acceptedSemiProsProsStats },
+          ];
+          for (const { key, stats } of allStatArrays) {
+            if (!category || category === key) {
+              for (const stat of stats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
             }
-          }
-          for (const stat of moderationKickStats) {
-            if (!category || category === "kick") {
-              combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            }
-          }
-          for (const stat of moderationMuteStats) {
-            if (!category || category === "mute") {
-              combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            }
-          }
-          for (const stat of unbanStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of inviteStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of modmailStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of appealStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of staffReportStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of partnershipsStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of acceptedStaffStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of roleRequestsReviewedStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of kickRequestsReviewedStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-          }
-          for (const stat of acceptedSemiProsProsStats) {
-            combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
           }
 
           // Filter out placeholder entries like staff_report_entry
@@ -9005,52 +8937,24 @@ client.on("interactionCreate", async (interaction) => {
             }
             filterCombinedActivityStatsToTrackedMembers(combinedStats, trackedActivityMemberIds);
           }
-          if (activityRoleMemberIds) {
-            filterCombinedActivityStatsToTrackedMembers(combinedStats, activityRoleMemberIds);
-          }
 
           const leaderboard = Object.entries(combinedStats)
             .map(([userId, count]) => ({ userId, count }))
             .sort((a, b) => b.count - a.count);
 
-          const totalPages = Math.ceil(leaderboard.length / 10);
-          const page = interaction.options.getInteger("page") || 1;
-          const start = (page - 1) * 10;
-          const end = start + 10;
-          const currentLeaderboard = leaderboard.slice(start, end);
-
-          const categoryText = category === "ban"
-            ? "Ban Requests"
-            : category === "modban"
-              ? "Moderation Bans"
-              : category === "kick"
-                ? "Moderation Kicks"
-                : category === "mute"
-                  ? "Moderation Mutes"
-                  : category === "unban"
-                    ? "Unban Requests"
-                    : category === "invites"
-                      ? "Invites"
-                      : category === "modmail"
-                        ? "Modmails Handled"
-                        : category === "appeal"
-                          ? "Ban Appeals Handled"
-                          : category === "staffreport"
-                            ? "Staff Reports"
-                            : category === "partnerships"
-                              ? "Partnerships"
-                              : category === "staff_accepted"
-                                ? "Accepted Staff"
-                                : category === "role_requests_reviewed"
-                                  ? "Role Requests Reviewed"
-                                  : category === "kick_requests_reviewed"
-                                    ? "Kick Requests Reviewed"
-                                    : category === "accepted_semi_pros_pros"
-                                      ? "Accepted Semi Pros & Pros"
-                                      : "All Activity";
+          const categoryLabels: Record<string, string> = {
+            ban: "Ban Requests", modban: "Bans", kick: "Kicks",
+            mute: "Mutes", unban: "Unban Requests", invites: "Invites",
+            modmail: "Modmails Handled", appeal: "Appeals Handled", staffreport: "Staff Reports",
+            partnerships: "Partnerships", staff_accepted: "Accepted Staff",
+            role_requests_reviewed: "Role Requests Reviewed",
+            kick_requests_reviewed: "Kick Requests Reviewed",
+            accepted_semi_pros_pros: "Accepted Semi Pros & Pros",
+          };
+          const titleSuffix = category ? ` — ${categoryLabels[category] ?? category}` : "";
 
           const embed = new EmbedBuilder()
-            .setTitle(`${categoryText} Leaderboard`)
+            .setTitle(`All Activity Leaderboard${titleSuffix}`)
             .setColor(0x5865f2);
 
           if (timeRangeDesc) {
@@ -9076,6 +8980,11 @@ client.on("interactionCreate", async (interaction) => {
           const kickRequestsReviewedTotal = kickRequestsReviewedStats.reduce((sum, e) => sum + e.count, 0);
           const acceptedSemiProsProsTotal = acceptedSemiProsProsStats.reduce((sum, e) => sum + e.count, 0);
 
+          const totalPages = Math.ceil(leaderboard.length / 10);
+          const page = 1;
+          const start = 0;
+          const currentLeaderboard = leaderboard.slice(start, 10);
+
           if (leaderboard.length === 0) {
             embed.addFields({ name: "\u200B", value: "No activity found for the specified filters.", inline: false });
           } else {
@@ -9092,9 +9001,9 @@ client.on("interactionCreate", async (interaction) => {
             // Add total and category breakdown
             let statsText = `**Total in the specified time:** ${totalCount}`;
             statsText += `\nBan Requests: ${banTotal}`;
-            statsText += `\nModeration Bans: ${moderationBanTotal}`;
-            statsText += `\nModeration Kicks: ${moderationKickTotal}`;
-            statsText += `\nModeration Mutes: ${moderationMuteTotal}`;
+            statsText += `\nBans: ${moderationBanTotal}`;
+            statsText += `\nKicks: ${moderationKickTotal}`;
+            statsText += `\nMutes: ${moderationMuteTotal}`;
             statsText += `\nUnban Requests: ${unbanTotal}`;
             statsText += `\nInvites: ${inviteTotal}`;
             statsText += `\nModmails Handled: ${modmailTotal}`;
@@ -9105,44 +9014,20 @@ client.on("interactionCreate", async (interaction) => {
             statsText += `\nRole Requests Reviewed: ${roleRequestsReviewedTotal}`;
             statsText += `\nKick Requests Reviewed: ${kickRequestsReviewedTotal}`;
             statsText += `\nAccepted Semi Pros & Pros: ${acceptedSemiProsProsTotal}`;
-            if (category === "modmail") {
-              // "Modmails Handled" view - show category breakdown
-              if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
-                // Build category labels from custom categories in config
-                const categoryLabels: { [key: string]: string } = {};
-                const leaderboardConfig = await storage.getGuildConfig(interaction.guildId!);
-                if (leaderboardConfig?.customModmailCategories) {
-                  try {
-                    const cats = JSON.parse(leaderboardConfig.customModmailCategories);
-                    for (const cat of cats) {
-                      categoryLabels[cat.id] = cat.label;
-                    }
-                  } catch (e) {}
-                }
-                statsText += "\n\n**Category Breakdown:**";
-                for (const catStat of modmailCategoryStats) {
-                  // Skip unknown/null categories
-                  if (catStat.category === "unknown" || !catStat.category) continue;
-                  const label = categoryLabels[catStat.category] || catStat.category;
-                  statsText += `\n• ${label}: ${catStat.count}`;
-                }
-              }
-            }
             embed.addFields({ name: "Stats", value: statsText.slice(0, 1024), inline: false });
           }
 
-          // Add footer with page and timestamp
           embed.setFooter({ text: `Page ${page} of ${totalPages} | ${now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}` });
 
           if (totalPages > 1) {
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
               new ButtonBuilder()
-                .setCustomId(`activity_page_${page - 1}_${category || "all"}_${scope}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}`)
+                .setCustomId(`activity_page_${page - 1}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
                 .setLabel("◀ Previous")
                 .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page <= 1),
+                .setDisabled(true),
               new ButtonBuilder()
-                .setCustomId(`activity_page_${page + 1}_${category || "all"}_${scope}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}`)
+                .setCustomId(`activity_page_${page + 1}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
                 .setLabel("Next ▶")
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(page >= totalPages)
@@ -9260,11 +9145,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        try {
-          await guild.members.fetch({ time: 30000 });
-        } catch (error) {
-          console.log("Could not fully fetch members");
-        }
+        await ensureGuildMembersFetched(guild);
 
         const guildRole = guild.roles.cache.get(role.id);
         if (!guildRole) {
@@ -9628,7 +9509,7 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             // Fetch members with the role
-            await interaction.guild.members.fetch({ time: 30000 });
+            await ensureGuildMembersFetched(interaction.guild);
             const trackedRole = interaction.guild.roles.cache.get(role.id);
             if (!trackedRole) {
               await interaction.editReply({ content: "Role not found." });
@@ -11500,9 +11381,7 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({ content: "📤 Sending messages to all server members... This may take a while." });
 
-        try {
-          await interaction.guild?.members.fetch();
-        } catch (e) {}
+        await ensureGuildMembersFetched(interaction.guild);
 
         const members = interaction.guild?.members.cache.filter(m => !m.user.bot);
         if (!members || members.size === 0) {
@@ -11542,11 +11421,7 @@ client.on("interactionCreate", async (interaction) => {
 
         // Fetch all members with the role
         const guild = interaction.guild!;
-        try {
-          await guild.members.fetch({ time: 60000 });
-        } catch (e) {
-          console.log("Could not fully fetch all members");
-        }
+        await ensureGuildMembersFetched(guild);
 
         const guildRole = guild.roles.cache.get(role.id);
         if (!guildRole) {
@@ -12144,11 +12019,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         // Fetch members
-        try {
-          await guild.members.fetch({ time: 30000 });
-        } catch (e) {
-          console.log("Could not fully fetch members for roster");
-        }
+        await ensureGuildMembersFetched(guild);
 
         // Generate roster content
         let rosterContent = `**${name.charAt(0).toUpperCase() + name.slice(1)} Roster**\n\n`;
@@ -12222,11 +12093,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        try {
-          await guild.members.fetch({ time: 60000 });
-        } catch (e) {
-          console.log("Could not fully fetch members for role command");
-        }
+        await ensureGuildMembersFetched(guild);
 
         if (subcommand === "all") {
           const membersWithoutRole = guild.members.cache.filter((m: any) => !m.roles.cache.has(role.id) && !m.user.bot);
@@ -12593,11 +12460,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        try {
-          await guild.members.fetch({ time: 30000 });
-        } catch {
-          // ignore fetch failures, cache may still be sufficient
-        }
+        await ensureGuildMembersFetched(guild);
 
         const membersMap = new Map<string, any>();
         for (const role of resolvedRoles) {
@@ -13520,6 +13383,14 @@ client.on("interactionCreate", async (interaction) => {
         let copyData = getModmailCopyContent(messageId);
 
         if (!copyData && interaction.message) {
+          const appealThread = await storage.getAppealThread(threadId).catch(() => null);
+          const storedMessage = appealThread
+            ? await storage.getAppealMessageByChannelMessageId(interaction.message.id).catch(() => undefined)
+            : await storage.getModmailMessageByChannelMessageId(interaction.message.id).catch(() => undefined);
+          copyData = parseStoredTranscriptContent(storedMessage?.content);
+        }
+
+        if (!copyData && interaction.message) {
           const embeds = interaction.message.embeds;
           const attachmentUrls: string[] = [];
 
@@ -13537,14 +13408,11 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        let response = copyData.content;
-        if (copyData.attachments && copyData.attachments.length > 0) {
-          response += "\n\n**Attachments:**\n" + copyData.attachments.join("\n");
-        }
+        const responsePayload = buildModmailCopyResponsePayload(messageId, copyData);
 
         if (selectedAction === "send_message_dm") {
           try {
-            await interaction.user.send({ content: response });
+            await interaction.user.send(responsePayload);
             await interaction.reply({ content: "✅ Sent in your DMs.", flags: 64 });
           } catch {
             await interaction.reply({ content: "❌ Could not DM you. Please enable DMs and try again.", flags: 64 });
@@ -13552,7 +13420,7 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        await interaction.reply({ content: response, flags: 64 });
+        await interaction.reply({ ...responsePayload, flags: 64 });
         return;
       }
 
@@ -13611,6 +13479,17 @@ client.on("interactionCreate", async (interaction) => {
           console.log(`[ticket_select] Non-modal category (${ticketCategory}), deferring immediately`);
           if (!await safeDeferReply(interaction, true)) {
             console.log(`[ticket_select] Failed to defer, returning`);
+            return;
+          }
+          const canDm = await canDeliverTicketDm(user);
+          if (!canDm) {
+            await interaction.editReply({ content: DM_REQUIRED_FOR_TICKETS_MESSAGE });
+            return;
+          }
+        } else {
+          const canDm = await canDeliverTicketDm(user);
+          if (!canDm) {
+            await interaction.reply({ content: DM_REQUIRED_FOR_TICKETS_MESSAGE, flags: 64 });
             return;
           }
         }
@@ -13822,6 +13701,17 @@ client.on("interactionCreate", async (interaction) => {
             ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
             : "You are permanently blocked.";
           await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
+          return;
+        }
+        const roleBlock = await getActiveRoleBasedSystemBlock({
+          guild,
+          userId: user.id,
+          system: "modmail",
+          config,
+          interactionMember: interaction.member,
+        });
+        if (roleBlock.blocked) {
+          await interaction.editReply({ content: "❌ You are blocked from opening tickets due to your server roles." });
           return;
         }
         console.log(`[ticket_select] User is not blocked`);
@@ -14036,6 +13926,12 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        const canDm = await canDeliverTicketDm(user);
+        if (!canDm) {
+          await interaction.editReply({ content: DM_REQUIRED_FOR_TICKETS_MESSAGE });
+          return;
+        }
+
         // Check if user is blocked
         const block = await storage.getActiveModmailBlock(guildId, user.id);
         if (block) {
@@ -14043,6 +13939,17 @@ client.on("interactionCreate", async (interaction) => {
             ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
             : "You are permanently blocked.";
           await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
+          return;
+        }
+        const roleBlock = await getActiveRoleBasedSystemBlock({
+          guild,
+          userId: user.id,
+          system: "modmail",
+          config,
+          interactionMember: interaction.member,
+        });
+        if (roleBlock.blocked) {
+          await interaction.editReply({ content: "❌ You are blocked from opening tickets due to your server roles." });
           return;
         }
 
@@ -14227,13 +14134,6 @@ client.on("interactionCreate", async (interaction) => {
             .setCustomId(`modmail_request_role_modal_${threadId}_${selectedRoleId}`)
             .setTitle("Request A Role");
 
-          const userIdInput = new TextInputBuilder()
-            .setCustomId("user_id")
-            .setLabel("User ID")
-            .setPlaceholder("Enter the Discord user ID")
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true);
-
           const reasonInput = new TextInputBuilder()
             .setCustomId("reason")
             .setLabel("Reason")
@@ -14249,7 +14149,6 @@ client.on("interactionCreate", async (interaction) => {
             .setRequired(true);
 
           modal.addComponents(
-            new ActionRowBuilder<TextInputBuilder>().addComponents(userIdInput),
             new ActionRowBuilder<TextInputBuilder>().addComponents(reasonInput),
             new ActionRowBuilder<TextInputBuilder>().addComponents(proofInput)
           );
@@ -14439,15 +14338,10 @@ client.on("interactionCreate", async (interaction) => {
           }
           
           if (copyData) {
-            // Build response with content and attachments
-            let response = copyData.content;
-            if (copyData.attachments && copyData.attachments.length > 0) {
-              response += "\n\n**Attachments:**\n" + copyData.attachments.join("\n");
-            }
-            
-            // Send the content as a plain text message so mobile users can copy it
+            const responsePayload = buildModmailCopyResponsePayload(messageId, copyData);
+
             await interaction.reply({ 
-              content: response, 
+              ...responsePayload,
               flags: 64 // Ephemeral 
             });
           } else {
@@ -14621,7 +14515,9 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Get the thread
-          const thread = await storage.getModmailThread(invite.threadId);
+          const thread = invite.isAppeal
+            ? await storage.getAppealThread(invite.threadId).catch(() => null)
+            : await storage.getModmailThread(invite.threadId).catch(() => null);
           if (!thread || thread.status !== "open") {
             await interaction.reply({ content: "❌ This ticket is no longer open.", flags: 64 });
             removePendingInvite(inviteId);
@@ -14635,7 +14531,11 @@ client.on("interactionCreate", async (interaction) => {
           const currentMembers = thread.addedMemberIds || [];
           if (!currentMembers.includes(invite.targetUserId)) {
             const newMembers = [...currentMembers, invite.targetUserId];
-            await storage.updateModmailThread(invite.threadId, { addedMemberIds: newMembers });
+            if (invite.isAppeal) {
+              await storage.updateAppealThread(invite.threadId, { addedMemberIds: newMembers });
+            } else {
+              await storage.updateModmailThread(invite.threadId, { addedMemberIds: newMembers });
+            }
           }
 
           // Remove the pending invite
@@ -14645,8 +14545,8 @@ client.on("interactionCreate", async (interaction) => {
           try {
             const ticketCreator = await client.users.fetch(thread.userId);
             const acceptEmbed = new EmbedBuilder()
-              .setTitle("Joined Ticket")
-              .setDescription(`You have joined **${ticketCreator.username}**'s ticket.\n\nType here to reply. Your messages will be visible to staff and other ticket members.`)
+              .setTitle(invite.isAppeal ? "Joined Appeal" : "Joined Ticket")
+              .setDescription(`You have joined **${ticketCreator.username}**'s ${invite.isAppeal ? "appeal" : "ticket"}.\n\nType here to reply. Your messages will be visible to staff and other ticket members.`)
               .setColor(0x57f287)
               .setTimestamp();
             await interaction.update({ embeds: [acceptEmbed], components: [] });
@@ -15173,24 +15073,24 @@ client.on("interactionCreate", async (interaction) => {
             if (!await safeDeferUpdate(interaction)) return;
             const parts = customId.split("_");
             const page = parseInt(parts[2]);
-            const category = parts[3] === "all" ? null : parts[3];
-            const scope = parts[4];
             const { fromDays, toDays } = normalizeActivityRangeBounds(
-              parseActivityRangeFromCustomId(parts[5]),
-              parseActivityRangeFromCustomId(parts[6]),
+              parseActivityRangeFromCustomId(parts[3]),
+              parseActivityRangeFromCustomId(parts[4]),
             );
+            const categoryPart = parts[5] ?? "all";
+            const category = categoryPart === "all" ? null : categoryPart;
+            const extraCategories = ["partnerships", "staff_accepted", "role_requests_reviewed", "kick_requests_reviewed", "accepted_semi_pros_pros"];
             const includeUndatedExtraCounters = fromDays === undefined && toDays === undefined;
-            const useAllGuilds = scope === "all";
+            const useAllGuilds = true;
             const activityConfig = await storage.getGuildConfig(interaction.guildId!).catch(() => undefined);
             const trackedActivityMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityTrackedRoleIds);
-            const activityRoleMemberIds = await getTrackedActivityMemberIds(interaction.guild, activityConfig?.activityRoleIds);
 
             // Reuse the activity command logic
             const now = new Date();
             const fromDate = fromDays !== undefined ? new Date(now.getTime() - fromDays * 24 * 60 * 60 * 1000) : null;
             const toDate = toDays !== undefined ? new Date(now.getTime() - toDays * 24 * 60 * 60 * 1000) : now;
 
-            let timeRangeDesc = useAllGuilds ? "📊 **All Servers**" : "📊 **This Server Only**";
+            let timeRangeDesc = "📊 **All Servers**";
             if (fromDate || toDays !== undefined) {
               const fromTimestamp = fromDate ? `<t:${Math.floor(fromDate.getTime() / 1000)}:F>` : null;
               const toTimestamp = `<t:${Math.floor(toDate.getTime() / 1000)}:F>`;
@@ -15211,102 +15111,63 @@ client.on("interactionCreate", async (interaction) => {
             let roleRequestsReviewedStats: { userId: string; count: number }[] = [];
             let kickRequestsReviewedStats: { userId: string; count: number }[] = [];
             let acceptedSemiProsProsStats: { userId: string; count: number }[] = [];
-            let modmailCategoryStats: { category: string; count: number }[] = [];
             let moderationStatsRows: { moderatorId: string; warns: number; mutes: number; unmutes: number; kicks: number; bans: number; unbans: number }[] = [];
 
             try {
-              if (!category || category === "ban") {
-                banStats = useAllGuilds
-                  ? await storage.getAllGuildsBanStats(fromDays, toDays)
-                  : await storage.getActivityStats(interaction.guildId!, "ban", fromDays, toDays);
-              }
+              banStats = await storage.getAllGuildsBanStats(fromDays, toDays);
             } catch (e) {}
             try {
-              if (!category || category === "modban" || category === "kick" || category === "mute") {
-                moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays);
-                moderationBanStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.bans }));
-                moderationKickStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.kicks }));
-                moderationMuteStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.mutes }));
-              }
+              moderationStatsRows = await storage.getModerationStats(interaction.guildId!, fromDays, toDays);
+              moderationBanStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.bans }));
+              moderationKickStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.kicks }));
+              moderationMuteStats = moderationStatsRows.map((entry) => ({ userId: entry.moderatorId, count: entry.mutes }));
             } catch (e) {}
             try {
-              if (!category || category === "unban") {
-                unbanStats = useAllGuilds
-                  ? await storage.getAllGuildsUnbanStats(fromDays, toDays)
-                  : await storage.getActivityStats(interaction.guildId!, "unban", fromDays, toDays);
-              }
+              unbanStats = await storage.getAllGuildsUnbanStats(fromDays, toDays);
             } catch (e) {}
             try {
-              if (!category || category === "invites") {
-                inviteStats = useAllGuilds
-                  ? await storage.getAllGuildsInviteStats(fromDays, toDays)
-                  : await storage.getInviteStats(interaction.guildId!, fromDays, toDays);
-              }
+              inviteStats = await storage.getAllGuildsInviteStats(fromDays, toDays);
             } catch (e) {}
             try {
-              if (!category || category === "modmail") {
-                modmailStats = useAllGuilds
-                  ? await storage.getAllGuildsModmailStats(fromDays, toDays)
-                  : await storage.getModmailStats(interaction.guildId!, fromDays, toDays);
-              }
+              modmailStats = await storage.getAllGuildsModmailStats(fromDays, toDays);
             } catch (e) {}
             try {
-              if (!category || category === "appeal") {
-                appealStats = useAllGuilds
-                  ? await storage.getAllGuildsAppealStats(fromDays, toDays)
-                  : await storage.getAppealStats(interaction.guildId!, fromDays, toDays);
-              }
+              appealStats = await storage.getAllGuildsAppealStats(fromDays, toDays);
             } catch (e) {}
             try {
-              if (!category || category === "staffreport") {
-                staffReportStats = await storage.getStaffReportStats(interaction.guildId!, fromDays, toDays);
-              }
+              staffReportStats = await storage.getStaffReportStats(interaction.guildId!, fromDays, toDays);
             } catch (e) {}
 
-            if (includeUndatedExtraCounters) {
-              if (!category || category === "partnerships") {
-                partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", useAllGuilds);
-              }
-              if (!category || category === "staff_accepted") {
-                acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", useAllGuilds);
-              }
-              if (!category || category === "role_requests_reviewed") {
-                roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", useAllGuilds);
-              }
-              if (!category || category === "kick_requests_reviewed") {
-                kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", useAllGuilds);
-              }
-              if (!category || category === "accepted_semi_pros_pros") {
-                acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", useAllGuilds);
-              }
+            if (includeUndatedExtraCounters || (category !== null && extraCategories.includes(category))) {
+              if (!category || category === "partnerships") partnershipsStats = await getExtraActivityStatsForScope(interaction.guildId!, "partnerships", true);
+              if (!category || category === "staff_accepted") acceptedStaffStats = await getExtraActivityStatsForScope(interaction.guildId!, "staff_accepted", true);
+              if (!category || category === "role_requests_reviewed") roleRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "role_requests_reviewed", true);
+              if (!category || category === "kick_requests_reviewed") kickRequestsReviewedStats = await getExtraActivityStatsForScope(interaction.guildId!, "kick_requests_reviewed", true);
+              if (!category || category === "accepted_semi_pros_pros") acceptedSemiProsProsStats = await getExtraActivityStatsForScope(interaction.guildId!, "accepted_semi_pros_pros", true);
             }
-            try {
-              if (!category || category === "modmail") {
-                modmailCategoryStats = await storage.getModmailStatsByCategory(interaction.guildId!, fromDays, toDays);
-              }
-            } catch (e) {}
 
             const combinedStats: { [userId: string]: number } = {};
-            for (const stat of banStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of moderationBanStats) {
-              if (!category || category === "modban") combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+            const allStatArrays: { key: string; stats: { userId: string; count: number }[] }[] = [
+              { key: "ban", stats: banStats },
+              { key: "modban", stats: moderationBanStats },
+              { key: "kick", stats: moderationKickStats },
+              { key: "mute", stats: moderationMuteStats },
+              { key: "unban", stats: unbanStats },
+              { key: "invites", stats: inviteStats },
+              { key: "modmail", stats: modmailStats },
+              { key: "appeal", stats: appealStats },
+              { key: "staffreport", stats: staffReportStats },
+              { key: "partnerships", stats: partnershipsStats },
+              { key: "staff_accepted", stats: acceptedStaffStats },
+              { key: "role_requests_reviewed", stats: roleRequestsReviewedStats },
+              { key: "kick_requests_reviewed", stats: kickRequestsReviewedStats },
+              { key: "accepted_semi_pros_pros", stats: acceptedSemiProsProsStats },
+            ];
+            for (const { key, stats } of allStatArrays) {
+              if (!category || category === key) {
+                for (const stat of stats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
+              }
             }
-            for (const stat of moderationKickStats) {
-              if (!category || category === "kick") combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            }
-            for (const stat of moderationMuteStats) {
-              if (!category || category === "mute") combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            }
-            for (const stat of unbanStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of inviteStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of modmailStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of appealStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of staffReportStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of partnershipsStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of acceptedStaffStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of roleRequestsReviewedStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of kickRequestsReviewedStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
-            for (const stat of acceptedSemiProsProsStats) combinedStats[stat.userId] = (combinedStats[stat.userId] || 0) + stat.count;
 
             delete combinedStats["staff_report_entry"];
             delete combinedStats["manual_entry"];
@@ -15317,9 +15178,6 @@ client.on("interactionCreate", async (interaction) => {
               }
               filterCombinedActivityStatsToTrackedMembers(combinedStats, trackedActivityMemberIds);
             }
-            if (activityRoleMemberIds) {
-              filterCombinedActivityStatsToTrackedMembers(combinedStats, activityRoleMemberIds);
-            }
 
             const leaderboard = Object.entries(combinedStats)
               .map(([userId, count]) => ({ userId, count }))
@@ -15329,38 +15187,19 @@ client.on("interactionCreate", async (interaction) => {
             const start = (page - 1) * 10;
             const currentLeaderboard = leaderboard.slice(start, start + 10);
 
-            const categoryText = category === "ban"
-              ? "Ban Requests"
-              : category === "modban"
-                ? "Moderation Bans"
-                : category === "kick"
-                  ? "Moderation Kicks"
-                  : category === "mute"
-                    ? "Moderation Mutes"
-                    : category === "unban"
-                      ? "Unban Requests"
-                      : category === "invites"
-                        ? "Invites"
-                        : category === "modmail"
-                          ? "Modmails Handled"
-                          : category === "appeal"
-                            ? "Ban Appeals Handled"
-                            : category === "staffreport"
-                              ? "Staff Reports"
-                              : category === "partnerships"
-                                ? "Partnerships"
-                                : category === "staff_accepted"
-                                  ? "Accepted Staff"
-                                  : category === "role_requests_reviewed"
-                                    ? "Role Requests Reviewed"
-                                    : category === "kick_requests_reviewed"
-                                      ? "Kick Requests Reviewed"
-                                      : category === "accepted_semi_pros_pros"
-                                        ? "Accepted Semi Pros & Pros"
-                                        : "All Activity";
+            const categoryLabels: Record<string, string> = {
+                ban: "Ban Requests", modban: "Bans", kick: "Kicks",
+                mute: "Mutes", unban: "Unban Requests", invites: "Invites",
+              modmail: "Modmails Handled", appeal: "Appeals Handled", staffreport: "Staff Reports",
+              partnerships: "Partnerships", staff_accepted: "Accepted Staff",
+              role_requests_reviewed: "Role Requests Reviewed",
+              kick_requests_reviewed: "Kick Requests Reviewed",
+              accepted_semi_pros_pros: "Accepted Semi Pros & Pros",
+            };
+            const titleSuffix = category ? ` — ${categoryLabels[category] ?? category}` : "";
 
             const embed = new EmbedBuilder()
-              .setTitle(`${categoryText} Leaderboard`)
+              .setTitle(`All Activity Leaderboard${titleSuffix}`)
               .setColor(0x5865f2)
               .setDescription(timeRangeDesc || null);
 
@@ -15388,9 +15227,9 @@ client.on("interactionCreate", async (interaction) => {
 
             let statsText = `**Total in the specified time:** ${totalCount}`;
             statsText += `\nBan Requests: ${banTotal}`;
-            statsText += `\nModeration Bans: ${moderationBanTotal}`;
-            statsText += `\nModeration Kicks: ${moderationKickTotal}`;
-            statsText += `\nModeration Mutes: ${moderationMuteTotal}`;
+              statsText += `\nBans: ${moderationBanTotal}`;
+              statsText += `\nKicks: ${moderationKickTotal}`;
+              statsText += `\nMutes: ${moderationMuteTotal}`;
             statsText += `\nUnban Requests: ${unbanTotal}`;
             statsText += `\nInvites: ${inviteTotal}`;
             statsText += `\nModmails Handled: ${modmailTotal}`;
@@ -15401,23 +15240,6 @@ client.on("interactionCreate", async (interaction) => {
             statsText += `\nRole Requests Reviewed: ${roleRequestsReviewedTotal}`;
             statsText += `\nKick Requests Reviewed: ${kickRequestsReviewedTotal}`;
             statsText += `\nAccepted Semi Pros & Pros: ${acceptedSemiProsProsTotal}`;
-            if (category === "modmail") {
-              if (modmailTotal > 0 && modmailCategoryStats.length > 0) {
-                const categoryLabels: { [key: string]: string } = {};
-                const config = await storage.getGuildConfig(interaction.guildId!);
-                if (config?.customModmailCategories) {
-                  try {
-                    const cats = JSON.parse(config.customModmailCategories);
-                    for (const cat of cats) categoryLabels[cat.id] = cat.label;
-                  } catch (e) {}
-                }
-                statsText += "\n\n**Category Breakdown:**";
-                for (const catStat of modmailCategoryStats) {
-                  if (catStat.category === "unknown" || !catStat.category) continue;
-                  statsText += `\n• ${categoryLabels[catStat.category] || catStat.category}: ${catStat.count}`;
-                }
-              }
-            }
             embed.addFields({ name: "Stats", value: statsText, inline: false });
 
             embed.setFooter({ text: `Page ${page} of ${totalPages} | ${now.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}, ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}` });
@@ -15426,12 +15248,12 @@ client.on("interactionCreate", async (interaction) => {
             if (totalPages > 1) {
               const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder()
-                  .setCustomId(`activity_page_${page - 1}_${category || "all"}_${scope}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}`)
+                  .setCustomId(`activity_page_${page - 1}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
                   .setLabel("◀ Previous")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(page <= 1),
                 new ButtonBuilder()
-                  .setCustomId(`activity_page_${page + 1}_${category || "all"}_${scope}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}`)
+                  .setCustomId(`activity_page_${page + 1}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
                   .setLabel("Next ▶")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(page >= totalPages)
@@ -16054,6 +15876,12 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        const canDm = await canDeliverTicketDm(user);
+        if (!canDm) {
+          await interaction.editReply({ content: DM_REQUIRED_FOR_TICKETS_MESSAGE });
+          return;
+        }
+
         // Verify the appeal category still exists before creating thread
         const categoryExists = await validateCategoryExists(guild, config.appealCategoryId);
         if (!categoryExists) {
@@ -16067,6 +15895,17 @@ client.on("interactionCreate", async (interaction) => {
             ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
             : "You are permanently blocked.";
           await interaction.editReply({ content: `You are blocked from submitting appeals. ${expiresText}` });
+          return;
+        }
+        const roleBlock = await getActiveRoleBasedSystemBlock({
+          guild,
+          userId: user.id,
+          system: "appeal",
+          config,
+          interactionMember: interaction.member,
+        });
+        if (roleBlock.blocked) {
+          await interaction.editReply({ content: "You are blocked from submitting appeals due to your server roles." });
           return;
         }
 
@@ -16306,11 +16145,7 @@ client.on("interactionCreate", async (interaction) => {
         const guild = interaction.guild;
         if (!guild) return;
 
-        try {
-          await guild.members.fetch({ time: 30000 });
-        } catch (error) {
-          console.log("Could not fully fetch members");
-        }
+        await ensureGuildMembersFetched(guild);
 
         const guildRole = guild.roles.cache.get(roleId);
         if (!guildRole) return;
@@ -16379,6 +16214,19 @@ client.on("interactionCreate", async (interaction) => {
               : " You are permanently blocked.";
             await interaction.editReply({
               content: `❌ You are blocked from staff applications.${expiresText}`,
+            });
+            return;
+          }
+          const roleBlock = await getActiveRoleBasedSystemBlock({
+            guild: interaction.guild,
+            userId: user.id,
+            system: "staff_applications",
+            config,
+            interactionMember: interaction.member,
+          });
+          if (roleBlock.blocked) {
+            await interaction.editReply({
+              content: "❌ You are blocked from staff applications due to your server roles.",
             });
             return;
           }
@@ -16746,8 +16594,16 @@ client.on("interactionCreate", async (interaction) => {
           .setFooter({ text: `Submission ID: ${submissionId}` })
           .setTimestamp();
 
+        const modlogsOnlyRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`staff_app_modlogs_${submissionId}`)
+            .setLabel("Modlogs")
+            .setStyle(ButtonStyle.Secondary)
+            .setEmoji("📚"),
+        );
+
         if (interaction.message) {
-          await interaction.message.edit({ embeds: [updatedEmbed], components: [] }).catch(() => {});
+          await interaction.message.edit({ embeds: [updatedEmbed], components: [modlogsOnlyRow] }).catch(() => {});
         }
 
         if (isApprove) {
@@ -17401,11 +17257,17 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          // Get the thread - try by ID first, then fall back to channel lookup
-          let thread = await storage.getModmailThread(threadId);
-          if (!thread) {
-            thread = await safeGetModmailThreadByChannel(interaction.channelId!);
+          // Get the thread - try modmail first, then appeal, then fall back to channel lookup
+          let modmailThread = await storage.getModmailThread(threadId).catch(() => null);
+          if (!modmailThread) {
+            modmailThread = await safeGetModmailThreadByChannel(interaction.channelId!);
           }
+          const appealThread = modmailThread
+            ? null
+            : (await storage.getAppealThread(threadId).catch(() => null))
+              || await storage.getAppealThreadByChannel(interaction.channelId!).catch(() => null);
+          const thread = modmailThread || appealThread;
+          const isAppeal = !modmailThread && !!appealThread;
           if (!thread) {
             await interaction.editReply({ content: "❌ Thread not found." });
             return;
@@ -17449,6 +17311,7 @@ client.on("interactionCreate", async (interaction) => {
               invitedById: interaction.user.id,
               reason: reason,
               createdAt: Date.now(),
+              isAppeal,
             });
 
             // DM the user with Accept/Deny buttons
@@ -17478,17 +17341,21 @@ client.on("interactionCreate", async (interaction) => {
             } catch {
               // Could not DM user - add them directly instead
               const newMembers = [...currentMembers, userId];
-              await storage.updateModmailThread(thread.id, { addedMemberIds: newMembers });
+              if (isAppeal) {
+                await storage.updateAppealThread(thread.id, { addedMemberIds: newMembers });
+              } else {
+                await storage.updateModmailThread(thread.id, { addedMemberIds: newMembers });
+              }
               removePendingInvite(inviteId);
 
-              await interaction.editReply({ content: `⚠️ Could not DM <@${userId}>, so they were added directly to the ticket.` });
+              await interaction.editReply({ content: `⚠️ Could not DM <@${userId}>, so they were added directly to this ${isAppeal ? "appeal" : "ticket"}.` });
               return;
             }
 
             // Send confirmation in the ticket channel
             const confirmEmbed = new EmbedBuilder()
               .setTitle("Invite Sent")
-              .setDescription(`An invite has been sent to <@${userId}>. They must accept to join this ticket.`)
+              .setDescription(`An invite has been sent to <@${userId}>. They must accept to join this ${isAppeal ? "appeal" : "ticket"}.`)
               .addFields(
                 { name: "Invited By", value: `<@${interaction.user.id}>`, inline: true },
                 { name: "Reason", value: reason, inline: true },
@@ -17517,7 +17384,11 @@ client.on("interactionCreate", async (interaction) => {
 
             // Remove the user
             const newMembers = currentMembers.filter((id: string) => id !== userId);
-            await storage.updateModmailThread(threadId, { addedMemberIds: newMembers });
+            if (isAppeal) {
+              await storage.updateAppealThread(threadId, { addedMemberIds: newMembers });
+            } else {
+              await storage.updateModmailThread(threadId, { addedMemberIds: newMembers });
+            }
 
             let ticketCreatorName = "the ticket creator";
             try {
@@ -17536,8 +17407,8 @@ client.on("interactionCreate", async (interaction) => {
             // DM the removed user
             try {
               const removeEmbed = new EmbedBuilder()
-                .setTitle("Removed from Modmail Ticket")
-                .setDescription(`You have been removed from **${ticketCreatorName}**'s modmail ticket.\n\nReplies in this DM will no longer go to staff or the other ticket members.`)
+                .setTitle(`Removed from ${isAppeal ? "Appeal" : "Ticket"}`)
+                .setDescription(`You have been removed from **${ticketCreatorName}**'s ${isAppeal ? "appeal" : "ticket"}.\n\nReplies in this DM will no longer go to staff or the other ticket members.`)
                 .setColor(0xed4245)
                 .setTimestamp();
               await targetUser.send({ embeds: [removeEmbed] });
@@ -17569,7 +17440,7 @@ client.on("interactionCreate", async (interaction) => {
             // Send confirmation in the ticket channel
             const confirmEmbed = new EmbedBuilder()
               .setTitle("Member Removed")
-              .setDescription(`<@${userId}> has been removed from this ticket.`)
+              .setDescription(`<@${userId}> has been removed from this ${isAppeal ? "appeal" : "ticket"}.`)
               .addFields(
                 { name: "Removed By", value: `<@${interaction.user.id}>`, inline: true },
                 { name: "Reason", value: reason, inline: true },
@@ -17779,26 +17650,13 @@ client.on("interactionCreate", async (interaction) => {
           const threadId = payloadLastUnderscore > 0 && /^\d{17,20}$/.test(selectedRoleIdFromDropdown)
             ? modalPayload.slice(0, payloadLastUnderscore)
             : modalPayload;
-          const targetUserId = interaction.fields.getTextInputValue("user_id").trim();
-          const roleInput = /^\d{17,20}$/.test(selectedRoleIdFromDropdown)
-            ? selectedRoleIdFromDropdown
-            : interaction.fields.getTextInputValue("role_input").trim();
+          const roleInput = selectedRoleIdFromDropdown;
           const reason = interaction.fields.getTextInputValue("reason").trim();
           const proof = interaction.fields.getTextInputValue("proof_requirements").trim();
 
-          if (!/^\d{17,19}$/.test(targetUserId)) {
-            await interaction.editReply({ content: "❌ Invalid user ID format. Please provide a valid Discord user ID." });
-            return;
-          }
-
-          if (!roleInput) {
-            await interaction.editReply({ content: "❌ Role ID is required." });
-            return;
-          }
-
           if (!/^\d{17,20}$/.test(roleInput)) {
             await interaction.editReply({
-              content: "❌ Role names are not accepted. Use a role ID only. This is how you get role IDs: https://www.youtube.com/watch?v=Rw0HjR9Nzvg",
+              content: "❌ Invalid role selection. Please pick a role from the role selector and try again.",
             });
             return;
           }
@@ -17827,9 +17685,15 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
+          const targetUserId = String(thread.userId || "").trim();
+          if (!/^\d{17,20}$/.test(targetUserId)) {
+            await interaction.editReply({ content: "❌ Could not resolve the ticket creator for this request." });
+            return;
+          }
+
           const targetUser = await client.users.fetch(targetUserId).catch(() => null);
           if (!targetUser) {
-            await interaction.editReply({ content: "❌ Could not find a user with that ID." });
+            await interaction.editReply({ content: "❌ Could not find the ticket creator for this request." });
             return;
           }
 
@@ -18366,6 +18230,12 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
+        const canDm = await canDeliverTicketDm(user);
+        if (!canDm) {
+          await interaction.editReply({ content: DM_REQUIRED_FOR_TICKETS_MESSAGE });
+          return;
+        }
+
         // Check if user is blocked
         const block = await storage.getActiveModmailBlock(guildId, user.id);
         if (block) {
@@ -18373,6 +18243,17 @@ client.on("interactionCreate", async (interaction) => {
             ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
             : "You are permanently blocked.";
           await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
+          return;
+        }
+        const roleBlock = await getActiveRoleBasedSystemBlock({
+          guild,
+          userId: user.id,
+          system: "modmail",
+          config,
+          interactionMember: interaction.member,
+        });
+        if (roleBlock.blocked) {
+          await interaction.editReply({ content: "❌ You are blocked from opening tickets due to your server roles." });
           return;
         }
 
@@ -18570,6 +18451,24 @@ client.on("interactionCreate", async (interaction) => {
         const config = await storage.getGuildConfig(guildId);
         if (!config?.modmailCategoryId) {
           await interaction.editReply({ content: "❌ Modmail is not configured for this server." });
+          return;
+        }
+
+        const roleBlock = await getActiveRoleBasedSystemBlock({
+          guild,
+          userId: user.id,
+          system: "modmail",
+          config,
+          interactionMember: interaction.member,
+        });
+        if (roleBlock.blocked) {
+          await interaction.editReply({ content: "❌ You are blocked from opening tickets due to your server roles." });
+          return;
+        }
+
+        const canDm = await canDeliverTicketDm(user);
+        if (!canDm) {
+          await interaction.editReply({ content: DM_REQUIRED_FOR_TICKETS_MESSAGE });
           return;
         }
 
@@ -18809,6 +18708,16 @@ client.on("interactionCreate", async (interaction) => {
             ? `Your block expires <t:${Math.floor(block.expiresAt.getTime() / 1000)}:R>.`
             : "You are permanently blocked.";
           await interaction.editReply({ content: `❌ You are blocked from opening tickets. ${expiresText}` });
+          return;
+        }
+        const dmRoleBlock = await getActiveRoleBasedSystemBlock({
+          guild,
+          userId: user.id,
+          system: "modmail",
+          config,
+        });
+        if (dmRoleBlock.blocked) {
+          await interaction.editReply({ content: "❌ You are blocked from opening tickets due to your server roles." });
           return;
         }
 
@@ -20765,6 +20674,83 @@ function buildStoredTranscriptContent(content: string, attachmentUrls?: string[]
   return `${normalized}\n\n${attachmentBlock}`;
 }
 
+function parseStoredTranscriptContent(content: string | null | undefined): ModmailCopyData | undefined {
+  const raw = String(content || "").trim();
+  if (!raw) return undefined;
+
+  const attachmentMarker = "\n\nAttachments:\n";
+  const attachmentOnlyMarker = "(Attachment)\nAttachments:\n";
+
+  if (raw.startsWith(attachmentOnlyMarker)) {
+    const attachments = raw.slice(attachmentOnlyMarker.length).split("\n").map((item) => item.trim()).filter(Boolean);
+    return { content: "", attachments: attachments.length > 0 ? attachments : undefined };
+  }
+
+  const attachmentIndex = raw.indexOf(attachmentMarker);
+  if (attachmentIndex >= 0) {
+    const messageContent = raw.slice(0, attachmentIndex).trim();
+    const attachments = raw.slice(attachmentIndex + attachmentMarker.length).split("\n").map((item) => item.trim()).filter(Boolean);
+    return {
+      content: messageContent,
+      attachments: attachments.length > 0 ? attachments : undefined,
+    };
+  }
+
+  return { content: raw };
+}
+
+function buildModmailCopyResponseText(copyData: ModmailCopyData): string {
+  const content = (copyData.content || "").trim();
+  const attachments = (copyData.attachments || []).filter(Boolean);
+
+  if (attachments.length === 0) {
+    return content || "(No text content)";
+  }
+
+  const mediaBlock = `Pictures/Videos:\n${attachments.join("\n")}`;
+  if (!content) {
+    return mediaBlock;
+  }
+
+  return `${content}\n\n${mediaBlock}`;
+}
+
+function isImageAttachmentUrl(url: string): boolean {
+  return /\.(png|jpe?g|gif|webp|bmp|svg)(\?.*)?$/i.test(url || "");
+}
+
+function buildModmailCopyResponsePayload(messageId: string, copyData: ModmailCopyData): { content: string; files?: AttachmentBuilder[]; embeds?: EmbedBuilder[] } {
+  const content = (copyData.content || "").trim();
+  const attachments = (copyData.attachments || []).filter(Boolean);
+  const imageUrls = attachments.filter(isImageAttachmentUrl);
+  const otherUrls = attachments.filter((url) => !isImageAttachmentUrl(url));
+  const embeds = imageUrls.slice(0, 10).map((url) => new EmbedBuilder().setImage(url));
+  const overflowUrls = [...imageUrls.slice(10), ...otherUrls];
+
+  let responseText = content;
+  if (overflowUrls.length > 0) {
+    const overflowBlock = `Pictures/Videos:\n${overflowUrls.join("\n")}`;
+    responseText = responseText ? `${responseText}\n\n${overflowBlock}` : overflowBlock;
+  } else if (!responseText && embeds.length === 0) {
+    responseText = "(No text content)";
+  }
+
+  if (responseText.length <= 1900) {
+    return {
+      content: responseText || (embeds.length > 0 ? "Pictures/Videos:" : "(No text content)"),
+      ...(embeds.length > 0 ? { embeds } : {}),
+    };
+  }
+
+  const transcriptBuffer = Buffer.from(responseText, "utf8");
+  const attachment = new AttachmentBuilder(transcriptBuffer, { name: `message-${messageId}.txt` });
+  return {
+    content: embeds.length > 0 ? "Message text attached as a file. Pictures are shown below." : "Message content attached as a text file.",
+    files: [attachment],
+    ...(embeds.length > 0 ? { embeds } : {}),
+  };
+}
+
 function buildInternalStoredTranscriptContent(content: string, attachmentUrls?: string[]): string {
   const normalized = (content || "").trim();
   const prefixed = normalized.length > 0 ? `[internal] ${normalized}` : "[internal]";
@@ -21471,7 +21457,6 @@ client.on("messageCreate", async (message) => {
       .setTimestamp();
     await message.reply({ embeds: [claimedEmbed] });
 
-    // Update claim button UI in the channel so it's no longer clickable
     try {
       const messages = await (message.channel as any).messages.fetch({ limit: 50 });
       const buttonMessage = messages.find((m: any) => 
@@ -22135,15 +22120,22 @@ client.on("messageCreate", async (message) => {
 
       const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
       const configuredRoles = uniqueStrings(modSetup.rolePermissions[configAction] || []);
+      const inheritedBanRoles = configAction === "fullban" || configAction === "fakeban"
+        ? uniqueStrings(modSetup.rolePermissions.ban || [])
+        : [];
+      const effectiveConfiguredRoles = uniqueStrings([...configuredRoles, ...inheritedBanRoles]);
       const fallbackModRoles = uniqueStrings(guildConfig?.modRoleIds || []);
-      const hasConfiguredRole = configuredRoles.some((roleId) => memberRoleIds.includes(roleId));
+      const hasConfiguredRole = effectiveConfiguredRoles.some((roleId) => memberRoleIds.includes(roleId));
       const hasFallbackModRole = fallbackModRoles.some((roleId) => memberRoleIds.includes(roleId));
       const hasNativeActionPermission = (isBanLikeCommand || command === "unban")
         ? hasBanPerm
         : command === "kick"
           ? hasKickPerm
           : hasMutePerm;
-      const isActionEnabled = modSetup.enabledActions.includes(configAction) || isAdmin || hasConfiguredRole || hasFallbackModRole || hasNativeActionPermission;
+      const isConfiguredActionEnabled = configAction === "fullban" || configAction === "fakeban"
+        ? modSetup.enabledActions.includes("ban")
+        : modSetup.enabledActions.includes(configAction as PrefixModerationAction);
+      const isActionEnabled = isConfiguredActionEnabled || isAdmin || hasConfiguredRole || hasFallbackModRole || hasNativeActionPermission;
       const hasPermissionForAction = isAdmin || hasConfiguredRole || hasFallbackModRole || hasNativeActionPermission;
 
       if (!isActionEnabled || !hasPermissionForAction) {
@@ -22281,14 +22273,13 @@ client.on("messageCreate", async (message) => {
               }
 
               if (durationMs && durationMs > 0) {
-                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
+                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fakebanned for \`${durationToken}\`. | ${reason}`);
               } else {
-                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
+                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fakebanned permanently. | ${reason}`);
               }
-              return;
-            }
 
-            if (isFullBanCommand) {
+              return;
+            } else if (isFullBanCommand) {
               const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage);
               if (!sent) {
                 await sendPrefixCommandMessage("Unable to DM the user, proceeded to fullban.");
@@ -22328,9 +22319,9 @@ client.on("messageCreate", async (message) => {
               });
               await sendModerationCommandLog(actionEntry);
               return;
+            } else {
+              await message.guild.members.ban(targetUserId, { reason });
             }
-
-            await message.guild.members.ban(targetUserId, { reason });
 
             if (durationMs && durationMs > 0) {
               await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
@@ -22418,9 +22409,9 @@ client.on("messageCreate", async (message) => {
             }
 
             if (durationMs && durationMs > 0) {
-              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fakebanned for \`${durationToken}\`. | ${reason}`);
             } else {
-              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fakebanned permanently. | ${reason}`);
             }
           } else if (isFullBanCommand) {
             const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage, targetMember);
@@ -22478,7 +22469,7 @@ client.on("messageCreate", async (message) => {
           try {
             await targetMember.roles.remove(modSetup.mutedRoleId, `Unmuted by ${message.author.tag}: ${reason}`);
           } catch {
-            // ignore muted-role removal failures
+            return;
           }
 
           await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was unmuted. | ${reason}`);
@@ -23697,9 +23688,9 @@ client.on("messageCreate", async (message) => {
             // Send to user DM
             const dmMessage = await user.send({ embeds: [staffEmbed] });
 
-            // Also send to added members if this is a modmail thread
+            // Also send to added members on the same ticket
             const snippetAddedMemberIds = (thread as any).addedMemberIds as string[] | null | undefined;
-            if (!isAppealSnippet && snippetAddedMemberIds && snippetAddedMemberIds.length > 0) {
+            if (snippetAddedMemberIds && snippetAddedMemberIds.length > 0) {
               for (const memberId of snippetAddedMemberIds) {
                 try {
                   const addedMember = await client.users.fetch(memberId);
@@ -23747,11 +23738,11 @@ client.on("messageCreate", async (message) => {
               if (!memberStillInServer) {
                 failureDescription = "⚠️ **User has left the server.**";
               } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
-                failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+                failureDescription = "⚠️ **User has DMs turned off.**";
               }
             } catch {
               if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
-                failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+                failureDescription = "⚠️ **User has DMs turned off.**";
               }
             }
             const errorEmbed = new EmbedBuilder()
@@ -24003,7 +23994,8 @@ client.on("messageCreate", async (message) => {
 
           // Collect attachment URLs
           const attachmentUrls = relayPayload.attachmentUrls;
-          const embedBodyText = relayPayload.plainText || description;
+          const attachmentOnlyNotice = `${message.author.username} has sent attachment(s).`;
+          const embedBodyText = relayPayload.plainText || (attachmentUrls.length > 0 ? attachmentOnlyNotice : description);
           const userEmbed = new EmbedBuilder()
             .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
             .setDescription(embedBodyText)
@@ -24025,11 +24017,6 @@ client.on("messageCreate", async (message) => {
             // fall back to URL-based embed if download fails
           }
           const uploadedFiles = fileBuilders.map(f => f.builder);
-
-          // Keep attachment details out of embed text; attachments render as files.
-          if (relayPayload.imageUrl) {
-            userEmbed.setImage(relayPayload.imageUrl);
-          }
 
           const actionRow = buildModmailActionRow(targetThread.id, message.id, message.author.id, isAppealThread);
 
@@ -24127,32 +24114,27 @@ client.on("messageCreate", async (message) => {
           }
 
           // Forward message to other ticket participants (original creator + added members)
-          if (!isAppealThread) {
-            const allParticipants = [targetThread.userId, ...(targetThread.addedMemberIds || [])];
-            const otherParticipants = allParticipants.filter((id: string) => id !== message.author.id);
-            
-            for (const participantId of otherParticipants) {
-              try {
-                const participant = await client.users.fetch(participantId);
-                const forwardEmbed = new EmbedBuilder()
-                  .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-                  .setDescription(relayPayload.plainText || description)
-                  .setColor(0x3498db)
-                  .setFooter({ text: participantId === targetThread.userId ? "Ticket Participant" : "Added Member" })
-                  .setTimestamp();
-                
-                if (attachmentUrls.length > 0) {
-                  forwardEmbed.addFields({ name: "Attachments", value: formatUrlListForField(attachmentUrls), inline: false });
-                }
-
-                if (relayPayload.imageUrl) {
-                  forwardEmbed.setImage(relayPayload.imageUrl);
-                }
-                
-                await participant.send({ embeds: [forwardEmbed] });
-              } catch {
-                // Could not DM participant
+          const allParticipants = [targetThread.userId, ...((targetThread as any).addedMemberIds || [])];
+          const otherParticipants = allParticipants.filter((id: string) => id !== message.author.id);
+          
+          for (const participantId of otherParticipants) {
+            try {
+              const participant = await client.users.fetch(participantId);
+              const forwardEmbedText = relayPayload.plainText || (attachmentUrls.length > 0 ? attachmentOnlyNotice : description);
+              const forwardEmbed = new EmbedBuilder()
+                .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+                .setDescription(forwardEmbedText)
+                .setColor(0x3498db)
+                .setFooter({ text: participantId === targetThread.userId ? "Ticket Participant" : "Added Member" })
+                .setTimestamp();
+              
+              if (attachmentUrls.length > 0) {
+                forwardEmbed.addFields({ name: "Attachments", value: formatUrlListForField(attachmentUrls), inline: false });
               }
+              
+              await participant.send({ embeds: [forwardEmbed] });
+            } catch {
+              // Could not DM participant
             }
           }
 
@@ -24252,9 +24234,9 @@ client.on("messageCreate", async (message) => {
         ...(replyDmBuilders.length > 0 ? { files: replyDmBuilders } : {}),
       });
 
-      // Also send to added members if this is a modmail thread
+      // Also send to added members on the same ticket
       const addedMemberIds = (thread as any).addedMemberIds as string[] | null | undefined;
-      if (!isAppeal && addedMemberIds && addedMemberIds.length > 0) {
+      if (addedMemberIds && addedMemberIds.length > 0) {
         for (const memberId of addedMemberIds) {
           try {
             const addedMember = await client.users.fetch(memberId);
@@ -24495,11 +24477,11 @@ client.on("messageCreate", async (message) => {
         if (!memberStillInServer) {
           failureDescription = "⚠️ **User has left the server.**";
         } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
-          failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+          failureDescription = "⚠️ **User has DMs turned off.**";
         }
       } catch {
         if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
-          failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+          failureDescription = "⚠️ **User has DMs turned off.**";
         }
       }
       const errorEmbed = new EmbedBuilder()
@@ -24583,9 +24565,9 @@ client.on("messageCreate", async (message) => {
         ...(arDmBuilders.length > 0 ? { files: arDmBuilders } : {}),
       });
 
-      // Also send to added members if this is a modmail thread
+      // Also send to added members on the same ticket
       const addedMemberIdsAr = (thread as any).addedMemberIds as string[] | null | undefined;
-      if (!isAppeal && addedMemberIdsAr && addedMemberIdsAr.length > 0) {
+      if (addedMemberIdsAr && addedMemberIdsAr.length > 0) {
         for (const memberId of addedMemberIdsAr) {
           try {
             const addedMember = await client.users.fetch(memberId);
@@ -24826,11 +24808,11 @@ client.on("messageCreate", async (message) => {
         if (!memberStillInServer) {
           failureDescription = "⚠️ **User has left the server.**";
         } else if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
-          failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+          failureDescription = "⚠️ **User has DMs turned off.**";
         }
       } catch {
         if (error?.code === 50007 || String(error?.message || "").toLowerCase().includes("cannot send messages to this user")) {
-          failureDescription = "⚠️ **User has DMs turned off or blocked the bot.**";
+          failureDescription = "⚠️ **User has DMs turned off.**";
         }
       }
       const errorEmbed = new EmbedBuilder()
@@ -25069,8 +25051,28 @@ client.on("messageCreate", async (message) => {
       // Discord message ID (snowflake)
       modmailMsg = isAppeal ? await storage.getAppealMessageByChannelMessageId(args) : await storage.getModmailMessageByChannelMessageId(args);
     } else {
-      // No ID provided, use most recent staff message
-      modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
+      // No ID provided, use the most recent stored staff message that still exists in the channel.
+      const recentChannelMessages = await (message.channel as any).messages.fetch({ limit: 25 }).catch(() => null);
+      if (recentChannelMessages) {
+        for (const candidate of recentChannelMessages.values()) {
+          if (candidate.id === message.id) {
+            continue;
+          }
+
+          const candidateRecord = isAppeal
+            ? await storage.getAppealMessageByChannelMessageId(String(candidate.id))
+            : await storage.getModmailMessageByChannelMessageId(String(candidate.id));
+
+          if (candidateRecord?.threadId === thread.id && candidateRecord.isStaff === "true") {
+            modmailMsg = candidateRecord;
+            break;
+          }
+        }
+      }
+
+      if (!modmailMsg) {
+        modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
+      }
     }
 
     if (!modmailMsg || modmailMsg.threadId !== thread.id || modmailMsg.isStaff !== "true") {

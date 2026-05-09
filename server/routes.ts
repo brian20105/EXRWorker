@@ -57,6 +57,8 @@ const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const DASHBOARD_SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
 const DASHBOARD_BLACKLIST_USERS_KEY = "__dashboardBlacklistedUsers";
+const DASHBOARD_MISC_ROLE_BLOCKS_KEY = "__dashboardMiscRoleBlocks";
+const DASHBOARD_MISC_ROLE_BLOCK_BYPASS_USERS_KEY = "__dashboardMiscRoleBlockBypassUsers";
 const DASHBOARD_FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
 const DASHBOARD_REACTION_ROLE_SETUP_KEY = "__reactionRoleSetup";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
@@ -283,6 +285,8 @@ type DashboardBlacklistEntry = {
   createdAt: string | null;
 };
 
+type DashboardMiscBlockSystem = "staff_applications" | "modmail" | "appeal";
+
 function getStaffApplicationBlocksFromConfig(raw: unknown): Record<string, StaffApplicationBlockEntry> {
   const root = parseDashboardConfigObject(raw);
   const blocksRaw = root.__staffApplicationBlocks;
@@ -373,10 +377,82 @@ function removeBlacklistedUserFromConfig(existingCustomCategoryPings: string | n
   return JSON.stringify(root);
 }
 
+function getMiscRoleBlocksFromConfig(raw: unknown): Record<DashboardMiscBlockSystem, string[]> {
+  const root = parseDashboardConfigObject(raw);
+  const blocksRaw = root[DASHBOARD_MISC_ROLE_BLOCKS_KEY];
+  const blocksObject = blocksRaw && typeof blocksRaw === "object" && !Array.isArray(blocksRaw)
+    ? blocksRaw as Record<string, unknown>
+    : {};
+
+  return {
+    staff_applications: normalizeStringList(blocksObject.staff_applications),
+    modmail: normalizeStringList(blocksObject.modmail),
+    appeal: normalizeStringList(blocksObject.appeal),
+  };
+}
+
+function addMiscRoleBlockToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  system: DashboardMiscBlockSystem,
+  roleId: string,
+): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existing = getMiscRoleBlocksFromConfig(existingCustomCategoryPings);
+  root[DASHBOARD_MISC_ROLE_BLOCKS_KEY] = {
+    ...existing,
+    [system]: Array.from(new Set([...(existing[system] || []), roleId])),
+  };
+  return JSON.stringify(root);
+}
+
+function removeMiscRoleBlockFromConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  system: DashboardMiscBlockSystem,
+  roleId: string,
+): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existing = getMiscRoleBlocksFromConfig(existingCustomCategoryPings);
+  root[DASHBOARD_MISC_ROLE_BLOCKS_KEY] = {
+    ...existing,
+    [system]: (existing[system] || []).filter((entry) => entry !== roleId),
+  };
+  return JSON.stringify(root);
+}
+
+function getMiscRoleBlockBypassUsersFromConfig(raw: unknown): string[] {
+  const root = parseDashboardConfigObject(raw);
+  return normalizeStringList(root[DASHBOARD_MISC_ROLE_BLOCK_BYPASS_USERS_KEY]);
+}
+
+function addMiscRoleBlockBypassUserToConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  userId: string,
+): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existing = getMiscRoleBlockBypassUsersFromConfig(existingCustomCategoryPings);
+  root[DASHBOARD_MISC_ROLE_BLOCK_BYPASS_USERS_KEY] = Array.from(new Set([...existing, userId]));
+  return JSON.stringify(root);
+}
+
+function removeMiscRoleBlockBypassUserFromConfig(
+  existingCustomCategoryPings: string | null | undefined,
+  userId: string,
+): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existing = getMiscRoleBlockBypassUsersFromConfig(existingCustomCategoryPings);
+  root[DASHBOARD_MISC_ROLE_BLOCK_BYPASS_USERS_KEY] = existing.filter((entry) => entry !== userId);
+  return JSON.stringify(root);
+}
+
 function mergeProtectedCustomCategoryCollections(nextRaw: unknown, previousRaw: unknown): string {
   const next = parseDashboardConfigObject(nextRaw);
   const previous = parseDashboardConfigObject(previousRaw);
-  const protectedKeys = [DASHBOARD_BLACKLIST_USERS_KEY, "__staffApplicationBlocks"];
+  const protectedKeys = [
+    DASHBOARD_BLACKLIST_USERS_KEY,
+    "__staffApplicationBlocks",
+    DASHBOARD_MISC_ROLE_BLOCKS_KEY,
+    DASHBOARD_MISC_ROLE_BLOCK_BYPASS_USERS_KEY,
+  ];
   const mergedSecuritySettings = mergeDashboardSecuritySettings(
     previous[DASHBOARD_SECURITY_SETTINGS_KEY],
     next[DASHBOARD_SECURITY_SETTINGS_KEY],
@@ -3017,7 +3093,16 @@ export async function registerRoutes(
         }))
         .filter((entry) => entry.userId);
 
-      const [blocks, blacklistedUsers] = await Promise.all([
+      const roleBlocksBySystem = getMiscRoleBlocksFromConfig(config?.customCategoryPings);
+      const roleBlocks = Object.entries(roleBlocksBySystem).flatMap(([system, roleIds]) =>
+        roleIds.map((roleId) => ({
+          system,
+          roleId,
+        }))
+      );
+      const bypassUserIds = getMiscRoleBlockBypassUsersFromConfig(config?.customCategoryPings);
+
+      const [blocks, blacklistedUsers, bypassUsers] = await Promise.all([
         Promise.all(rawBlocks.map(async (block) => {
           const blockedUser = await getCachedUserSummary(block.userId);
           const blockedByUser = block.blockedById ? await getCachedUserSummary(block.blockedById) : null;
@@ -3047,7 +3132,29 @@ export async function registerRoutes(
             createdAt: entry.createdAt,
           };
         })),
+        Promise.all(bypassUserIds.map(async (userId) => {
+          const bypassUser = await getCachedUserSummary(userId);
+          return {
+            userId,
+            username: bypassUser.username || userId,
+            avatarUrl: bypassUser.avatarUrl,
+          };
+        })),
       ]);
+
+      const roleBlocksResolved = roleBlocks
+        .map((entry) => {
+          const role = guildRoles.find((guildRole) => guildRole.id === entry.roleId);
+          return {
+            system: entry.system,
+            roleId: entry.roleId,
+            roleName: role?.name || `Unknown Role (${entry.roleId})`,
+          };
+        })
+        .sort((a, b) => {
+          if (a.system === b.system) return a.roleName.localeCompare(b.roleName);
+          return a.system.localeCompare(b.system);
+        });
 
       const auditActivity = Array.isArray(auditLogs?.audit_log_entries)
         ? auditLogs.audit_log_entries.map((entry: any) => {
@@ -3074,7 +3181,7 @@ export async function registerRoutes(
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, 40);
 
-      res.json({ bans, blacklistedUsers, blocks, activity, unavailableReason });
+      res.json({ bans, blacklistedUsers, blocks, roleBlocks: roleBlocksResolved, bypassUsers, activity, unavailableReason });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -3797,6 +3904,134 @@ export async function registerRoutes(
       res.json({ success: true, userId, system });
     } catch (e: any) {
       res.status(500).json({ error: e.message || "Failed to unblock this user." });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/blocks/roles", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      const system = String(req.body?.system || "").trim() as DashboardMiscBlockSystem;
+      const roleId = String(req.body?.roleId || "").trim();
+      if (!/^[0-9]{17,20}$/.test(roleId)) {
+        return res.status(400).json({ error: "A valid Discord role ID is required." });
+      }
+      if (!(["staff_applications", "modmail", "appeal"] as DashboardMiscBlockSystem[]).includes(system)) {
+        return res.status(400).json({ error: "Choose a valid block section." });
+      }
+
+      const updatedConfig = await withGuildConfigMutationLock(guildId, async () => {
+        const config = await storage.getGuildConfig(guildId);
+        return await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: addMiscRoleBlockToConfig(config?.customCategoryPings, system, roleId),
+        });
+      }).catch(() => undefined);
+
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        config: updatedConfig || { guildId },
+      });
+
+      res.json({ success: true, system, roleId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to add blocked role." });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/blocks/roles/:system/:roleId", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      const system = String(req.params.system || "").trim() as DashboardMiscBlockSystem;
+      const roleId = String(req.params.roleId || "").trim();
+      if (!/^[0-9]{17,20}$/.test(roleId)) {
+        return res.status(400).json({ error: "A valid Discord role ID is required." });
+      }
+      if (!(["staff_applications", "modmail", "appeal"] as DashboardMiscBlockSystem[]).includes(system)) {
+        return res.status(400).json({ error: "Choose a valid block section." });
+      }
+
+      const updatedConfig = await withGuildConfigMutationLock(guildId, async () => {
+        const config = await storage.getGuildConfig(guildId);
+        return await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: removeMiscRoleBlockFromConfig(config?.customCategoryPings, system, roleId),
+        });
+      }).catch(() => undefined);
+
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        config: updatedConfig || { guildId },
+      });
+
+      res.json({ success: true, system, roleId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to remove blocked role." });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/blocks/bypass-users", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      const userId = String(req.body?.userId || "").trim();
+      if (!/^[0-9]{17,20}$/.test(userId)) {
+        return res.status(400).json({ error: "A valid Discord user ID is required." });
+      }
+
+      const updatedConfig = await withGuildConfigMutationLock(guildId, async () => {
+        const config = await storage.getGuildConfig(guildId);
+        return await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: addMiscRoleBlockBypassUserToConfig(config?.customCategoryPings, userId),
+        });
+      }).catch(() => undefined);
+
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        config: updatedConfig || { guildId },
+      });
+
+      res.json({ success: true, userId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to add bypass user." });
+    }
+  });
+
+  app.delete("/api/guilds/:guildId/blocks/bypass-users/:userId", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId } = auth;
+
+      const userId = String(req.params.userId || "").trim();
+      if (!/^[0-9]{17,20}$/.test(userId)) {
+        return res.status(400).json({ error: "A valid Discord user ID is required." });
+      }
+
+      const updatedConfig = await withGuildConfigMutationLock(guildId, async () => {
+        const config = await storage.getGuildConfig(guildId);
+        return await storage.upsertGuildConfig({
+          guildId,
+          customCategoryPings: removeMiscRoleBlockBypassUserFromConfig(config?.customCategoryPings, userId),
+        });
+      }).catch(() => undefined);
+
+      broadcastGuildUpdate(guildId, {
+        type: "config-updated",
+        config: updatedConfig || { guildId },
+      });
+
+      res.json({ success: true, userId });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message || "Failed to remove bypass user." });
     }
   });
 

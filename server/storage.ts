@@ -78,10 +78,24 @@ const inMemoryStore = {
 const GUILD_CONFIG_SQL_BACKOFF_MS = 15000;
 let guildConfigSqlBackoffUntil = 0;
 
-// Short-lived TTL cache so repeated getGuildConfig calls within one interaction
-// don't each fire a DB round trip.
-const GUILD_CONFIG_CACHE_TTL_MS = 15_000; // 15 seconds
-const guildConfigTtlCache = new Map<string, { value: GuildConfig; expiresAt: number }>();
+// Short-lived TTL cache so repeated calls within a single interaction hit memory instead of DB
+const GUILD_CONFIG_CACHE_TTL_MS = 30_000;
+const guildConfigCache = new Map<string, { config: any; expiresAt: number }>();
+
+function getGuildConfigFromCache(guildId: string): any | undefined {
+  const entry = guildConfigCache.get(guildId);
+  if (entry && Date.now() < entry.expiresAt) return entry.config;
+  guildConfigCache.delete(guildId);
+  return undefined;
+}
+
+function setGuildConfigCache(guildId: string, config: any): void {
+  guildConfigCache.set(guildId, { config, expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
+}
+
+function invalidateGuildConfigCache(guildId: string): void {
+  guildConfigCache.delete(guildId);
+}
 
 function normalizeScopeGuildIds(guildIds?: string[]): string[] {
   return Array.from(new Set((guildIds || []).map((entry) => String(entry || "").trim()).filter(Boolean)));
@@ -227,7 +241,7 @@ export interface IStorage {
   getAppealThread(id: string): Promise<AppealThread | undefined>;
   getOpenAppealThread(guildId: string, userId: string): Promise<AppealThread | undefined>;
   getAppealThreadByChannel(channelId: string): Promise<AppealThread | undefined>;
-  updateAppealThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[] }): Promise<AppealThread>;
+  updateAppealThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[]; addedMemberIds?: string[] }): Promise<AppealThread>;
   getAllAppealThreads(guildId: string): Promise<AppealThread[]>;
   getAllAppealThreadsByUser(userId: string): Promise<AppealThread[]>;
 
@@ -272,11 +286,9 @@ export interface IStorage {
 
 export class DatabaseStorage implements IStorage {
   async getGuildConfig(guildId: string): Promise<GuildConfig | undefined> {
-    // Serve from TTL cache when fresh
-    const cached = guildConfigTtlCache.get(guildId);
-    if (cached && Date.now() < cached.expiresAt) {
-      return cached.value;
-    }
+    // Serve from TTL cache first to avoid repeated DB round-trips within the same interaction
+    const cached = getGuildConfigFromCache(guildId);
+    if (cached !== undefined) return cached;
 
     const memoryConfig = inMemoryStore.guildConfigs.get(guildId);
 
@@ -298,7 +310,7 @@ export class DatabaseStorage implements IStorage {
       );
       if (result && result.length > 0) {
         inMemoryStore.guildConfigs.set(guildId, result[0]);
-        guildConfigTtlCache.set(guildId, { value: result[0], expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
+        setGuildConfigCache(guildId, result[0]);
         return result[0];
       }
       guildConfigSqlBackoffUntil = 0;
@@ -325,14 +337,14 @@ export class DatabaseStorage implements IStorage {
           .returning();
         if (updated && updated.length > 0) {
           inMemoryStore.guildConfigs.set(config.guildId, updated[0]);
-          guildConfigTtlCache.set(config.guildId, { value: updated[0], expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
+          setGuildConfigCache(config.guildId, updated[0]);
           return updated[0];
         }
       } else {
         const inserted = await db.insert(guildConfigs).values(config).returning();
         if (inserted && inserted.length > 0) {
           inMemoryStore.guildConfigs.set(config.guildId, inserted[0]);
-          guildConfigTtlCache.set(config.guildId, { value: inserted[0], expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
+          setGuildConfigCache(config.guildId, inserted[0]);
           return inserted[0];
         }
       }
@@ -343,7 +355,7 @@ export class DatabaseStorage implements IStorage {
     const existing = inMemoryStore.guildConfigs.get(config.guildId);
     const fullConfig = { ...existing, ...config, updatedAt: new Date() } as GuildConfig;
     inMemoryStore.guildConfigs.set(config.guildId, fullConfig);
-    guildConfigTtlCache.set(config.guildId, { value: fullConfig, expiresAt: Date.now() + GUILD_CONFIG_CACHE_TTL_MS });
+    invalidateGuildConfigCache(config.guildId);
     return fullConfig;
   }
 
@@ -2004,7 +2016,7 @@ export class DatabaseStorage implements IStorage {
     return result[0];
   }
 
-  async updateAppealThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[] }): Promise<AppealThread> {
+  async updateAppealThread(id: string, updates: { status?: string; claimedById?: string | null; closedById?: string; closeReason?: string; channelId?: string; closedAt?: Date; subscribedUserIds?: string[]; addedMemberIds?: string[] }): Promise<AppealThread> {
     const result = await db.update(appealThreads).set(updates).where(eq(appealThreads.id, id)).returning();
     return result[0];
   }

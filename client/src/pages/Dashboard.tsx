@@ -170,6 +170,18 @@ interface MiscBlockItem {
   expiresAt: string | null;
 }
 
+interface MiscRoleBlockItem {
+  system: MiscBlockSystem;
+  roleId: string;
+  roleName: string;
+}
+
+interface MiscBypassUserItem {
+  userId: string;
+  username: string;
+  avatarUrl: string | null;
+}
+
 interface MiscBlacklistItem {
   userId: string;
   username: string;
@@ -836,6 +848,8 @@ export default function Dashboard() {
   const [miscBans, setMiscBans] = useState<MiscBanItem[]>([]);
   const [miscBlacklistedUsers, setMiscBlacklistedUsers] = useState<MiscBlacklistItem[]>([]);
   const [miscBlocks, setMiscBlocks] = useState<MiscBlockItem[]>([]);
+  const [miscRoleBlocks, setMiscRoleBlocks] = useState<MiscRoleBlockItem[]>([]);
+  const [miscBypassUsers, setMiscBypassUsers] = useState<MiscBypassUserItem[]>([]);
   const [miscActivity, setMiscActivity] = useState<MiscActivityItem[]>([]);
   const [miscOverviewLoading, setMiscOverviewLoading] = useState(false);
   const [miscOverviewError, setMiscOverviewError] = useState<string | null>(null);
@@ -852,6 +866,12 @@ export default function Dashboard() {
   const [miscBlockReason, setMiscBlockReason] = useState("");
   const [blockingMiscUser, setBlockingMiscUser] = useState(false);
   const [unblockingMiscKey, setUnblockingMiscKey] = useState<string | null>(null);
+  const [miscBlockRoleIdInput, setMiscBlockRoleIdInput] = useState("");
+  const [blockingMiscRole, setBlockingMiscRole] = useState(false);
+  const [unblockingMiscRoleKey, setUnblockingMiscRoleKey] = useState<string | null>(null);
+  const [miscBypassUserIdInput, setMiscBypassUserIdInput] = useState("");
+  const [addingMiscBypassUser, setAddingMiscBypassUser] = useState(false);
+  const [removingMiscBypassUserId, setRemovingMiscBypassUserId] = useState<string | null>(null);
   const [snippetItems, setSnippetItems] = useState<SnippetItem[]>([]);
   const [snippetLoading, setSnippetLoading] = useState(false);
   const [snippetSaving, setSnippetSaving] = useState(false);
@@ -1566,6 +1586,8 @@ export default function Dashboard() {
       setMiscBans(Array.isArray(data?.bans) ? data.bans : []);
       setMiscBlacklistedUsers(Array.isArray(data?.blacklistedUsers) ? data.blacklistedUsers : []);
       setMiscBlocks(Array.isArray(data?.blocks) ? data.blocks : []);
+      setMiscRoleBlocks(Array.isArray(data?.roleBlocks) ? data.roleBlocks : []);
+      setMiscBypassUsers(Array.isArray(data?.bypassUsers) ? data.bypassUsers : []);
       setMiscActivity(Array.isArray(data?.activity) ? data.activity : []);
       setMiscOverviewError(data?.unavailableReason ? String(data.unavailableReason) : null);
     } catch (e: any) {
@@ -1573,6 +1595,8 @@ export default function Dashboard() {
         setMiscBans([]);
         setMiscBlacklistedUsers([]);
         setMiscBlocks([]);
+        setMiscRoleBlocks([]);
+        setMiscBypassUsers([]);
         setMiscActivity([]);
         setMiscOverviewError(e.message || "Failed to load server activity.");
       }
@@ -1773,6 +1797,110 @@ export default function Dashboard() {
       toast({ title: "Error", description: e.message || "Failed to unblock this user.", variant: "destructive" });
     }
     setUnblockingMiscKey(null);
+  };
+
+  const blockRoleFromMisc = async () => {
+    if (!selectedGuild) return;
+
+    const roleId = miscBlockRoleIdInput.trim();
+    if (!/^\d{17,20}$/.test(roleId)) {
+      toast({ title: "Role ID required", description: "Enter a valid Discord role ID.", variant: "destructive" });
+      return;
+    }
+
+    setBlockingMiscRole(true);
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/blocks/roles`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roleId,
+          system: miscBlockSystem,
+        }),
+      }, 15000);
+      toast({ title: "Role blocked", description: `Role ${roleId} is now blocked from ${blockSystemLabels[miscBlockSystem]}.` });
+      setMiscBlockRoleIdInput("");
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to block this role.", variant: "destructive" });
+    }
+    setBlockingMiscRole(false);
+  };
+
+  const unblockMiscRole = async (system: MiscBlockSystem, roleId: string, roleName?: string) => {
+    if (!selectedGuild) return;
+
+    const normalizedRoleId = roleId.trim();
+    if (!/^\d{17,20}$/.test(normalizedRoleId)) {
+      toast({ title: "Role ID required", description: "Enter a valid Discord role ID to unblock.", variant: "destructive" });
+      return;
+    }
+
+    const label = roleName || normalizedRoleId;
+    if (!window.confirm(`Unblock role ${label} from ${blockSystemLabels[system]}?`)) return;
+
+    const requestKey = `${system}:${normalizedRoleId}`;
+    setUnblockingMiscRoleKey(requestKey);
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/blocks/roles/${encodeURIComponent(system)}/${encodeURIComponent(normalizedRoleId)}`, {
+        method: "DELETE",
+      }, 15000);
+      toast({ title: "Role unblocked", description: `${label} was removed from ${blockSystemLabels[system]}.` });
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to unblock this role.", variant: "destructive" });
+    }
+    setUnblockingMiscRoleKey(null);
+  };
+
+  const addMiscBypassUser = async () => {
+    if (!selectedGuild) return;
+
+    const userId = miscBypassUserIdInput.trim();
+    if (!/^\d{17,20}$/.test(userId)) {
+      toast({ title: "User ID required", description: "Enter a valid Discord user ID.", variant: "destructive" });
+      return;
+    }
+
+    setAddingMiscBypassUser(true);
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/blocks/bypass-users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      }, 15000);
+      toast({ title: "Bypass added", description: `User ${userId} now bypasses role-based blocks.` });
+      setMiscBypassUserIdInput("");
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to add bypass user.", variant: "destructive" });
+    }
+    setAddingMiscBypassUser(false);
+  };
+
+  const removeMiscBypassUser = async (userId: string, username?: string) => {
+    if (!selectedGuild) return;
+
+    const normalizedUserId = userId.trim();
+    if (!/^\d{17,20}$/.test(normalizedUserId)) {
+      toast({ title: "User ID required", description: "Enter a valid Discord user ID to remove bypass.", variant: "destructive" });
+      return;
+    }
+
+    const label = username || normalizedUserId;
+    if (!window.confirm(`Remove ${label} from role-block bypass users?`)) return;
+
+    setRemovingMiscBypassUserId(normalizedUserId);
+    try {
+      await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/blocks/bypass-users/${encodeURIComponent(normalizedUserId)}`, {
+        method: "DELETE",
+      }, 15000);
+      toast({ title: "Bypass removed", description: `${label} was removed from bypass users.` });
+      loadMiscOverview(selectedGuild).catch(() => undefined);
+    } catch (e: any) {
+      toast({ title: "Error", description: e.message || "Failed to remove bypass user.", variant: "destructive" });
+    }
+    setRemovingMiscBypassUserId(null);
   };
 
   const loadModmailLogs = async (guildId: string | null = selectedGuild, options?: { silent?: boolean }) => {
@@ -7392,6 +7520,151 @@ export default function Dashboard() {
                           </div>
                         );
                       })}
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <p className="text-sm font-semibold">Blocked Roles</p>
+                        <p className="text-xs text-muted-foreground">Users with these roles cannot open Modmails/Appeals/Staff Applications unless they are in bypass users.</p>
+                      </div>
+
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>Role ID</Label>
+                          <Input
+                            value={miscBlockRoleIdInput}
+                            onChange={(event) => setMiscBlockRoleIdInput(event.target.value)}
+                            placeholder="123456789012345678"
+                            data-testid="input-misc-block-role-id"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Section</Label>
+                          <Select value={miscBlockSystem} onValueChange={(value) => setMiscBlockSystem(value as MiscBlockSystem)}>
+                            <SelectTrigger data-testid="select-misc-role-block-system">
+                              <SelectValue placeholder="Choose section" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="staff_applications">Staff Applications</SelectItem>
+                              <SelectItem value="modmail">Modmails</SelectItem>
+                              <SelectItem value="appeal">Appeals</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <Button onClick={blockRoleFromMisc} disabled={blockingMiscRole || miscOverviewLoading} data-testid="button-misc-block-role">
+                          {blockingMiscRole ? "Blocking Role…" : "Block Role"}
+                        </Button>
+                      </div>
+
+                      <div className="space-y-4">
+                        {(["staff_applications", "modmail", "appeal"] as MiscBlockSystem[]).map((systemKey) => {
+                          const roleItems = miscRoleBlocks.filter((block) => block.system === systemKey);
+                          return (
+                            <div key={`misc-role-block-section-${systemKey}`} className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <p className="text-sm font-semibold">{blockSystemLabels[systemKey]}</p>
+                                <Badge variant="outline">{roleItems.length}</Badge>
+                              </div>
+
+                              {miscOverviewLoading ? (
+                                <p className="text-sm text-muted-foreground">Loading blocked roles…</p>
+                              ) : roleItems.length === 0 ? (
+                                <p className="text-sm text-muted-foreground">No roles are blocked in this section.</p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {roleItems.map((block) => {
+                                    const requestKey = `${block.system}:${block.roleId}`;
+                                    return (
+                                      <div key={requestKey} className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                                        <div className="min-w-0 flex-1 text-sm">
+                                          <p className="truncate font-medium">{block.roleName}</p>
+                                          <p className="text-[11px] text-muted-foreground">Role ID: {block.roleId}</p>
+                                        </div>
+                                        <Button
+                                          size="sm"
+                                          variant="destructive"
+                                          className="shrink-0"
+                                          disabled={unblockingMiscRoleKey === requestKey}
+                                          onClick={() => unblockMiscRole(block.system, block.roleId, block.roleName)}
+                                        >
+                                          {unblockingMiscRoleKey === requestKey ? "Unblocking…" : "Unblock"}
+                                        </Button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <p className="text-sm font-semibold">Role Block Bypass Users</p>
+                        <p className="text-xs text-muted-foreground">Users listed here ignore role-based blocks but still follow direct user blocks.</p>
+                      </div>
+
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label>User ID</Label>
+                          <Input
+                            value={miscBypassUserIdInput}
+                            onChange={(event) => setMiscBypassUserIdInput(event.target.value)}
+                            placeholder="123456789012345678"
+                            data-testid="input-misc-bypass-user-id"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <Button onClick={addMiscBypassUser} disabled={addingMiscBypassUser || miscOverviewLoading} data-testid="button-misc-bypass-user-add">
+                          {addingMiscBypassUser ? "Adding…" : "Add Bypass User"}
+                        </Button>
+                      </div>
+
+                      {miscOverviewLoading ? (
+                        <p className="text-sm text-muted-foreground">Loading bypass users…</p>
+                      ) : miscBypassUsers.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">No bypass users configured.</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {miscBypassUsers.map((entry) => (
+                            <div key={`misc-bypass-${entry.userId}`} className="flex items-start justify-between gap-3 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
+                              <div className="flex min-w-0 flex-1 items-start gap-3">
+                                {entry.avatarUrl ? (
+                                  <img src={entry.avatarUrl} alt={entry.username} className="h-9 w-9 rounded-full object-cover" />
+                                ) : (
+                                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-muted text-xs font-semibold">
+                                    {entry.username.slice(0, 2).toUpperCase()}
+                                  </div>
+                                )}
+                                <div className="min-w-0 flex-1 text-sm">
+                                  <p className="truncate font-medium">{entry.username}</p>
+                                  <p className="text-[11px] text-muted-foreground">User ID: {entry.userId}</p>
+                                </div>
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                className="shrink-0"
+                                disabled={removingMiscBypassUserId === entry.userId}
+                                onClick={() => removeMiscBypassUser(entry.userId, entry.username)}
+                              >
+                                {removingMiscBypassUserId === entry.userId ? "Removing…" : "Remove"}
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
