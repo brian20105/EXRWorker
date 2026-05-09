@@ -189,6 +189,7 @@ export interface IStorage {
   updateModmailMessage(id: string, updates: { content?: string; channelMessageId?: string; dmMessageId?: string }): Promise<ModmailMessage | undefined>;
   deleteModmailMessage(id: string): Promise<void>;
   getLatestStaffModmailMessage(threadId: string): Promise<ModmailMessage | undefined>;
+  getLatestStaffRelayModmailMessage(threadId: string): Promise<ModmailMessage | undefined>;
   getModmailStats(guildId: string, fromDays?: number, toDays?: number): Promise<{ userId: string; count: number }[]>;
   getModmailStatsByCategory(guildId: string, fromDays?: number, toDays?: number): Promise<{ category: string; count: number }[]>;
   getActivityStatsForUser(guildId: string, userId: string, category: string, fromDays?: number, toDays?: number): Promise<number>;
@@ -252,6 +253,7 @@ export interface IStorage {
   updateAppealMessage(id: string, updates: { content?: string; channelMessageId?: string; dmMessageId?: string }): Promise<AppealMessage | undefined>;
   deleteAppealMessage(id: string): Promise<void>;
   getLatestStaffAppealMessage(threadId: string): Promise<AppealMessage | undefined>;
+  getLatestStaffRelayAppealMessage(threadId: string): Promise<AppealMessage | undefined>;
 
   createAppealBlock(block: InsertAppealBlock): Promise<AppealBlock>;
   getActiveAppealBlock(guildId: string, userId: string): Promise<AppealBlock | undefined>;
@@ -931,6 +933,17 @@ export class DatabaseStorage implements IStorage {
       and(
         eq(modmailMessages.threadId, threadId),
         eq(modmailMessages.isStaff, "true")
+      )
+    ).orderBy(desc(modmailMessages.createdAt)).limit(1);
+    return result[0];
+  }
+
+  async getLatestStaffRelayModmailMessage(threadId: string): Promise<ModmailMessage | undefined> {
+    const result = await db.select().from(modmailMessages).where(
+      and(
+        eq(modmailMessages.threadId, threadId),
+        eq(modmailMessages.isStaff, "true"),
+        sql`${modmailMessages.dmMessageId} IS NOT NULL`
       )
     ).orderBy(desc(modmailMessages.createdAt)).limit(1);
     return result[0];
@@ -2062,6 +2075,17 @@ export class DatabaseStorage implements IStorage {
       and(
         eq(appealMessages.threadId, threadId),
         eq(appealMessages.isStaff, "true")
+      )
+    ).orderBy(desc(appealMessages.createdAt)).limit(1);
+    return result[0];
+  }
+
+  async getLatestStaffRelayAppealMessage(threadId: string): Promise<AppealMessage | undefined> {
+    const result = await db.select().from(appealMessages).where(
+      and(
+        eq(appealMessages.threadId, threadId),
+        eq(appealMessages.isStaff, "true"),
+        sql`${appealMessages.dmMessageId} IS NOT NULL`
       )
     ).orderBy(desc(appealMessages.createdAt)).limit(1);
     return result[0];

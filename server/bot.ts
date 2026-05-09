@@ -24859,8 +24859,8 @@ client.on("messageCreate", async (message) => {
       modmailMsg = isAppeal ? await storage.getAppealMessageByChannelMessageId(parts[0]) : await storage.getModmailMessageByChannelMessageId(parts[0]);
       newContent = parts.slice(1).join(" ");
     } else {
-      // No ID provided, use most recent staff message
-      modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
+      // No ID provided, use the most recent bot relay message
+      modmailMsg = isAppeal ? await storage.getLatestStaffRelayAppealMessage(thread.id) : await storage.getLatestStaffRelayModmailMessage(thread.id);
       newContent = args;
     }
 
@@ -25051,8 +25051,8 @@ client.on("messageCreate", async (message) => {
       // Discord message ID (snowflake)
       modmailMsg = isAppeal ? await storage.getAppealMessageByChannelMessageId(args) : await storage.getModmailMessageByChannelMessageId(args);
     } else {
-      // No ID provided: use the latest stored staff message for this thread.
-      modmailMsg = isAppeal ? await storage.getLatestStaffAppealMessage(thread.id) : await storage.getLatestStaffModmailMessage(thread.id);
+      // No ID provided: use the latest bot relay message for this thread.
+      modmailMsg = isAppeal ? await storage.getLatestStaffRelayAppealMessage(thread.id) : await storage.getLatestStaffRelayModmailMessage(thread.id);
     }
 
     if (!modmailMsg || modmailMsg.threadId !== thread.id || modmailMsg.isStaff !== "true") {
