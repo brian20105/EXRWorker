@@ -1582,8 +1582,8 @@ export default function Dashboard() {
     }
 
     try {
-      const useCacheBuster = silent || options?.forceRefresh === true;
-      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview${useCacheBuster ? "?cache=1" : ""}`, undefined, 15000);
+      const useCachedOverview = silent && options?.forceRefresh !== true;
+      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview${useCachedOverview ? "?cache=1" : ""}`, undefined, 15000);
       setMiscBans(Array.isArray(data?.bans) ? data.bans : []);
       setMiscBlacklistedUsers(Array.isArray(data?.blacklistedUsers) ? data.blacklistedUsers : []);
       setMiscBlocks(Array.isArray(data?.blocks) ? data.blocks : []);
