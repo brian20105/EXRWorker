@@ -1571,7 +1571,7 @@ export default function Dashboard() {
 
   const loadMiscOverview = async (
     guildId: string | null = selectedGuild,
-    options?: { silent?: boolean },
+    options?: { silent?: boolean; forceRefresh?: boolean },
   ) => {
     if (!guildId) return;
 
@@ -1582,7 +1582,8 @@ export default function Dashboard() {
     }
 
     try {
-      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview${silent ? "?cache=1" : ""}`, undefined, 15000);
+      const useCacheBuster = silent || options?.forceRefresh === true;
+      const data = await fetchJsonWithTimeout(`/api/guilds/${guildId}/misc-overview${useCacheBuster ? "?cache=1" : ""}`, undefined, 15000);
       setMiscBans(Array.isArray(data?.bans) ? data.bans : []);
       setMiscBlacklistedUsers(Array.isArray(data?.blacklistedUsers) ? data.blacklistedUsers : []);
       setMiscBlocks(Array.isArray(data?.blocks) ? data.blocks : []);
@@ -1616,7 +1617,7 @@ export default function Dashboard() {
       await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/bans/${encodeURIComponent(userId)}`, { method: "DELETE" }, 15000);
       setMiscBans((prev) => prev.filter((ban) => ban.userId !== userId));
       toast({ title: "User unbanned", description: `${username} has been unbanned.` });
-      loadMiscOverview(selectedGuild).catch(() => undefined);
+      loadMiscOverview(selectedGuild, { forceRefresh: true }).catch(() => undefined);
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to unban this user.", variant: "destructive" });
     }
@@ -1633,7 +1634,7 @@ export default function Dashboard() {
       const removedCount = Number(data?.count || miscBans.length);
       setMiscBans([]);
       toast({ title: "All users unbanned", description: `Removed ${removedCount} ban(s).` });
-      loadMiscOverview(selectedGuild).catch(() => undefined);
+      loadMiscOverview(selectedGuild, { forceRefresh: true }).catch(() => undefined);
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to unban all users.", variant: "destructive" });
     }
@@ -1668,7 +1669,7 @@ export default function Dashboard() {
       });
       setMiscBlacklistUserIdInput("");
       setMiscBlacklistReason("");
-      loadMiscOverview(selectedGuild).catch(() => undefined);
+      loadMiscOverview(selectedGuild, { forceRefresh: true }).catch(() => undefined);
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to blacklist this user.", variant: "destructive" });
     }
@@ -1695,7 +1696,7 @@ export default function Dashboard() {
       if (miscBlacklistUserIdInput.trim() === normalizedUserId) {
         setMiscBlacklistUserIdInput("");
       }
-      loadMiscOverview(selectedGuild).catch(() => undefined);
+      loadMiscOverview(selectedGuild, { forceRefresh: true }).catch(() => undefined);
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to remove this user from the blacklist.", variant: "destructive" });
     }
@@ -1764,7 +1765,7 @@ export default function Dashboard() {
       setMiscBlockReason("");
       setMiscBlockUserIdInput("");
       setMiscBlockDurationValue("1");
-      loadMiscOverview(selectedGuild).catch(() => undefined);
+      loadMiscOverview(selectedGuild, { forceRefresh: true }).catch(() => undefined);
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to block this user.", variant: "destructive" });
     }
@@ -1792,7 +1793,7 @@ export default function Dashboard() {
       if (miscBlockUserIdInput.trim() === normalizedUserId && miscBlockSystem === system) {
         setMiscBlockUserIdInput("");
       }
-      loadMiscOverview(selectedGuild).catch(() => undefined);
+      loadMiscOverview(selectedGuild, { forceRefresh: true }).catch(() => undefined);
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to unblock this user.", variant: "destructive" });
     }
@@ -1820,7 +1821,7 @@ export default function Dashboard() {
       }, 15000);
       toast({ title: "Role blocked", description: `Role ${roleId} is now blocked from ${blockSystemLabels[miscBlockSystem]}.` });
       setMiscBlockRoleIdInput("");
-      loadMiscOverview(selectedGuild).catch(() => undefined);
+      loadMiscOverview(selectedGuild, { forceRefresh: true }).catch(() => undefined);
     } catch (e: any) {
       toast({ title: "Error", description: e.message || "Failed to block this role.", variant: "destructive" });
     }
