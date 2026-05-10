@@ -21649,6 +21649,8 @@ client.on("messageCreate", async (message) => {
     }
 
     if (command === "clean") {
+      console.log(`[*CLEAN] Command triggered by ${message.author.tag} (admin: ${message.member?.permissions?.has(PermissionFlagsBits.Administrator)}, modlogs roles: ${modSetup.modlogsRoleIds?.length || 0})`);
+      
       const memberPerms = message.member?.permissions;
       const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
       const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
@@ -21656,11 +21658,13 @@ client.on("messageCreate", async (message) => {
       const hasRoleAccess = allowedRoleIds.length > 0 && allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
 
       if (!isAdmin && !hasRoleAccess) {
+        console.log(`[*CLEAN] Permission denied - not admin and no modlogs role`);
         return;
       }
 
       const channelAny = message.channel as any;
       if (!channelAny?.messages?.fetch) {
+        console.log(`[*CLEAN] Cannot fetch messages from channel`);
         return;
       }
 
@@ -21686,7 +21690,7 @@ client.on("messageCreate", async (message) => {
           const description = String(embed?.description || "").toLowerCase();
 
           // Match modlog title format: "Case 123456 | Ban | reason" or "Case 123456 | Member Banned | reason"
-          if (title.includes("case") && (title.includes("| ban") || title.includes("| kick") || title.includes("| mute") || title.includes("| unban") || title.includes("| unmute"))) {
+          if (title.includes("case") && (title.includes("| ban") || title.includes("| full ban") || title.includes("| kick") || title.includes("| mute") || title.includes("| unban") || title.includes("| unmute"))) {
             return true;
           }
 
@@ -21719,34 +21723,54 @@ client.on("messageCreate", async (message) => {
       let beforeId: string | undefined;
       const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
       const cutoffTime = Date.now() - FOURTEEN_DAYS_MS;
+      let totalDeleted = 0;
 
       for (let page = 0; page < 10; page++) {
         const batch = await channelAny.messages.fetch({ limit: 100, ...(beforeId ? { before: beforeId } : {}) }).catch(() => null);
-        if (!batch || batch.size === 0) break;
+        if (!batch || batch.size === 0) {
+          console.log(`[*CLEAN] Page ${page}: no messages fetched, stopping`);
+          break;
+        }
 
+        console.log(`[*CLEAN] Page ${page}: fetched ${batch.size} messages`);
         const candidates = batch.filter((entry: any) => isBotModerationCommandMessage(entry));
+        console.log(`[*CLEAN] Page ${page}: found ${candidates.size} modlog messages`);
 
         const recentCandidates = candidates.filter((entry: any) => (entry.createdTimestamp || 0) >= cutoffTime);
+        console.log(`[*CLEAN] Page ${page}: found ${recentCandidates.size} recent modlog messages (within 14 days)`);
+        
         if (recentCandidates.size > 0) {
           try {
             await channelAny.bulkDelete(recentCandidates, true);
+            totalDeleted += recentCandidates.size;
+            console.log(`[*CLEAN] Page ${page}: bulk deleted ${recentCandidates.size} messages`);
           } catch {
             for (const [, candidate] of recentCandidates) {
               try {
                 await candidate.delete();
+                totalDeleted += 1;
               } catch {
                 // ignore individual delete failures
               }
             }
+            console.log(`[*CLEAN] Page ${page}: individual deleted ${recentCandidates.size} messages`);
           }
         }
 
         const oldestInBatch = batch.last();
-        if (oldestInBatch && (oldestInBatch.createdTimestamp || 0) < cutoffTime) break;
+        if (oldestInBatch && (oldestInBatch.createdTimestamp || 0) < cutoffTime) {
+          console.log(`[*CLEAN] Batch contains messages older than 14 days, stopping`);
+          break;
+        }
 
         beforeId = batch.last()?.id;
-        if (batch.size < 100) break;
+        if (batch.size < 100) {
+          console.log(`[*CLEAN] Page ${page}: batch smaller than 100, stopping`);
+          break;
+        }
       }
+      
+      console.log(`[*CLEAN] Completed: deleted ${totalDeleted} messages total`);
       return;
     }
 
