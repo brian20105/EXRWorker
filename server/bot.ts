@@ -21568,6 +21568,14 @@ client.on("messageCreate", async (message) => {
 
     const guildConfig = await storage.getGuildConfig(message.guild.id);
     const modSetup = getModerationSetupFromConfig(guildConfig);
+    const quickSettingsPrefixes = getDashboardQuickSettingsFromGuildConfig(guildConfig);
+    const moderationPrefix = (quickSettingsPrefixes.moderationPrefix || "*").toLowerCase();
+
+    // ONLY allow moderation commands (.ban, .mute, .kick, .clean, etc.) when using the moderation prefix
+    const isModerationCommand = ["ban", "unban", "mute", "unmute", "kick", "clean", "purge", "modlogs", "reason", "retime", "rl", "removelog"].includes(command);
+    if (isModerationCommand && lowerPrefix !== moderationPrefix) {
+      return; // Skip if using wrong prefix
+    }
 
     if (command === "purge") {
       const memberPerms = message.member?.permissions;
@@ -21677,6 +21685,11 @@ client.on("messageCreate", async (message) => {
           const title = String(embed?.title || "").toLowerCase();
           const description = String(embed?.description || "").toLowerCase();
 
+          // Match modlog title format: "Case 123456 | Ban | reason" or "Case 123456 | Member Banned | reason"
+          if (title.includes("case") && (title.includes("| ban") || title.includes("| kick") || title.includes("| mute") || title.includes("| unban") || title.includes("| unmute"))) {
+            return true;
+          }
+
           if (title.startsWith("modlogs for (")) {
             return true;
           }
@@ -21692,6 +21705,11 @@ client.on("messageCreate", async (message) => {
               || title.includes(`${prefix}retime`.toLowerCase())
               || title.includes(`${prefix}rl`.toLowerCase())
               || title.includes(`${prefix}removelog`.toLowerCase());
+          }
+
+          // Match compact embeds: "Member Banned", "Member Unbanned", "Member Kicked", etc.
+          if (title.includes("member") && (title.includes("banned") || title.includes("unbanned") || title.includes("kicked") || title.includes("muted") || title.includes("unmuted"))) {
+            return true;
           }
 
           return /\bwas (banned|kicked|muted|unbanned|unmuted)\b|\bfailed to (ban|kick|mute|unban|unmute) user\b|\bcannot be (banned|kicked|muted)\b|\byou cannot moderate yourself\b|\bthat user is not in this server\b|\busage:\s*\*?(modlogs|reason|retime|rl|removelog|ban|mute|kick|unban|unmute)\b|\bno logs found for that user\b|\bcase id\b|\bupdated case\b|\bremoved case\b/.test(description);
