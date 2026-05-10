@@ -21662,13 +21662,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Clean current channel
-      const channelAny = message.channel as any;
-      if (!channelAny?.messages?.fetch || !channelAny?.bulkDelete) {
-        console.log(`[*CLEAN] Cannot fetch or bulk delete messages from channel`);
-        return;
-      }
-
       try {
         await message.delete();
       } catch {
@@ -21677,20 +21670,15 @@ client.on("messageCreate", async (message) => {
 
       const isBotModerationResponse = (entry: any) => {
         if (!client.user || entry.author?.id !== client.user.id) return false;
-
         const embeds = entry.embeds || [];
         if (!Array.isArray(embeds) || embeds.length === 0) return false;
 
         return embeds.some((embed: any) => {
           const description = String(embed?.description || "").toLowerCase();
           const color = embed?.color;
-
-          // Match success/error responses (green 0x57f287 or red 0xed4245)
           const isModResponseColor = color === 0x57f287 || color === 0xed4245;
-
           if (!isModResponseColor) return false;
 
-          // Match any of these moderation response patterns
           return (
             description.includes("was banned") ||
             description.includes("was kicked") ||
@@ -21719,61 +21707,122 @@ client.on("messageCreate", async (message) => {
         });
       };
 
+      const isModlogMessage = (entry: any) => {
+        if (!client.user || entry.author?.id !== client.user.id) return false;
+        const embeds = entry.embeds || [];
+        if (!Array.isArray(embeds) || embeds.length === 0) return false;
+
+        return embeds.some((embed: any) => {
+          const title = String(embed?.title || "").toLowerCase();
+          // Match modlog format: "Case 123456 | Ban | reason" or "Member Banned"
+          return (title.includes("case") && (title.includes("| ban") || title.includes("| full ban") || title.includes("| kick") || title.includes("| mute") || title.includes("| unban") || title.includes("| unmute"))) ||
+                 (title.includes("member") && (title.includes("banned") || title.includes("unbanned") || title.includes("kicked") || title.includes("muted") || title.includes("unmuted")));
+        });
+      };
+
       const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
       const cutoffTime = Date.now() - FOURTEEN_DAYS_MS;
       let allCandidates = new Map<string, any>();
-      let beforeId: string | undefined;
+      let totalDeleted = 0;
 
-      console.log(`[*CLEAN] Scanning channel for moderation response messages (max 3 pages)...`);
+      // Clean current channel (moderation responses)
+      console.log(`[*CLEAN] Scanning current channel for moderation responses (max 3 pages)...`);
+      const channelAny = message.channel as any;
+      if (channelAny?.messages?.fetch && channelAny?.bulkDelete) {
+        let beforeId: string | undefined;
+        for (let page = 0; page < 3; page++) {
+          const batch = await channelAny.messages.fetch({ limit: 100, ...(beforeId ? { before: beforeId } : {}) }).catch(() => null);
+          if (!batch || batch.size === 0) break;
 
-      // Only scan last 3 pages (300 messages) instead of 10
-      for (let page = 0; page < 3; page++) {
-        const batch = await channelAny.messages.fetch({ limit: 100, ...(beforeId ? { before: beforeId } : {}) }).catch(() => null);
-        if (!batch || batch.size === 0) {
-          console.log(`[*CLEAN] Page ${page}: no more messages`);
-          break;
-        }
-
-        console.log(`[*CLEAN] Page ${page}: checking ${batch.size} messages`);
-        
-        for (const [id, entry] of batch) {
-          if (isBotModerationResponse(entry) && (entry.createdTimestamp || 0) >= cutoffTime) {
-            allCandidates.set(id, entry);
-          }
-        }
-
-        const oldestInBatch = batch.last();
-        if (oldestInBatch && (oldestInBatch.createdTimestamp || 0) < cutoffTime) {
-          console.log(`[*CLEAN] Batch older than 14 days, stopping scan`);
-          break;
-        }
-
-        beforeId = batch.last()?.id;
-        if (batch.size < 100) break;
-      }
-
-      console.log(`[*CLEAN] Found ${allCandidates.size} responses, deleting...`);
-
-      if (allCandidates.size > 0) {
-        try {
-          const messagesToDelete = Array.from(allCandidates.values());
-          await channelAny.bulkDelete(messagesToDelete, true);
-          console.log(`[*CLEAN] ✅ Deleted ${allCandidates.size} messages`);
-        } catch (err) {
-          console.log(`[*CLEAN] Bulk delete failed, trying individual deletes`);
-          let successCount = 0;
-          for (const [, candidate] of allCandidates) {
-            try {
-              await candidate.delete();
-              successCount++;
-            } catch {
-              // ignore
+          for (const [id, entry] of batch) {
+            if (isBotModerationResponse(entry) && (entry.createdTimestamp || 0) >= cutoffTime) {
+              allCandidates.set(id, entry);
             }
           }
-          console.log(`[*CLEAN] ✅ Deleted ${successCount}/${allCandidates.size} messages individually`);
+
+          const oldestInBatch = batch.last();
+          if (oldestInBatch && (oldestInBatch.createdTimestamp || 0) < cutoffTime) break;
+
+          beforeId = batch.last()?.id;
+          if (batch.size < 100) break;
+        }
+
+        if (allCandidates.size > 0) {
+          try {
+            const messagesToDelete = Array.from(allCandidates.values());
+            await channelAny.bulkDelete(messagesToDelete, true);
+            totalDeleted += allCandidates.size;
+            console.log(`[*CLEAN] Deleted ${allCandidates.size} responses from current channel`);
+          } catch (err) {
+            let successCount = 0;
+            for (const [, candidate] of allCandidates) {
+              try {
+                await candidate.delete();
+                successCount++;
+                totalDeleted += 1;
+              } catch {
+                // ignore
+              }
+            }
+            console.log(`[*CLEAN] Deleted ${successCount}/${allCandidates.size} responses individually`);
+          }
+          allCandidates.clear();
         }
       }
 
+      // Clean modlog channel (modlog entries)
+      if (guildConfig?.modLogChannelId) {
+        try {
+          console.log(`[*CLEAN] Scanning modlog channel for modlog entries (max 3 pages)...`);
+          const modlogChannel = await client.channels.fetch(guildConfig.modLogChannelId);
+          const modlogChannelAny = modlogChannel as any;
+
+          if (modlogChannelAny?.messages?.fetch && modlogChannelAny?.bulkDelete) {
+            let beforeId: string | undefined;
+            for (let page = 0; page < 3; page++) {
+              const batch = await modlogChannelAny.messages.fetch({ limit: 100, ...(beforeId ? { before: beforeId } : {}) }).catch(() => null);
+              if (!batch || batch.size === 0) break;
+
+              for (const [id, entry] of batch) {
+                if (isModlogMessage(entry) && (entry.createdTimestamp || 0) >= cutoffTime) {
+                  allCandidates.set(id, entry);
+                }
+              }
+
+              const oldestInBatch = batch.last();
+              if (oldestInBatch && (oldestInBatch.createdTimestamp || 0) < cutoffTime) break;
+
+              beforeId = batch.last()?.id;
+              if (batch.size < 100) break;
+            }
+
+            if (allCandidates.size > 0) {
+              try {
+                const messagesToDelete = Array.from(allCandidates.values());
+                await modlogChannelAny.bulkDelete(messagesToDelete, true);
+                totalDeleted += allCandidates.size;
+                console.log(`[*CLEAN] Deleted ${allCandidates.size} entries from modlog channel`);
+              } catch (err) {
+                let successCount = 0;
+                for (const [, candidate] of allCandidates) {
+                  try {
+                    await candidate.delete();
+                    successCount++;
+                    totalDeleted += 1;
+                  } catch {
+                    // ignore
+                  }
+                }
+                console.log(`[*CLEAN] Deleted ${successCount}/${allCandidates.size} entries individually`);
+              }
+            }
+          }
+        } catch (e) {
+          console.log(`[*CLEAN] Could not access modlog channel:`, e);
+        }
+      }
+
+      console.log(`[*CLEAN] ✅ Complete: deleted ${totalDeleted} messages total`);
       return;
     }
 
