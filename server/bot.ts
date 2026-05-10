@@ -21662,9 +21662,20 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      const channelAny = message.channel as any;
+      // Fetch from modlog channel if configured, otherwise use current channel
+      let targetChannel = message.channel;
+      if (guildConfig?.modLogChannelId) {
+        try {
+          targetChannel = await client.channels.fetch(guildConfig.modLogChannelId);
+          console.log(`[*CLEAN] Targeting modlog channel: ${guildConfig.modLogChannelId}`);
+        } catch (e) {
+          console.log(`[*CLEAN] Could not fetch modlog channel, using current channel: ${e}`);
+        }
+      }
+
+      const channelAny = targetChannel as any;
       if (!channelAny?.messages?.fetch) {
-        console.log(`[*CLEAN] Cannot fetch messages from channel`);
+        console.log(`[*CLEAN] Cannot fetch messages from target channel`);
         return;
       }
 
