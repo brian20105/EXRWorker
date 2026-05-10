@@ -21724,16 +21724,17 @@ client.on("messageCreate", async (message) => {
       let allCandidates = new Map<string, any>();
       let beforeId: string | undefined;
 
-      console.log(`[*CLEAN] Scanning channel for moderation response messages...`);
+      console.log(`[*CLEAN] Scanning channel for moderation response messages (max 3 pages)...`);
 
-      for (let page = 0; page < 10; page++) {
+      // Only scan last 3 pages (300 messages) instead of 10
+      for (let page = 0; page < 3; page++) {
         const batch = await channelAny.messages.fetch({ limit: 100, ...(beforeId ? { before: beforeId } : {}) }).catch(() => null);
         if (!batch || batch.size === 0) {
           console.log(`[*CLEAN] Page ${page}: no more messages`);
           break;
         }
 
-        console.log(`[*CLEAN] Page ${page}: fetched ${batch.size} messages`);
+        console.log(`[*CLEAN] Page ${page}: checking ${batch.size} messages`);
         
         for (const [id, entry] of batch) {
           if (isBotModerationResponse(entry) && (entry.createdTimestamp || 0) >= cutoffTime) {
@@ -21743,39 +21744,34 @@ client.on("messageCreate", async (message) => {
 
         const oldestInBatch = batch.last();
         if (oldestInBatch && (oldestInBatch.createdTimestamp || 0) < cutoffTime) {
-          console.log(`[*CLEAN] Batch contains messages older than 14 days, stopping`);
+          console.log(`[*CLEAN] Batch older than 14 days, stopping scan`);
           break;
         }
 
         beforeId = batch.last()?.id;
-        if (batch.size < 100) {
-          console.log(`[*CLEAN] Page ${page}: batch smaller than 100, stopping`);
-          break;
-        }
+        if (batch.size < 100) break;
       }
 
-      console.log(`[*CLEAN] Found ${allCandidates.size} moderation response messages to delete`);
+      console.log(`[*CLEAN] Found ${allCandidates.size} responses, deleting...`);
 
       if (allCandidates.size > 0) {
         try {
           const messagesToDelete = Array.from(allCandidates.values());
           await channelAny.bulkDelete(messagesToDelete, true);
-          console.log(`[*CLEAN] Successfully bulk deleted ${allCandidates.size} messages`);
+          console.log(`[*CLEAN] ✅ Deleted ${allCandidates.size} messages`);
         } catch (err) {
-          console.log(`[*CLEAN] Bulk delete failed, trying individual deletes:`, err);
+          console.log(`[*CLEAN] Bulk delete failed, trying individual deletes`);
           let successCount = 0;
           for (const [, candidate] of allCandidates) {
             try {
               await candidate.delete();
               successCount++;
             } catch {
-              // ignore individual delete failures
+              // ignore
             }
           }
-          console.log(`[*CLEAN] Successfully deleted ${successCount}/${allCandidates.size} messages individually`);
+          console.log(`[*CLEAN] ✅ Deleted ${successCount}/${allCandidates.size} messages individually`);
         }
-      } else {
-        console.log(`[*CLEAN] No moderation response messages found to delete`);
       }
 
       return;
