@@ -21649,7 +21649,7 @@ client.on("messageCreate", async (message) => {
     }
 
     if (command === "clean") {
-      console.log(`[*CLEAN] Command triggered by ${message.author.tag} (admin: ${message.member?.permissions?.has(PermissionFlagsBits.Administrator)}, modlogs roles: ${modSetup.modlogsRoleIds?.length || 0})`);
+      console.log(`[*CLEAN] Command triggered by ${message.author.tag} in channel ${message.channel.id}`);
       
       const memberPerms = message.member?.permissions;
       const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
@@ -21662,20 +21662,10 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      // Fetch from modlog channel if configured, otherwise use current channel
-      let targetChannel = message.channel;
-      if (guildConfig?.modLogChannelId) {
-        try {
-          targetChannel = await client.channels.fetch(guildConfig.modLogChannelId);
-          console.log(`[*CLEAN] Targeting modlog channel: ${guildConfig.modLogChannelId}`);
-        } catch (e) {
-          console.log(`[*CLEAN] Could not fetch modlog channel, using current channel: ${e}`);
-        }
-      }
-
-      const channelAny = targetChannel as any;
-      if (!channelAny?.messages?.fetch) {
-        console.log(`[*CLEAN] Cannot fetch messages from target channel`);
+      // Clean current channel
+      const channelAny = message.channel as any;
+      if (!channelAny?.messages?.fetch || !channelAny?.bulkDelete) {
+        console.log(`[*CLEAN] Cannot fetch or bulk delete messages from channel`);
         return;
       }
 
@@ -21685,124 +21675,69 @@ client.on("messageCreate", async (message) => {
         // ignore failures deleting the command invocation
       }
 
-      const isBotModerationCommandMessage = (entry: any) => {
+      const isBotModerationResponse = (entry: any) => {
         if (!client.user || entry.author?.id !== client.user.id) return false;
-        
-        // Match modlog pagination buttons
-        const hasModlogsPagination = Array.isArray(entry.components)
-          && entry.components.some((row: any) => Array.isArray(row?.components)
-            && row.components.some((component: any) => String(component?.customId || "").startsWith("modlogs_page_")));
-
-        if (hasModlogsPagination) return true;
 
         const embeds = entry.embeds || [];
         if (!Array.isArray(embeds) || embeds.length === 0) return false;
 
         return embeds.some((embed: any) => {
-          const title = String(embed?.title || "").toLowerCase();
           const description = String(embed?.description || "").toLowerCase();
           const color = embed?.color;
 
-          // Match modlog title format: "Case 123456 | Ban | reason"
-          if (title.includes("case") && (title.includes("| ban") || title.includes("| full ban") || title.includes("| kick") || title.includes("| mute") || title.includes("| unban") || title.includes("| unmute"))) {
-            return true;
-          }
+          // Match success/error responses (green 0x57f287 or red 0xed4245)
+          const isModResponseColor = color === 0x57f287 || color === 0xed4245;
 
-          // Match modlogs for user embeds
-          if (title.startsWith("modlogs for (")) {
-            return true;
-          }
+          if (!isModResponseColor) return false;
 
-          // Match command embeds (old format)
-          if (title.startsWith("command:")) {
-            return title.includes(`${prefix}ban`.toLowerCase())
-              || title.includes(`${prefix}mute`.toLowerCase())
-              || title.includes(`${prefix}kick`.toLowerCase())
-              || title.includes(`${prefix}unban`.toLowerCase())
-              || title.includes(`${prefix}unmute`.toLowerCase())
-              || title.includes(`${prefix}modlogs`.toLowerCase())
-              || title.includes(`${prefix}reason`.toLowerCase())
-              || title.includes(`${prefix}retime`.toLowerCase())
-              || title.includes(`${prefix}rl`.toLowerCase())
-              || title.includes(`${prefix}removelog`.toLowerCase());
-          }
-
-          // Match compact embeds: "Member Banned", "Member Unbanned", "Member Kicked", etc.
-          if (title.includes("member") && (title.includes("banned") || title.includes("unbanned") || title.includes("kicked") || title.includes("muted") || title.includes("unmuted"))) {
-            return true;
-          }
-
-          // Match success/error embeds (green or red color) with moderation keywords in description
-          const isSuccessColor = color === 0x57f287; // Discord success green
-          const isErrorColor = color === 0xed4245; // Discord error red
-          const isBotColor = color === 0x2b2d31; // Bot dark color for modlog embeds
-
-          if ((isSuccessColor || isErrorColor || isBotColor) && (
+          // Match any of these moderation response patterns
+          return (
             description.includes("was banned") ||
             description.includes("was kicked") ||
             description.includes("was muted") ||
             description.includes("was unmuted") ||
             description.includes("was unbanned") ||
+            description.includes("was fakebanned") ||
+            description.includes("was fullbanned") ||
             description.includes("failed to ban") ||
             description.includes("failed to kick") ||
             description.includes("failed to mute") ||
+            description.includes("failed to unban") ||
+            description.includes("failed to unmute") ||
             description.includes("cannot be banned") ||
             description.includes("cannot be kicked") ||
             description.includes("cannot be muted") ||
             description.includes("you cannot moderate yourself") ||
             description.includes("that user is not in this server") ||
-            description.includes("you cannot mute someone") ||
             description.includes("is already muted") ||
             description.includes("is not muted") ||
-            description.includes("no logs found for") ||
-            description.includes("case id") ||
-            description.includes("updated case") ||
-            description.includes("removed case") ||
+            description.includes("is already banned") ||
+            description.includes("you cannot mute someone") ||
             description.includes("muted role is not configured") ||
-            description.includes("user is not muted")
-          )) {
-            return true;
-          }
-
-          // Match any moderation-related text patterns
-          return /\bwas (banned|kicked|muted|unbanned|unmuted)\b|\bfailed to (ban|kick|mute|unban|unmute) user\b|\bcannot be (banned|kicked|muted)\b|\byou cannot moderate yourself\b|\bthat user is not in this server\b|\busage:\s*\*?(modlogs|reason|retime|rl|removelog|ban|mute|kick|unban|unmute)\b|\bno logs found for that user\b|\bcase id\b|\bupdated case\b|\bremoved case\b/.test(description);
+            description.includes("could not dm this user")
+          );
         });
       };
 
-      let beforeId: string | undefined;
       const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
       const cutoffTime = Date.now() - FOURTEEN_DAYS_MS;
-      let totalDeleted = 0;
+      let allCandidates = new Map<string, any>();
+      let beforeId: string | undefined;
+
+      console.log(`[*CLEAN] Scanning channel for moderation response messages...`);
 
       for (let page = 0; page < 10; page++) {
         const batch = await channelAny.messages.fetch({ limit: 100, ...(beforeId ? { before: beforeId } : {}) }).catch(() => null);
         if (!batch || batch.size === 0) {
-          console.log(`[*CLEAN] Page ${page}: no messages fetched, stopping`);
+          console.log(`[*CLEAN] Page ${page}: no more messages`);
           break;
         }
 
         console.log(`[*CLEAN] Page ${page}: fetched ${batch.size} messages`);
-        const candidates = batch.filter((entry: any) => isBotModerationCommandMessage(entry));
-        console.log(`[*CLEAN] Page ${page}: found ${candidates.size} modlog messages`);
-
-        const recentCandidates = candidates.filter((entry: any) => (entry.createdTimestamp || 0) >= cutoffTime);
-        console.log(`[*CLEAN] Page ${page}: found ${recentCandidates.size} recent modlog messages (within 14 days)`);
         
-        if (recentCandidates.size > 0) {
-          try {
-            await channelAny.bulkDelete(recentCandidates, true);
-            totalDeleted += recentCandidates.size;
-            console.log(`[*CLEAN] Page ${page}: bulk deleted ${recentCandidates.size} messages`);
-          } catch {
-            for (const [, candidate] of recentCandidates) {
-              try {
-                await candidate.delete();
-                totalDeleted += 1;
-              } catch {
-                // ignore individual delete failures
-              }
-            }
-            console.log(`[*CLEAN] Page ${page}: individual deleted ${recentCandidates.size} messages`);
+        for (const [id, entry] of batch) {
+          if (isBotModerationResponse(entry) && (entry.createdTimestamp || 0) >= cutoffTime) {
+            allCandidates.set(id, entry);
           }
         }
 
@@ -21818,8 +21753,31 @@ client.on("messageCreate", async (message) => {
           break;
         }
       }
-      
-      console.log(`[*CLEAN] Completed: deleted ${totalDeleted} messages total`);
+
+      console.log(`[*CLEAN] Found ${allCandidates.size} moderation response messages to delete`);
+
+      if (allCandidates.size > 0) {
+        try {
+          const messagesToDelete = Array.from(allCandidates.values());
+          await channelAny.bulkDelete(messagesToDelete, true);
+          console.log(`[*CLEAN] Successfully bulk deleted ${allCandidates.size} messages`);
+        } catch (err) {
+          console.log(`[*CLEAN] Bulk delete failed, trying individual deletes:`, err);
+          let successCount = 0;
+          for (const [, candidate] of allCandidates) {
+            try {
+              await candidate.delete();
+              successCount++;
+            } catch {
+              // ignore individual delete failures
+            }
+          }
+          console.log(`[*CLEAN] Successfully deleted ${successCount}/${allCandidates.size} messages individually`);
+        }
+      } else {
+        console.log(`[*CLEAN] No moderation response messages found to delete`);
+      }
+
       return;
     }
 
