@@ -21687,6 +21687,8 @@ client.on("messageCreate", async (message) => {
 
       const isBotModerationCommandMessage = (entry: any) => {
         if (!client.user || entry.author?.id !== client.user.id) return false;
+        
+        // Match modlog pagination buttons
         const hasModlogsPagination = Array.isArray(entry.components)
           && entry.components.some((row: any) => Array.isArray(row?.components)
             && row.components.some((component: any) => String(component?.customId || "").startsWith("modlogs_page_")));
@@ -21699,16 +21701,19 @@ client.on("messageCreate", async (message) => {
         return embeds.some((embed: any) => {
           const title = String(embed?.title || "").toLowerCase();
           const description = String(embed?.description || "").toLowerCase();
+          const color = embed?.color;
 
-          // Match modlog title format: "Case 123456 | Ban | reason" or "Case 123456 | Member Banned | reason"
+          // Match modlog title format: "Case 123456 | Ban | reason"
           if (title.includes("case") && (title.includes("| ban") || title.includes("| full ban") || title.includes("| kick") || title.includes("| mute") || title.includes("| unban") || title.includes("| unmute"))) {
             return true;
           }
 
+          // Match modlogs for user embeds
           if (title.startsWith("modlogs for (")) {
             return true;
           }
 
+          // Match command embeds (old format)
           if (title.startsWith("command:")) {
             return title.includes(`${prefix}ban`.toLowerCase())
               || title.includes(`${prefix}mute`.toLowerCase())
@@ -21727,6 +21732,39 @@ client.on("messageCreate", async (message) => {
             return true;
           }
 
+          // Match success/error embeds (green or red color) with moderation keywords in description
+          const isSuccessColor = color === 0x57f287; // Discord success green
+          const isErrorColor = color === 0xed4245; // Discord error red
+          const isBotColor = color === 0x2b2d31; // Bot dark color for modlog embeds
+
+          if ((isSuccessColor || isErrorColor || isBotColor) && (
+            description.includes("was banned") ||
+            description.includes("was kicked") ||
+            description.includes("was muted") ||
+            description.includes("was unmuted") ||
+            description.includes("was unbanned") ||
+            description.includes("failed to ban") ||
+            description.includes("failed to kick") ||
+            description.includes("failed to mute") ||
+            description.includes("cannot be banned") ||
+            description.includes("cannot be kicked") ||
+            description.includes("cannot be muted") ||
+            description.includes("you cannot moderate yourself") ||
+            description.includes("that user is not in this server") ||
+            description.includes("you cannot mute someone") ||
+            description.includes("is already muted") ||
+            description.includes("is not muted") ||
+            description.includes("no logs found for") ||
+            description.includes("case id") ||
+            description.includes("updated case") ||
+            description.includes("removed case") ||
+            description.includes("muted role is not configured") ||
+            description.includes("user is not muted")
+          )) {
+            return true;
+          }
+
+          // Match any moderation-related text patterns
           return /\bwas (banned|kicked|muted|unbanned|unmuted)\b|\bfailed to (ban|kick|mute|unban|unmute) user\b|\bcannot be (banned|kicked|muted)\b|\byou cannot moderate yourself\b|\bthat user is not in this server\b|\busage:\s*\*?(modlogs|reason|retime|rl|removelog|ban|mute|kick|unban|unmute)\b|\bno logs found for that user\b|\bcase id\b|\bupdated case\b|\bremoved case\b/.test(description);
         });
       };
