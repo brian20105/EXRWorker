@@ -47,6 +47,7 @@ const DASHBOARD_BOT_DISABLED_KEY = "__botDisabled";
 const DASHBOARD_FEATURE_FLAGS_KEY = "__dashboardFeatureFlags";
 const DASHBOARD_SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
 const DASHBOARD_BLACKLIST_USERS_KEY = "__dashboardBlacklistedUsers";
+const DASHBOARD_PRIVATE_CHANNEL_SNAPSHOTS_KEY = "__privateChannelSnapshots";
 const DISABLED_MESSAGE = "This is currently disabled, please contact the server owner to resolve the issue.";
 const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
 const SECURITY_AUDIT_LOOKUP_DELAY_MS = 1_000;
@@ -125,6 +126,8 @@ const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
   // Sticky messages
   sticky: "sticky",
   unsticky: "sticky",
+  private: "permissions",
+  unprivate: "permissions",
 };
 
 function isPidAlive(pid: number): boolean {
@@ -254,6 +257,90 @@ function isDashboardFeatureEnabled(config: any, featureId: string): boolean {
   }
 
   return true;
+}
+
+type PrivateChannelOverwriteSnapshot = {
+  id: string;
+  type: 0 | 1;
+  allow: string;
+  deny: string;
+};
+
+function getPermissionOverwriteType(value: unknown): 0 | 1 {
+  return value === 1 || value === "member" ? 1 : 0;
+}
+
+function getPrivateChannelSnapshotsFromGuildConfig(config?: any): Record<string, PrivateChannelOverwriteSnapshot[]> {
+  const parsed = parseDashboardConfigObject(config?.customCategoryPings);
+  const raw = parsed[DASHBOARD_PRIVATE_CHANNEL_SNAPSHOTS_KEY];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+
+  const result: Record<string, PrivateChannelOverwriteSnapshot[]> = {};
+  for (const [channelId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(value)) continue;
+
+    const normalized: PrivateChannelOverwriteSnapshot[] = [];
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const overwrite = entry as Record<string, unknown>;
+      const id = String(overwrite.id || "").trim();
+      const allow = String(overwrite.allow || "").trim();
+      const deny = String(overwrite.deny || "").trim();
+      if (!id || !allow || !deny) continue;
+      if (!/^\d+$/.test(allow) || !/^\d+$/.test(deny)) continue;
+
+      normalized.push({
+        id,
+        type: getPermissionOverwriteType(overwrite.type),
+        allow,
+        deny,
+      });
+    }
+
+    result[channelId] = normalized;
+  }
+
+  return result;
+}
+
+function writePrivateChannelSnapshotToConfig(
+  existingCustomCategoryPings: unknown,
+  channelId: string,
+  snapshot: PrivateChannelOverwriteSnapshot[],
+): string {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existingSnapshots = getPrivateChannelSnapshotsFromGuildConfig({
+    customCategoryPings: existingCustomCategoryPings,
+  });
+
+  root[DASHBOARD_PRIVATE_CHANNEL_SNAPSHOTS_KEY] = {
+    ...existingSnapshots,
+    [channelId]: snapshot,
+  };
+
+  return JSON.stringify(root);
+}
+
+function removePrivateChannelSnapshotFromConfig(
+  existingCustomCategoryPings: unknown,
+  channelId: string,
+): { customCategoryPings: string; snapshot: PrivateChannelOverwriteSnapshot[] | null } {
+  const root = parseDashboardConfigObject(existingCustomCategoryPings);
+  const existingSnapshots = getPrivateChannelSnapshotsFromGuildConfig({
+    customCategoryPings: existingCustomCategoryPings,
+  });
+
+  const snapshot = existingSnapshots[channelId] || null;
+  delete existingSnapshots[channelId];
+
+  root[DASHBOARD_PRIVATE_CHANNEL_SNAPSHOTS_KEY] = existingSnapshots;
+
+  return {
+    customCategoryPings: JSON.stringify(root),
+    snapshot,
+  };
 }
 
 type SecurityPunishmentType = "ban" | "kick" | "clear_roles";
@@ -996,6 +1083,21 @@ const activeQuizzes = new Map<string, QuizState>();
 // Prevent duplicate Start Quiz button processing
 const processingQuizStart = new Set<string>();
 
+// Prevent duplicate review handling when two moderators submit at the same time.
+const reviewDecisionLocks = new Set<string>();
+
+function tryAcquireReviewDecisionLock(key: string): boolean {
+  if (!key) return false;
+  if (reviewDecisionLocks.has(key)) return false;
+  reviewDecisionLocks.add(key);
+  return true;
+}
+
+function releaseReviewDecisionLock(key: string): void {
+  if (!key) return;
+  reviewDecisionLocks.delete(key);
+}
+
 // DM message cache for tracking edits/deletions (stores last 50 messages per user)
 interface CachedDMMessage {
   id: string;
@@ -1523,6 +1625,63 @@ function buildModmailActionRow(threadId: string, dmMessageId: string, authorId: 
   actionMenu.addOptions(...options);
 
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(actionMenu);
+}
+
+function buildTicketHeaderControls(
+  threadId: string,
+  isAppeal: boolean,
+  claimLabel = "Claim",
+  claimDisabled = false,
+): ActionRowBuilder<ButtonBuilder>[] {
+  const claimButtonId = isAppeal ? `appeal_claim_${threadId}` : `modmail_claim_${threadId}`;
+  const claimButton = new ButtonBuilder()
+    .setCustomId(claimButtonId)
+    .setLabel(claimLabel)
+    .setStyle(claimDisabled ? ButtonStyle.Secondary : ButtonStyle.Primary)
+    .setDisabled(claimDisabled);
+
+  if (!claimDisabled) {
+    claimButton.setEmoji("🙋");
+  }
+
+  if (isAppeal) {
+    return [
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        claimButton,
+        new ButtonBuilder()
+          .setCustomId(`modmail_modlogs_${threadId}`)
+          .setLabel("Modlogs")
+          .setStyle(ButtonStyle.Secondary)
+          .setEmoji("📚"),
+        new ButtonBuilder()
+          .setCustomId(`appeal_logs_${threadId}`)
+          .setLabel("Appeal Logs")
+          .setStyle(ButtonStyle.Secondary)
+          .setEmoji("⚖️"),
+        new ButtonBuilder()
+          .setCustomId(`modmail_close_${threadId}`)
+          .setLabel("Close")
+          .setStyle(ButtonStyle.Danger)
+          .setEmoji("🔒"),
+      ),
+    ];
+  }
+
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      claimButton,
+      new ButtonBuilder()
+        .setCustomId(`modmail_logs_${threadId}`)
+        .setLabel("Modmail Logs")
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji("📝"),
+      new ButtonBuilder()
+        .setCustomId(`modmail_close_${threadId}`)
+        .setLabel("Close")
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji("🔒"),
+    ),
+  ];
 }
 
 client.on("typingStart", async (typing) => {
@@ -2673,6 +2832,33 @@ async function writeSyncedActivityCheckRoleGroups(group: ActivityCheckGroup, rol
       customCategoryPings: writeActivityCheckRoleGroupsToConfig(config?.customCategoryPings, group, roleValues),
     });
   }));
+}
+
+async function initializeSyncedActivityCheckRoleGroupsForGuild(guildId: string): Promise<void> {
+  const currentConfig = await storage.getGuildConfig(guildId).catch(() => undefined);
+  const currentGroups = getActivityCheckRoleGroupsFromGuildConfig(currentConfig);
+  if (Object.values(currentGroups).some((values) => values.length > 0)) {
+    return;
+  }
+
+  for (const guild of client.guilds.cache.values()) {
+    if (guild.id === guildId) continue;
+
+    const sourceConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    const sourceGroups = getActivityCheckRoleGroupsFromGuildConfig(sourceConfig);
+    if (!Object.values(sourceGroups).some((values) => values.length > 0)) {
+      continue;
+    }
+
+    await storage.upsertGuildConfig({
+      guildId,
+      customCategoryPings: JSON.stringify({
+        ...parseJsonObject(currentConfig?.customCategoryPings),
+        __activityCheckRoleGroups: sourceGroups,
+      }),
+    });
+    return;
+  }
 }
 
 function getPartnershipActivityChannelIdFromGuildConfig(config?: any): string | null {
@@ -3883,6 +4069,7 @@ function buildModlogsEmbed(
   page: number,
   itemsPerPage = 10,
 ): { embed: EmbedBuilder; totalPages: number } {
+  const MAX_REASON_LENGTH = 280;
   const filtered = logs.filter((entry) => parseActionTypeForLog(entry.actionType));
   const totalPages = Math.max(1, Math.ceil(filtered.length / itemsPerPage));
   const safePage = Math.min(Math.max(1, page), totalPages);
@@ -3893,12 +4080,16 @@ function buildModlogsEmbed(
     const type = parseActionTypeForLog(entry.actionType) || "Unknown";
     const caseId = buildSixDigitCaseId(entry, start + index + 1);
     const createdAtDate = entry.createdAt ? new Date(entry.createdAt) : null;
-    const timestamp = createdAtDate
-      ? `<t:${Math.floor(createdAtDate.getTime() / 1000)}:f> • <t:${Math.floor(createdAtDate.getTime() / 1000)}:R>`
+    const createdAtMs = createdAtDate?.getTime();
+    const hasValidCreatedAt = typeof createdAtMs === "number" && Number.isFinite(createdAtMs);
+    const timestamp = hasValidCreatedAt
+      ? `<t:${Math.floor(createdAtMs / 1000)}:f> • <t:${Math.floor(createdAtMs / 1000)}:R>`
       : "Unknown time";
     const moderator = entry.moderatorId ? `<@${entry.moderatorId}>` : "Unknown";
     const parsed = extractReasonAndDuration(entry.reason);
-    const reason = parsed.reason;
+    const reason = parsed.reason.length > MAX_REASON_LENGTH
+      ? `${parsed.reason.slice(0, MAX_REASON_LENGTH - 3)}...`
+      : parsed.reason;
     const shouldShowServer = ["ban", "kick", "mute", "timeout"].includes(String(entry.actionType || "").toLowerCase());
     const guildName = entry.guildId
       ? (client.guilds.cache.get(entry.guildId)?.name || `Guild ${entry.guildId}`)
@@ -3919,10 +4110,14 @@ function buildModlogsEmbed(
         details.push("Duration: Permanent");
       } else {
         const durationMs = parseDurationMs(durationToken);
-        if (durationMs && createdAtDate) {
-          const expiresAt = new Date(createdAtDate.getTime() + durationMs);
-          const expiresTs = Math.floor(expiresAt.getTime() / 1000);
-          details.push(`Duration: ${parsed.duration} (until <t:${expiresTs}:f> • <t:${expiresTs}:R>)`);
+        if (durationMs && hasValidCreatedAt) {
+          const expiresAtMs = createdAtMs + durationMs;
+          if (Number.isFinite(expiresAtMs) && Math.abs(expiresAtMs) <= 8.64e15) {
+            const expiresTs = Math.floor(expiresAtMs / 1000);
+            details.push(`Duration: ${parsed.duration} (until <t:${expiresTs}:f> • <t:${expiresTs}:R>)`);
+          } else {
+            details.push(`Duration: ${parsed.duration}`);
+          }
         } else {
           details.push(`Duration: ${parsed.duration}`);
         }
@@ -3933,13 +4128,57 @@ function buildModlogsEmbed(
     return details.join("\n");
   });
 
+  const description = lines.join("\n\n") || "No logs found for that user.";
+  const safeDescription = description.length > 4096
+    ? `${description.slice(0, 4093)}...`
+    : description;
+
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle(`Modlogs for (${targetLabel}) (Page ${safePage} of ${totalPages})`)
-    .setDescription(lines.join("\n\n") || "No logs found for that user.")
+    .setDescription(safeDescription)
     .setFooter({ text: `${filtered.length} total log${filtered.length === 1 ? "" : "s"}` });
 
   return { embed, totalPages };
+}
+
+function buildModlogsComponents(
+  requesterId: string,
+  targetId: string,
+  logs: any[],
+  page: number,
+  itemsPerPage = 10,
+): ActionRowBuilder<ButtonBuilder>[] {
+  const filtered = logs.filter((entry) => !!parseActionTypeForLog(entry.actionType));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / itemsPerPage));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+
+  if (totalPages <= 1) return [];
+
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`modlogs_page_${requesterId}_${targetId}_${safePage}_first`)
+        .setLabel("⏪")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage <= 1),
+      new ButtonBuilder()
+        .setCustomId(`modlogs_page_${requesterId}_${targetId}_${safePage}_prev`)
+        .setLabel("◀️")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage <= 1),
+      new ButtonBuilder()
+        .setCustomId(`modlogs_page_${requesterId}_${targetId}_${safePage}_next`)
+        .setLabel("▶️")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage >= totalPages),
+      new ButtonBuilder()
+        .setCustomId(`modlogs_page_${requesterId}_${targetId}_${safePage}_last`)
+        .setLabel("⏩")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage >= totalPages),
+    )
+  ];
 }
 
 function buildModmailLogsEmbed(
@@ -4004,13 +4243,23 @@ function buildModmailLogsComponents(
     rows.push(
       new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
+          .setCustomId(`modmail_logs_page_${requesterId}_${targetId}_${safePage}_first`)
+          .setLabel("⏪")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(safePage <= 1),
+        new ButtonBuilder()
           .setCustomId(`modmail_logs_page_${requesterId}_${targetId}_${safePage}_prev`)
-          .setLabel("◀")
+          .setLabel("◀️")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(safePage <= 1),
         new ButtonBuilder()
           .setCustomId(`modmail_logs_page_${requesterId}_${targetId}_${safePage}_next`)
-          .setLabel("▶")
+          .setLabel("▶️")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(safePage >= totalPages),
+        new ButtonBuilder()
+          .setCustomId(`modmail_logs_page_${requesterId}_${targetId}_${safePage}_last`)
+          .setLabel("⏩")
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(safePage >= totalPages),
       )
@@ -4189,13 +4438,23 @@ function buildSpecificModmailLogComponents(
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
+        .setCustomId(`modmail_log_page_${requesterId}_${threadId}_${page}_first`)
+        .setLabel("⏪")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page <= 1),
+      new ButtonBuilder()
         .setCustomId(`modmail_log_page_${requesterId}_${threadId}_${page}_prev`)
-        .setLabel("◀")
+        .setLabel("◀️")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(page <= 1),
       new ButtonBuilder()
         .setCustomId(`modmail_log_page_${requesterId}_${threadId}_${page}_next`)
-        .setLabel("▶")
+        .setLabel("▶️")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(page >= totalPages),
+      new ButtonBuilder()
+        .setCustomId(`modmail_log_page_${requesterId}_${threadId}_${page}_last`)
+        .setLabel("⏩")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(page >= totalPages),
     )
@@ -5429,16 +5688,6 @@ const commands = [
           { name: "Kick Requests Reviewed", value: "kick_requests_reviewed" },
           { name: "Accepted Semi Pros & Pros", value: "accepted_semi_pros_pros" }
         )
-    )
-    .addStringOption((option) =>
-      option
-        .setName("server")
-        .setDescription("Which server to add entries for (default: current)")
-        .setRequired(false)
-        .addChoices(
-          { name: "This Server", value: "current" },
-          { name: "All Servers (Global)", value: "global" }
-        )
     ),
   new SlashCommandBuilder()
     .setName("activity_remove")
@@ -5476,16 +5725,6 @@ const commands = [
           { name: "Role Requests Reviewed", value: "role_requests_reviewed" },
           { name: "Kick Requests Reviewed", value: "kick_requests_reviewed" },
           { name: "Accepted Semi Pros & Pros", value: "accepted_semi_pros_pros" }
-        )
-    )
-    .addStringOption((option) =>
-      option
-        .setName("server")
-        .setDescription("Which server to remove entries from (default: current)")
-        .setRequired(false)
-        .addChoices(
-          { name: "This Server", value: "current" },
-          { name: "All Servers (Global)", value: "global" }
         )
     ),
   new SlashCommandBuilder()
@@ -6023,6 +6262,14 @@ const commands = [
       option.setName("reason").setDescription("Reason for unblocking").setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName("private")
+    .setDescription("Make this channel private for all roles")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
+    .setName("unprivate")
+    .setDescription("Restore this channel's previous role permissions")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
     .setName("permissions")
     .setDescription("Set permission roles for various features")
     .setDefaultMemberPermissions(0)
@@ -6412,12 +6659,12 @@ function buildStatusPaginationButtons(
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(prevId)
-      .setLabel("◀ Previous")
+      .setLabel("◀")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(safePage <= 1),
     new ButtonBuilder()
       .setCustomId(nextId)
-      .setLabel("Next ▶")
+      .setLabel("▶")
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(safePage >= Math.max(1, totalPages)),
   );
@@ -6599,7 +6846,7 @@ function buildSnippetListPage(
     row.addComponents(
       new ButtonBuilder()
         .setCustomId(`${isAppeal ? "asniplist" : "sniplist"}_${page - 1}`)
-        .setLabel("◀ Previous")
+        .setLabel("◀")
         .setStyle(ButtonStyle.Secondary)
     );
   }
@@ -6607,7 +6854,7 @@ function buildSnippetListPage(
     row.addComponents(
       new ButtonBuilder()
         .setCustomId(`${isAppeal ? "asniplist" : "sniplist"}_${page + 1}`)
-        .setLabel("Next ▶")
+        .setLabel("▶")
         .setStyle(ButtonStyle.Secondary)
     );
   }
@@ -8203,7 +8450,6 @@ client.on("interactionCreate", async (interaction) => {
             && pair.targetRoleId === sourceRoleId
           ));
 
-          let createdForwardId: string | null = null;
           if (!forward) {
             const createdForward = await storage.addRoleSyncPair({
               sourceGuildId,
@@ -8211,29 +8457,17 @@ client.on("interactionCreate", async (interaction) => {
               targetGuildId,
               targetRoleId,
             });
-            createdForwardId = createdForward.id;
             forward = createdForward;
           }
 
-          if (!reverse) {
-            try {
-              const createdReverse = await storage.addRoleSyncPair({
-                sourceGuildId: targetGuildId,
-                sourceRoleId: targetRoleId,
-                targetGuildId: sourceGuildId,
-                targetRoleId: sourceRoleId,
-              });
-              reverse = createdReverse;
-            } catch (error) {
-              if (createdForwardId) {
-                await storage.removeRoleSyncPair(createdForwardId).catch(() => undefined);
-              }
-              throw error;
-            }
+          // Enforce one-way sync only: source -> target.
+          if (reverse) {
+            await storage.removeRoleSyncPair(reverse.id).catch(() => undefined);
+            reverse = null as any;
           }
 
           await interaction.editReply({
-            content: `✅ Role sync pair is active!\n**Source:** ${sourceRole.name} (<@&${sourceRoleId}>) in ${sourceGuild.name}\n**Target:** ${targetRole.name} (<@&${targetRoleId}>) in ${targetGuild.name}\n\nPair IDs: \`${forward.id}\`, \`${reverse.id}\``,
+            content: `✅ One-way role sync is active!\n**Source:** ${sourceRole.name} (<@&${sourceRoleId}>) in ${sourceGuild.name}\n**Target:** ${targetRole.name} (<@&${targetRoleId}>) in ${targetGuild.name}\n\nPair ID: \`${forward.id}\`\nUsers must keep the source role to keep the target role.`,
           });
         } else if (action === "remove") {
           const pairId = interaction.options.getString("pair_id");
@@ -8307,12 +8541,12 @@ client.on("interactionCreate", async (interaction) => {
           const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
               .setCustomId(`members_prev_${role.id}_0`)
-              .setLabel("◀ Previous")
+              .setLabel("◀")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(true),
             new ButtonBuilder()
               .setCustomId(`members_next_${role.id}_0`)
-              .setLabel("Next ▶")
+              .setLabel("▶")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(totalPages <= 1)
           );
@@ -8754,16 +8988,13 @@ client.on("interactionCreate", async (interaction) => {
               }
             } catch {}
 
-            let partnershipsCount = 0, acceptedStaffCount = 0, roleRequestsCount = 0, kickRequestsCount = 0, acceptedSemiProsCount = 0;
-            if (includeUndatedExtraCounters) {
-              [partnershipsCount, acceptedStaffCount, roleRequestsCount, kickRequestsCount, acceptedSemiProsCount] = await Promise.all([
-                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", targetUser.id, true).catch(() => 0),
-                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", targetUser.id, true).catch(() => 0),
-                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", targetUser.id, true).catch(() => 0),
-                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", targetUser.id, true).catch(() => 0),
-                getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", targetUser.id, true).catch(() => 0),
-              ]);
-            }
+            const [partnershipsCount, acceptedStaffCount, roleRequestsCount, kickRequestsCount, acceptedSemiProsCount] = await Promise.all([
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "partnerships", targetUser.id, true).catch(() => 0),
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "staff_accepted", targetUser.id, true).catch(() => 0),
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "role_requests_reviewed", targetUser.id, true).catch(() => 0),
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "kick_requests_reviewed", targetUser.id, true).catch(() => 0),
+              getExtraActivityCountForUserAcrossScope(interaction.guildId!, "accepted_semi_pros_pros", targetUser.id, true).catch(() => 0),
+            ]);
 
             const total = banCount + unbanCount + inviteCount + modmailCount + appealCount + staffReportCount +
               moderationStats.bans + moderationStats.kicks + moderationStats.mutes +
@@ -8785,13 +9016,11 @@ client.on("interactionCreate", async (interaction) => {
             statsText += `\nMod Bans: ${moderationStats.bans}`;
             statsText += `\nMod Kicks: ${moderationStats.kicks}`;
             statsText += `\nMod Mutes: ${moderationStats.mutes}`;
-            if (includeUndatedExtraCounters) {
-              statsText += `\nPartnerships: ${partnershipsCount}`;
-              statsText += `\nAccepted Staff: ${acceptedStaffCount}`;
-              statsText += `\nRole Requests Reviewed: ${roleRequestsCount}`;
-              statsText += `\nKick Requests Reviewed: ${kickRequestsCount}`;
-              statsText += `\nAccepted Semi Pros & Pros: ${acceptedSemiProsCount}`;
-            }
+            statsText += `\nPartnerships: ${partnershipsCount}`;
+            statsText += `\nAccepted Staff: ${acceptedStaffCount}`;
+            statsText += `\nRole Requests Reviewed: ${roleRequestsCount}`;
+            statsText += `\nKick Requests Reviewed: ${kickRequestsCount}`;
+            statsText += `\nAccepted Semi Pros & Pros: ${acceptedSemiProsCount}`;
 
             embed.addFields({ name: "Stats", value: statsText, inline: false });
             await interaction.editReply({ embeds: [embed] });
@@ -9022,13 +9251,23 @@ client.on("interactionCreate", async (interaction) => {
           if (totalPages > 1) {
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
               new ButtonBuilder()
-                .setCustomId(`activity_page_${page - 1}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
-                .setLabel("◀ Previous")
+                .setCustomId(`activity_page_first_${page}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
+                .setLabel("⏪")
                 .setStyle(ButtonStyle.Secondary)
-                .setDisabled(true),
+                .setDisabled(page <= 1),
               new ButtonBuilder()
-                .setCustomId(`activity_page_${page + 1}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
-                .setLabel("Next ▶")
+                .setCustomId(`activity_page_prev_${page}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
+                .setLabel("◀️")
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(page <= 1),
+              new ButtonBuilder()
+                .setCustomId(`activity_page_next_${page}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
+                .setLabel("▶️")
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(page >= totalPages),
+              new ButtonBuilder()
+                .setCustomId(`activity_page_last_${page}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
+                .setLabel("⏩")
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(page >= totalPages)
             );
@@ -9187,10 +9426,9 @@ client.on("interactionCreate", async (interaction) => {
           const user = interaction.options.getUser("user", true);
           const amount = interaction.options.getInteger("amount", true);
           const category = interaction.options.getString("category", true);
-          const serverOption = interaction.options.getString("server") || "current";
 
-          // Use "global" for cross-server synced entries, otherwise current guild
-          const targetGuildId = serverOption === "global" ? "global" : interaction.guildId!;
+          // Use a shared "global" guild key for manual cross-server additions.
+          const targetGuildId = "global";
 
           try {
             if (category === "modmail") {
@@ -9206,7 +9444,7 @@ client.on("interactionCreate", async (interaction) => {
             } else if (category === "unban") {
               await storage.addUnbanActivityEntries(targetGuildId, user.id, amount);
             } else if (category === "partnerships" || category === "staff_accepted" || category === "role_requests_reviewed" || category === "kick_requests_reviewed" || category === "accepted_semi_pros_pros") {
-              await adjustExtraActivityCounterForScope(interaction.guildId!, category as ExtraActivityCounterKey, user.id, amount, serverOption === "global");
+              await adjustExtraActivityCounterForScope(interaction.guildId!, category as ExtraActivityCounterKey, user.id, amount, true);
             } else if (category === "modban" || category === "kick" || category === "mute") {
               await storage.addModerationActivityEntries(targetGuildId, user.id, category, amount);
             }
@@ -9241,9 +9479,8 @@ client.on("interactionCreate", async (interaction) => {
                       : category === "appeal"
                         ? "appeal"
                         : "modmail";
-          const serverText = serverOption === "global" ? " (synced across all servers)" : "";
           await interaction.editReply({
-            content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity${serverText}.`,
+            content: `Added **${amount}** ${categoryText} log entries to <@${user.id}>'s activity.`,
           });
         } catch (error: any) {
           console.log("Error in /activity_add command:", error.message);
@@ -9266,28 +9503,62 @@ client.on("interactionCreate", async (interaction) => {
           const user = interaction.options.getUser("user", true);
           const amount = interaction.options.getInteger("amount", true);
           const category = interaction.options.getString("category", true);
-          const serverOption = interaction.options.getString("server") || "current";
 
-          // Use "global" for cross-server synced entries, otherwise current guild
-          const targetGuildId = serverOption === "global" ? "global" : interaction.guildId!;
+          const scopeGuildIds = Array.from(new Set(["global", interaction.guildId!, ...client.guilds.cache.map((guild) => guild.id)]));
 
           let removed = 0;
           try {
             if (category === "modmail") {
-              removed = await storage.removeModmailActivityEntries(targetGuildId, user.id, amount);
+              let remaining = amount;
+              for (const guildId of scopeGuildIds) {
+                if (remaining <= 0) break;
+                const chunk = await storage.removeModmailActivityEntries(guildId, user.id, remaining);
+                removed += chunk;
+                remaining -= chunk;
+              }
             } else if (category === "appeal") {
-              removed = await storage.removeAppealActivityEntries(targetGuildId, user.id, amount);
+              let remaining = amount;
+              for (const guildId of scopeGuildIds) {
+                if (remaining <= 0) break;
+                const chunk = await storage.removeAppealActivityEntries(guildId, user.id, remaining);
+                removed += chunk;
+                remaining -= chunk;
+              }
             } else if (category === "invites") {
-              removed = await storage.removeInviteActivityEntries(targetGuildId, user.id, amount);
+              let remaining = amount;
+              for (const guildId of scopeGuildIds) {
+                if (remaining <= 0) break;
+                const chunk = await storage.removeInviteActivityEntries(guildId, user.id, remaining);
+                removed += chunk;
+                remaining -= chunk;
+              }
             } else if (category === "staffreport") {
-              removed = await storage.removeStaffReportEntries(targetGuildId, user.id, amount);
+              let remaining = amount;
+              for (const guildId of scopeGuildIds) {
+                if (remaining <= 0) break;
+                const chunk = await storage.removeStaffReportEntries(guildId, user.id, remaining);
+                removed += chunk;
+                remaining -= chunk;
+              }
             } else if (category === "partnerships" || category === "staff_accepted" || category === "role_requests_reviewed" || category === "kick_requests_reviewed" || category === "accepted_semi_pros_pros") {
-              await adjustExtraActivityCounterForScope(interaction.guildId!, category as ExtraActivityCounterKey, user.id, -amount, serverOption === "global");
+              await adjustExtraActivityCounterForScope(interaction.guildId!, category as ExtraActivityCounterKey, user.id, -amount, true);
               removed = amount;
             } else if (category === "modban" || category === "kick" || category === "mute") {
-              removed = await storage.removeModerationActivityEntries(targetGuildId, user.id, category, amount);
+              let remaining = amount;
+              for (const guildId of scopeGuildIds) {
+                if (remaining <= 0) break;
+                const chunk = await storage.removeModerationActivityEntries(guildId, user.id, category, remaining);
+                removed += chunk;
+                remaining -= chunk;
+              }
             } else {
-              removed = await storage.removeActivityEntries(targetGuildId, user.id, category, amount);
+              let remaining = amount;
+              for (const guildId of scopeGuildIds) {
+                if (remaining <= 0) break;
+                const chunk = await storage.removeActivityEntries(guildId, user.id, category, remaining);
+                removed += chunk;
+                remaining -= chunk;
+              }
             }
           } catch (e) {
             console.log("Could not remove activity entries:", e);
@@ -9320,9 +9591,8 @@ client.on("interactionCreate", async (interaction) => {
                       : category === "appeal"
                         ? "appeal"
                         : "modmail";
-          const serverText = serverOption === "global" ? " (synced across all servers)" : "";
           await interaction.editReply({
-            content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity${serverText}.`,
+            content: `Removed **${removed}** ${categoryText} log entries from <@${user.id}>'s activity.`,
           });
         } catch (error: any) {
           console.log("Error in /activity_remove command:", error.message);
@@ -10950,6 +11220,146 @@ client.on("interactionCreate", async (interaction) => {
           }
           await interaction.editReply({ content: `✅ <@${targetUser.id}> has been unblocked from modmail.${reason ? ` Reason: ${reason}` : ""}` });
         }
+      } else if (commandName === "private") {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const { memberPermissions } = getInteractionMemberContext(interaction);
+        const permissionBits = typeof memberPermissions === "string"
+          ? BigInt(memberPermissions)
+          : (memberPermissions ?? BigInt(0));
+        const hasPermission = (permissionBits & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You need Administrator permission to use this command." });
+          return;
+        }
+
+        const guild = interaction.guild;
+        const channel: any = interaction.channel;
+        if (!guild || !channel || !("permissionOverwrites" in channel)) {
+          await interaction.editReply({ content: "❌ This command can only be used in a server channel." });
+          return;
+        }
+
+        try {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const snapshots = getPrivateChannelSnapshotsFromGuildConfig(config);
+
+          if (snapshots[interaction.channelId!]) {
+            await interaction.editReply({
+              content: "⚠️ This channel is already private from a previous /private command. Use /unprivate to restore it first.",
+            });
+            return;
+          }
+
+          const snapshot: PrivateChannelOverwriteSnapshot[] = [...channel.permissionOverwrites.cache.values()].map((ow: any) => ({
+            id: ow.id,
+            type: getPermissionOverwriteType(ow.type),
+            allow: String(ow.allow?.bitfield ?? 0n),
+            deny: String(ow.deny?.bitfield ?? 0n),
+          }));
+
+          // Deny ViewChannel only for roles already in the channel + @everyone
+          const roleTargetIds = new Set<string>(
+            [...channel.permissionOverwrites.cache.values()]
+              .filter((ow: any) => getPermissionOverwriteType(ow.type) === 0)
+              .map((ow: any) => ow.id as string),
+          );
+          roleTargetIds.add(guild.id); // always include @everyone
+
+          for (const roleId of roleTargetIds) {
+            await channel.permissionOverwrites.edit(
+              roleId,
+              { ViewChannel: false },
+              { reason: `Channel privatized by ${interaction.user.tag}` },
+            );
+          }
+
+          const updatedCustomCategoryPings = writePrivateChannelSnapshotToConfig(
+            config?.customCategoryPings,
+            interaction.channelId!,
+            snapshot,
+          );
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings: updatedCustomCategoryPings,
+          });
+
+          await interaction.editReply({
+            content: "✅ This channel is now private for all roles. Run /unprivate here to restore previous permissions.",
+          });
+        } catch (error: any) {
+          console.error("Error in private command:", error);
+          await interaction.editReply({ content: `❌ Failed to private this channel: ${error?.message ?? error}` }).catch(() => {});
+        }
+      } else if (commandName === "unprivate") {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        const { memberPermissions } = getInteractionMemberContext(interaction);
+        const permissionBits = typeof memberPermissions === "string"
+          ? BigInt(memberPermissions)
+          : (memberPermissions ?? BigInt(0));
+        const hasPermission = (permissionBits & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
+
+        if (!hasPermission) {
+          await interaction.editReply({ content: "❌ You need Administrator permission to use this command." });
+          return;
+        }
+
+        const guild = interaction.guild;
+        const channel: any = interaction.channel;
+        if (!guild || !channel || !("permissionOverwrites" in channel)) {
+          await interaction.editReply({ content: "❌ This command can only be used in a server channel." });
+          return;
+        }
+
+        try {
+          const config = await storage.getGuildConfig(interaction.guildId!);
+          const { customCategoryPings, snapshot } = removePrivateChannelSnapshotFromConfig(
+            config?.customCategoryPings,
+            interaction.channelId!,
+          );
+
+          if (!snapshot) {
+            await interaction.editReply({
+              content: "⚠️ I do not have a saved permission snapshot for this channel. Run /private first before /unprivate.",
+            });
+            return;
+          }
+
+          const snapshotById = new Map(snapshot.map((s) => [s.id, s]));
+          const vcBit = PermissionFlagsBits.ViewChannel;
+
+          for (const role of guild.roles.cache.values()) {
+            const saved = snapshotById.get(role.id);
+            if (!saved) {
+              const currentOw = channel.permissionOverwrites.cache.get(role.id);
+              if (currentOw) await (currentOw as any).delete(`Channel unprivatized by ${interaction.user.tag}`);
+            } else {
+              const allowBit = BigInt(saved.allow);
+              const denyBit = BigInt(saved.deny);
+              const wasAllowed = (allowBit & vcBit) === vcBit;
+              const wasDenied = (denyBit & vcBit) === vcBit;
+              const viewChannelState = wasAllowed ? true : wasDenied ? false : null;
+              await channel.permissionOverwrites.edit(
+                role.id,
+                { ViewChannel: viewChannelState },
+                { reason: `Channel unprivatized by ${interaction.user.tag}` },
+              );
+            }
+          }
+
+          await storage.upsertGuildConfig({
+            guildId: interaction.guildId!,
+            customCategoryPings,
+          });
+
+          await interaction.editReply({ content: "✅ Previous channel permissions have been restored." });
+        } catch (error: any) {
+          console.error("Error in unprivate command:", error);
+          await interaction.editReply({ content: `❌ Failed to restore permissions: ${error?.message ?? error}` }).catch(() => {});
+        }
       } else if (commandName === "unban") {
         const { memberRoles, memberPermissions } = getInteractionMemberContext(interaction);
         const hasPermission = await hasUnbanAllPermission(memberRoles, memberPermissions, interaction.guildId!);
@@ -11012,7 +11422,13 @@ client.on("interactionCreate", async (interaction) => {
 
         await interaction.editReply({ content: summaryParts.join("\n") });
       } else if (commandName === "permissions") {
-        if (!canUsePrefixCommand(interaction)) {
+        const { memberPermissions } = getInteractionMemberContext(interaction);
+        const permissionBits = typeof memberPermissions === "string"
+          ? BigInt(memberPermissions)
+          : (memberPermissions ?? BigInt(0));
+        const hasAdministrator = (permissionBits & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator;
+
+        if (!hasAdministrator && !canUsePrefixCommand(interaction)) {
           await interaction.reply({
             content: "You do not have permission to use this command.",
             ephemeral: true,
@@ -11245,13 +11661,23 @@ client.on("interactionCreate", async (interaction) => {
                 const totalPages = Math.ceil(messages.length / pageSize) || 1;
                 const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
                   new ButtonBuilder()
-                    .setCustomId(`modmail_transcript_0_${thread.id}`)
-                    .setLabel("Previous Page")
+                    .setCustomId(`modmail_transcript_first_${thread.id}`)
+                    .setLabel("⏪")
                     .setStyle(ButtonStyle.Secondary)
                     .setDisabled(true),
                   new ButtonBuilder()
-                    .setCustomId(`modmail_transcript_1_${thread.id}`)
-                    .setLabel("Next Page")
+                    .setCustomId(`modmail_transcript_prev_${0}_${thread.id}`)
+                    .setLabel("◀️")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_transcript_next_${0}_${thread.id}`)
+                    .setLabel("▶️")
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(totalPages <= 1),
+                  new ButtonBuilder()
+                    .setCustomId(`modmail_transcript_last_${thread.id}`)
+                    .setLabel("⏩")
                     .setStyle(ButtonStyle.Secondary)
                     .setDisabled(totalPages <= 1)
                 );
@@ -12935,42 +13361,7 @@ client.on("interactionCreate", async (interaction) => {
             // Update message components to show claimed state
             try {
               await interaction.message.edit({
-                components: [
-                  new ActionRowBuilder<ButtonBuilder>().addComponents(
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_unclaim_${threadId}`)
-                      .setLabel(`Claimed by ${interaction.user.username}`)
-                      .setStyle(ButtonStyle.Secondary)
-                      .setDisabled(true),
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_toggle_${threadId}`)
-                      .setLabel("Toggle Member")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("👥"),
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_request_role_${threadId}`)
-                      .setLabel("Request A Role")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("🛡️")
-                  ),
-                  new ActionRowBuilder<ButtonBuilder>().addComponents(
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_modlogs_${threadId}`)
-                      .setLabel("Modlogs")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("📚"),
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_logs_${threadId}`)
-                      .setLabel("Modmail Logs")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("📝"),
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_close_${threadId}`)
-                      .setLabel("Close")
-                      .setStyle(ButtonStyle.Danger)
-                      .setEmoji("🔒")
-                  )
-                ]
+                components: buildTicketHeaderControls(threadId, false, `Claimed by ${interaction.user.username}`, true)
               });
             } catch (e) {}
 
@@ -12986,42 +13377,7 @@ client.on("interactionCreate", async (interaction) => {
                   return m.components.some((row: any) => row.components && row.components.some((c: any) => c.customId === `modmail_claim_${threadId}` || c.customId === `appeal_claim_${threadId}`));
                 });
                 if (duplicate && duplicate.id !== interaction.message.id) {
-                  await duplicate.edit({ components: [
-                    new ActionRowBuilder<ButtonBuilder>().addComponents(
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_unclaim_${threadId}`)
-                        .setLabel(`Claimed by ${interaction.user.username}`)
-                        .setStyle(ButtonStyle.Secondary)
-                        .setDisabled(true),
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_toggle_${threadId}`)
-                        .setLabel("Toggle Member")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("👥"),
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_request_role_${threadId}`)
-                        .setLabel("Request A Role")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("🛡️")
-                    ),
-                    new ActionRowBuilder<ButtonBuilder>().addComponents(
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_modlogs_${threadId}`)
-                        .setLabel("Modlogs")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("📚"),
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_logs_${threadId}`)
-                        .setLabel("Modmail Logs")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("📝"),
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_close_${threadId}`)
-                        .setLabel("Close")
-                        .setStyle(ButtonStyle.Danger)
-                        .setEmoji("🔒")
-                    )
-                  ]}).catch(() => {});
+                  await duplicate.edit({ components: buildTicketHeaderControls(threadId, false, `Claimed by ${interaction.user.username}`, true) }).catch(() => {});
                 }
               }
             } catch (e) {}
@@ -13128,13 +13484,23 @@ client.on("interactionCreate", async (interaction) => {
                   const totalPages = Math.ceil(messages.length / pageSize) || 1;
                   const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
                     new ButtonBuilder()
-                      .setCustomId(`modmail_transcript_0_${threadIdForLog}`)
-                      .setLabel("Previous Page")
+                      .setCustomId(`modmail_transcript_first_${threadIdForLog}`)
+                      .setLabel("⏪")
                       .setStyle(ButtonStyle.Secondary)
                       .setDisabled(true),
                     new ButtonBuilder()
-                      .setCustomId(`modmail_transcript_1_${threadIdForLog}`)
-                      .setLabel("Next Page")
+                      .setCustomId(`modmail_transcript_prev_${0}_${threadIdForLog}`)
+                      .setLabel("◀️")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setDisabled(true),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_transcript_next_${0}_${threadIdForLog}`)
+                      .setLabel("▶️")
+                      .setStyle(ButtonStyle.Secondary)
+                      .setDisabled(totalPages <= 1),
+                    new ButtonBuilder()
+                      .setCustomId(`modmail_transcript_last_${threadIdForLog}`)
+                      .setLabel("⏩")
                       .setStyle(ButtonStyle.Secondary)
                       .setDisabled(totalPages <= 1)
                   );
@@ -13169,7 +13535,10 @@ client.on("interactionCreate", async (interaction) => {
         if (selectedAction === "override_ticket") {
           if (!await safeDeferUpdate(interaction)) return;
           try {
-            const thread = await storage.getModmailThread(threadId) || await safeGetModmailThreadByChannel(interaction.channelId!);
+            const modmailThread = await storage.getModmailThread(threadId) || await safeGetModmailThreadByChannel(interaction.channelId!);
+            const appealThread = modmailThread ? null : (await storage.getAppealThread(threadId).catch(() => null) || await storage.getAppealThreadByChannel(interaction.channelId!).catch(() => null));
+            const thread = modmailThread || appealThread;
+            const isAppealThread = !!appealThread;
             if (!thread) {
               await interaction.followUp({ content: "Thread not found.", flags: 64 });
               return;
@@ -13184,7 +13553,7 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             const previousClaimer = thread.claimedById;
-            if (thread.isAppeal) {
+            if (isAppealThread) {
               await storage.updateAppealThread(thread.id, { claimedById: null });
             } else {
               await storage.updateModmailThread(thread.id, { claimedById: null });
@@ -13196,42 +13565,7 @@ client.on("interactionCreate", async (interaction) => {
               .setTimestamp();
 
             try {
-              await interaction.message.edit({ components: [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_claim_${thread.id}`)
-                    .setLabel("Claim")
-                    .setStyle(ButtonStyle.Primary)
-                    .setEmoji("👋"),
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_toggle_${thread.id}`)
-                    .setLabel("Toggle Member")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("👥"),
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_request_role_${thread.id}`)
-                    .setLabel("Request A Role")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("🛡️")
-                ),
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_modlogs_${thread.id}`)
-                    .setLabel("Modlogs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("📚"),
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_logs_${thread.id}`)
-                    .setLabel("Modmail Logs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("📝"),
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_close_${thread.id}`)
-                    .setLabel("Close")
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji("🔒")
-                )
-              ]});
+              await interaction.message.edit({ components: buildTicketHeaderControls(thread.id, isAppealThread) });
             } catch (e) {}
 
             await interaction.followUp({ embeds: [unclaimEmbed] });
@@ -13324,23 +13658,9 @@ client.on("interactionCreate", async (interaction) => {
           const targetUser = await client.users.fetch(sourceUserId).catch(() => null);
           const targetLabel = targetUser?.username || sourceUserId;
           const { embed, totalPages } = buildModlogsEmbed(sourceUserId, targetLabel, filtered, 1, MODLOGS_ITEMS_PER_PAGE);
-
-          const components: any[] = [];
-          if (totalPages > 1) {
-            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-              new ButtonBuilder()
-                .setCustomId(`modlogs_page_${interaction.user.id}_${sourceUserId}_1_prev`)
-                .setLabel("◀")
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(true),
-              new ButtonBuilder()
-                .setCustomId(`modlogs_page_${interaction.user.id}_${sourceUserId}_1_next`)
-                .setLabel("▶")
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(false),
-            );
-            components.push(row);
-          }
+          const components = totalPages > 1
+            ? buildModlogsComponents(interaction.user.id, sourceUserId, filtered, 1, MODLOGS_ITEMS_PER_PAGE)
+            : [];
 
           await interaction.reply({ embeds: [embed], components, flags: 64 });
           return;
@@ -13837,38 +14157,7 @@ client.on("interactionCreate", async (interaction) => {
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
 
-          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_claim_${thread.id}`)
-              .setLabel("Claim")
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_toggle_${thread.id}`)
-              .setLabel("Toggle Member")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_request_role_${thread.id}`)
-              .setLabel("Request A Role")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("🛡️")
-          );
-
-          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_modlogs_${thread.id}`)
-              .setLabel("Modlogs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📚"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_logs_${thread.id}`)
-              .setLabel("Modmail Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝")
-          );
-
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: buildTicketHeaderControls(thread.id, false) });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -14060,39 +14349,7 @@ client.on("interactionCreate", async (interaction) => {
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
 
-          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_claim_${thread.id}`)
-              .setLabel("Claim")
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_toggle_${thread.id}`)
-              .setLabel("Toggle Member")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_request_role_${thread.id}`)
-              .setLabel("Request A Role")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("🛡️")
-          );
-
-          // Add a compact header action dropdown for ticket-level actions
-          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_modlogs_${thread.id}`)
-              .setLabel("Modlogs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📚"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_logs_${thread.id}`)
-              .setLabel("Modmail Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝")
-          );
-
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: buildTicketHeaderControls(thread.id, false) });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -14358,9 +14615,15 @@ client.on("interactionCreate", async (interaction) => {
 
           try {
             const threadId = customId.replace("modmail_modlogs_", "");
-            let thread = await storage.getModmailThread(threadId);
+            let thread: any = await storage.getModmailThread(threadId);
+            if (!thread) {
+              thread = await storage.getAppealThread(threadId).catch(() => null);
+            }
             if (!thread) {
               thread = await safeGetModmailThreadByChannel(interaction.channelId!);
+            }
+            if (!thread) {
+              thread = await storage.getAppealThreadByChannel(interaction.channelId!).catch(() => null);
             }
 
             if (!thread) {
@@ -14380,23 +14643,9 @@ client.on("interactionCreate", async (interaction) => {
             const targetUser = await client.users.fetch(targetUserId).catch(() => null);
             const targetLabel = targetUser?.username || targetUserId;
             const { embed, totalPages } = buildModlogsEmbed(targetUserId, targetLabel, filtered, 1, MODLOGS_ITEMS_PER_PAGE);
-
-            const components: any[] = [];
-            if (totalPages > 1) {
-              const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`modlogs_page_${interaction.user.id}_${targetUserId}_1_prev`)
-                  .setLabel("◀")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setDisabled(true),
-                new ButtonBuilder()
-                  .setCustomId(`modlogs_page_${interaction.user.id}_${targetUserId}_1_next`)
-                  .setLabel("▶")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setDisabled(false),
-              );
-              components.push(row);
-            }
+            const components = totalPages > 1
+              ? buildModlogsComponents(interaction.user.id, targetUserId, filtered, 1, MODLOGS_ITEMS_PER_PAGE)
+              : [];
 
             await interaction.editReply({ embeds: [embed], components });
           } catch (error: any) {
@@ -14750,7 +14999,7 @@ client.on("interactionCreate", async (interaction) => {
           const requesterId = parts[2];
           const targetId = parts[3];
           const currentPage = parseInt(parts[4] || "1", 10);
-          const direction = parts[5];
+          const action = parts[5];
 
           if (interaction.user.id !== requesterId) {
             const hasPermission = await canUseModlogsButtons(interaction);
@@ -14766,28 +15015,20 @@ client.on("interactionCreate", async (interaction) => {
           const filtered = actions.filter((entry) => !!parseActionTypeForLog(entry.actionType));
 
           const totalPages = Math.max(1, Math.ceil(filtered.length / MODLOGS_ITEMS_PER_PAGE));
-          const nextPage = direction === "prev"
-            ? Math.max(1, currentPage - 1)
-            : Math.min(totalPages, currentPage + 1);
+          const nextPage = action === "first"
+            ? 1
+            : action === "last"
+              ? totalPages
+              : action === "prev"
+                ? Math.max(1, currentPage - 1)
+                : Math.min(totalPages, currentPage + 1);
 
           const targetUser = await client.users.fetch(targetId).catch(() => null);
           const targetLabel = targetUser?.username || targetId;
           const { embed } = buildModlogsEmbed(targetId, targetLabel, filtered, nextPage, MODLOGS_ITEMS_PER_PAGE);
+          const components = buildModlogsComponents(requesterId, targetId, filtered, nextPage, MODLOGS_ITEMS_PER_PAGE);
 
-          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modlogs_page_${requesterId}_${targetId}_${nextPage}_prev`)
-              .setLabel("◀")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(nextPage <= 1),
-            new ButtonBuilder()
-              .setCustomId(`modlogs_page_${requesterId}_${targetId}_${nextPage}_next`)
-              .setLabel("▶")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(nextPage >= totalPages),
-          );
-
-          await interaction.editReply({ embeds: [embed], components: totalPages > 1 ? [row] : [] });
+          await interaction.editReply({ embeds: [embed], components });
           return;
         }
 
@@ -14796,7 +15037,7 @@ client.on("interactionCreate", async (interaction) => {
           const requesterId = parts[3];
           const targetId = parts[4];
           const currentPage = parseInt(parts[5] || "1", 10);
-          const direction = parts[6];
+          const action = parts[6];
 
           if (interaction.user.id !== requesterId) {
             const memberPerms = interaction.member?.permissions;
@@ -14811,9 +15052,13 @@ client.on("interactionCreate", async (interaction) => {
 
           const logs = await storage.getAllModmailThreadsByUser(targetId);
           const totalPages = Math.max(1, Math.ceil(logs.length / MODMAIL_LOGS_ITEMS_PER_PAGE));
-          const nextPage = direction === "prev"
-            ? Math.max(1, currentPage - 1)
-            : Math.min(totalPages, currentPage + 1);
+          const nextPage = action === "first"
+            ? 1
+            : action === "last"
+              ? totalPages
+              : action === "prev"
+                ? Math.max(1, currentPage - 1)
+                : Math.min(totalPages, currentPage + 1);
 
           const targetUser = await client.users.fetch(targetId).catch(() => null);
           const targetLabel = targetUser?.username || targetId;
@@ -15015,7 +15260,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         if (customId.startsWith("modmail_log_page_")) {
-          const match = customId.match(/^modmail_log_page_(\d+)_(.+)_(\d+)_(prev|next)$/);
+          const match = customId.match(/^modmail_log_page_(\d+)_(.+)_(\d+)_(first|prev|next|last)$/);
           if (!match) {
             await interaction.followUp({ content: "Invalid transcript page request.", flags: 64 });
             return;
@@ -15024,7 +15269,7 @@ client.on("interactionCreate", async (interaction) => {
           const requesterId = match[1];
           const threadId = match[2];
           const currentPage = parseInt(match[3], 10);
-          const direction = match[4];
+          const action = match[4];
 
           if (interaction.user.id !== requesterId) {
             const memberPerms = interaction.member?.permissions;
@@ -15050,9 +15295,13 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           const preview = buildSpecificModmailLogEmbed(thread, messages, currentPage, 10);
-          const nextPage = direction === "prev"
-            ? Math.max(1, preview.safePage - 1)
-            : Math.min(preview.totalPages, preview.safePage + 1);
+          const nextPage = action === "first"
+            ? 1
+            : action === "last"
+              ? preview.totalPages
+              : action === "prev"
+                ? Math.max(1, preview.safePage - 1)
+                : Math.min(preview.totalPages, preview.safePage + 1);
 
           const { embed, totalPages, safePage } = buildSpecificModmailLogEmbed(thread, messages, nextPage, 10);
           const components = buildSpecificModmailLogComponents(requesterId, threadId, safePage, totalPages);
@@ -15071,13 +15320,32 @@ client.on("interactionCreate", async (interaction) => {
             }
 
             if (!await safeDeferUpdate(interaction)) return;
-            const parts = customId.split("_");
-            const page = parseInt(parts[2]);
+            let action: "first" | "prev" | "next" | "last" = "next";
+            let currentPage = 1;
+            let rangeFromRaw = "none";
+            let rangeToRaw = "none";
+            let categoryPart = "all";
+
+            const modernMatch = customId.match(/^activity_page_(first|prev|next|last)_(-?\d+)_([^_]+)_([^_]+)_(.+)$/);
+            if (modernMatch) {
+              action = modernMatch[1] as "first" | "prev" | "next" | "last";
+              currentPage = Math.max(1, parseInt(modernMatch[2] || "1", 10));
+              rangeFromRaw = modernMatch[3] || "none";
+              rangeToRaw = modernMatch[4] || "none";
+              categoryPart = modernMatch[5] || "all";
+            } else {
+              // Backward compatibility for older two-button IDs.
+              const legacyParts = customId.split("_");
+              currentPage = Math.max(1, parseInt(legacyParts[2] || "1", 10));
+              rangeFromRaw = legacyParts[3] || "none";
+              rangeToRaw = legacyParts[4] || "none";
+              categoryPart = legacyParts[5] || "all";
+            }
+
             const { fromDays, toDays } = normalizeActivityRangeBounds(
-              parseActivityRangeFromCustomId(parts[3]),
-              parseActivityRangeFromCustomId(parts[4]),
+              parseActivityRangeFromCustomId(rangeFromRaw),
+              parseActivityRangeFromCustomId(rangeToRaw),
             );
-            const categoryPart = parts[5] ?? "all";
             const category = categoryPart === "all" ? null : categoryPart;
             const extraCategories = ["partnerships", "staff_accepted", "role_requests_reviewed", "kick_requests_reviewed", "accepted_semi_pros_pros"];
             const includeUndatedExtraCounters = fromDays === undefined && toDays === undefined;
@@ -15183,7 +15451,14 @@ client.on("interactionCreate", async (interaction) => {
               .map(([userId, count]) => ({ userId, count }))
               .sort((a, b) => b.count - a.count);
 
-            const totalPages = Math.ceil(leaderboard.length / 10);
+            const totalPages = Math.max(1, Math.ceil(leaderboard.length / 10));
+            const page = action === "first"
+              ? 1
+              : action === "last"
+                ? totalPages
+                : action === "prev"
+                  ? Math.max(1, currentPage - 1)
+                  : Math.min(totalPages, currentPage + 1);
             const start = (page - 1) * 10;
             const currentLeaderboard = leaderboard.slice(start, start + 10);
 
@@ -15248,13 +15523,23 @@ client.on("interactionCreate", async (interaction) => {
             if (totalPages > 1) {
               const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder()
-                  .setCustomId(`activity_page_${page - 1}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
-                  .setLabel("◀ Previous")
+                  .setCustomId(`activity_page_first_${page}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
+                  .setLabel("⏪")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(page <= 1),
                 new ButtonBuilder()
-                  .setCustomId(`activity_page_${page + 1}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
-                  .setLabel("Next ▶")
+                  .setCustomId(`activity_page_prev_${page}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
+                  .setLabel("◀️")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(page <= 1),
+                new ButtonBuilder()
+                  .setCustomId(`activity_page_next_${page}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
+                  .setLabel("▶️")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(page >= totalPages),
+                new ButtonBuilder()
+                  .setCustomId(`activity_page_last_${page}_${serializeActivityRangeForCustomId(fromDays)}_${serializeActivityRangeForCustomId(toDays)}_${category ?? "all"}`)
+                  .setLabel("⏩")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(page >= totalPages)
               );
@@ -15313,42 +15598,7 @@ client.on("interactionCreate", async (interaction) => {
 
           // Update button to show claimed state while preserving other buttons
           await interaction.message.edit({
-            components: [
-              new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`modmail_unclaim_${threadId}`)
-                  .setLabel(`Claimed by ${interaction.user.username}`)
-                  .setStyle(ButtonStyle.Secondary)
-                  .setDisabled(true),
-                new ButtonBuilder()
-                  .setCustomId(`modmail_toggle_${threadId}`)
-                  .setLabel("Toggle Member")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("👥"),
-                new ButtonBuilder()
-                  .setCustomId(`modmail_request_role_${threadId}`)
-                  .setLabel("Request A Role")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("🛡️")
-              ),
-              new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`modmail_modlogs_${threadId}`)
-                  .setLabel("Modlogs")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("📚"),
-                new ButtonBuilder()
-                  .setCustomId(`modmail_logs_${threadId}`)
-                  .setLabel("Modmail Logs")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("📝"),
-                new ButtonBuilder()
-                  .setCustomId(`modmail_close_${threadId}`)
-                  .setLabel("Close")
-                  .setStyle(ButtonStyle.Danger)
-                  .setEmoji("🔒")
-              )
-            ]
+            components: buildTicketHeaderControls(threadId, false, `Claimed by ${interaction.user.username}`, true)
           });
           // Also update any other ticket header/control messages in this channel
           try {
@@ -15360,42 +15610,7 @@ client.on("interactionCreate", async (interaction) => {
                 return m.components.some((row: any) => row.components && row.components.some((c: any) => c.customId === `modmail_claim_${threadId}` || c.customId === `appeal_claim_${threadId}`));
               });
               if (duplicate && duplicate.id !== interaction.message.id) {
-                await duplicate.edit({ components: [
-                  new ActionRowBuilder<ButtonBuilder>().addComponents(
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_unclaim_${threadId}`)
-                      .setLabel(`Claimed by ${interaction.user.username}`)
-                      .setStyle(ButtonStyle.Secondary)
-                      .setDisabled(true),
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_toggle_${threadId}`)
-                      .setLabel("Toggle Member")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("👥"),
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_request_role_${threadId}`)
-                      .setLabel("Request A Role")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("🛡️")
-                  ),
-                  new ActionRowBuilder<ButtonBuilder>().addComponents(
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_modlogs_${threadId}`)
-                      .setLabel("Modlogs")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("📚"),
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_logs_${threadId}`)
-                      .setLabel("Modmail Logs")
-                      .setStyle(ButtonStyle.Secondary)
-                      .setEmoji("📝"),
-                    new ButtonBuilder()
-                      .setCustomId(`modmail_close_${threadId}`)
-                      .setLabel("Close")
-                      .setStyle(ButtonStyle.Danger)
-                      .setEmoji("🔒")
-                  )
-                ]}).catch(() => {});
+                await duplicate.edit({ components: buildTicketHeaderControls(threadId, false, `Claimed by ${interaction.user.username}`, true) }).catch(() => {});
               }
             }
           } catch (e) {}
@@ -15472,42 +15687,7 @@ client.on("interactionCreate", async (interaction) => {
 
           // Reset Claim button
           await interaction.message.edit({
-            components: [
-              new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`modmail_claim_${threadId}`)
-                  .setLabel("Claim")
-                  .setStyle(ButtonStyle.Primary)
-                  .setEmoji("👋"),
-                new ButtonBuilder()
-                  .setCustomId(`modmail_toggle_${threadId}`)
-                  .setLabel("Toggle Member")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("👥"),
-                new ButtonBuilder()
-                  .setCustomId(`modmail_request_role_${threadId}`)
-                  .setLabel("Request A Role")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("🛡️")
-              ),
-              new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`modmail_modlogs_${threadId}`)
-                  .setLabel("Modlogs")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("📚"),
-                new ButtonBuilder()
-                  .setCustomId(`modmail_logs_${threadId}`)
-                  .setLabel("Modmail Logs")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("📝"),
-                new ButtonBuilder()
-                  .setCustomId(`modmail_close_${threadId}`)
-                  .setLabel("Close")
-                  .setStyle(ButtonStyle.Danger)
-                  .setEmoji("🔒")
-              )
-            ]
+            components: buildTicketHeaderControls(threadId, false)
           });
 
           await interaction.followUp({ embeds: [unclaimEmbed] });
@@ -15521,42 +15701,7 @@ client.on("interactionCreate", async (interaction) => {
                   return m.components.some((row: any) => row.components && row.components.some((c: any) => c.customId === `modmail_claim_${threadId}` || c.customId === `appeal_claim_${threadId}`));
                 });
                 if (duplicate && duplicate.id !== interaction.message.id) {
-                  await duplicate.edit({ components: [
-                    new ActionRowBuilder<ButtonBuilder>().addComponents(
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_claim_${threadId}`)
-                        .setLabel("Claim")
-                        .setStyle(ButtonStyle.Primary)
-                        .setEmoji("👋"),
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_toggle_${threadId}`)
-                        .setLabel("Toggle Member")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("👥"),
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_request_role_${threadId}`)
-                        .setLabel("Request A Role")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("🛡️")
-                    ),
-                    new ActionRowBuilder<ButtonBuilder>().addComponents(
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_modlogs_${threadId}`)
-                        .setLabel("Modlogs")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("📚"),
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_logs_${threadId}`)
-                        .setLabel("Modmail Logs")
-                        .setStyle(ButtonStyle.Secondary)
-                        .setEmoji("📝"),
-                      new ButtonBuilder()
-                        .setCustomId(`modmail_close_${threadId}`)
-                        .setLabel("Close")
-                        .setStyle(ButtonStyle.Danger)
-                        .setEmoji("🔒")
-                    )
-                  ]}).catch(() => {});
+                  await duplicate.edit({ components: buildTicketHeaderControls(threadId, false) }).catch(() => {});
                 }
               }
             } catch (e) {}
@@ -15646,14 +15791,31 @@ client.on("interactionCreate", async (interaction) => {
 
         if (!await safeDeferUpdate(interaction)) return;
 
-        const transcriptMatch = interaction.customId.match(/^modmail_transcript_(-?\d+)_(.+)$/);
-        if (!transcriptMatch) {
+        let requestedPageIndex = 0;
+        let threadId = "";
+        const parts = interaction.customId.split("_");
+        const action = parts[2];
+
+        if (action === "first" || action === "last") {
+          threadId = parts.slice(3).join("_");
+        } else if (action === "prev" || action === "next") {
+          requestedPageIndex = parseInt(parts[3] || "0", 10);
+          threadId = parts.slice(4).join("_");
+        } else {
+          // Backward compatibility for older numeric transcript IDs.
+          const transcriptMatch = interaction.customId.match(/^modmail_transcript_(-?\d+)_(.+)$/);
+          if (!transcriptMatch) {
+            await interaction.followUp({ content: "Invalid transcript request.", flags: 64 }).catch(() => {});
+            return;
+          }
+          requestedPageIndex = parseInt(transcriptMatch[1], 10);
+          threadId = transcriptMatch[2];
+        }
+
+        if (!threadId) {
           await interaction.followUp({ content: "Invalid transcript request.", flags: 64 }).catch(() => {});
           return;
         }
-
-        const pageIndex = parseInt(transcriptMatch[1], 10);
-        const threadId = transcriptMatch[2];
         
         try {
           let messages = await storage.getModmailMessages(threadId);
@@ -15678,6 +15840,17 @@ client.on("interactionCreate", async (interaction) => {
           
           const pageSize = 10;
           const totalPages = Math.ceil(messages.length / pageSize) || 1;
+          let pageIndex = requestedPageIndex;
+          if (action === "first") {
+            pageIndex = 0;
+          } else if (action === "last") {
+            pageIndex = totalPages - 1;
+          } else if (action === "prev") {
+            pageIndex = requestedPageIndex - 1;
+          } else if (action === "next") {
+            pageIndex = requestedPageIndex + 1;
+          }
+
           const validPageIndex = Math.max(0, Math.min(pageIndex, totalPages - 1));
           
           const startIndex = validPageIndex * pageSize;
@@ -15701,13 +15874,23 @@ client.on("interactionCreate", async (interaction) => {
             
           const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
-              .setCustomId(`modmail_transcript_${validPageIndex - 1}_${threadId}`)
-              .setLabel("Previous Page")
+              .setCustomId(`modmail_transcript_first_${threadId}`)
+              .setLabel("⏪")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(validPageIndex === 0),
             new ButtonBuilder()
-              .setCustomId(`modmail_transcript_${validPageIndex + 1}_${threadId}`)
-              .setLabel("Next Page")
+              .setCustomId(`modmail_transcript_prev_${validPageIndex}_${threadId}`)
+              .setLabel("◀️")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(validPageIndex === 0),
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_next_${validPageIndex}_${threadId}`)
+              .setLabel("▶️")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(validPageIndex >= totalPages - 1),
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_last_${threadId}`)
+              .setLabel("⏩")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(validPageIndex >= totalPages - 1)
           );
@@ -15723,10 +15906,25 @@ client.on("interactionCreate", async (interaction) => {
 
         try {
           const threadId = interaction.customId.replace("modmail_close_", "");
+          let isAppeal = false;
           // Try to find thread by ID first, then fall back to channel lookup
-          let thread = await storage.getModmailThread(threadId);
+          let thread: any = await storage.getModmailThread(threadId);
+          if (!thread) {
+            const appealThreadById = await storage.getAppealThread(threadId).catch(() => null);
+            if (appealThreadById) {
+              thread = appealThreadById;
+              isAppeal = true;
+            }
+          }
           if (!thread) {
             thread = await safeGetModmailThreadByChannel(interaction.channelId!);
+          }
+          if (!thread) {
+            const appealThreadByChannel = await storage.getAppealThreadByChannel(interaction.channelId!).catch(() => null);
+            if (appealThreadByChannel) {
+              thread = appealThreadByChannel;
+              isAppeal = true;
+            }
           }
 
           if (!thread) {
@@ -15745,15 +15943,24 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           // Update thread status and clear timer
-          await storage.updateModmailThread(threadId, {
-            status: "closed",
-            closedById: interaction.user.id,
-            closeReason: "Closed via button",
-            closedAt: new Date(),
-          });
+          if (isAppeal) {
+            await storage.updateAppealThread(thread.id, {
+              status: "closed",
+              closedById: interaction.user.id,
+              closeReason: "Closed via button",
+              closedAt: new Date(),
+            });
+          } else {
+            await storage.updateModmailThread(thread.id, {
+              status: "closed",
+              closedById: interaction.user.id,
+              closeReason: "Closed via button",
+              closedAt: new Date(),
+            });
 
-          // Track activity for closing modmail
-          await storage.addModmailActivityEntries(interaction.guildId!, interaction.user.id, 1);
+            // Track activity for closing modmail
+            await storage.addModmailActivityEntries(interaction.guildId!, interaction.user.id, 1);
+          }
 
           if (interaction.channel) {
             const existingClaimTimer = pendingClaimExpiry.get(interaction.channel.id);
@@ -15773,10 +15980,11 @@ client.on("interactionCreate", async (interaction) => {
           // Send log BEFORE replying or deleting (critical to ensure it happens)
           try {
             const config = await storage.getGuildConfig(guildId);
-            if (config?.modmailLogChannelId) {
-              const logChannel = await client.channels.fetch(config.modmailLogChannelId);
+            const logChannelId = isAppeal ? config?.appealLogChannelId : config?.modmailLogChannelId;
+            if (logChannelId) {
+              const logChannel = await client.channels.fetch(logChannelId);
               if (logChannel && "send" in logChannel) {
-          const messages = await storage.getModmailMessages(threadIdForLog);
+          const messages = isAppeal ? await storage.getAppealMessages(threadIdForLog) : await storage.getModmailMessages(threadIdForLog);
           // Include all messages in the .txt transcript, even if they weren't sent to the user (like staff notes)
           const transcriptContent = messages.map(m => `[${m.isStaff === "true" ? "Staff" : "User"}] ${m.authorId}: ${m.content}`).join("\n");
           const buffer = Buffer.from(transcriptContent, "utf-8");
@@ -15788,7 +15996,7 @@ client.on("interactionCreate", async (interaction) => {
           transcriptPreview = clampEmbedFieldValue(transcriptPreview);
 
           const logEmbed = new EmbedBuilder()
-            .setTitle("Ticket Closed")
+            .setTitle(isAppeal ? "Appeal Closed" : "Ticket Closed")
             .setColor(0xed4245)
             .addFields(
               { name: "Opened By", value: `<@${threadUserId}>`, inline: true },
@@ -15800,13 +16008,23 @@ client.on("interactionCreate", async (interaction) => {
           const totalPages = Math.ceil(messages.length / pageSize) || 1;
           const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
-              .setCustomId(`modmail_transcript_0_${threadIdForLog}`)
-              .setLabel("Previous Page")
+              .setCustomId(`modmail_transcript_first_${threadIdForLog}`)
+              .setLabel("⏪")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(true),
             new ButtonBuilder()
-              .setCustomId(`modmail_transcript_1_${threadIdForLog}`)
-              .setLabel("Next Page")
+              .setCustomId(`modmail_transcript_prev_${0}_${threadIdForLog}`)
+              .setLabel("◀️")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(true),
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_next_${0}_${threadIdForLog}`)
+              .setLabel("▶️")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(totalPages <= 1),
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_last_${threadIdForLog}`)
+              .setLabel("⏩")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(totalPages <= 1)
           );
@@ -15843,7 +16061,7 @@ client.on("interactionCreate", async (interaction) => {
 
         // Background: notify ticket participants and delete channel
         (async () => {
-          await notifyClosedTicketParticipants(thread, false);
+          await notifyClosedTicketParticipants(thread, isAppeal);
 
           // Delete channel immediately (no delay)
           if (channelId) {
@@ -15989,20 +16207,7 @@ client.on("interactionCreate", async (interaction) => {
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
 
-          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`appeal_claim_${thread.id}`)
-              .setLabel("Claim")
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`appeal_logs_${thread.id}`)
-              .setLabel("Appeal Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("⚖️")
-          );
-
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: buildTicketHeaderControls(thread.id, true) });
           await initialTicketMessage.pin().catch(() => {});
 
           try {
@@ -16072,20 +16277,7 @@ client.on("interactionCreate", async (interaction) => {
             .setTimestamp();
 
           await interaction.message.edit({
-            components: [
-              new ActionRowBuilder<ButtonBuilder>().addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`appeal_claim_${threadId}`)
-                  .setLabel(`Claimed by ${interaction.user.username}`)
-                  .setStyle(ButtonStyle.Secondary)
-                  .setDisabled(true),
-                new ButtonBuilder()
-                  .setCustomId(`appeal_logs_${threadId}`)
-                  .setLabel("Appeal Logs")
-                  .setStyle(ButtonStyle.Secondary)
-                  .setEmoji("⚖️")
-              )
-            ]
+            components: buildTicketHeaderControls(threadId, true, `Claimed by ${interaction.user.username}`, true)
           });
 
           await interaction.followUp({ embeds: [claimEmbed] });
@@ -16173,12 +16365,12 @@ client.on("interactionCreate", async (interaction) => {
         const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
           new ButtonBuilder()
             .setCustomId(`members_prev_${roleId}_${newPage}`)
-            .setLabel("◀ Previous")
+            .setLabel("◀")
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(newPage === 0),
           new ButtonBuilder()
             .setCustomId(`members_next_${roleId}_${newPage}`)
-            .setLabel("Next ▶")
+            .setLabel("▶")
             .setStyle(ButtonStyle.Secondary)
             .setDisabled(newPage >= totalPages - 1)
         );
@@ -16520,23 +16712,9 @@ client.on("interactionCreate", async (interaction) => {
         const targetUser = await client.users.fetch(submission.userId).catch(() => null);
         const targetLabel = targetUser?.username || submission.userId;
         const { embed, totalPages } = buildModlogsEmbed(submission.userId, targetLabel, filtered, 1, MODLOGS_ITEMS_PER_PAGE);
-
-        const components: any[] = [];
-        if (totalPages > 1) {
-          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modlogs_page_${interaction.user.id}_${submission.userId}_1_prev`)
-              .setLabel("◀")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(true),
-            new ButtonBuilder()
-              .setCustomId(`modlogs_page_${interaction.user.id}_${submission.userId}_1_next`)
-              .setLabel("▶")
-              .setStyle(ButtonStyle.Secondary)
-              .setDisabled(false),
-          );
-          components.push(row);
-        }
+        const components = totalPages > 1
+          ? buildModlogsComponents(interaction.user.id, submission.userId, filtered, 1, MODLOGS_ITEMS_PER_PAGE)
+          : [];
 
         await interaction.editReply({ embeds: [embed], components });
         return;
@@ -16563,6 +16741,13 @@ client.on("interactionCreate", async (interaction) => {
 
         const isApprove = interaction.customId.startsWith("staff_app_approve_");
         const submissionId = interaction.customId.replace(isApprove ? "staff_app_approve_" : "staff_app_deny_", "");
+        const lockKey = `staff_app:${submissionId}`;
+        if (!tryAcquireReviewDecisionLock(lockKey)) {
+          await interaction.editReply({ content: "This submission is already being reviewed. Please try again in a moment." });
+          return;
+        }
+
+        try {
         const submission = pendingStaffApplicationSubmissions.get(submissionId);
 
         if (!submission) {
@@ -16622,6 +16807,9 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.editReply({
           content: isApprove ? "✅ Staff application accepted." : "✅ Staff application denied.",
         });
+        } finally {
+          releaseReviewDecisionLock(lockKey);
+        }
         return;
       } else if (interaction.customId.startsWith("quiz_approve_") || interaction.customId.startsWith("quiz_deny_")) {
         if (interaction.guildId) {
@@ -17177,16 +17365,6 @@ client.on("interactionCreate", async (interaction) => {
           }
           if (!pending) {
             await interaction.reply({ content: "This role request has expired or is no longer available.", flags: 64 });
-            return;
-          }
-
-          if (!pending.reviewerId) {
-            await interaction.reply({ content: "❌ You must click Review first before approving or denying this request.", flags: 64 });
-            return;
-          }
-
-          if (pending.reviewerId !== interaction.user.id) {
-            await interaction.reply({ content: `❌ This request is being reviewed by <@${pending.reviewerId}>. Only they can approve/deny.`, flags: 64 });
             return;
           }
 
@@ -17761,10 +17939,15 @@ client.on("interactionCreate", async (interaction) => {
 
           const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
-              .setCustomId(`role_request_review_${requestId}`)
-              .setLabel("Review")
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji("🛡️")
+              .setCustomId(`role_request_approve_${requestId}`)
+              .setLabel("Accept")
+              .setStyle(ButtonStyle.Success)
+              .setEmoji("✅"),
+            new ButtonBuilder()
+              .setCustomId(`role_request_deny_${requestId}`)
+              .setLabel("Deny")
+              .setStyle(ButtonStyle.Danger)
+              .setEmoji("❌")
           );
 
           let roleRequestPingRoles = getRequestPingRoleIdsFromGuildConfig(config, "role_requests");
@@ -18351,38 +18534,7 @@ client.on("interactionCreate", async (interaction) => {
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
 
-          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_claim_${thread.id}`)
-              .setLabel("Claim")
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_toggle_${thread.id}`)
-              .setLabel("Toggle Member")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_request_role_${thread.id}`)
-              .setLabel("Request A Role")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("🛡️")
-          );
-
-          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_modlogs_${thread.id}`)
-              .setLabel("Modlogs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📚"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_logs_${thread.id}`)
-              .setLabel("Modmail Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝")
-          );
-
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: buildTicketHeaderControls(thread.id, false) });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -18616,38 +18768,7 @@ client.on("interactionCreate", async (interaction) => {
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
 
-          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_claim_${thread.id}`)
-              .setLabel("Claim")
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_toggle_${thread.id}`)
-              .setLabel("Toggle Member")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_request_role_${thread.id}`)
-              .setLabel("Request A Role")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("🛡️")
-          );
-
-          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_modlogs_${thread.id}`)
-              .setLabel("Modlogs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📚"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_logs_${thread.id}`)
-              .setLabel("Modmail Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝")
-          );
-
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: buildTicketHeaderControls(thread.id, false) });
           await initialTicketMessage.pin().catch(() => {});
 
           // DM user confirmation
@@ -18864,38 +18985,7 @@ client.on("interactionCreate", async (interaction) => {
             .setThumbnail(user.displayAvatarURL())
             .setTimestamp();
 
-          const controlRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_claim_${thread.id}`)
-              .setLabel("Claim")
-              .setStyle(ButtonStyle.Primary)
-              .setEmoji("🙋"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_toggle_${thread.id}`)
-              .setLabel("Toggle Member")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("👥"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_request_role_${thread.id}`)
-              .setLabel("Request A Role")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("🛡️")
-          );
-
-          const logsRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`modmail_modlogs_${thread.id}`)
-              .setLabel("Modlogs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📚"),
-            new ButtonBuilder()
-              .setCustomId(`modmail_logs_${thread.id}`)
-              .setLabel("Modmail Logs")
-              .setStyle(ButtonStyle.Secondary)
-              .setEmoji("📝")
-          );
-
-          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: [controlRow, logsRow] });
+          const initialTicketMessage = await newChannel.send({ content: staffRoleMentions, embeds: [initialEmbed], components: buildTicketHeaderControls(thread.id, false) });
           await initialTicketMessage.pin().catch(() => {});
 
           await interaction.editReply({ content: `✅ Your **${categoryLabel}** application has been submitted to **${guild.name}**! Staff will respond shortly. Reply to this DM to communicate with them.` });
@@ -18914,6 +19004,96 @@ client.on("interactionCreate", async (interaction) => {
           }
         }
         return;
+      } else if (interaction.customId.startsWith("send_embed_modal_")) {
+        try {
+          if (!await safeDeferReply(interaction, true)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log('Send embed modal interaction expired:', interaction.id);
+            return;
+          }
+          throw error;
+        }
+
+        try {
+          const memberRoles = (interaction.member as any)?.roles?.cache?.map((r: any) => r.id);
+          const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+          const hasPermission = await hasMessageCommandPermission(memberRoles, memberPermissions, interaction.guildId!);
+
+          if (!hasPermission) {
+            await interaction.editReply({ content: "❌ You don't have permission to use this command." });
+            return;
+          }
+
+          const messageText = interaction.fields.getTextInputValue("embed_message").trim();
+          const imageUrlRaw = (interaction.fields.getTextInputValue("embed_image_url") || "").trim();
+          const footerComboRaw = (interaction.fields.getTextInputValue("embed_footer_combo") || "").trim();
+          const authorRaw = (interaction.fields.getTextInputValue("embed_author") || "").trim();
+          const authorIconRaw = (interaction.fields.getTextInputValue("embed_author_icon_url") || "").trim();
+
+          if (!messageText) {
+            await interaction.editReply({ content: "❌ Message is required." });
+            return;
+          }
+
+          if (imageUrlRaw && !isHttpUrl(imageUrlRaw)) {
+            await interaction.editReply({ content: "❌ Image URL must start with http:// or https://" });
+            return;
+          }
+
+          if (authorIconRaw && !isHttpUrl(authorIconRaw)) {
+            await interaction.editReply({ content: "❌ Author icon URL must start with http:// or https://" });
+            return;
+          }
+
+          const footerParts = footerComboRaw
+            ? footerComboRaw.split("|").map((part) => part.trim()).filter(Boolean)
+            : [];
+          const footerText = footerParts[0] || "";
+          const footerIconUrl = footerParts[1] || "";
+
+          if (footerIconUrl && !isHttpUrl(footerIconUrl)) {
+            await interaction.editReply({ content: "❌ Footer icon URL must start with http:// or https://" });
+            return;
+          }
+
+          const embed = new EmbedBuilder()
+            .setColor(0x5865f2)
+            .setDescription(messageText)
+            .setTimestamp();
+
+          if (imageUrlRaw) {
+            embed.setImage(imageUrlRaw);
+          }
+
+          if (authorRaw) {
+            if (authorIconRaw) {
+              embed.setAuthor({ name: authorRaw, iconURL: authorIconRaw });
+            } else {
+              embed.setAuthor({ name: authorRaw });
+            }
+          }
+
+          if (footerText || footerIconUrl) {
+            if (footerIconUrl) {
+              embed.setFooter({ text: footerText || " ", iconURL: footerIconUrl });
+            } else {
+              embed.setFooter({ text: footerText });
+            }
+          }
+
+          const targetChannel = interaction.channel;
+          if (!targetChannel || !("send" in targetChannel)) {
+            await interaction.editReply({ content: "❌ Could not send embed in this channel." });
+            return;
+          }
+
+          await (targetChannel as any).send({ embeds: [embed] });
+          await interaction.editReply({ content: "✅ Embed sent." });
+        } catch (error: any) {
+          console.log("Error in send_embed_modal:", error?.message || error);
+          await interaction.editReply({ content: "❌ Failed to send embed. Check your URLs and try again." }).catch(() => {});
+        }
       } else if (interaction.customId === "payout_modal") {
         // Defer reply immediately to prevent timeout
         try {
@@ -19060,7 +19240,15 @@ client.on("interactionCreate", async (interaction) => {
         const status = action === "approve" ? "✅ Approved" : "❌ Denied";
         const color = action === "approve" ? 0x23a559 : 0xda373c;
 
-        await storage.updatePayoutStatus(requestId, action === "approve" ? "approved" : "denied", interaction.user.id);
+        const payoutReview = await storage.reviewPayoutIfPending(
+          requestId,
+          action === "approve" ? "approved" : "denied",
+          interaction.user.id,
+        );
+        if (!payoutReview) {
+          await interaction.editReply({ content: "This payout request has already been reviewed." });
+          return;
+        }
 
         const updatedFields: any[] = [
           { name: "User ID", value: userIdField, inline: true },
@@ -19515,6 +19703,14 @@ client.on("interactionCreate", async (interaction) => {
         const requestedById = parts[3];
         const targetUserId = parts[4];
         const actionReason = interaction.fields.getTextInputValue("action_reason") || "";
+        const lockKey = `kick_review:${interaction.message?.id || `${requestedById}:${targetUserId}`}`;
+
+        if (!tryAcquireReviewDecisionLock(lockKey)) {
+          await interaction.editReply({ content: "This kick request is already being reviewed." });
+          return;
+        }
+
+        try {
 
         const config = await storage.getGuildConfig(interaction.guildId!);
         const member = interaction.member;
@@ -19635,6 +19831,9 @@ client.on("interactionCreate", async (interaction) => {
             } catch (e) { console.log("[KICK] Failed to post to log channel:", e); }
           }
         })().catch(e => console.log("[KICK] Background task error:", e));
+        } finally {
+          releaseReviewDecisionLock(lockKey);
+        }
       } else if (interaction.customId.startsWith("ban_action_")) {
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -19680,11 +19879,16 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        await storage.updateBanRequest(requestId, {
-          status: action === "approve" ? "approved" : "denied",
-          reviewedById: interaction.user.id,
-          reviewReason: actionReason,
-        });
+        const reviewedBanRequest = await storage.reviewBanRequestIfPending(
+          requestId,
+          action === "approve" ? "approved" : "denied",
+          interaction.user.id,
+          actionReason,
+        );
+        if (!reviewedBanRequest) {
+          await interaction.editReply({ content: "This ban request has already been reviewed." });
+          return;
+        }
 
         const message = interaction.message;
         if (message && message.embeds[0]) {
@@ -19805,11 +20009,16 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        await storage.updateUnbanRequest(requestId, {
-          status: action === "approve" ? "approved" : "denied",
-          reviewedById: interaction.user.id,
-          reviewReason: actionReason,
-        });
+        const reviewedUnbanRequest = await storage.reviewUnbanRequestIfPending(
+          requestId,
+          action === "approve" ? "approved" : "denied",
+          interaction.user.id,
+          actionReason,
+        );
+        if (!reviewedUnbanRequest) {
+          await interaction.editReply({ content: "This unban request has already been reviewed." });
+          return;
+        }
 
         const message = interaction.message;
         if (message && message.embeds[0]) {
@@ -19934,6 +20143,14 @@ client.on("interactionCreate", async (interaction) => {
         const action = match[1];
         const requestId = match[2];
         const actionReason = interaction.fields.getTextInputValue("action_reason") || "";
+        const lockKey = `promotion_request:${requestId}`;
+
+        if (!tryAcquireReviewDecisionLock(lockKey)) {
+          await interaction.editReply({ content: "This promotion/demotion request is already being reviewed." });
+          return;
+        }
+
+        try {
 
         const sourceEmbed = interaction.message?.embeds?.[0];
         const sourceFields = sourceEmbed?.fields || [];
@@ -20053,6 +20270,9 @@ client.on("interactionCreate", async (interaction) => {
             }
           } catch (e) { console.log("[PROMO] Failed to post to log channel:", e); }
         })().catch(() => {});
+        } finally {
+          releaseReviewDecisionLock(lockKey);
+        }
       } else if (interaction.customId.startsWith("inactivity_review_")) {
         try {
           if (!await safeDeferReply(interaction)) return;
@@ -20078,11 +20298,16 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         const status = isApprove ? "approved" : "denied";
-        await storage.updateInactivityRequest(requestId, {
-          status,
-          reviewedById: interaction.user.id,
+        const reviewedInactivityRequest = await storage.reviewInactivityRequestIfPending(
+          requestId,
+          status as "approved" | "denied",
+          interaction.user.id,
           reviewReason,
-        });
+        );
+        if (!reviewedInactivityRequest) {
+          await interaction.editReply({ content: "This inactivity request has already been reviewed." });
+          return;
+        }
 
         const embed = new EmbedBuilder()
           .setTitle(`Inactivity Request ${isApprove ? "Approved" : "Denied"}`)
@@ -20338,11 +20563,16 @@ client.on("interactionCreate", async (interaction) => {
           return;
         }
 
-        await storage.updateStaffIntroSubmission(submissionId, {
-          status: action === "approve" ? "approved" : "denied",
-          reviewedById: interaction.user.id,
+        const reviewedSubmission = await storage.reviewStaffIntroSubmissionIfPending(
+          submissionId,
+          action === "approve" ? "approved" : "denied",
+          interaction.user.id,
           reviewReason,
-        });
+        );
+        if (!reviewedSubmission) {
+          await interaction.editReply({ content: "This quiz submission has already been reviewed." });
+          return;
+        }
 
         const message = interaction.message;
         if (message) {
@@ -21466,58 +21696,8 @@ client.on("messageCreate", async (message) => {
         )
       );
       if (buttonMessage) {
-        const claimButtonId = isAppeal ? `appeal_claim_${thread.id}` : `modmail_claim_${thread.id}`;
-        const closeButtonId = isAppeal ? `appeal_close_${thread.id}` : `modmail_close_${thread.id}`;
-        const appealLogsButtonId = `appeal_logs_${thread.id}`;
         await buttonMessage.edit({
-          components: isAppeal
-            ? [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(claimButtonId)
-                    .setLabel(`Claimed by ${targetUser ? targetUser.username : targetUserId}`)
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(true),
-                  new ButtonBuilder()
-                    .setCustomId(appealLogsButtonId)
-                    .setLabel("Appeal Logs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("⚖️")
-                ),
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(closeButtonId)
-                    .setLabel("Close")
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji("🔒")
-                )
-              ]
-            : [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(claimButtonId)
-                    .setLabel(`Claimed by ${targetUser ? targetUser.username : targetUserId}`)
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(true)
-                ),
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_modlogs_${thread.id}`)
-                    .setLabel("Modlogs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("📚"),
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_logs_${thread.id}`)
-                    .setLabel("Modmail Logs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("📝"),
-                  new ButtonBuilder()
-                    .setCustomId(closeButtonId)
-                    .setLabel("Close")
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji("🔒")
-                )
-              ]
+          components: buildTicketHeaderControls(thread.id, isAppeal, `Claimed by ${targetUser ? targetUser.username : targetUserId}`, true)
         });
       }
     } catch (e) {
@@ -21549,6 +21729,106 @@ client.on("messageCreate", async (message) => {
       console.log("Failed to send modmail action menu:", e);
     }
 
+    return;
+  }
+
+  if (message.guild && (lowerContent === `${lowerPrefix}private` || lowerContent === `${lowerPrefix}unprivate`)) {
+    const memberPerms = message.member?.permissions;
+    const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+    if (!isAdmin) {
+      await message.reply("❌ You need Administrator permission to use this command.");
+      return;
+    }
+
+    const channel: any = message.channel;
+    if (!channel || !("permissionOverwrites" in channel)) {
+      await message.reply("❌ This command can only be used in a server channel.");
+      return;
+    }
+
+    try {
+      const guildConfig = await storage.getGuildConfig(message.guild.id);
+
+      if (lowerContent === `${lowerPrefix}private`) {
+        const snapshots = getPrivateChannelSnapshotsFromGuildConfig(guildConfig);
+        if (snapshots[message.channel.id]) {
+          await message.reply("⚠️ This channel is already private from a previous `private` command. Use `*unprivate` to restore it first.");
+          return;
+        }
+
+        const snapshot: PrivateChannelOverwriteSnapshot[] = [...channel.permissionOverwrites.cache.values()].map((ow: any) => ({
+          id: ow.id,
+          type: getPermissionOverwriteType(ow.type),
+          allow: String(ow.allow?.bitfield ?? 0n),
+          deny: String(ow.deny?.bitfield ?? 0n),
+        }));
+
+        // Deny ViewChannel only for roles already in the channel + @everyone
+        const roleTargetIds = new Set<string>(
+          [...channel.permissionOverwrites.cache.values()]
+            .filter((ow: any) => getPermissionOverwriteType(ow.type) === 0)
+            .map((ow: any) => ow.id as string),
+        );
+        roleTargetIds.add(message.guild.id); // always include @everyone
+
+        for (const roleId of roleTargetIds) {
+          await channel.permissionOverwrites.edit(
+            roleId,
+            { ViewChannel: false },
+            { reason: `Channel privatized by ${message.author.tag}` },
+          );
+        }
+
+        await storage.upsertGuildConfig({
+          guildId: message.guild.id,
+          customCategoryPings: writePrivateChannelSnapshotToConfig(
+            guildConfig?.customCategoryPings,
+            message.channel.id,
+            snapshot,
+          ),
+        });
+
+        await message.reply("✅ This channel is now private for all roles. Use `*unprivate` here to restore the previous permissions.");
+      } else {
+        const { customCategoryPings, snapshot } = removePrivateChannelSnapshotFromConfig(guildConfig?.customCategoryPings, message.channel.id);
+        if (!snapshot) {
+          await message.reply("⚠️ I do not have a saved permission snapshot for this channel. Use `*private` first.");
+          return;
+        }
+
+        const snapshotById = new Map(snapshot.map((s) => [s.id, s]));
+        const vcBit = PermissionFlagsBits.ViewChannel;
+
+        for (const role of message.guild.roles.cache.values()) {
+          const saved = snapshotById.get(role.id);
+          if (!saved) {
+            const currentOw = channel.permissionOverwrites.cache.get(role.id);
+            if (currentOw) await (currentOw as any).delete(`Channel unprivatized by ${message.author.tag}`);
+          } else {
+            const allowBit = BigInt(saved.allow);
+            const denyBit = BigInt(saved.deny);
+            const wasAllowed = (allowBit & vcBit) === vcBit;
+            const wasDenied = (denyBit & vcBit) === vcBit;
+            const viewChannelState = wasAllowed ? true : wasDenied ? false : null;
+            await channel.permissionOverwrites.edit(
+              role.id,
+              { ViewChannel: viewChannelState },
+              { reason: `Channel unprivatized by ${message.author.tag}` },
+            );
+          }
+        }
+
+        await storage.upsertGuildConfig({
+          guildId: message.guild.id,
+          customCategoryPings,
+        });
+
+        await message.reply("✅ Previous channel permissions have been restored.");
+      }
+    } catch (error: any) {
+      console.error("Error in prefix private/unprivate command:", error);
+      await message.reply(`❌ Failed: ${error?.message ?? error}`);
+    }
     return;
   }
 
@@ -21662,12 +21942,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      try {
-        await message.delete();
-      } catch {
-        // ignore failures deleting the command invocation
-      }
-
       const isBotModerationResponse = (entry: any) => {
         if (!client.user || entry.author?.id !== client.user.id) return false;
         const embeds = entry.embeds || [];
@@ -21707,16 +21981,25 @@ client.on("messageCreate", async (message) => {
         });
       };
 
-      const isModlogMessage = (entry: any) => {
+      const isBotModlogsResponse = (entry: any) => {
         if (!client.user || entry.author?.id !== client.user.id) return false;
         const embeds = entry.embeds || [];
         if (!Array.isArray(embeds) || embeds.length === 0) return false;
 
         return embeds.some((embed: any) => {
           const title = String(embed?.title || "").toLowerCase();
-          // Match modlog format: "Case 123456 | Ban | reason" or "Member Banned"
-          return (title.includes("case") && (title.includes("| ban") || title.includes("| full ban") || title.includes("| kick") || title.includes("| mute") || title.includes("| unban") || title.includes("| unmute"))) ||
-                 (title.includes("member") && (title.includes("banned") || title.includes("unbanned") || title.includes("kicked") || title.includes("muted") || title.includes("unmuted")));
+          return title.startsWith("modlogs for (");
+        });
+      };
+
+      const isBotCommandTemplateResponse = (entry: any) => {
+        if (!client.user || entry.author?.id !== client.user.id) return false;
+        const embeds = entry.embeds || [];
+        if (!Array.isArray(embeds) || embeds.length === 0) return false;
+
+        return embeds.some((embed: any) => {
+          const title = String(embed?.title || "").toLowerCase();
+          return title.startsWith("command: ");
         });
       };
 
@@ -21735,7 +22018,10 @@ client.on("messageCreate", async (message) => {
           if (!batch || batch.size === 0) break;
 
           for (const [id, entry] of batch) {
-            if (isBotModerationResponse(entry) && (entry.createdTimestamp || 0) >= cutoffTime) {
+            if (
+              (entry.createdTimestamp || 0) >= cutoffTime
+              && (isBotModerationResponse(entry) || isBotModlogsResponse(entry) || isBotCommandTemplateResponse(entry))
+            ) {
               allCandidates.set(id, entry);
             }
           }
@@ -21770,56 +22056,19 @@ client.on("messageCreate", async (message) => {
         }
       }
 
-      // Clean modlog channel (modlog entries)
-      if (guildConfig?.modLogChannelId) {
-        try {
-          console.log(`[*CLEAN] Scanning modlog channel for modlog entries (max 3 pages)...`);
-          const modlogChannel = await client.channels.fetch(guildConfig.modLogChannelId);
-          const modlogChannelAny = modlogChannel as any;
+      if (totalDeleted === 0) {
+        const embed = new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setDescription("There are not any messages to clean.")
+          .setTimestamp();
+        await message.reply({ embeds: [embed] }).catch(() => {});
+        return;
+      }
 
-          if (modlogChannelAny?.messages?.fetch && modlogChannelAny?.bulkDelete) {
-            let beforeId: string | undefined;
-            for (let page = 0; page < 3; page++) {
-              const batch = await modlogChannelAny.messages.fetch({ limit: 100, ...(beforeId ? { before: beforeId } : {}) }).catch(() => null);
-              if (!batch || batch.size === 0) break;
-
-              for (const [id, entry] of batch) {
-                if (isModlogMessage(entry) && (entry.createdTimestamp || 0) >= cutoffTime) {
-                  allCandidates.set(id, entry);
-                }
-              }
-
-              const oldestInBatch = batch.last();
-              if (oldestInBatch && (oldestInBatch.createdTimestamp || 0) < cutoffTime) break;
-
-              beforeId = batch.last()?.id;
-              if (batch.size < 100) break;
-            }
-
-            if (allCandidates.size > 0) {
-              try {
-                const messagesToDelete = Array.from(allCandidates.values());
-                await modlogChannelAny.bulkDelete(messagesToDelete, true);
-                totalDeleted += allCandidates.size;
-                console.log(`[*CLEAN] Deleted ${allCandidates.size} entries from modlog channel`);
-              } catch (err) {
-                let successCount = 0;
-                for (const [, candidate] of allCandidates) {
-                  try {
-                    await candidate.delete();
-                    successCount++;
-                    totalDeleted += 1;
-                  } catch {
-                    // ignore
-                  }
-                }
-                console.log(`[*CLEAN] Deleted ${successCount}/${allCandidates.size} entries individually`);
-              }
-            }
-          }
-        } catch (e) {
-          console.log(`[*CLEAN] Could not access modlog channel:`, e);
-        }
+      try {
+        await message.delete();
+      } catch {
+        // ignore failures deleting clean invocation
       }
 
       console.log(`[*CLEAN] ✅ Complete: deleted ${totalDeleted} messages total`);
@@ -21887,22 +22136,9 @@ client.on("messageCreate", async (message) => {
       const targetUser = await client.users.fetch(targetUserId).catch(() => null);
       const targetLabel = targetUser?.username || targetUserId;
       const { embed, totalPages } = buildModlogsEmbed(targetUserId, targetLabel, filtered, 1, MODLOGS_ITEMS_PER_PAGE);
-      const components: any[] = [];
-      if (totalPages > 1) {
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId(`modlogs_page_${message.author.id}_${targetUserId}_1_prev`)
-            .setLabel("◀")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(true),
-          new ButtonBuilder()
-            .setCustomId(`modlogs_page_${message.author.id}_${targetUserId}_1_next`)
-            .setLabel("▶")
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(false),
-        );
-        components.push(row);
-      }
+      const components = totalPages > 1
+        ? buildModlogsComponents(message.author.id, targetUserId, filtered, 1, MODLOGS_ITEMS_PER_PAGE)
+        : [];
 
       await message.reply({ embeds: [embed], components });
       return;
@@ -22236,12 +22472,6 @@ client.on("messageCreate", async (message) => {
         return;
       }
 
-      try {
-        await message.delete();
-      } catch {
-        // ignore delete failures for trigger command
-      }
-
       const targetResolution = await resolveModerationTargetFromArgs(message.guild, tokens.slice(1), {
         allowBannedUsers: command === "unban" || isBanLikeCommand,
         searchAllGuilds: isBanLikeCommand,
@@ -22291,6 +22521,12 @@ client.on("messageCreate", async (message) => {
             : buildPrefixCommandUsageEmbed(prefix, command as PrefixModerationAction, modSetup.actionEmojis[command as PrefixModerationAction]);
         await sendPrefixCommandEmbed(usageEmbed);
         return;
+      }
+
+      try {
+        await message.delete();
+      } catch {
+        // ignore delete failures for trigger command
       }
 
       if (command === "unban") {
@@ -22367,9 +22603,9 @@ client.on("messageCreate", async (message) => {
               }
 
               if (durationMs && durationMs > 0) {
-                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fakebanned for \`${durationToken}\`. | ${reason}`);
+                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
               } else {
-                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fakebanned permanently. | ${reason}`);
+                await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
               }
 
               return;
@@ -22503,9 +22739,9 @@ client.on("messageCreate", async (message) => {
             }
 
             if (durationMs && durationMs > 0) {
-              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fakebanned for \`${durationToken}\`. | ${reason}`);
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned for \`${durationToken}\`. | ${reason}`);
             } else {
-              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was fakebanned permanently. | ${reason}`);
+              await sendPrefixCommandMessage(`${successEmoji} <@${targetUserId}> was banned permanently. | ${reason}`);
             }
           } else if (isFullBanCommand) {
             const sent = await sendModerationDm(targetUserId, "Ban", reason, getDurationLabel("ban", durationMs, durationToken), modSetup.banDmMessage, targetMember);
@@ -22896,13 +23132,23 @@ client.on("messageCreate", async (message) => {
               const totalPages = Math.ceil(messages.length / pageSize) || 1;
               const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
                 new ButtonBuilder()
-                  .setCustomId(`modmail_transcript_0_${currentThread.id}`)
-                  .setLabel("Previous Page")
+                  .setCustomId(`modmail_transcript_first_${currentThread.id}`)
+                  .setLabel("⏪")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(true),
                 new ButtonBuilder()
-                  .setCustomId(`modmail_transcript_1_${currentThread.id}`)
-                  .setLabel("Next Page")
+                  .setCustomId(`modmail_transcript_prev_${0}_${currentThread.id}`)
+                  .setLabel("◀️")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(true),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_transcript_next_${0}_${currentThread.id}`)
+                  .setLabel("▶️")
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(totalPages <= 1),
+                new ButtonBuilder()
+                  .setCustomId(`modmail_transcript_last_${currentThread.id}`)
+                  .setLabel("⏩")
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(totalPages <= 1)
               );
@@ -22990,13 +23236,23 @@ client.on("messageCreate", async (message) => {
           const totalPages = Math.ceil(messages.length / pageSize) || 1;
           const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
-              .setCustomId(`modmail_transcript_0_${threadId}`)
-              .setLabel("Previous Page")
+              .setCustomId(`modmail_transcript_first_${threadId}`)
+              .setLabel("⏪")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(true),
             new ButtonBuilder()
-              .setCustomId(`modmail_transcript_1_${threadId}`)
-              .setLabel("Next Page")
+              .setCustomId(`modmail_transcript_prev_${0}_${threadId}`)
+              .setLabel("◀️")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(true),
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_next_${0}_${threadId}`)
+              .setLabel("▶️")
+              .setStyle(ButtonStyle.Secondary)
+              .setDisabled(totalPages <= 1),
+            new ButtonBuilder()
+              .setCustomId(`modmail_transcript_last_${threadId}`)
+              .setLabel("⏩")
               .setStyle(ButtonStyle.Secondary)
               .setDisabled(totalPages <= 1)
           );
@@ -23079,58 +23335,8 @@ client.on("messageCreate", async (message) => {
         )
       );
       if (buttonMessage) {
-        const claimButtonId = isAppeal ? `appeal_claim_${thread.id}` : `modmail_claim_${thread.id}`;
-        const closeButtonId = isAppeal ? `appeal_close_${thread.id}` : `modmail_close_${thread.id}`;
-        const appealLogsButtonId = `appeal_logs_${thread.id}`;
         await buttonMessage.edit({
-          components: isAppeal
-            ? [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(claimButtonId)
-                    .setLabel(`Claimed by ${message.author.username}`)
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(true),
-                  new ButtonBuilder()
-                    .setCustomId(appealLogsButtonId)
-                    .setLabel("Appeal Logs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("⚖️")
-                ),
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(closeButtonId)
-                    .setLabel("Close")
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji("🔒")
-                )
-              ]
-            : [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(claimButtonId)
-                    .setLabel(`Claimed by ${message.author.username}`)
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(true)
-                ),
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_modlogs_${thread.id}`)
-                    .setLabel("Modlogs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("📚"),
-                  new ButtonBuilder()
-                    .setCustomId(`modmail_logs_${thread.id}`)
-                    .setLabel("Modmail Logs")
-                    .setStyle(ButtonStyle.Secondary)
-                    .setEmoji("📝"),
-                  new ButtonBuilder()
-                    .setCustomId(closeButtonId)
-                    .setLabel("Close")
-                    .setStyle(ButtonStyle.Danger)
-                    .setEmoji("🔒")
-                )
-              ]
+          components: buildTicketHeaderControls(thread.id, isAppeal, `Claimed by ${message.author.username}`, true)
         });
       }
     } catch (e) {
@@ -24504,13 +24710,23 @@ client.on("messageCreate", async (message) => {
                     const totalPages = Math.ceil(messages.length / pageSize) || 1;
                     const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
                       new ButtonBuilder()
-                        .setCustomId(`modmail_transcript_0_${threadToClose.id}`)
-                        .setLabel("Previous Page")
+                        .setCustomId(`modmail_transcript_first_${threadToClose.id}`)
+                        .setLabel("⏪")
                         .setStyle(ButtonStyle.Secondary)
                         .setDisabled(true),
                       new ButtonBuilder()
-                        .setCustomId(`modmail_transcript_1_${threadToClose.id}`)
-                        .setLabel("Next Page")
+                        .setCustomId(`modmail_transcript_prev_${0}_${threadToClose.id}`)
+                        .setLabel("◀️")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_transcript_next_${0}_${threadToClose.id}`)
+                        .setLabel("▶️")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(totalPages <= 1),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_transcript_last_${threadToClose.id}`)
+                        .setLabel("⏩")
                         .setStyle(ButtonStyle.Secondary)
                         .setDisabled(totalPages <= 1)
                     );
@@ -24851,13 +25067,23 @@ client.on("messageCreate", async (message) => {
                     const totalPages = Math.ceil(messages.length / pageSize) || 1;
                     const transcriptButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
                       new ButtonBuilder()
-                        .setCustomId(`modmail_transcript_0_${threadToClose.id}`)
-                        .setLabel("Previous Page")
+                        .setCustomId(`modmail_transcript_first_${threadToClose.id}`)
+                        .setLabel("⏪")
                         .setStyle(ButtonStyle.Secondary)
                         .setDisabled(true),
                       new ButtonBuilder()
-                        .setCustomId(`modmail_transcript_1_${threadToClose.id}`)
-                        .setLabel("Next Page")
+                        .setCustomId(`modmail_transcript_prev_${0}_${threadToClose.id}`)
+                        .setLabel("◀️")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(true),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_transcript_next_${0}_${threadToClose.id}`)
+                        .setLabel("▶️")
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(totalPages <= 1),
+                      new ButtonBuilder()
+                        .setCustomId(`modmail_transcript_last_${threadToClose.id}`)
+                        .setLabel("⏩")
                         .setStyle(ButtonStyle.Secondary)
                         .setDisabled(totalPages <= 1)
                     );
@@ -25516,14 +25742,27 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
     && candidate.targetRoleId === pair.sourceRoleId
   ));
 
-  const sourceChangedPairs = allSyncPairs.filter((pair) => (
+  // If reciprocal rows exist from older configs, keep a single canonical direction
+  // so role sync remains strictly source -> target and avoids reverse propagation.
+  const canonicalPairs = allSyncPairs.filter((pair) => {
+    const reciprocal = allSyncPairs.find((candidate) => (
+      candidate.id !== pair.id
+      && candidate.sourceGuildId === pair.targetGuildId
+      && candidate.sourceRoleId === pair.targetRoleId
+      && candidate.targetGuildId === pair.sourceGuildId
+      && candidate.targetRoleId === pair.sourceRoleId
+    ));
+    if (!reciprocal) return true;
+    return String(pair.id) < String(reciprocal.id);
+  });
+
+  const sourceChangedPairs = canonicalPairs.filter((pair) => (
     pair.sourceGuildId === currentGuildId && changedRoleIds.has(pair.sourceRoleId)
   ));
 
-  const oneWayTargetChangedPairs = allSyncPairs.filter((pair) => (
+  const oneWayTargetChangedPairs = canonicalPairs.filter((pair) => (
     pair.targetGuildId === currentGuildId
     && changedRoleIds.has(pair.targetRoleId)
-    && !hasReciprocal(pair)
   ));
 
   const pairsToProcess = [...sourceChangedPairs, ...oneWayTargetChangedPairs]
@@ -25642,10 +25881,18 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
 
 client.on("ready", () => {
   persistCurrentGuildSnapshot();
+  for (const guild of client.guilds.cache.values()) {
+    initializeSyncedActivityCheckRoleGroupsForGuild(guild.id).catch((error) => {
+      console.log("[ACTIVITY] Failed to initialize synced activity check roles on ready:", error);
+    });
+  }
 });
 
-client.on("guildCreate", () => {
+client.on("guildCreate", (guild) => {
   persistCurrentGuildSnapshot();
+  initializeSyncedActivityCheckRoleGroupsForGuild(guild.id).catch((error) => {
+    console.log("[ACTIVITY] Failed to initialize synced activity check roles for new guild:", error);
+  });
 });
 
 client.on("guildDelete", () => {
@@ -25788,6 +26035,31 @@ client.on("roleUpdate", async (_oldRole, newRole) => {
 // Handle user leaving server - notify open modmail/appeal threads
 client.on("guildMemberRemove", async (member) => {
   try {
+    // Enforce one-way source -> target role sync on source-server leave.
+    // If the user leaves the source guild, remove mapped target roles immediately.
+    try {
+      const allPairs = await storage.getAllRoleSyncPairs();
+      const sourcePairs = allPairs.filter((pair) => pair.sourceGuildId === member.guild.id);
+      for (const pair of sourcePairs) {
+        let targetGuild = client.guilds.cache.get(pair.targetGuildId);
+        if (!targetGuild) {
+          targetGuild = await client.guilds.fetch(pair.targetGuildId).catch(() => null as any);
+        }
+        if (!targetGuild) continue;
+
+        const targetMember = await targetGuild.members.fetch(member.id).catch(() => null);
+        if (!targetMember) continue;
+        if (!targetMember.roles.cache.has(pair.targetRoleId)) continue;
+
+        await targetMember.roles.remove(
+          pair.targetRoleId,
+          `Removed due to leaving source guild ${member.guild.name} (${member.guild.id})`,
+        ).catch(() => undefined);
+      }
+    } catch (roleSyncLeaveError) {
+      console.log("[ROLE SYNC] Failed to enforce source-leave cleanup:", roleSyncLeaveError);
+    }
+
     try {
       await storage.removeInviteAttribution(member.guild.id, member.id);
     } catch (inviteError) {
@@ -26059,3 +26331,7 @@ export async function startBot() {
     releaseBotInstanceLock();
   }
 }
+
+
+
+
