@@ -26255,6 +26255,16 @@ client.on("guildMemberAdd", async (member) => {
       return;
     }
 
+    if (!member.user.bot) {
+      try {
+        // Auto-sync role pairs on join so target roles are granted/removed immediately.
+        await reconcileRoleSyncForUser(member.id, member.guild.id);
+        scheduleRoleSyncRecheck(member.id, member.guild.id, 1200);
+      } catch (roleSyncJoinError) {
+        console.log("[ROLE SYNC] Failed to enforce join-time sync:", roleSyncJoinError);
+      }
+    }
+
     if (member.user.bot) {
       try {
         const auditEntry = await findRecentAuditEntry(
