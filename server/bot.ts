@@ -25614,6 +25614,7 @@ client.on("messageCreate", async (message) => {
 const syncingUsers = new Set<string>();
 const pendingRosterUpdates = new Map<string, NodeJS.Timeout>();
 const activeRosterUpdates = new Set<string>();
+const pendingRoleSyncRechecks = new Map<string, NodeJS.Timeout>();
 
 // Cleanup for role sync and roster update tracking (every 5 minutes)
 setInterval(() => {
@@ -25636,6 +25637,14 @@ setInterval(() => {
   if (activeRosterUpdates.size > 10) {
     console.log(`[CLEANUP] Clearing ${activeRosterUpdates.size} stale active roster updates`);
     activeRosterUpdates.clear();
+  }
+
+  if (pendingRoleSyncRechecks.size > 100) {
+    console.log(`[CLEANUP] Clearing ${pendingRoleSyncRechecks.size} stale role-sync rechecks`);
+    for (const timeout of pendingRoleSyncRechecks.values()) {
+      clearTimeout(timeout);
+    }
+    pendingRoleSyncRechecks.clear();
   }
 }, 5 * 60 * 1000);
 
@@ -25666,6 +25675,90 @@ function scheduleRosterUpdate(guildId: string) {
   pendingRosterUpdates.set(guildId, timeout);
 }
 
+async function reconcileRoleSyncForUser(userId: string, currentGuildId: string): Promise<void> {
+  const allSyncPairs = await storage.getAllRoleSyncPairs();
+  const relevantPairs = allSyncPairs.filter((pair) => (
+    pair.sourceGuildId === currentGuildId || pair.targetGuildId === currentGuildId
+  ));
+
+  if (relevantPairs.length === 0) return;
+
+  const canonicalPairs = relevantPairs.filter((pair) => {
+    const reciprocal = allSyncPairs.find((candidate) => (
+      candidate.id !== pair.id
+      && candidate.sourceGuildId === pair.targetGuildId
+      && candidate.sourceRoleId === pair.targetRoleId
+      && candidate.targetGuildId === pair.sourceGuildId
+      && candidate.targetRoleId === pair.sourceRoleId
+    ));
+    if (!reciprocal) return true;
+    return String(pair.id) < String(reciprocal.id);
+  });
+
+  for (const pair of canonicalPairs) {
+    let sourceGuild = client.guilds.cache.get(pair.sourceGuildId);
+    if (!sourceGuild) {
+      sourceGuild = await client.guilds.fetch(pair.sourceGuildId).catch(() => null as any);
+    }
+
+    let targetGuild = client.guilds.cache.get(pair.targetGuildId);
+    if (!targetGuild) {
+      targetGuild = await client.guilds.fetch(pair.targetGuildId).catch(() => null as any);
+    }
+
+    if (!sourceGuild || !targetGuild) continue;
+
+    let sourceMember: any = null;
+    let targetMember: any = null;
+    try {
+      sourceMember = await sourceGuild.members.fetch(userId);
+    } catch {
+      sourceMember = null;
+    }
+    try {
+      targetMember = await targetGuild.members.fetch(userId);
+    } catch {
+      targetMember = null;
+    }
+
+    if (!targetMember) continue;
+
+    const sourceHasRole = !!sourceMember?.roles?.cache?.has(pair.sourceRoleId);
+    const targetHasRole = !!targetMember.roles?.cache?.has(pair.targetRoleId);
+
+    if (sourceHasRole && !targetHasRole) {
+      await targetMember.roles.add(pair.targetRoleId).catch(() => undefined);
+    } else if (!sourceHasRole && targetHasRole) {
+      await targetMember.roles.remove(pair.targetRoleId).catch(() => undefined);
+    }
+  }
+}
+
+function scheduleRoleSyncRecheck(userId: string, guildId: string, delayMs = 900): void {
+  const key = `${userId}-${guildId}`;
+  const existing = pendingRoleSyncRechecks.get(key);
+  if (existing) {
+    clearTimeout(existing);
+  }
+
+  const timeout = setTimeout(async () => {
+    pendingRoleSyncRechecks.delete(key);
+
+    if (syncingUsers.has(key)) {
+      scheduleRoleSyncRecheck(userId, guildId, delayMs);
+      return;
+    }
+
+    try {
+      await reconcileRoleSyncForUser(userId, guildId);
+    } catch (error) {
+      console.log("[ROLE SYNC] Deferred recheck failed:", error);
+    }
+  }, delayMs);
+
+  pendingRoleSyncRechecks.set(key, timeout);
+}
+
 client.on("guildMemberUpdate", async (oldMember, newMember) => {
   console.log(`[ROLE SYNC] guildMemberUpdate triggered for ${newMember.user.tag} in guild ${newMember.guild.name} (${newMember.guild.id})`);
 
@@ -25688,6 +25781,7 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
   const syncKey = `${newMember.id}-${currentGuildId}`;
   if (syncingUsers.has(syncKey)) {
     console.log(`[ROLE SYNC] Sync already in progress for ${newMember.user.tag}, skipping to prevent loop`);
+    scheduleRoleSyncRecheck(newMember.id, currentGuildId);
     return;
   }
 
@@ -25876,6 +25970,9 @@ client.on("guildMemberUpdate", async (oldMember, newMember) => {
         syncingUsers.delete(`${newMember.id}-${pair.targetGuildId}`);
       }
     }, 350);
+
+    // One final pass catches missed updates when Discord batches rapid role edits.
+    scheduleRoleSyncRecheck(newMember.id, currentGuildId, 500);
   }
 });
 
