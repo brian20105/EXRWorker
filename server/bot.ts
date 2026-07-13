@@ -2678,16 +2678,17 @@ interface StaffApplicationsSetupConfig {
   questions: string[];
 }
 
-const STAFF_HUB_GUILD_ID = "1474862267249070192";
+const STAFF_HUB_GUILD_ID = "1524395531021848706";
+const STAFF_HUB_INVITE_PLACEHOLDER = "{STAFF_HUB_INVITE}";
 const STAFF_APPLICATION_ACCEPTANCE_MESSAGE_TEMPLATE = [
   "*Hello, I am reaching out in regards to the staff application you made for Team Expert. We have decided to accept you onto the team, We will invite you to join our Staff HQ so you can be introed into the Staff Team here at Team Expert.*",
   "",
-  "You have 24 hours to join this server - (Server Link)",
+  `You have 24 hours to join this server - ${STAFF_HUB_INVITE_PLACEHOLDER}`,
   "",
   "*Once you have joined, you will be greeted with staff information as well of the staff quiz + other channels.*",
   "",
   "**Staff Intro Video** - <https://streamable.com/16nta5>",
-  "**Staff Quiz** - https://discord.com/channels/1474862267249070192/1474914416125284593/1474919703884337395",
+  "**Staff Quiz** - <#1525833758765355161>",
   "",
   "*Staff Information includes videos to help you pass your quiz, once finished the quiz. Let an admin know in general chat of the server that you have finished it.*",
   "",
@@ -3148,7 +3149,7 @@ async function createStaffHubInviteUrl(): Promise<string | null> {
 
 function buildStaffAcceptanceMessage(inviteUrl: string | null): string {
   const replacement = inviteUrl || "Staff Hub invite unavailable right now. Please contact management to get access.";
-  return STAFF_APPLICATION_ACCEPTANCE_MESSAGE_TEMPLATE.replace("(Server Link)", replacement);
+  return STAFF_APPLICATION_ACCEPTANCE_MESSAGE_TEMPLATE.replace(STAFF_HUB_INVITE_PLACEHOLDER, replacement);
 }
 
 function getStaffApplicationBlocksFromGuildConfig(config?: any): Record<string, StaffApplicationBlockEntry> {
