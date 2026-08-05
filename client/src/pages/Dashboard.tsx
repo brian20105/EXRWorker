@@ -21,6 +21,7 @@ interface Guild {
   name: string;
   icon: string | null;
   memberCount: number;
+  inviteLink?: string | null;
   isDisabled?: boolean;
 }
 
@@ -360,6 +361,8 @@ type GiveawayMentionTarget = "none" | "everyone" | "here";
 interface DashboardGiveawaySettings {
   channelId: string;
   giveawayName: string;
+  giveawayDescription: string;
+  startsAtUnix: number | null;
   endsAtUnix: number | null;
   winnerCount: number;
   mentionTarget: GiveawayMentionTarget;
@@ -371,6 +374,7 @@ interface DashboardGiveawaySettings {
   mentionRoleIds: string[];
   allowDailyEntries: boolean;
   allowReferralEntries: boolean;
+  postEndMessageInChannel: boolean;
   hideFromNonMembers: boolean;
   showEntrantCount: boolean;
   allowedRoleIds: string[];
@@ -573,6 +577,8 @@ function createDefaultGiveawaySettings(): DashboardGiveawaySettings {
   return {
     channelId: "",
     giveawayName: "",
+    giveawayDescription: "",
+    startsAtUnix: null,
     endsAtUnix: null,
     winnerCount: 1,
     mentionTarget: "none",
@@ -584,6 +590,7 @@ function createDefaultGiveawaySettings(): DashboardGiveawaySettings {
     mentionRoleIds: [],
     allowDailyEntries: false,
     allowReferralEntries: false,
+    postEndMessageInChannel: true,
     hideFromNonMembers: false,
     showEntrantCount: false,
     allowedRoleIds: [],
@@ -2760,6 +2767,7 @@ export default function Dashboard() {
 
     const settings = value as Record<string, unknown>;
     const winnerCount = Number(settings.winnerCount || defaults.winnerCount);
+    const startsAtUnixRaw = Number(settings.startsAtUnix);
     const endsAtUnixRaw = Number(settings.endsAtUnix);
     const mentionTarget = typeof settings.mentionTarget === "string" ? settings.mentionTarget.toLowerCase() : defaults.mentionTarget;
     const rawEntryMode = typeof settings.entryMode === "string" ? settings.entryMode.toLowerCase() : "";
@@ -2773,6 +2781,10 @@ export default function Dashboard() {
     return {
       channelId: typeof settings.channelId === "string" ? settings.channelId.trim() : defaults.channelId,
       giveawayName: typeof settings.giveawayName === "string" ? settings.giveawayName.trim().slice(0, 120) : defaults.giveawayName,
+      giveawayDescription: typeof settings.giveawayDescription === "string"
+        ? settings.giveawayDescription.trim().slice(0, 1000)
+        : defaults.giveawayDescription,
+      startsAtUnix: Number.isFinite(startsAtUnixRaw) && startsAtUnixRaw > 0 ? Math.floor(startsAtUnixRaw) : null,
       endsAtUnix: Number.isFinite(endsAtUnixRaw) && endsAtUnixRaw > 0 ? Math.floor(endsAtUnixRaw) : null,
       winnerCount: Number.isFinite(winnerCount) ? Math.max(1, Math.min(10, Math.round(winnerCount))) : defaults.winnerCount,
       mentionTarget: mentionTarget === "everyone" || mentionTarget === "here" ? mentionTarget : "none",
@@ -2788,6 +2800,7 @@ export default function Dashboard() {
       mentionRoleIds: normalizeStringArray(settings.mentionRoleIds),
       allowDailyEntries: settings.allowDailyEntries === true,
       allowReferralEntries: settings.allowReferralEntries === true,
+      postEndMessageInChannel: settings.postEndMessageInChannel !== false,
       hideFromNonMembers: settings.hideFromNonMembers === true,
       showEntrantCount: settings.showEntrantCount === true,
       allowedRoleIds: normalizeStringArray(settings.allowedRoleIds),
@@ -3659,6 +3672,10 @@ export default function Dashboard() {
     categoryPingsObject[GIVEAWAYS_SETTINGS_KEY] = {
       channelId: giveawaySettings.channelId.trim(),
       giveawayName: giveawaySettings.giveawayName.trim().slice(0, 120),
+      giveawayDescription: giveawaySettings.giveawayDescription.trim().slice(0, 1000),
+      startsAtUnix: typeof giveawaySettings.startsAtUnix === "number" && giveawaySettings.startsAtUnix > 0
+        ? Math.floor(giveawaySettings.startsAtUnix)
+        : null,
       endsAtUnix: typeof giveawaySettings.endsAtUnix === "number" && giveawaySettings.endsAtUnix > 0
         ? Math.floor(giveawaySettings.endsAtUnix)
         : null,
@@ -3673,6 +3690,7 @@ export default function Dashboard() {
       useButtons: giveawaySettings.entryMode === "button",
       allowDailyEntries: giveawaySettings.allowDailyEntries,
       allowReferralEntries: giveawaySettings.allowReferralEntries,
+      postEndMessageInChannel: giveawaySettings.postEndMessageInChannel,
       hideFromNonMembers: giveawaySettings.hideFromNonMembers,
       showEntrantCount: giveawaySettings.showEntrantCount,
       allowedRoleIds: filterToCurrentServerRoleIds(giveawaySettings.allowedRoleIds),
@@ -5358,6 +5376,40 @@ export default function Dashboard() {
                   <p className="text-xs text-muted-foreground">Used as the default giveaway name and referral identifier.</p>
                 </div>
                 <div className="space-y-2">
+                  <Label>Starts On (Optional)</Label>
+                  <Input
+                    type="datetime-local"
+                    value={giveawaySettings.startsAtUnix
+                      ? (() => {
+                          const date = new Date(giveawaySettings.startsAtUnix * 1000);
+                          const pad = (value: number) => String(value).padStart(2, "0");
+                          return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                        })()
+                      : ""}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      const parsed = value ? Math.floor(new Date(value).getTime() / 1000) : null;
+                      setGiveawaySettings((prev) => ({
+                        ...prev,
+                        startsAtUnix: parsed && Number.isFinite(parsed) ? parsed : null,
+                      }));
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">Entries are blocked until this time when set.</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Giveaway Description</Label>
+                <Textarea
+                  value={giveawaySettings.giveawayDescription}
+                  onChange={(event) => setGiveawaySettings((prev) => ({ ...prev, giveawayDescription: event.target.value.slice(0, 1000) }))}
+                  placeholder="Describe the prize, requirements, and any extra details."
+                />
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
                   <Label>Ends On (Optional)</Label>
                   <Input
                     type="datetime-local"
@@ -5509,6 +5561,16 @@ export default function Dashboard() {
                   <Switch
                     checked={giveawaySettings.showEntrantCount}
                     onCheckedChange={(checked) => setGiveawaySettings((prev) => ({ ...prev, showEntrantCount: checked }))}
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2 md:col-span-2">
+                  <div>
+                    <p className="text-sm font-medium">Post End Message In Channel</p>
+                    <p className="text-xs text-muted-foreground">When giveaway ends, post a channel notice and lock the giveaway controls.</p>
+                  </div>
+                  <Switch
+                    checked={giveawaySettings.postEndMessageInChannel}
+                    onCheckedChange={(checked) => setGiveawaySettings((prev) => ({ ...prev, postEndMessageInChannel: checked }))}
                   />
                 </div>
               </div>
@@ -6272,6 +6334,16 @@ export default function Dashboard() {
                                 </div>
 
                                 <div className="flex flex-col gap-2 sm:flex-row lg:justify-end">
+                                  {guild.inviteLink ? (
+                                    <Button
+                                      variant="outline"
+                                      className="flex-1"
+                                      onClick={() => window.open(guild.inviteLink || "", "_blank", "noopener,noreferrer")}
+                                      data-testid={`button-owner-invite-guild-${guild.id}`}
+                                    >
+                                      Invite Link
+                                    </Button>
+                                  ) : null}
                                   <Button
                                     variant="outline"
                                     className="flex-1"

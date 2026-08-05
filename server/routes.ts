@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { client } from "./bot";
+import { client, registerPostedGiveaway } from "./bot";
 import { guildConfigs, insertGuildConfigSchema } from "@shared/schema";
 import crypto from "crypto";
 import fs from "fs";
@@ -1805,6 +1805,8 @@ type DashboardGiveawayEntryMode = "button" | "reaction";
 type DashboardGiveawaySettings = {
   channelId: string | null;
   giveawayName: string;
+  giveawayDescription: string;
+  startsAtUnix: number | null;
   endsAtUnix: number | null;
   winnerCount: number;
   mentionTarget: "none" | "everyone" | "here";
@@ -1816,6 +1818,7 @@ type DashboardGiveawaySettings = {
   mentionRoleIds: string[];
   allowDailyEntries: boolean;
   allowReferralEntries: boolean;
+  postEndMessageInChannel: boolean;
   hideFromNonMembers: boolean;
   showEntrantCount: boolean;
   allowedRoleIds: string[];
@@ -1844,6 +1847,8 @@ const DEFAULT_REACTION_ROLE_SETUP: DashboardReactionRoleSetup = {
 const DEFAULT_GIVEAWAYS_SETTINGS: DashboardGiveawaySettings = {
   channelId: null,
   giveawayName: "",
+  giveawayDescription: "",
+  startsAtUnix: null,
   endsAtUnix: null,
   winnerCount: 1,
   mentionTarget: "none",
@@ -1855,6 +1860,7 @@ const DEFAULT_GIVEAWAYS_SETTINGS: DashboardGiveawaySettings = {
   mentionRoleIds: [],
   allowDailyEntries: false,
   allowReferralEntries: false,
+  postEndMessageInChannel: true,
   hideFromNonMembers: false,
   showEntrantCount: false,
   allowedRoleIds: [],
@@ -1939,6 +1945,7 @@ function normalizeGiveawaysSettings(input: unknown): DashboardGiveawaySettings {
 
   const value = input as Record<string, unknown>;
   const winnerCount = Number(value.winnerCount || DEFAULT_GIVEAWAYS_SETTINGS.winnerCount);
+  const startsAtUnixRaw = Number(value.startsAtUnix);
   const endsAtUnixRaw = Number(value.endsAtUnix);
   const mentionTarget = String(value.mentionTarget || DEFAULT_GIVEAWAYS_SETTINGS.mentionTarget).toLowerCase();
   const rawEntryMode = String(value.entryMode || "").toLowerCase();
@@ -1947,6 +1954,8 @@ function normalizeGiveawaysSettings(input: unknown): DashboardGiveawaySettings {
   return {
     channelId: String(value.channelId || "").trim() || null,
     giveawayName: String(value.giveawayName || "").trim().slice(0, 120),
+    giveawayDescription: String(value.giveawayDescription || "").trim().slice(0, 1000),
+    startsAtUnix: Number.isFinite(startsAtUnixRaw) && startsAtUnixRaw > 0 ? Math.floor(startsAtUnixRaw) : null,
     endsAtUnix: Number.isFinite(endsAtUnixRaw) && endsAtUnixRaw > 0 ? Math.floor(endsAtUnixRaw) : null,
     winnerCount: Number.isFinite(winnerCount) ? Math.max(1, Math.min(10, Math.round(winnerCount))) : DEFAULT_GIVEAWAYS_SETTINGS.winnerCount,
     mentionTarget: mentionTarget === "everyone" || mentionTarget === "here" ? mentionTarget : "none",
@@ -1960,6 +1969,7 @@ function normalizeGiveawaysSettings(input: unknown): DashboardGiveawaySettings {
       : [],
     allowDailyEntries: value.allowDailyEntries === true,
     allowReferralEntries: value.allowReferralEntries === true,
+    postEndMessageInChannel: value.postEndMessageInChannel !== false,
     hideFromNonMembers: value.hideFromNonMembers === true,
     showEntrantCount: value.showEntrantCount === true,
     allowedRoleIds: Array.isArray(value.allowedRoleIds)
@@ -2618,9 +2628,14 @@ export async function registerRoutes(
       const guilds = await Promise.all(
         resolvedSummaries.map(async (guild) => {
           const config = await storage.getGuildConfig(guild.id).catch(() => undefined);
+          const applicationId = String(process.env.DISCORD_APPLICATION_ID || client.application?.id || "").trim();
+          const inviteLink = applicationId
+            ? `https://discord.com/api/oauth2/authorize?client_id=${encodeURIComponent(applicationId)}&permissions=8&scope=bot%20applications.commands&guild_id=${encodeURIComponent(guild.id)}&disable_guild_select=true`
+            : null;
           return {
             ...guild,
             isDisabled: isGuildDisabledFromCustomCategoryPings(config?.customCategoryPings),
+            inviteLink,
           };
         }),
       );
@@ -4321,6 +4336,7 @@ export async function registerRoutes(
       let sentMessage: any = null;
       let reactionRoleResultNote: string | null = null;
       let giveawayReactionValue: string | null = null;
+      let giveawaySettingsForPost: DashboardGiveawaySettings | null = null;
 
       if (featureKey === "modmail") {
         targetChannelId = targetChannelId || String(config?.modmailEmbedChannelId || "").trim();
@@ -4581,6 +4597,7 @@ export async function registerRoutes(
         const giveawaySettings = hasOverride
           ? normalizeGiveawaysSettings(req.body.giveawaySettings)
           : getGiveawaysSettings(config?.customCategoryPings);
+        giveawaySettingsForPost = giveawaySettings;
 
         targetChannelId = targetChannelId || String(giveawaySettings.channelId || "").trim();
         if (!targetChannelId) {
@@ -4588,6 +4605,9 @@ export async function registerRoutes(
         }
 
         const nowUnix = Math.floor(Date.now() / 1000);
+        if (giveawaySettings.startsAtUnix && giveawaySettings.endsAtUnix && giveawaySettings.endsAtUnix <= giveawaySettings.startsAtUnix) {
+          return res.status(400).json({ error: "End time must be after start time." });
+        }
         if (giveawaySettings.endsAtUnix && giveawaySettings.endsAtUnix <= nowUnix) {
           return res.status(400).json({ error: "Giveaway Already Ended" });
         }
@@ -4612,6 +4632,9 @@ export async function registerRoutes(
         if (giveawaySettings.showEntrantCount) {
           extraLines.push("Entries: **0**");
         }
+        if (giveawaySettings.startsAtUnix) {
+          extraLines.push(`Starts: <t:${giveawaySettings.startsAtUnix}:F> (<t:${giveawaySettings.startsAtUnix}:R>)`);
+        }
         if (giveawaySettings.endsAtUnix) {
           extraLines.push(`Ends: <t:${giveawaySettings.endsAtUnix}:F> (<t:${giveawaySettings.endsAtUnix}:R>)`);
         }
@@ -4629,6 +4652,7 @@ export async function registerRoutes(
           .setTitle(giveawaySettings.giveawayName ? `Giveaway: ${giveawaySettings.giveawayName}` : "Giveaway")
           .setDescription([
             "A new giveaway has started.",
+            giveawaySettings.giveawayDescription ? `\n${giveawaySettings.giveawayDescription}` : "",
             "",
             entryLine,
             ...extraLines,
@@ -4700,6 +4724,29 @@ export async function registerRoutes(
               }
               return await (channel as any).send(messagePayload);
             })();
+      }
+
+      if ((featureKey === "giveaways" || featureKey === "giveaway") && giveawaySettingsForPost) {
+        registerPostedGiveaway(guildId, targetChannelId, String(sentMessage.id || ""), {
+          giveawayName: giveawaySettingsForPost.giveawayName,
+          giveawayDescription: giveawaySettingsForPost.giveawayDescription,
+          startsAtUnix: giveawaySettingsForPost.startsAtUnix,
+          endsAtUnix: giveawaySettingsForPost.endsAtUnix,
+          winnerCount: giveawaySettingsForPost.winnerCount,
+          mentionTarget: giveawaySettingsForPost.mentionTarget,
+          entryMode: giveawaySettingsForPost.entryMode,
+          reactionEmoji: giveawaySettingsForPost.reactionEmoji,
+          dmWinners: giveawaySettingsForPost.dmWinners,
+          winnerDmMessage: giveawaySettingsForPost.winnerDmMessage,
+          postEndMessageInChannel: giveawaySettingsForPost.postEndMessageInChannel,
+          inviteLink: giveawaySettingsForPost.inviteLink,
+          mentionRoleIds: giveawaySettingsForPost.mentionRoleIds,
+          allowDailyEntries: giveawaySettingsForPost.allowDailyEntries,
+          allowReferralEntries: giveawaySettingsForPost.allowReferralEntries,
+          showEntrantCount: giveawaySettingsForPost.showEntrantCount,
+          allowedRoleIds: giveawaySettingsForPost.allowedRoleIds,
+          ignoredRoleIds: giveawaySettingsForPost.ignoredRoleIds,
+        });
       }
 
       if (featureKey === "reaction-roles") {

@@ -3675,11 +3675,16 @@ interface ReactionRoleSetupConfig {
 
 interface GiveawaySettingsConfig {
   giveawayName: string;
+  giveawayDescription: string;
+  startsAtUnix: number | null;
   endsAtUnix: number | null;
   winnerCount: number;
   mentionTarget: "none" | "everyone" | "here";
   entryMode: GiveawayEntryMode;
   reactionEmoji: string;
+  dmWinners: boolean;
+  winnerDmMessage: string;
+  postEndMessageInChannel: boolean;
   inviteLink: string;
   mentionRoleIds: string[];
   allowDailyEntries: boolean;
@@ -3710,11 +3715,16 @@ const DEFAULT_REACTION_ROLE_SETUP: ReactionRoleSetupConfig = {
 
 const DEFAULT_GIVEAWAY_SETTINGS: GiveawaySettingsConfig = {
   giveawayName: "",
+  giveawayDescription: "",
+  startsAtUnix: null,
   endsAtUnix: null,
   winnerCount: 1,
   mentionTarget: "none",
   entryMode: "button",
   reactionEmoji: "✋",
+  dmWinners: true,
+  winnerDmMessage: "Congratulations! Contact a server admin to claim your prize!",
+  postEndMessageInChannel: true,
   inviteLink: "",
   mentionRoleIds: [],
   allowDailyEntries: false,
@@ -3824,6 +3834,7 @@ function getGiveawaySettingsFromGuildConfig(config?: any): GiveawaySettingsConfi
     return { ...DEFAULT_GIVEAWAY_SETTINGS };
   }
 
+  const startsAtUnixRaw = Number(raw.startsAtUnix);
   const endsAtUnixRaw = Number(raw.endsAtUnix);
   const winnerCountRaw = Number(raw.winnerCount || DEFAULT_GIVEAWAY_SETTINGS.winnerCount);
   const mentionTargetRaw = typeof raw.mentionTarget === "string"
@@ -3834,6 +3845,8 @@ function getGiveawaySettingsFromGuildConfig(config?: any): GiveawaySettingsConfi
 
   return {
     giveawayName: typeof raw.giveawayName === "string" ? raw.giveawayName.trim().slice(0, 120) : "",
+    giveawayDescription: typeof raw.giveawayDescription === "string" ? raw.giveawayDescription.trim().slice(0, 1000) : "",
+    startsAtUnix: Number.isFinite(startsAtUnixRaw) && startsAtUnixRaw > 0 ? Math.floor(startsAtUnixRaw) : null,
     endsAtUnix: Number.isFinite(endsAtUnixRaw) && endsAtUnixRaw > 0 ? Math.floor(endsAtUnixRaw) : null,
     winnerCount: Number.isFinite(winnerCountRaw) ? Math.max(1, Math.min(10, Math.round(winnerCountRaw))) : DEFAULT_GIVEAWAY_SETTINGS.winnerCount,
     mentionTarget: mentionTargetRaw === "everyone" || mentionTargetRaw === "here" ? mentionTargetRaw : "none",
@@ -3845,6 +3858,11 @@ function getGiveawaySettingsFromGuildConfig(config?: any): GiveawaySettingsConfi
     reactionEmoji: typeof raw.reactionEmoji === "string" && raw.reactionEmoji.trim().length > 0
       ? raw.reactionEmoji.trim().slice(0, 100)
       : DEFAULT_GIVEAWAY_SETTINGS.reactionEmoji,
+    dmWinners: raw.dmWinners !== false,
+    winnerDmMessage: typeof raw.winnerDmMessage === "string" && raw.winnerDmMessage.trim().length > 0
+      ? raw.winnerDmMessage.trim().slice(0, 500)
+      : DEFAULT_GIVEAWAY_SETTINGS.winnerDmMessage,
+    postEndMessageInChannel: raw.postEndMessageInChannel !== false,
     inviteLink: typeof raw.inviteLink === "string" ? raw.inviteLink.trim().slice(0, 400) : "",
     mentionRoleIds: Array.isArray(raw.mentionRoleIds)
       ? raw.mentionRoleIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
@@ -3872,6 +3890,9 @@ function buildGiveawayDescription(settings: GiveawaySettingsConfig, entrantCount
   if (settings.showEntrantCount) {
     extraLines.push(`Entries: **${Math.max(0, Number(entrantCount || 0))}**`);
   }
+  if (settings.startsAtUnix) {
+    extraLines.push(`Starts: <t:${settings.startsAtUnix}:F> (<t:${settings.startsAtUnix}:R>)`);
+  }
   if (settings.endsAtUnix) {
     extraLines.push(`Ends: <t:${settings.endsAtUnix}:F> (<t:${settings.endsAtUnix}:R>)`);
   }
@@ -3887,6 +3908,7 @@ function buildGiveawayDescription(settings: GiveawaySettingsConfig, entrantCount
 
   return [
     "A new giveaway has started.",
+    settings.giveawayDescription ? `\n${settings.giveawayDescription}` : "",
     "",
     entryLine,
     ...extraLines,
@@ -4179,14 +4201,29 @@ async function handleGiveawayReactionEvent(reaction: any, user: any, action: "ad
     const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
     if (!isDashboardFeatureEnabled(guildConfig, "giveaways")) return;
 
-    const giveawaySettings = getGiveawaySettingsFromGuildConfig(guildConfig);
+    const entryKey = getGiveawayEntryKey(guild.id, String(message.id));
+    const giveawaySettings = getGiveawaySettingsForEntry(entryKey, guildConfig, message);
     if (giveawaySettings.entryMode !== "reaction") return;
+
+    const nowUnix = Math.floor(Date.now() / 1000);
+    if (giveawaySettings.endsAtUnix && nowUnix >= giveawaySettings.endsAtUnix) {
+      await concludeGiveaway(entryKey, guild.id, String(message.channelId || ""), String(message.id || ""));
+      if (action === "add") {
+        await reaction.users.remove(user.id).catch(() => undefined);
+      }
+      return;
+    }
+    if (giveawaySettings.startsAtUnix && nowUnix < giveawaySettings.startsAtUnix) {
+      if (action === "add") {
+        await reaction.users.remove(user.id).catch(() => undefined);
+      }
+      return;
+    }
 
     const emojiKey = getReactionEmojiKey(reaction);
     const configuredEmojiKey = normalizeReactionEmojiInput(giveawaySettings.reactionEmoji || "✋");
     if (!emojiKey || !configuredEmojiKey || emojiKey !== configuredEmojiKey) return;
 
-    const entryKey = getGiveawayEntryKey(guild.id, String(message.id));
     const entrants = getGiveawayEntrants(entryKey);
 
     if (action === "remove") {
@@ -6284,6 +6321,12 @@ const commands = [
         )
         .addStringOption((option) =>
           option
+            .setName("start")
+            .setDescription("Start time in hammertime, unix, or date text (e.g. <t:1777001000:F>)")
+            .setRequired(false)
+        )
+        .addStringOption((option) =>
+          option
             .setName("end")
             .setDescription("End time in hammertime, unix, or date text (e.g. <t:1777005000:F>)")
             .setRequired(false)
@@ -7891,9 +7934,12 @@ const INTERACTION_DEDUP_TIMEOUT = 15000;
 
 const giveawayEntrantsByMessage = new Map<string, Set<string>>();
 const giveawayDailyEntryByMessage = new Map<string, Map<string, number>>();
+const giveawaySettingsByMessage = new Map<string, GiveawaySettingsConfig>();
 const GIVEAWAY_ENTRY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const GIVEAWAY_DAILY_ENTRY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const giveawayEntryTimeouts = new Map<string, NodeJS.Timeout>();
+const giveawayEndTimeouts = new Map<string, NodeJS.Timeout>();
+const endedGiveaways = new Set<string>();
 
 function scheduleGiveawayEntryCleanup(entryKey: string): void {
   const existingTimeout = giveawayEntryTimeouts.get(entryKey);
@@ -7902,8 +7948,11 @@ function scheduleGiveawayEntryCleanup(entryKey: string): void {
   }
 
   const timeout = setTimeout(() => {
+    clearGiveawayEndTimeout(entryKey);
     giveawayEntrantsByMessage.delete(entryKey);
     giveawayDailyEntryByMessage.delete(entryKey);
+    giveawaySettingsByMessage.delete(entryKey);
+    endedGiveaways.delete(entryKey);
     giveawayEntryTimeouts.delete(entryKey);
   }, GIVEAWAY_ENTRY_RETENTION_MS);
 
@@ -7912,6 +7961,71 @@ function scheduleGiveawayEntryCleanup(entryKey: string): void {
 
 function getGiveawayEntryKey(guildId: string, messageId: string): string {
   return `${guildId}:${messageId}`;
+}
+
+function cloneGiveawaySettings(settings: GiveawaySettingsConfig): GiveawaySettingsConfig {
+  return {
+    ...settings,
+    mentionRoleIds: [...(settings.mentionRoleIds || [])],
+    allowedRoleIds: [...(settings.allowedRoleIds || [])],
+    ignoredRoleIds: [...(settings.ignoredRoleIds || [])],
+  };
+}
+
+function hydrateGiveawaySettingsFromMessage(base: GiveawaySettingsConfig, message: any): GiveawaySettingsConfig {
+  const hydrated = cloneGiveawaySettings(base);
+  const firstEmbed = message?.embeds?.[0];
+  const title = String(firstEmbed?.title || "").trim();
+  const description = String(firstEmbed?.description || "");
+
+  const titleMatch = title.match(/^Giveaway:\s*(.+)$/i);
+  if (titleMatch?.[1]) {
+    hydrated.giveawayName = titleMatch[1].trim().slice(0, 120);
+  }
+
+  const endMatch = description.match(/Ends:\s*<t:(\d{1,11}):[tTdDfFR]>/i);
+  if (endMatch?.[1]) {
+    const endUnix = Number(endMatch[1]);
+    if (Number.isFinite(endUnix) && endUnix > 0) {
+      hydrated.endsAtUnix = Math.floor(endUnix);
+    }
+  }
+
+  const startMatch = description.match(/Starts:\s*<t:(\d{1,11}):[tTdDfFR]>/i);
+  if (startMatch?.[1]) {
+    const startUnix = Number(startMatch[1]);
+    if (Number.isFinite(startUnix) && startUnix > 0) {
+      hydrated.startsAtUnix = Math.floor(startUnix);
+    }
+  }
+
+  const referralMatch = description.match(/Referral entries:\s*enabled for\s*\*\*(.+?)\*\*/i);
+  if (referralMatch?.[1]) {
+    hydrated.allowReferralEntries = true;
+    hydrated.giveawayName = referralMatch[1].trim().slice(0, 120) || hydrated.giveawayName;
+  }
+
+  const reactionMatch = description.match(/React with\s+(.+?)\s+to join\./i);
+  if (reactionMatch?.[1]) {
+    hydrated.reactionEmoji = reactionMatch[1].trim().slice(0, 100) || hydrated.reactionEmoji;
+    hydrated.entryMode = "reaction";
+  } else if (message?.components?.length > 0) {
+    hydrated.entryMode = "button";
+  }
+
+  return hydrated;
+}
+
+function getGiveawaySettingsForEntry(entryKey: string, guildConfig: any, message: any): GiveawaySettingsConfig {
+  const cached = giveawaySettingsByMessage.get(entryKey);
+  if (cached) {
+    return cloneGiveawaySettings(cached);
+  }
+
+  const base = getGiveawaySettingsFromGuildConfig(guildConfig);
+  const hydrated = hydrateGiveawaySettingsFromMessage(base, message);
+  giveawaySettingsByMessage.set(entryKey, cloneGiveawaySettings(hydrated));
+  return hydrated;
 }
 
 function getGiveawayEntrants(entryKey: string): Set<string> {
@@ -7957,6 +8071,119 @@ function formatGiveawayDailyRetry(waitMs: number): string {
     return `${hours}h`;
   }
   return `${minutes}m`;
+}
+
+function clearGiveawayEndTimeout(entryKey: string): void {
+  const timeout = giveawayEndTimeouts.get(entryKey);
+  if (timeout) {
+    clearTimeout(timeout);
+    giveawayEndTimeouts.delete(entryKey);
+  }
+}
+
+function pickGiveawayWinners(entrantIds: string[], winnerCount: number): string[] {
+  const pool = [...entrantIds];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, Math.max(0, Math.min(winnerCount, pool.length)));
+}
+
+async function concludeGiveaway(entryKey: string, guildId: string, channelId: string, messageId: string): Promise<void> {
+  if (endedGiveaways.has(entryKey)) return;
+  endedGiveaways.add(entryKey);
+  clearGiveawayEndTimeout(entryKey);
+
+  const settings = giveawaySettingsByMessage.get(entryKey);
+  if (!settings) return;
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel || !("messages" in channel)) return;
+  const message = await (channel as any).messages.fetch(messageId).catch(() => null);
+  if (!message) return;
+
+  const entrants = Array.from(getGiveawayEntrants(entryKey));
+  const winners = pickGiveawayWinners(entrants, settings.winnerCount);
+
+  if (settings.dmWinners && winners.length > 0) {
+    for (const winnerId of winners) {
+      try {
+        const user = await client.users.fetch(winnerId).catch(() => null);
+        if (!user) continue;
+        const winnerMessage = settings.winnerDmMessage || DEFAULT_GIVEAWAY_SETTINGS.winnerDmMessage;
+        await user.send({
+          content: settings.giveawayName
+            ? `**${settings.giveawayName}**\n${winnerMessage}`
+            : winnerMessage,
+        }).catch(() => {});
+      } catch {
+        // Ignore winner DM failures.
+      }
+    }
+  }
+
+  if (settings.postEndMessageInChannel && "send" in channel) {
+    const winnerMentions = winners.map((winnerId) => `<@${winnerId}>`).join(" ");
+    const endMessage = winnerMentions
+      ? `Giveaway Has Ended\nWinners: ${winnerMentions}`
+      : "Giveaway Has Ended";
+    await (channel as any).send({
+      content: endMessage,
+      allowedMentions: { users: winners },
+    }).catch(() => {});
+  }
+
+  const endedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`giveaway_ended_${guildId}`)
+      .setLabel("Giveaway Has Ended")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true),
+  );
+
+  try {
+    const firstEmbed = message.embeds?.[0];
+    const updatedEmbed = firstEmbed
+      ? EmbedBuilder.from(firstEmbed).setDescription(buildGiveawayDescription(settings, entrants.length))
+      : undefined;
+    await message.edit({
+      embeds: updatedEmbed ? [updatedEmbed] : message.embeds,
+      components: [endedRow],
+    });
+  } catch {
+    // Ignore end-state component update failures.
+  }
+}
+
+function scheduleGiveawayEnd(entryKey: string, guildId: string, channelId: string, messageId: string, settings: GiveawaySettingsConfig): void {
+  clearGiveawayEndTimeout(entryKey);
+  if (!settings.endsAtUnix || settings.endsAtUnix <= 0) return;
+
+  const nowMs = Date.now();
+  const endMs = settings.endsAtUnix * 1000;
+  if (endMs <= nowMs) {
+    void concludeGiveaway(entryKey, guildId, channelId, messageId);
+    return;
+  }
+
+  const delay = Math.max(1, endMs - nowMs);
+  const timeout = setTimeout(() => {
+    void concludeGiveaway(entryKey, guildId, channelId, messageId);
+  }, delay);
+  giveawayEndTimeouts.set(entryKey, timeout);
+}
+
+export function registerPostedGiveaway(guildId: string, channelId: string, messageId: string, settings: GiveawaySettingsConfig): void {
+  const safeGuildId = String(guildId || "").trim();
+  const safeChannelId = String(channelId || "").trim();
+  const safeMessageId = String(messageId || "").trim();
+  if (!safeGuildId || !safeChannelId || !safeMessageId) return;
+
+  const entryKey = getGiveawayEntryKey(safeGuildId, safeMessageId);
+  giveawaySettingsByMessage.set(entryKey, cloneGiveawaySettings(settings));
+  scheduleGiveawayEntryCleanup(entryKey);
+  scheduleGiveawayEnd(entryKey, safeGuildId, safeChannelId, safeMessageId, settings);
 }
 
 async function updateGiveawayEntryDisplay(message: any, settings: GiveawaySettingsConfig, entrantCount: number): Promise<void> {
@@ -8194,7 +8421,9 @@ client.on("interactionCreate", async (interaction) => {
           const nowUnix = Math.floor(Date.now() / 1000);
 
           const commandNameInput = String(interaction.options.getString("name", false) || "").trim().slice(0, 120);
+          const commandStartInput = interaction.options.getString("start", false);
           const commandEndInput = interaction.options.getString("end", false);
+          const commandStartUnix = parseGiveawayHammertime(commandStartInput);
           const commandEndUnix = parseGiveawayHammertime(commandEndInput);
 
           settings.giveawayName = commandNameInput || settings.giveawayName;
@@ -8202,12 +8431,23 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.editReply({ content: "❌ Please provide a giveaway name using `/giveaway post name:<name>`." });
             return;
           }
+          if (commandStartInput && commandStartUnix === null) {
+            await interaction.editReply({ content: "❌ Invalid start time format. Use hammertime (`<t:...:F>`), unix seconds, or a date string." });
+            return;
+          }
           if (commandEndInput && commandEndUnix === null) {
             await interaction.editReply({ content: "❌ Invalid end time format. Use hammertime (`<t:...:F>`), unix seconds, or a date string." });
             return;
           }
+          if (commandStartUnix !== null) {
+            settings.startsAtUnix = commandStartUnix;
+          }
           if (commandEndUnix !== null) {
             settings.endsAtUnix = commandEndUnix;
+          }
+          if (settings.startsAtUnix && settings.endsAtUnix && settings.endsAtUnix <= settings.startsAtUnix) {
+            await interaction.editReply({ content: "❌ End time must be after start time." });
+            return;
           }
 
           if (settings.endsAtUnix && settings.endsAtUnix <= nowUnix) {
@@ -8252,6 +8492,7 @@ client.on("interactionCreate", async (interaction) => {
           }
 
           const sentMessage: any = await (targetChannel as any).send(messagePayload);
+          registerPostedGiveaway(String(interaction.guildId || ""), String(targetChannel.id || ""), String(sentMessage?.id || ""), settings);
 
           let followUpNote = "✅ Giveaway posted in this channel using dashboard settings.";
           if (settings.entryMode === "reaction") {
@@ -14855,12 +15096,28 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const guildConfig = await storage.getGuildConfig(interactionGuildId).catch(() => undefined);
-          const giveawaySettings = getGiveawaySettingsFromGuildConfig(guildConfig);
           const entryKey = getGiveawayEntryKey(interactionGuildId, messageId);
+          const guildConfig = await storage.getGuildConfig(interactionGuildId).catch(() => undefined);
+          const giveawaySettings = getGiveawaySettingsForEntry(entryKey, guildConfig, interaction.message);
           const entrants = getGiveawayEntrants(entryKey);
+          const nowUnix = Math.floor(Date.now() / 1000);
+
+          if (giveawaySettings.endsAtUnix && nowUnix >= giveawaySettings.endsAtUnix) {
+            await concludeGiveaway(entryKey, interactionGuildId, String(interaction.channelId || ""), messageId);
+            await interaction.reply({ content: "Giveaway Has Ended", flags: 64 });
+            return;
+          }
+
+          if (giveawaySettings.startsAtUnix && nowUnix < giveawaySettings.startsAtUnix) {
+            await interaction.reply({ content: "This giveaway has not started yet.", flags: 64 });
+            return;
+          }
 
           if (action === "leave") {
+            if (!entrants.has(interaction.user.id)) {
+              await interaction.reply({ content: "Your not in this giveaway!", flags: 64 });
+              return;
+            }
             entrants.delete(interaction.user.id);
             scheduleGiveawayEntryCleanup(entryKey);
             await updateGiveawayEntryDisplay(interaction.message, giveawaySettings, entrants.size);
