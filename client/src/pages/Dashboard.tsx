@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Save, Server, Shield, ShieldAlert, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X, SlidersHorizontal, Sparkles, ListTree, Mail } from "lucide-react";
+import { ArrowLeft, Server, Shield, ShieldAlert, CheckCircle2, AlertCircle, Copy, Hash, Braces, Moon, Sun, ChevronDown, Search, Settings, Palette, Users, Plus, Pencil, Trash2, X, SlidersHorizontal, Sparkles, ListTree, Mail } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { useTheme } from "next-themes";
 import { useLocation, useRoute } from "wouter";
@@ -265,7 +265,7 @@ interface ModmailLogSummary {
   closedEvents: number;
 }
 
-type FeaturePostChannelKey = "modmail" | "appeals" | "staff-intro" | "inactivity" | "payouts" | "reaction-roles";
+type FeaturePostChannelKey = "modmail" | "appeals" | "staff-intro" | "inactivity" | "payouts" | "reaction-roles" | "giveaways";
 type DashboardFeaturePostChannels = Partial<Record<FeaturePostChannelKey, string>>;
 
 const PRIMARY_TAB_META: Record<PrimaryTabKey, { label: string; icon: typeof SlidersHorizontal }> = {
@@ -282,7 +282,6 @@ interface DashboardQuickSettings {
   moderationPrefix: string;
   modmailPrefix: string;
   botNickname: string;
-  serverProfileName: string;
   serverProfileDescription: string;
 }
 
@@ -354,6 +353,24 @@ interface DashboardReactionRoleSetup {
   thumbnailUrl: string;
   imageUrl: string;
   items: ReactionRoleItem[];
+}
+
+type GiveawayMentionTarget = "none" | "everyone" | "here";
+
+interface DashboardGiveawaySettings {
+  channelId: string;
+  winnerCount: number;
+  mentionTarget: GiveawayMentionTarget;
+  dmWinners: boolean;
+  winnerDmMessage: string;
+  inviteLink: string;
+  entryMode: "button" | "reaction";
+  reactionEmoji: string;
+  allowDailyEntries: boolean;
+  allowReferralEntries: boolean;
+  hideFromNonMembers: boolean;
+  allowedRoleIds: string[];
+  ignoredRoleIds: string[];
 }
 
 type SecurityPunishmentType = "ban" | "kick" | "clear_roles";
@@ -497,6 +514,7 @@ const FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
 const SECURITY_SETTINGS_KEY = "__dashboardSecuritySettings";
 const AUTO_ROLES_KEY = "__autoRoles";
 const REACTION_ROLE_SETUP_KEY = "__reactionRoleSetup";
+const GIVEAWAYS_SETTINGS_KEY = "__giveawaysSettings";
 const PRIVILEGED_DASHBOARD_USER_IDS = new Set(["948598563359817728", "944385000059600896"]);
 const DASHBOARD_COLOR_STORAGE_KEY = "dashboardColorOverrides";
 const DASHBOARD_LAST_GUILD_STORAGE_KEY = "dashboardLastSelectedGuild";
@@ -506,6 +524,8 @@ const DEFAULT_TOP_FADE_COLOR = "#5865f2";
 const DEFAULT_ENABLED_STATUS_COLOR = "#00ff7b";
 const DEFAULT_DISABLED_STATUS_COLOR = "#ff0000";
 const DEFAULT_SECURITY_TIME_WINDOW_SECONDS = 60;
+const SERVER_PROFILE_AVATAR_MAX_UPLOAD_BYTES = 7 * 1024 * 1024;
+const SERVER_PROFILE_AVATAR_TARGET_BYTES = 900 * 1024;
 const BACKGROUND_COLOR_PRESETS = ["#ff0000", "#00ff7b", "#0000ff"];
 
 function filterNamedItems<T extends { name: string }>(items: T[], rawQuery: string): T[] {
@@ -542,6 +562,24 @@ function createDefaultReactionRoleSetup(): DashboardReactionRoleSetup {
     thumbnailUrl: "",
     imageUrl: "",
     items: [],
+  };
+}
+
+function createDefaultGiveawaySettings(): DashboardGiveawaySettings {
+  return {
+    channelId: "",
+    winnerCount: 1,
+    mentionTarget: "none",
+    dmWinners: true,
+    winnerDmMessage: "Congratulations! Contact a server admin to claim your prize!",
+    inviteLink: "",
+    entryMode: "button",
+    reactionEmoji: "✋",
+    allowDailyEntries: false,
+    allowReferralEntries: false,
+    hideFromNonMembers: false,
+    allowedRoleIds: [],
+    ignoredRoleIds: [],
   };
 }
 
@@ -795,6 +833,7 @@ export default function Dashboard() {
     delayMinutes: "0",
   });
   const [reactionRoleSetup, setReactionRoleSetup] = useState<DashboardReactionRoleSetup>(createDefaultReactionRoleSetup());
+  const [giveawaySettings, setGiveawaySettings] = useState<DashboardGiveawaySettings>(createDefaultGiveawaySettings());
   const [newReactionRole, setNewReactionRole] = useState<{ emoji: string; roleId: string; mode: ReactionRoleMode }>({
     emoji: "",
     roleId: "",
@@ -904,6 +943,14 @@ export default function Dashboard() {
   const [rosterEmbedModalOpen, setRosterEmbedModalOpen] = useState(false);
   const reactionRoleDraftReadyRef = useRef(false);
   const suppressLastGuildRestoreRef = useRef(false);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSaveArmedRef = useRef(false);
+  const lastAutoSaveSignatureRef = useRef("");
+  const latestAutoSaveSignatureRef = useRef("");
+  const savingRef = useRef(false);
+  const suppressNextAutoSaveRef = useRef(false);
+  const lastProfileBioByGuildRef = useRef<Record<string, string>>({});
+  const failedProfileAvatarKeyRef = useRef<string | null>(null);
   const [rosterEmbedModalMode, setRosterEmbedModalMode] = useState<"create" | "edit">("create");
   const [rosterEmbedSaving, setRosterEmbedSaving] = useState(false);
   const [rosterEmbedEditingId, setRosterEmbedEditingId] = useState("");
@@ -925,9 +972,9 @@ export default function Dashboard() {
     moderationPrefix: "",
     modmailPrefix: "",
     botNickname: "",
-    serverProfileName: "",
     serverProfileDescription: "",
   });
+  const [serverProfileAvatarFile, setServerProfileAvatarFile] = useState<File | null>(null);
   const [permissionSettings, setPermissionSettings] = useState<DashboardPermissionSettings>({
     stickyCommandRoleIds: [],
     roleRequestCommandRoleIds: [],
@@ -968,6 +1015,7 @@ export default function Dashboard() {
   } as const;
 
   const applyGuildConfigData = (data: any, preserveView = false) => {
+    suppressNextAutoSaveRef.current = true;
     const nextConfig = (data.config || {}) as GuildConfig;
     const nextChannels = (data.channels || []) as Channel[];
     const nextRoles = (data.roles || []) as Role[];
@@ -1007,7 +1055,12 @@ export default function Dashboard() {
     setCustomModmailCategoriesText(nextConfig.customModmailCategories || "[]");
     const nextFeaturePostChannels = getFeaturePostChannelsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     setFeaturePostChannels(nextFeaturePostChannels);
-    setQuickSettings(getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}"));
+    const nextQuickSettings = getQuickSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+    setQuickSettings(nextQuickSettings);
+    if (selectedGuild) {
+      lastProfileBioByGuildRef.current[selectedGuild] = nextQuickSettings.serverProfileDescription.trim().slice(0, 190);
+    }
+    setServerProfileAvatarFile(null);
     const nextPermissionSettings = getPermissionSettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     const sanitizedPermissionSettings: DashboardPermissionSettings = { ...nextPermissionSettings };
     for (const roleKey of PERMISSION_ROLE_KEYS) {
@@ -1030,6 +1083,12 @@ export default function Dashboard() {
       ...nextReactionRoleSetup,
       channelId: nextFeaturePostChannels["reaction-roles"] || nextReactionRoleSetup.channelId || "",
       items: nextReactionRoleSetup.items.filter((entry) => validRoleIds.has(entry.roleId)),
+    });
+    const loadedGiveawaySettings = getGiveawaySettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
+    setGiveawaySettings({
+      ...loadedGiveawaySettings,
+      allowedRoleIds: loadedGiveawaySettings.allowedRoleIds.filter((roleId) => validRoleIds.has(roleId)),
+      ignoredRoleIds: loadedGiveawaySettings.ignoredRoleIds.filter((roleId) => validRoleIds.has(roleId)),
     });
     reactionRoleDraftReadyRef.current = true;
     const nextSecuritySettings = getSecuritySettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
@@ -1191,6 +1250,10 @@ export default function Dashboard() {
   }, [selectedGuild, reactionRoleSetup]);
 
   useEffect(() => {
+    savingRef.current = saving;
+  }, [saving]);
+
+  useEffect(() => {
     if (!selectedGuild) return;
 
     const eventSource = new EventSource(`/api/guilds/${selectedGuild}/stream`);
@@ -1201,6 +1264,13 @@ export default function Dashboard() {
         if (!payload || payload.guildId !== selectedGuild) return;
 
         if (payload.type === "config-updated") {
+          const hasPendingLocalChanges = savingRef.current
+            || !!autoSaveTimerRef.current
+            || (autoSaveArmedRef.current && latestAutoSaveSignatureRef.current !== lastAutoSaveSignatureRef.current);
+          if (hasPendingLocalChanges) {
+            return;
+          }
+
           fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/config`, undefined, 15000)
             .then((data) => applyGuildConfigData(data, true))
             .catch(() => undefined);
@@ -2057,6 +2127,7 @@ export default function Dashboard() {
       if (featureKey === "inactivity") return String(config.inactivityChannelId || "");
       if (featureKey === "payouts") return String(config.requestChannelId || "");
       if (featureKey === "reaction-roles") return String(reactionRoleSetup.channelId || "");
+      if (featureKey === "giveaways") return String(giveawaySettings.channelId || "");
       return "";
     })().trim();
 
@@ -2079,6 +2150,12 @@ export default function Dashboard() {
           reactionRoleSetup: featureKey === "reaction-roles"
             ? {
                 ...reactionRoleSetup,
+                channelId: selectedChannelId,
+              }
+            : undefined,
+          giveawaySettings: featureKey === "giveaways"
+            ? {
+                ...giveawaySettings,
                 channelId: selectedChannelId,
               }
             : undefined,
@@ -2499,6 +2576,8 @@ export default function Dashboard() {
     sticky: true,
     "auto-roles": true,
     "reaction-roles": true,
+    poll: true,
+    giveaways: true,
   });
 
   const parseJsonObjectSafely = (raw: string | null | undefined) => {
@@ -2537,7 +2616,6 @@ export default function Dashboard() {
         moderationPrefix: "",
         modmailPrefix: "",
         botNickname: "",
-        serverProfileName: "",
         serverProfileDescription: "",
       };
     }
@@ -2547,7 +2625,6 @@ export default function Dashboard() {
       moderationPrefix: typeof quickSettingsObject.moderationPrefix === "string" ? quickSettingsObject.moderationPrefix : "",
       modmailPrefix: typeof quickSettingsObject.modmailPrefix === "string" ? quickSettingsObject.modmailPrefix : "",
       botNickname: typeof quickSettingsObject.botNickname === "string" ? quickSettingsObject.botNickname : "",
-      serverProfileName: typeof quickSettingsObject.serverProfileName === "string" ? quickSettingsObject.serverProfileName : "",
       serverProfileDescription: typeof quickSettingsObject.serverProfileDescription === "string" ? quickSettingsObject.serverProfileDescription : "",
     };
   };
@@ -2560,7 +2637,7 @@ export default function Dashboard() {
     }
 
     const next: DashboardFeaturePostChannels = {};
-    for (const key of ["modmail", "appeals", "staff-intro", "inactivity", "payouts", "reaction-roles"] as FeaturePostChannelKey[]) {
+    for (const key of ["modmail", "appeals", "staff-intro", "inactivity", "payouts", "reaction-roles", "giveaways"] as FeaturePostChannelKey[]) {
       const channelId = (value as Record<string, unknown>)[key];
       if (typeof channelId === "string" && channelId.trim()) {
         next[key] = channelId.trim();
@@ -2639,6 +2716,46 @@ export default function Dashboard() {
       thumbnailUrl: typeof setup.thumbnailUrl === "string" ? setup.thumbnailUrl : defaultSetup.thumbnailUrl,
       imageUrl: typeof setup.imageUrl === "string" ? setup.imageUrl : defaultSetup.imageUrl,
       items,
+    };
+  };
+
+  const getGiveawaySettingsFromCustomCategoryPings = (raw: string | null | undefined): DashboardGiveawaySettings => {
+    const parsed = parseJsonObjectSafely(raw);
+    const value = parsed[GIVEAWAYS_SETTINGS_KEY];
+    const defaults = createDefaultGiveawaySettings();
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return defaults;
+    }
+
+    const settings = value as Record<string, unknown>;
+    const winnerCount = Number(settings.winnerCount || defaults.winnerCount);
+    const mentionTarget = typeof settings.mentionTarget === "string" ? settings.mentionTarget.toLowerCase() : defaults.mentionTarget;
+    const rawEntryMode = typeof settings.entryMode === "string" ? settings.entryMode.toLowerCase() : "";
+    const legacyUseButtons = settings.useButtons !== false;
+    const entryMode: "button" | "reaction" = rawEntryMode === "reaction"
+      ? "reaction"
+      : rawEntryMode === "button"
+        ? "button"
+        : (legacyUseButtons ? "button" : "reaction");
+
+    return {
+      channelId: typeof settings.channelId === "string" ? settings.channelId.trim() : defaults.channelId,
+      winnerCount: Number.isFinite(winnerCount) ? Math.max(1, Math.min(10, Math.round(winnerCount))) : defaults.winnerCount,
+      mentionTarget: mentionTarget === "everyone" || mentionTarget === "here" ? mentionTarget : "none",
+      dmWinners: settings.dmWinners !== false,
+      winnerDmMessage: typeof settings.winnerDmMessage === "string" && settings.winnerDmMessage.trim()
+        ? settings.winnerDmMessage
+        : defaults.winnerDmMessage,
+      inviteLink: typeof settings.inviteLink === "string" ? settings.inviteLink.trim() : defaults.inviteLink,
+      entryMode,
+      reactionEmoji: typeof settings.reactionEmoji === "string" && settings.reactionEmoji.trim()
+        ? settings.reactionEmoji.trim().slice(0, 100)
+        : defaults.reactionEmoji,
+      allowDailyEntries: settings.allowDailyEntries === true,
+      allowReferralEntries: settings.allowReferralEntries === true,
+      hideFromNonMembers: settings.hideFromNonMembers === true,
+      allowedRoleIds: normalizeStringArray(settings.allowedRoleIds),
+      ignoredRoleIds: normalizeStringArray(settings.ignoredRoleIds),
     };
   };
 
@@ -2929,6 +3046,25 @@ export default function Dashboard() {
       }
       return { ...prev, [key]: [...current, roleId] };
     });
+  };
+
+  const toggleGiveawayRoleList = (key: "allowedRoleIds" | "ignoredRoleIds", roleId: string) => {
+    setGiveawaySettings((prev) => {
+      const current = prev[key] || [];
+      return {
+        ...prev,
+        [key]: current.includes(roleId)
+          ? current.filter((entry) => entry !== roleId)
+          : [...current, roleId],
+      };
+    });
+  };
+
+  const updateGiveawayChannel = (channelId: string | null) => {
+    setGiveawaySettings((prev) => ({
+      ...prev,
+      channelId: channelId || "",
+    }));
   };
 
   const toggleRole = (key: keyof GuildConfig, roleId: string) => {
@@ -3295,7 +3431,7 @@ export default function Dashboard() {
     }
   };
 
-  const parseJsonField = (raw: string, fieldName: string) => {
+  const parseJsonField = (raw: string, fieldName: string, silent = false) => {
     const trimmed = raw.trim();
     if (!trimmed) return null;
 
@@ -3303,25 +3439,119 @@ export default function Dashboard() {
       JSON.parse(trimmed);
       return trimmed;
     } catch {
-      toast({
-        title: "Invalid JSON",
-        description: `${fieldName} must be valid JSON before saving.`,
-        variant: "destructive",
-      });
+      if (!silent) {
+        toast({
+          title: "Invalid JSON",
+          description: `${fieldName} must be valid JSON before saving.`,
+          variant: "destructive",
+        });
+      }
       return undefined;
     }
   };
 
-  const saveConfig = async () => {
-    if (!selectedGuild) return;
+  const readFileAsDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error("Failed to read image file."));
+    };
+    reader.onerror = () => reject(new Error("Failed to read image file."));
+    reader.readAsDataURL(file);
+  });
+
+  const getDataUrlBytes = (dataUrl: string): number => {
+    const base64 = dataUrl.split(",")[1] || "";
+    return Math.floor((base64.length * 3) / 4);
+  };
+
+  const loadImageElement = (src: string): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Failed to decode image."));
+    image.src = src;
+  });
+
+  const optimizeAvatarDataUrl = async (file: File): Promise<string> => {
+    const rawDataUrl = await readFileAsDataUrl(file);
+    if (getDataUrlBytes(rawDataUrl) <= SERVER_PROFILE_AVATAR_TARGET_BYTES) {
+      return rawDataUrl;
+    }
+
+    const normalizedType = (file.type || "").toLowerCase();
+    if (normalizedType === "image/gif") {
+      throw new Error("GIF is too large. Use a smaller GIF or PNG/JPG/WEBP image.");
+    }
+
+    const image = await loadImageElement(rawDataUrl);
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return rawDataUrl;
+    }
+
+    let scale = 1;
+    let quality = 0.9;
+    let bestCandidate = rawDataUrl;
+    let bestSize = getDataUrlBytes(rawDataUrl);
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const width = Math.max(1, Math.floor(image.width * scale));
+      const height = Math.max(1, Math.floor(image.height * scale));
+      canvas.width = width;
+      canvas.height = height;
+
+      context.clearRect(0, 0, width, height);
+      context.drawImage(image, 0, 0, width, height);
+
+      const candidate = canvas.toDataURL("image/webp", Math.max(0.35, quality));
+      const candidateSize = getDataUrlBytes(candidate);
+      if (candidateSize < bestSize) {
+        bestCandidate = candidate;
+        bestSize = candidateSize;
+      }
+      if (candidateSize <= SERVER_PROFILE_AVATAR_TARGET_BYTES) {
+        return candidate;
+      }
+
+      if (quality > 0.45) {
+        quality -= 0.1;
+      } else {
+        scale *= 0.82;
+      }
+    }
+
+    if (bestSize > SERVER_PROFILE_AVATAR_TARGET_BYTES * 1.5) {
+      throw new Error("Image is still too large after optimization. Please use a smaller image.");
+    }
+
+    return bestCandidate;
+  };
+
+  const getProfileAvatarFileKey = (file: File | null): string => {
+    if (!file) return "";
+    return `${file.name}:${file.size}:${file.lastModified}`;
+  };
+
+  const saveConfig = async (options?: { silent?: boolean; originSignature?: string }) => {
+    if (!selectedGuild) return false;
+
+    const guildId = selectedGuild;
+    const currentAvatarFile = serverProfileAvatarFile;
+    const currentAvatarFileKey = getProfileAvatarFileKey(currentAvatarFile);
+    const bioInput = quickSettings.serverProfileDescription.trim().slice(0, 190);
+    const previouslySyncedBio = lastProfileBioByGuildRef.current[guildId] || "";
+    const requestedBioSync = bioInput !== previouslySyncedBio;
 
     const categoryPingsObject = parseJsonObjectSafely(customCategoryPingsText || config.customCategoryPings || "{}");
     categoryPingsObject[QUICK_SETTINGS_KEY] = {
       moderationPrefix: quickSettings.moderationPrefix.trim(),
       modmailPrefix: quickSettings.modmailPrefix.trim(),
       botNickname: quickSettings.botNickname.trim(),
-      serverProfileName: quickSettings.serverProfileName.trim().slice(0, 80),
-      serverProfileDescription: quickSettings.serverProfileDescription.trim().slice(0, 300),
+      serverProfileDescription: quickSettings.serverProfileDescription.trim().slice(0, 190),
     };
     categoryPingsObject[FEATURE_POST_CHANNELS_KEY] = featurePostChannels;
 
@@ -3390,11 +3620,27 @@ export default function Dashboard() {
         }))
         .filter((entry) => entry.roleId && (reactionRoleSetup.pickerStyle !== "reactions" || !!entry.emoji)),
     };
+    categoryPingsObject[GIVEAWAYS_SETTINGS_KEY] = {
+      channelId: giveawaySettings.channelId.trim(),
+      winnerCount: Math.max(1, Math.min(10, Math.round(Number(giveawaySettings.winnerCount) || 1))),
+      mentionTarget: giveawaySettings.mentionTarget,
+      dmWinners: giveawaySettings.dmWinners,
+      winnerDmMessage: giveawaySettings.winnerDmMessage.trim().slice(0, 500),
+      inviteLink: giveawaySettings.inviteLink.trim().slice(0, 400),
+      entryMode: giveawaySettings.entryMode,
+      reactionEmoji: giveawaySettings.reactionEmoji.trim().slice(0, 100) || "✋",
+      useButtons: giveawaySettings.entryMode === "button",
+      allowDailyEntries: giveawaySettings.allowDailyEntries,
+      allowReferralEntries: giveawaySettings.allowReferralEntries,
+      hideFromNonMembers: giveawaySettings.hideFromNonMembers,
+      allowedRoleIds: filterToCurrentServerRoleIds(giveawaySettings.allowedRoleIds),
+      ignoredRoleIds: filterToCurrentServerRoleIds(giveawaySettings.ignoredRoleIds),
+    };
 
     const parsedCategoryPings = JSON.stringify(categoryPingsObject, null, 2);
 
-    const parsedCustomCategories = parseJsonField(customModmailCategoriesText, "Custom Modmail Categories");
-    if (parsedCustomCategories === undefined) return;
+    const parsedCustomCategories = parseJsonField(customModmailCategoriesText, "Custom Modmail Categories", options?.silent === true);
+    if (parsedCustomCategories === undefined) return false;
 
     const payload: GuildConfig = {
       ...config,
@@ -3405,7 +3651,7 @@ export default function Dashboard() {
 
     setSaving(true);
     try {
-      const res = await fetch(`/api/guilds/${selectedGuild}/config`, {
+      const res = await fetch(`/api/guilds/${guildId}/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -3426,26 +3672,100 @@ export default function Dashboard() {
         if (res.status === 401 || res.status === 403) {
           toast({ title: "Access denied", description: data.error || "Manager role required for dashboard access.", variant: "destructive" });
           setSelectedGuild(null);
-          return;
+          return false;
         }
         toast({ title: "Save failed", description: data.error || `Could not save config (HTTP ${res.status}).`, variant: "destructive" });
+        return false;
       } else {
-        setConfig((data.config || payload) as GuildConfig);
-        clearReactionRoleDraft(selectedGuild);
-        toast({ title: "Saved", description: "Dashboard configuration updated." });
+        const shouldApplyServerConfig = !options?.originSignature || latestAutoSaveSignatureRef.current === options.originSignature;
+        if (shouldApplyServerConfig) {
+          setConfig((data.config || payload) as GuildConfig);
+        }
+        clearReactionRoleDraft(guildId);
+
+        const shouldSyncProfile = !!currentAvatarFile || requestedBioSync;
+
+        if (shouldSyncProfile) {
+          let avatarDataUrl: string | undefined;
+          if (currentAvatarFile && currentAvatarFileKey !== failedProfileAvatarKeyRef.current) {
+            try {
+              avatarDataUrl = await optimizeAvatarDataUrl(currentAvatarFile);
+            } catch (error) {
+              failedProfileAvatarKeyRef.current = currentAvatarFileKey;
+              setServerProfileAvatarFile(null);
+              const message = error instanceof Error ? error.message : "Image processing failed.";
+              toast({ title: "Profile update failed", description: message, variant: "destructive" });
+              return false;
+            }
+          }
+
+          const profileRes = await fetch(`/api/guilds/${guildId}/server-profile`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              avatarDataUrl,
+              bio: bioInput,
+            }),
+          });
+
+          const profileContentType = (profileRes.headers.get("content-type") || "").toLowerCase();
+          const profileData = profileContentType.includes("application/json")
+            ? await profileRes.json().catch(() => ({}))
+            : { error: "Failed to update server profile." };
+
+          if (!profileRes.ok) {
+            if (avatarDataUrl && currentAvatarFileKey) {
+              failedProfileAvatarKeyRef.current = currentAvatarFileKey;
+              setServerProfileAvatarFile(null);
+            }
+            toast({
+              title: "Profile update failed",
+              description: profileData.error || `Could not upload profile image (HTTP ${profileRes.status}).`,
+              variant: "destructive",
+            });
+            return false;
+          } else {
+            if (avatarDataUrl && profileData?.avatarApplied === false) {
+              if (currentAvatarFileKey) {
+                failedProfileAvatarKeyRef.current = currentAvatarFileKey;
+              }
+              toast({
+                title: "Profile image not applied",
+                description: profileData?.avatarWarning || "Discord did not accept this profile image.",
+                variant: "destructive",
+              });
+            }
+            if (requestedBioSync) {
+              if (profileData?.bioApplied === false) {
+                toast({
+                  title: "Profile bio not applied",
+                  description: profileData?.bioWarning || "Discord did not accept this bio update.",
+                  variant: "destructive",
+                });
+              } else {
+                lastProfileBioByGuildRef.current[guildId] = bioInput;
+              }
+            }
+            if (currentAvatarFile) {
+              setServerProfileAvatarFile(null);
+            }
+          }
+        }
+        return true;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Network error while saving.";
       toast({ title: "Save failed", description: message, variant: "destructive" });
+      return false;
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const categoryChannels = channels.filter((c) => c.type === CATEGORY_CHANNEL_TYPE);
   const textChannels = channels.filter((c) => TEXT_CHANNEL_TYPES.has(c.type));
   const voiceChannels = channels.filter((c) => c.type === 2 || c.type === 13);
   const selectedGuildSummary = guilds.find((guild) => guild.id === selectedGuild) || null;
-  const serverProfileName = quickSettings.serverProfileName.trim() || selectedGuildSummary?.name || "Selected Server";
   const serverProfileDescription = quickSettings.serverProfileDescription.trim();
   const visibleOwnerGuilds = ownerGuilds;
   const hasGeneralDashboardAccess = viewerIsAdmin || isOwnerUser || filterToCurrentServerRoleIds(config.modRoleIds || []).some((roleId) => viewerRoleIds.includes(roleId));
@@ -3464,6 +3784,103 @@ export default function Dashboard() {
   const roleSyncTargetRoles = roleSyncTargetGuildId === selectedGuild
     ? roles
     : (roleSyncGuildRoles[roleSyncTargetGuildId] || []);
+
+  const autosaveConfigSignature = useMemo(() => {
+    const nextConfig: GuildConfig = { ...config };
+    const parsedCategoryPings = parseJsonObjectSafely(nextConfig.customCategoryPings || "{}");
+    const botPresenceRaw = parsedCategoryPings.__dashboardBotPresence;
+
+    if (botPresenceRaw && typeof botPresenceRaw === "object" && !Array.isArray(botPresenceRaw)) {
+      const { updatedAt: _ignoredUpdatedAt, ...restBotPresence } = botPresenceRaw as Record<string, unknown>;
+      parsedCategoryPings.__dashboardBotPresence = restBotPresence;
+      nextConfig.customCategoryPings = JSON.stringify(parsedCategoryPings);
+    }
+
+    return nextConfig;
+  }, [config]);
+
+  const autoSaveSignature = useMemo(() => JSON.stringify({
+    selectedGuild,
+    config: autosaveConfigSignature,
+    customCategoryPingsText,
+    customModmailCategoriesText,
+    quickSettings,
+    permissionSettings,
+    welcomeEmbedSettings,
+    botPresenceSettings,
+    featurePostChannels,
+    autoRoles,
+    reactionRoleSetup,
+    giveawaySettings,
+    serverProfileAvatarName: serverProfileAvatarFile?.name || "",
+    serverProfileAvatarSize: serverProfileAvatarFile?.size || 0,
+    serverProfileAvatarLastModified: serverProfileAvatarFile?.lastModified || 0,
+  }), [
+    selectedGuild,
+    autosaveConfigSignature,
+    customCategoryPingsText,
+    customModmailCategoriesText,
+    quickSettings,
+    permissionSettings,
+    welcomeEmbedSettings,
+    botPresenceSettings,
+    featurePostChannels,
+    autoRoles,
+    reactionRoleSetup,
+    giveawaySettings,
+    serverProfileAvatarFile,
+  ]);
+
+  useEffect(() => {
+    latestAutoSaveSignatureRef.current = autoSaveSignature;
+  }, [autoSaveSignature]);
+
+  useEffect(() => {
+    autoSaveArmedRef.current = false;
+    lastAutoSaveSignatureRef.current = "";
+    if (!selectedGuild) return;
+    lastProfileBioByGuildRef.current[selectedGuild] = quickSettings.serverProfileDescription.trim().slice(0, 190);
+  }, [selectedGuild]);
+
+  useEffect(() => {
+    if (!selectedGuild || loading) return;
+
+    if (suppressNextAutoSaveRef.current) {
+      suppressNextAutoSaveRef.current = false;
+      lastAutoSaveSignatureRef.current = autoSaveSignature;
+      return;
+    }
+
+    if (!autoSaveArmedRef.current) {
+      autoSaveArmedRef.current = true;
+      lastAutoSaveSignatureRef.current = autoSaveSignature;
+      return;
+    }
+
+    if (saving) return;
+    if (autoSaveSignature === lastAutoSaveSignatureRef.current) return;
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+
+    const signatureForSave = autoSaveSignature;
+    autoSaveTimerRef.current = setTimeout(async () => {
+      autoSaveTimerRef.current = null;
+      const didSave = await saveConfig({ silent: true, originSignature: signatureForSave });
+      if (didSave && latestAutoSaveSignatureRef.current === signatureForSave) {
+        lastAutoSaveSignatureRef.current = signatureForSave;
+      }
+    }, 200);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [autoSaveSignature, selectedGuild, loading, saving]);
 
   const resolveRoleSyncRoleDisplay = (guildId: string, roleId: string, fallbackName: string) => {
     const guildRoles = guildId === selectedGuild ? roles : (roleSyncGuildRoles[guildId] || []);
@@ -3545,6 +3962,7 @@ export default function Dashboard() {
       || (featureKey === "staff-intro" ? config.staffIntroChannelId : null)
       || (featureKey === "inactivity" ? config.inactivityChannelId : null)
       || (featureKey === "payouts" ? config.requestChannelId : null)
+      || (featureKey === "giveaways" ? giveawaySettings.channelId : null)
       || ""
     ) as string;
     const searchKey = `feature-post-${featureKey}`;
@@ -3753,6 +4171,22 @@ export default function Dashboard() {
       area: "messaging",
       includes: ["Emoji role mapping", "Both ways / add only / remove only", "Post configured embed"],
       tab: "embeds",
+    },
+    {
+      id: "poll",
+      name: "Poll",
+      description: "Create and manage server polls with multiple choices.",
+      area: "messaging",
+      includes: ["Up to 10 choices", "Poll settings", "Result tracking"],
+      tab: "channels",
+    },
+    {
+      id: "giveaways",
+      name: "Giveaways",
+      description: "Run timed giveaways with winner selection and entry rules.",
+      area: "operations",
+      includes: ["Start/end scheduling", "Winner count", "Role restrictions"],
+      tab: "channels",
     },
   ];
 
@@ -4802,6 +5236,224 @@ export default function Dashboard() {
             </div>
           )}
 
+          {moduleId === "poll" && (
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Use the poll command to start polls and manage choices:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">*poll</Badge>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Poll Module</h3>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Configure poll role access and where poll command activity is logged.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderChannelSelect("Poll Activity Log Channel", "commandLogChannelId", textChannels, "select-module-poll-log")}
+              </div>
+              <div className="space-y-5">
+                {renderRoleSection("Poll Command Roles", "messageCommandRoleIds", "module-settings-poll-role")}
+              </div>
+            </div>
+          )}
+
+          {moduleId === "giveaways" && (
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Setup Commands</h3>
+                <p className="mt-2 text-xs text-muted-foreground">Use your giveaway command flow to create and manage timed giveaways:</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Badge variant="outline">/giveaway</Badge>
+                  <Badge variant="outline">/gstart</Badge>
+                  <Badge variant="outline">/greroll</Badge>
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
+                <h3 className="text-sm font-semibold uppercase tracking-[0.15em] text-muted-foreground">Giveaways Module</h3>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Configure default giveaway behavior used by your staff workflow, including entry targeting, winner DM text, and role-based access.
+                </p>
+              </div>
+
+              {renderFeaturePostSection(
+                "giveaways",
+                "Giveaway Post",
+                "Choose where to post a giveaway announcement using these settings.",
+                "Post Giveaway",
+              )}
+
+              <div className="grid gap-4 md:grid-cols-2">
+                {renderCustomChannelSection(
+                  "Default Giveaway Channel",
+                  textChannels,
+                  giveawaySettings.channelId || null,
+                  updateGiveawayChannel,
+                  "module-settings-giveaway-channel",
+                )}
+                <div className="space-y-2">
+                  <Label>Default Winner Count</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={String(giveawaySettings.winnerCount)}
+                    onChange={(event) => {
+                      const parsed = Number.parseInt(event.target.value, 10);
+                      setGiveawaySettings((prev) => ({
+                        ...prev,
+                        winnerCount: Number.isFinite(parsed) ? Math.max(1, Math.min(10, parsed)) : 1,
+                      }));
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">Used as the default number of winners when staff starts a giveaway.</p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Announcement Mention</Label>
+                  <Select
+                    value={giveawaySettings.mentionTarget}
+                    onValueChange={(value) =>
+                      setGiveawaySettings((prev) => ({
+                        ...prev,
+                        mentionTarget: value as GiveawayMentionTarget,
+                      }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No Ping</SelectItem>
+                      <SelectItem value="everyone">@everyone</SelectItem>
+                      <SelectItem value="here">@here</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Invite Link (Optional)</Label>
+                  <Input
+                    value={giveawaySettings.inviteLink}
+                    onChange={(event) => setGiveawaySettings((prev) => ({ ...prev, inviteLink: event.target.value }))}
+                    placeholder="https://discord.gg/..."
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Winner DM Message</Label>
+                <Textarea
+                  value={giveawaySettings.winnerDmMessage}
+                  onChange={(event) => setGiveawaySettings((prev) => ({ ...prev, winnerDmMessage: event.target.value.slice(0, 500) }))}
+                  placeholder="Congratulations! Contact a server admin to claim your prize!"
+                />
+                <p className="text-xs text-muted-foreground">Sent to winners when the giveaway ends if winner DMs are enabled.</p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium">DM Winners</p>
+                    <p className="text-xs text-muted-foreground">Send an automated DM when winners are selected.</p>
+                  </div>
+                  <Switch
+                    checked={giveawaySettings.dmWinners}
+                    onCheckedChange={(checked) => setGiveawaySettings((prev) => ({ ...prev, dmWinners: checked }))}
+                  />
+                </div>
+
+                <div className="space-y-2 rounded-md border border-border/60 bg-background/40 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium">Giveaway Entry Mode</p>
+                    <p className="text-xs text-muted-foreground">Choose whether entries come from a button or from a reaction emoji.</p>
+                  </div>
+                  <Select
+                    value={giveawaySettings.entryMode}
+                    onValueChange={(value) =>
+                      setGiveawaySettings((prev) => ({
+                        ...prev,
+                        entryMode: value === "reaction" ? "reaction" : "button",
+                      }))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="button">Button Entry</SelectItem>
+                      <SelectItem value="reaction">Reaction Entry</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2 rounded-md border border-border/60 bg-background/40 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium">Reaction Emoji</p>
+                    <p className="text-xs text-muted-foreground">Pick the emoji users react with to enter (used when Entry Mode is set to reaction).</p>
+                  </div>
+                  <Input
+                    value={giveawaySettings.reactionEmoji}
+                    onChange={(event) => setGiveawaySettings((prev) => ({ ...prev, reactionEmoji: event.target.value.slice(0, 100) }))}
+                    placeholder="✋"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium">Allow Daily Entries</p>
+                    <p className="text-xs text-muted-foreground">Enable extra entry tracking for daily participation giveaways.</p>
+                  </div>
+                  <Switch
+                    checked={giveawaySettings.allowDailyEntries}
+                    onCheckedChange={(checked) => setGiveawaySettings((prev) => ({ ...prev, allowDailyEntries: checked }))}
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium">Allow Referral Entries</p>
+                    <p className="text-xs text-muted-foreground">Enable extra entry tracking for referral-based giveaways.</p>
+                  </div>
+                  <Switch
+                    checked={giveawaySettings.allowReferralEntries}
+                    onCheckedChange={(checked) => setGiveawaySettings((prev) => ({ ...prev, allowReferralEntries: checked }))}
+                  />
+                </div>
+                <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2 md:col-span-2">
+                  <div>
+                    <p className="text-sm font-medium">Hide Giveaways From Non-Members</p>
+                    <p className="text-xs text-muted-foreground">Use this as a private-mode default for member-only giveaway campaigns.</p>
+                  </div>
+                  <Switch
+                    checked={giveawaySettings.hideFromNonMembers}
+                    onCheckedChange={(checked) => setGiveawaySettings((prev) => ({ ...prev, hideFromNonMembers: checked }))}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-5">
+                {renderRoleSection("Giveaway Manager Roles", "modRoleIds", "module-settings-giveaway-role")}
+                {renderCustomRoleSection(
+                  "Giveaway Allowed Roles (Optional)",
+                  roles,
+                  giveawaySettings.allowedRoleIds,
+                  (roleId) => toggleGiveawayRoleList("allowedRoleIds", roleId),
+                  "module-settings-giveaway-allowed-roles",
+                )}
+                {renderCustomRoleSection(
+                  "Giveaway Ignored Roles (Optional)",
+                  roles,
+                  giveawaySettings.ignoredRoleIds,
+                  (roleId) => toggleGiveawayRoleList("ignoredRoleIds", roleId),
+                  "module-settings-giveaway-ignored-roles",
+                )}
+              </div>
+            </div>
+          )}
+
           {moduleId === "sticky" && (
             <div className="space-y-6">
               <div className="rounded-lg border border-border/70 bg-muted/20 p-4">
@@ -5828,10 +6480,9 @@ export default function Dashboard() {
               />
             </div>
             <div className="hidden sm:block">{renderBackgroundPresetControls("selected")}</div>
-            <Button onClick={saveConfig} disabled={saving} data-testid="button-save">
-              <Save className="mr-2 h-4 w-4" />
-              {saving ? "Saving..." : "Save Changes"}
-            </Button>
+            <div className="rounded-md border border-border px-3 py-1 text-xs text-muted-foreground" data-testid="autosave-status">
+              Auto-save enabled
+            </div>
           </div>
         </div>
 
@@ -5914,10 +6565,7 @@ export default function Dashboard() {
               <Card className="border-border/80 bg-card/90" data-testid="card-server-info">
                 <CardHeader>
                   <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Server Info</CardTitle>
-                  <CardDescription>
-                    {serverProfileName}
-                    {serverProfileDescription ? ` - ${serverProfileDescription}` : ""}
-                  </CardDescription>
+                  <CardDescription>{serverProfileDescription || selectedGuildSummary?.name || ""}</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -6003,28 +6651,48 @@ export default function Dashboard() {
                     />
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <div className="space-y-2">
-                      <Label>Server Profile Name</Label>
-                      <Input
-                        value={quickSettings.serverProfileName}
-                        onChange={(event) => setQuickSettings((prev) => ({ ...prev, serverProfileName: event.target.value }))}
-                        placeholder="Operations Hub"
-                        maxLength={80}
-                        data-testid="input-server-profile-name"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Server Profile Description</Label>
-                      <Textarea
-                        value={quickSettings.serverProfileDescription}
-                        onChange={(event) => setQuickSettings((prev) => ({ ...prev, serverProfileDescription: event.target.value }))}
-                        placeholder="What this server is about"
-                        maxLength={300}
-                        rows={3}
-                        data-testid="input-server-profile-description"
-                      />
-                    </div>
+                  <div className="max-w-xl space-y-2">
+                    <Label>Bot Server Bio</Label>
+                    <Textarea
+                      value={quickSettings.serverProfileDescription}
+                      onChange={(event) => setQuickSettings((prev) => ({ ...prev, serverProfileDescription: event.target.value }))}
+                      placeholder="Set the bot server bio"
+                      maxLength={190}
+                      rows={3}
+                      data-testid="input-server-profile-description"
+                    />
+                  </div>
+
+                  <div className="space-y-2 max-w-xl">
+                    <Label>Server Profile Picture (Upload)</Label>
+                    <Input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      onChange={(event) => {
+                        const nextFile = event.target.files && event.target.files[0] ? event.target.files[0] : null;
+                        failedProfileAvatarKeyRef.current = null;
+                        if (nextFile && nextFile.size > SERVER_PROFILE_AVATAR_MAX_UPLOAD_BYTES) {
+                          setServerProfileAvatarFile(null);
+                          event.target.value = "";
+                          toast({
+                            title: "Image too large",
+                            description: "Please upload an image that is 7 MB or smaller.",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
+                        setServerProfileAvatarFile(nextFile);
+                      }}
+                      data-testid="input-server-profile-avatar"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Upload a PNG, JPG, WEBP, or GIF file (max 7 MB). Changes apply automatically.
+                    </p>
+                    {serverProfileAvatarFile ? (
+                      <p className="text-xs text-muted-foreground">
+                        Selected: {serverProfileAvatarFile.name}
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-3">
@@ -6102,9 +6770,6 @@ export default function Dashboard() {
                       {postingLatestUpdate ? "Posting..." : "Post Latest Update"}
                     </Button>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    This replaces the duplicate permissions card here and lets you test the updates feed directly.
-                  </p>
                 </CardContent>
               </Card>
             </TabsContent>
@@ -8032,7 +8697,7 @@ export default function Dashboard() {
               <DialogFooter>
                 <Button variant="outline" onClick={() => setRosterModalOpen(false)}>Cancel</Button>
                 <Button onClick={saveRosterModal} disabled={rosterSaving}>
-                  {rosterSaving ? "Saving…" : rosterModalMode === "create" ? "Create" : "Save Changes"}
+                  {rosterModalMode === "create" ? "Create" : "Update"}
                 </Button>
               </DialogFooter>
             </DialogContent>

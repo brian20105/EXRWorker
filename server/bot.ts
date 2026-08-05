@@ -239,6 +239,8 @@ function getDashboardDefaultFeatureEnabledMap(_config?: any): Record<string, boo
     sticky: true,
     "auto-roles": true,
     "reaction-roles": true,
+    poll: true,
+    giveaways: true,
   };
 }
 
@@ -6273,7 +6275,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("permissions")
     .setDescription("Set permission roles for various features")
-    .setDefaultMemberPermissions(0)
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption((option) =>
       option.setName("type").setDescription("Permission type").setRequired(true).setAutocomplete(true)
     )
@@ -6374,15 +6376,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("announce")
     .setDescription("Send a test message to the configured Updates Channel")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addStringOption((option) =>
-      option
-        .setName("message")
-        .setDescription("The message to send")
-        .setRequired(true)
-        .setMinLength(1)
-        .setMaxLength(2000)
-    ),
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
     .setName("setup_moderation_command_logs")
     .setDescription("Set the channel for prefix moderation command logs")
@@ -12080,10 +12074,8 @@ client.on("interactionCreate", async (interaction) => {
           content: `✅ Command logs will be sent to <#${channel.id}>!`,
         });
       } else if (commandName === "announce") {
-        if (!await safeDeferReply(interaction)) return;
-
         if (!interaction.guildId) {
-          await interaction.editReply({ content: "❌ This command must be used in a server." });
+          await interaction.reply({ content: "❌ This command must be used in a server.", ephemeral: true });
           return;
         }
 
@@ -12096,24 +12088,29 @@ client.on("interactionCreate", async (interaction) => {
           (permBits & PermissionFlagsBits.ManageGuild) === PermissionFlagsBits.ManageGuild;
 
         if (!hasPermission) {
-          await interaction.editReply({ content: "❌ You need Manage Server permission to use this command." });
+          await interaction.reply({ content: "❌ You need Manage Server permission to use this command.", ephemeral: true });
           return;
         }
 
-        const message = interaction.options.getString("message", true).trim();
+        const modal = new ModalBuilder()
+          .setCustomId(`announce_modal_${interaction.guildId}`)
+          .setTitle("Send Announcement");
 
-        if (!interaction.channel || !("send" in interaction.channel)) {
-          await interaction.editReply({ content: "❌ I couldn't send a message in this channel." });
-          return;
-        }
+        const messageInput = new TextInputBuilder()
+          .setCustomId("announce_message")
+          .setLabel("Announcement Message")
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true)
+          .setMinLength(1)
+          .setMaxLength(2000)
+          .setPlaceholder("Type your announcement here. Line breaks are supported.");
 
-        try {
-          await interaction.channel.send({ content: message });
-          await interaction.editReply({ content: "✅ Announcement sent." });
-        } catch (error: any) {
-          console.log("Error in announce:", error?.message || error);
-          await interaction.editReply({ content: "❌ Failed to send the announcement." }).catch(() => {});
-        }
+        modal.addComponents(
+          new ActionRowBuilder<TextInputBuilder>().addComponents(messageInput),
+        );
+
+        await interaction.showModal(modal);
+        return;
       } else if (commandName === "setup_moderation_command_logs") {
         if (!await safeDeferReply(interaction)) return;
 
@@ -19095,6 +19092,54 @@ client.on("interactionCreate", async (interaction) => {
           console.log("Error in send_embed_modal:", error?.message || error);
           await interaction.editReply({ content: "❌ Failed to send embed. Check your URLs and try again." }).catch(() => {});
         }
+      } else if (interaction.customId.startsWith("announce_modal_")) {
+        try {
+          if (!await safeDeferReply(interaction, true)) return;
+        } catch (error: any) {
+          if (error.code === 10062 || error.code === 40060) {
+            console.log("Announce modal interaction expired:", interaction.id);
+            return;
+          }
+          throw error;
+        }
+
+        try {
+          if (!interaction.guildId) {
+            await interaction.editReply({ content: "❌ This command must be used in a server." });
+            return;
+          }
+
+          const memberPermissions = (interaction.member as any)?.permissions?.bitfield;
+          const permBits = typeof memberPermissions === "string"
+            ? BigInt(memberPermissions)
+            : BigInt(memberPermissions ?? 0);
+          const hasPermission =
+            (permBits & PermissionFlagsBits.Administrator) === PermissionFlagsBits.Administrator ||
+            (permBits & PermissionFlagsBits.ManageGuild) === PermissionFlagsBits.ManageGuild;
+
+          if (!hasPermission) {
+            await interaction.editReply({ content: "❌ You need Manage Server permission to use this command." });
+            return;
+          }
+
+          const message = interaction.fields.getTextInputValue("announce_message").trim();
+          if (!message) {
+            await interaction.editReply({ content: "❌ Announcement message cannot be empty." });
+            return;
+          }
+
+          const targetChannel = interaction.channel;
+          if (!targetChannel || !("send" in targetChannel)) {
+            await interaction.editReply({ content: "❌ I couldn't send a message in this channel." });
+            return;
+          }
+
+          await (targetChannel as any).send({ content: message });
+          await interaction.editReply({ content: "✅ Announcement sent." });
+        } catch (error: any) {
+          console.log("Error in announce modal:", error?.message || error);
+          await interaction.editReply({ content: "❌ Failed to send the announcement." }).catch(() => {});
+        }
       } else if (interaction.customId === "payout_modal") {
         // Defer reply immediately to prevent timeout
         try {
@@ -21856,6 +21901,207 @@ client.on("messageCreate", async (message) => {
     const isModerationCommand = ["ban", "unban", "mute", "unmute", "kick", "clean", "purge", "modlogs", "reason", "retime", "rl", "removelog"].includes(command);
     if (isModerationCommand && lowerPrefix !== moderationPrefix) {
       return; // Skip if using wrong prefix
+    }
+
+    if (command === "av" || command === "avatar") {
+      const targetResolution = await resolveModerationTargetFromArgs(message.guild, tokens.slice(1), {
+        allowBannedUsers: false,
+        searchAllGuilds: false,
+      });
+      const targetUserId = targetResolution.userId || message.author.id;
+      const targetUser = await client.users.fetch(targetUserId).catch(() => null);
+
+      if (!targetUser) {
+        await message.reply("❌ I couldn't find that user.");
+        return;
+      }
+
+      const avatarUrl = targetUser.displayAvatarURL({ size: 4096, forceStatic: false });
+      const avatarEmbed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setAuthor({ name: `${targetUser.username}`, iconURL: targetUser.displayAvatarURL() || undefined })
+        .setTitle(`${targetUser.username}'s Avatar`)
+        .setImage(avatarUrl)
+        .setDescription(`[Open avatar in browser](${avatarUrl})`)
+        .setTimestamp();
+
+      await message.reply({ embeds: [avatarEmbed] });
+      return;
+    }
+
+    if (command === "w" || command === "whois") {
+      const targetResolution = await resolveModerationTargetFromArgs(message.guild, tokens.slice(1), {
+        allowBannedUsers: false,
+        searchAllGuilds: false,
+      });
+      const targetUserId = targetResolution.userId || message.author.id;
+      const targetMember = targetResolution.targetMember || await message.guild.members.fetch(targetUserId).catch(() => null);
+
+      if (!targetMember) {
+        await message.reply("❌ That user is not in this server.");
+        return;
+      }
+
+      const targetUser = targetMember.user;
+      const joinedAt = targetMember.joinedAt ? `<t:${Math.floor(targetMember.joinedAt.getTime() / 1000)}:F>` : "Unknown";
+      const createdAt = targetUser.createdAt ? `<t:${Math.floor(targetUser.createdAt.getTime() / 1000)}:F>` : "Unknown";
+
+      const roleMentions = targetMember.roles.cache
+        .filter((role: any) => role.id !== message.guild!.id)
+        .sort((a: any, b: any) => b.position - a.position)
+        .map((role: any) => `<@&${role.id}>`);
+
+      const importantPermissions: Array<[bigint, string]> = [
+        [PermissionFlagsBits.Administrator, "Administrator"],
+        [PermissionFlagsBits.ManageGuild, "Manage Server"],
+        [PermissionFlagsBits.ManageRoles, "Manage Roles"],
+        [PermissionFlagsBits.ManageChannels, "Manage Channels"],
+        [PermissionFlagsBits.ManageMessages, "Manage Messages"],
+        [PermissionFlagsBits.ManageWebhooks, "Manage Webhooks"],
+        [PermissionFlagsBits.ManageNicknames, "Manage Nicknames"],
+        [PermissionFlagsBits.BanMembers, "Ban Members"],
+        [PermissionFlagsBits.KickMembers, "Kick Members"],
+        [PermissionFlagsBits.ModerateMembers, "Timeout Members"],
+      ];
+
+      const keyPermissions = importantPermissions
+        .filter(([bit]) => targetMember.permissions.has(bit))
+        .map(([, label]) => label);
+
+      const whoisEmbed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setAuthor({ name: targetUser.username, iconURL: targetUser.displayAvatarURL() || undefined })
+        .setThumbnail(targetUser.displayAvatarURL({ size: 256, forceStatic: false }))
+        .setDescription(`<@${targetUser.id}>`)
+        .addFields(
+          { name: "Joined", value: joinedAt, inline: true },
+          { name: "Registered", value: createdAt, inline: true },
+          { name: `Roles [${roleMentions.length}]`, value: roleMentions.length > 0 ? roleMentions.join(" ") : "None", inline: false },
+          { name: "Key Permissions", value: keyPermissions.length > 0 ? keyPermissions.join(", ") : "None", inline: false },
+        )
+        .setFooter({ text: `ID: ${targetUser.id}` })
+        .setTimestamp();
+
+      await message.reply({ embeds: [whoisEmbed] });
+      return;
+    }
+
+    if (command === "flip") {
+      const side = Math.random() < 0.5 ? "Heads" : "Tails";
+      const flipEmbed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle("Coin Flip")
+        .setDescription(`🪙 Result: **${side}**`)
+        .setTimestamp();
+      await message.reply({ embeds: [flipEmbed] });
+      return;
+    }
+
+    if (command === "rps") {
+      const input = (tokens[1] || "").toLowerCase();
+      const choiceMap: Record<string, "rock" | "paper" | "scissors"> = {
+        r: "rock",
+        rock: "rock",
+        p: "paper",
+        paper: "paper",
+        s: "scissors",
+        scissors: "scissors",
+      };
+
+      const playerChoice = choiceMap[input];
+      if (!playerChoice) {
+        await message.reply(`❌ Usage: ${prefix}rps <rock|paper|scissors>`);
+        return;
+      }
+
+      const options: Array<"rock" | "paper" | "scissors"> = ["rock", "paper", "scissors"];
+      const botChoice = options[Math.floor(Math.random() * options.length)];
+
+      let result = "It's a tie!";
+      if (playerChoice !== botChoice) {
+        const playerWins =
+          (playerChoice === "rock" && botChoice === "scissors") ||
+          (playerChoice === "paper" && botChoice === "rock") ||
+          (playerChoice === "scissors" && botChoice === "paper");
+        result = playerWins ? "You win!" : "You lose!";
+      }
+
+      const pretty = (value: "rock" | "paper" | "scissors") =>
+        value.charAt(0).toUpperCase() + value.slice(1);
+
+      const rpsEmbed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle("Rock Paper Scissors")
+        .addFields(
+          { name: "You", value: pretty(playerChoice), inline: true },
+          { name: "Bot", value: pretty(botChoice), inline: true },
+          { name: "Result", value: result, inline: false },
+        )
+        .setTimestamp();
+
+      await message.reply({ embeds: [rpsEmbed] });
+      return;
+    }
+
+    if (command === "poll" || command === "polls") {
+      if (!isDashboardFeatureEnabled(guildConfig, "poll")) {
+        await message.reply(DISABLED_MESSAGE).catch(() => {});
+        return;
+      }
+
+      const memberPerms = message.member?.permissions;
+      const isAdmin = !!memberPerms?.has(PermissionFlagsBits.Administrator);
+      const memberRoleIds = message.member?.roles.cache.map((role) => role.id) || [];
+      const allowedRoleIds = uniqueStrings(guildConfig?.messageCommandRoleIds || []);
+      const hasRoleAccess = allowedRoleIds.length === 0 || allowedRoleIds.some((roleId) => memberRoleIds.includes(roleId));
+
+      if (!isAdmin && !hasRoleAccess) {
+        return;
+      }
+
+      const commandToken = tokens[0] || `${prefix}poll`;
+      const rawBody = message.content.slice(message.content.indexOf(commandToken) + commandToken.length).trim();
+      const choiceMatches = Array.from(rawBody.matchAll(/"([^"]+)"/g));
+      const choices = choiceMatches
+        .map((match) => String(match[1] || "").trim())
+        .filter(Boolean);
+      const question = rawBody.replace(/"([^"]+)"/g, "").replace(/\s+/g, " ").trim();
+
+      if (!question || choices.length < 2) {
+        await message.reply(`❌ Usage: ${prefix}poll <message> "Choice One" "Choice Two" ... (up to 10 choices)`);
+        return;
+      }
+
+      if (choices.length > 10) {
+        await message.reply("❌ You can only provide up to 10 choices.");
+        return;
+      }
+
+      const pollNumberEmojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+      const descriptionLines = choices.map((choice, index) => `${pollNumberEmojis[index]} ${choice}`);
+
+      const pollEmbed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle("📊 Poll")
+        .setDescription(`**${question}**\n\n${descriptionLines.join("\n")}\n\nReact below to vote.`)
+        .setFooter({ text: `Started by ${message.author.username}` })
+        .setTimestamp();
+
+      const pollMessage = await message.channel.send({
+        content: "@everyone",
+        embeds: [pollEmbed],
+        allowedMentions: { parse: ["everyone"] },
+      }).catch(() => null);
+      if (!pollMessage) {
+        await message.reply("❌ I couldn't post that poll.");
+        return;
+      }
+
+      for (let index = 0; index < choices.length; index += 1) {
+        await pollMessage.react(pollNumberEmojis[index]).catch(() => undefined);
+      }
+
+      return;
     }
 
     if (command === "purge") {

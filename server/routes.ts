@@ -15,6 +15,8 @@ import { readOwnerBotDesiredState, writeOwnerBotDesiredState } from "./owner-bot
 
 const execFile = promisify(execFileAsync);
 
+const DASHBOARD_PROFILE_BIO_MAX_LENGTH = 190;
+
 type DashboardSessionUser = {
   id: string;
   username: string;
@@ -61,6 +63,7 @@ const DASHBOARD_MISC_ROLE_BLOCKS_KEY = "__dashboardMiscRoleBlocks";
 const DASHBOARD_MISC_ROLE_BLOCK_BYPASS_USERS_KEY = "__dashboardMiscRoleBlockBypassUsers";
 const DASHBOARD_FEATURE_POST_CHANNELS_KEY = "__dashboardFeaturePostChannels";
 const DASHBOARD_REACTION_ROLE_SETUP_KEY = "__reactionRoleSetup";
+const DASHBOARD_GIVEAWAYS_SETTINGS_KEY = "__giveawaysSettings";
 const GUILDS_CACHE_TTL_MS = 60 * 1000;
 const ACCESS_CACHE_TTL_MS = 5 * 60 * 1000;
 const USER_SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -1221,6 +1224,60 @@ function getDashboardUrl(): string {
   return `http://localhost:${dashboardPort}/dashboard`;
 }
 
+function normalizeDashboardProfileBio(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw.trim().slice(0, DASHBOARD_PROFILE_BIO_MAX_LENGTH);
+}
+
+function normalizeDashboardAvatarDataUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const validPrefix = /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i;
+  if (!validPrefix.test(trimmed)) return null;
+
+  return trimmed;
+}
+
+async function applyGuildBotAvatar(guildId: string, avatarDataUri: string): Promise<void> {
+
+  await discordBotApiRequest(`/guilds/${guildId}/members/@me`, {
+    method: "PATCH",
+    body: JSON.stringify({ avatar: avatarDataUri }),
+  });
+}
+
+async function applyGuildBotBioBestEffort(guildId: string, bio: string): Promise<{ applied: boolean; message?: string }> {
+  const errors: string[] = [];
+
+  try {
+    await discordBotApiRequest(`/guilds/${guildId}/members/@me`, {
+      method: "PATCH",
+      body: JSON.stringify({ bio }),
+    });
+    return { applied: true };
+  } catch (error: any) {
+    errors.push(String(error?.message || "Guild profile bio update was rejected."));
+  }
+
+  try {
+    // Fallback: update the bot application's public description (shown as bot bio in many Discord clients).
+    await discordBotApiRequest(`/applications/@me`, {
+      method: "PATCH",
+      body: JSON.stringify({ description: bio }),
+    });
+    return { applied: true };
+  } catch (error: any) {
+    errors.push(String(error?.message || "Application description update was rejected."));
+  }
+
+  return {
+    applied: false,
+    message: errors.join(" | ").slice(0, 500) || "Discord did not accept the bio update.",
+  };
+}
+
 function getBotNicknameFromCustomCategoryPings(raw: unknown): { hasBotNickname: boolean; botNickname: string | null } {
   if (typeof raw !== "string") {
     return { hasBotNickname: false, botNickname: null };
@@ -1457,9 +1514,13 @@ const FEATURE_LABELS: Record<string, string> = {
   sticky: "Sticky Messages",
   "auto-roles": "Auto Roles",
   "reaction-roles": "Reaction Roles",
+  poll: "Poll",
+  giveaways: "Giveaways",
 };
 
 const LATEST_BOT_UPDATE_HIGHLIGHTS = [
+  "New dashboard feature: `Poll` adds poll management with multi-choice setup and result tracking.",
+  "New dashboard feature: `Giveaways` adds timed giveaways with winner count and role-based entry controls.",
   "New dashboard feature: `Auto Roles` can add or remove roles when members join, with optional delays.",
   "New dashboard feature: `Reaction Roles` lets members react to get or remove server roles.",
   "Reaction Roles now support `Both Ways`, `Add Only`, and `Remove Only`, plus `Reactions`, `Buttons`, and `Dropdown Menu` picker styles.",
@@ -1739,6 +1800,24 @@ type DashboardReactionRoleSetup = {
   items: DashboardReactionRoleItem[];
 };
 
+type DashboardGiveawayEntryMode = "button" | "reaction";
+
+type DashboardGiveawaySettings = {
+  channelId: string | null;
+  winnerCount: number;
+  mentionTarget: "none" | "everyone" | "here";
+  dmWinners: boolean;
+  winnerDmMessage: string;
+  inviteLink: string;
+  entryMode: DashboardGiveawayEntryMode;
+  reactionEmoji: string;
+  allowDailyEntries: boolean;
+  allowReferralEntries: boolean;
+  hideFromNonMembers: boolean;
+  allowedRoleIds: string[];
+  ignoredRoleIds: string[];
+};
+
 const DEFAULT_REACTION_ROLE_SETUP: DashboardReactionRoleSetup = {
   name: "Reaction Roles",
   channelId: null,
@@ -1756,6 +1835,22 @@ const DEFAULT_REACTION_ROLE_SETUP: DashboardReactionRoleSetup = {
   thumbnailUrl: "",
   imageUrl: "",
   items: [],
+};
+
+const DEFAULT_GIVEAWAYS_SETTINGS: DashboardGiveawaySettings = {
+  channelId: null,
+  winnerCount: 1,
+  mentionTarget: "none",
+  dmWinners: true,
+  winnerDmMessage: "Congratulations! Contact a server admin to claim your prize!",
+  inviteLink: "",
+  entryMode: "button",
+  reactionEmoji: "✋",
+  allowDailyEntries: false,
+  allowReferralEntries: false,
+  hideFromNonMembers: false,
+  allowedRoleIds: [],
+  ignoredRoleIds: [],
 };
 
 function normalizeReactionRoleSetup(input: unknown): DashboardReactionRoleSetup {
@@ -1827,6 +1922,43 @@ function writeReactionRoleSetup(raw: unknown, setup: DashboardReactionRoleSetup,
   }
 
   return JSON.stringify(parsed);
+}
+
+function normalizeGiveawaysSettings(input: unknown): DashboardGiveawaySettings {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ...DEFAULT_GIVEAWAYS_SETTINGS };
+  }
+
+  const value = input as Record<string, unknown>;
+  const winnerCount = Number(value.winnerCount || DEFAULT_GIVEAWAYS_SETTINGS.winnerCount);
+  const mentionTarget = String(value.mentionTarget || DEFAULT_GIVEAWAYS_SETTINGS.mentionTarget).toLowerCase();
+  const rawEntryMode = String(value.entryMode || "").toLowerCase();
+  const legacyUseButtons = value.useButtons !== false;
+
+  return {
+    channelId: String(value.channelId || "").trim() || null,
+    winnerCount: Number.isFinite(winnerCount) ? Math.max(1, Math.min(10, Math.round(winnerCount))) : DEFAULT_GIVEAWAYS_SETTINGS.winnerCount,
+    mentionTarget: mentionTarget === "everyone" || mentionTarget === "here" ? mentionTarget : "none",
+    dmWinners: value.dmWinners !== false,
+    winnerDmMessage: String(value.winnerDmMessage || DEFAULT_GIVEAWAYS_SETTINGS.winnerDmMessage).trim().slice(0, 500) || DEFAULT_GIVEAWAYS_SETTINGS.winnerDmMessage,
+    inviteLink: String(value.inviteLink || "").trim().slice(0, 400),
+    entryMode: rawEntryMode === "reaction" ? "reaction" : rawEntryMode === "button" ? "button" : (legacyUseButtons ? "button" : "reaction"),
+    reactionEmoji: String(value.reactionEmoji || DEFAULT_GIVEAWAYS_SETTINGS.reactionEmoji).trim().slice(0, 100) || DEFAULT_GIVEAWAYS_SETTINGS.reactionEmoji,
+    allowDailyEntries: value.allowDailyEntries === true,
+    allowReferralEntries: value.allowReferralEntries === true,
+    hideFromNonMembers: value.hideFromNonMembers === true,
+    allowedRoleIds: Array.isArray(value.allowedRoleIds)
+      ? value.allowedRoleIds.map((entry) => String(entry || "").trim()).filter(Boolean)
+      : [],
+    ignoredRoleIds: Array.isArray(value.ignoredRoleIds)
+      ? value.ignoredRoleIds.map((entry) => String(entry || "").trim()).filter(Boolean)
+      : [],
+  };
+}
+
+function getGiveawaysSettings(raw: unknown): DashboardGiveawaySettings {
+  const parsed = parseJsonObject(raw);
+  return normalizeGiveawaysSettings(parsed[DASHBOARD_GIVEAWAYS_SETTINGS_KEY]);
 }
 
 function extractDiscordMessageTarget(value?: string | null): { channelId: string | null; messageId: string | null } {
@@ -4173,6 +4305,7 @@ export async function registerRoutes(
       let messagePayload: any = null;
       let sentMessage: any = null;
       let reactionRoleResultNote: string | null = null;
+      let giveawayReactionValue: string | null = null;
 
       if (featureKey === "modmail") {
         targetChannelId = targetChannelId || String(config?.modmailEmbedChannelId || "").trim();
@@ -4428,6 +4561,77 @@ export async function registerRoutes(
         }
 
         reactionRoleResultNote = componentNote;
+      } else if (featureKey === "giveaways") {
+        const hasOverride = req.body?.giveawaySettings && typeof req.body.giveawaySettings === "object" && !Array.isArray(req.body.giveawaySettings);
+        const giveawaySettings = hasOverride
+          ? normalizeGiveawaysSettings(req.body.giveawaySettings)
+          : getGiveawaysSettings(config?.customCategoryPings);
+
+        targetChannelId = targetChannelId || String(giveawaySettings.channelId || "").trim();
+        if (!targetChannelId) {
+          return res.status(400).json({ error: "Choose a giveaway channel first." });
+        }
+
+        const mentionContent = giveawaySettings.mentionTarget === "everyone"
+          ? "@everyone"
+          : giveawaySettings.mentionTarget === "here"
+            ? "@here"
+            : "";
+
+        const entryEmoji = giveawaySettings.reactionEmoji || "✋";
+        const winnerLabel = giveawaySettings.winnerCount === 1 ? "1 winner" : `${giveawaySettings.winnerCount} winners`;
+        const entryLine = giveawaySettings.entryMode === "reaction"
+          ? `React with ${entryEmoji} to enter.`
+          : "Click the button below to enter.";
+
+        const extraLines: string[] = [];
+        extraLines.push(`Default draw: **${winnerLabel}**`);
+        if (giveawaySettings.allowedRoleIds.length > 0) {
+          extraLines.push(`Allowed roles: ${giveawaySettings.allowedRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
+        }
+        if (giveawaySettings.ignoredRoleIds.length > 0) {
+          extraLines.push(`Ignored roles: ${giveawaySettings.ignoredRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
+        }
+
+        const giveawayEmbed = new EmbedBuilder()
+          .setTitle("Giveaway")
+          .setDescription([
+            "A new giveaway has started.",
+            "",
+            entryLine,
+            ...extraLines,
+            giveawaySettings.inviteLink ? `\nInvite: ${giveawaySettings.inviteLink}` : "",
+          ].filter(Boolean).join("\n"))
+          .setColor(0x5865f2)
+          .setFooter({ text: "Powered by Expert Worker Dashboard" })
+          .setTimestamp();
+
+        if (giveawaySettings.entryMode === "button") {
+          const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`giveaway_enter_${guildId}`)
+              .setLabel("Enter Giveaway")
+              .setStyle(ButtonStyle.Success)
+          );
+          messagePayload = {
+            content: mentionContent || undefined,
+            allowedMentions: mentionContent ? { parse: ["everyone"] } : undefined,
+            embeds: [giveawayEmbed],
+            components: [row],
+          };
+        } else {
+          giveawayReactionValue = normalizeReactionEmojiValue(entryEmoji);
+          if (!giveawayReactionValue) {
+            giveawayReactionValue = "✋";
+          }
+
+          messagePayload = {
+            content: mentionContent || undefined,
+            allowedMentions: mentionContent ? { parse: ["everyone"] } : undefined,
+            embeds: [giveawayEmbed],
+            components: [],
+          };
+        }
       } else {
         return res.status(400).json({ error: "That embed type is not supported yet from the dashboard." });
       }
@@ -4437,6 +4641,8 @@ export async function registerRoutes(
           ? await discordBotApiRequest<any>(`/channels/${targetChannelId}/messages`, {
               method: "POST",
               body: JSON.stringify({
+                content: typeof messagePayload?.content === "string" ? messagePayload.content : undefined,
+                allowed_mentions: messagePayload?.allowedMentions,
                 embeds: (messagePayload?.embeds || []).map((embed: any) => typeof embed?.toJSON === "function" ? embed.toJSON() : embed),
                 components: (messagePayload?.components || []).map((component: any) => typeof component?.toJSON === "function" ? component.toJSON() : component),
               }),
@@ -4516,6 +4722,21 @@ export async function registerRoutes(
             messageId: String(sentMessage.id || "").trim() || null,
           }, targetChannelId),
         });
+      }
+
+      if (featureKey === "giveaways" && giveawayReactionValue) {
+        try {
+          if (hasBotToken) {
+            await discordBotApiRequest(`/channels/${targetChannelId}/messages/${sentMessage.id}/reactions/${encodeURIComponent(giveawayReactionValue)}/@me`, {
+              method: "PUT",
+            });
+          } else if (typeof (sentMessage as any)?.react === "function") {
+            await (sentMessage as any).react(giveawayReactionValue);
+          }
+          reactionRoleResultNote = `Giveaway posted with reaction entry emoji ${giveawayReactionValue}.`;
+        } catch {
+          reactionRoleResultNote = "Giveaway posted, but I couldn't add the reaction emoji. Check emoji permissions or format.";
+        }
       }
 
       if (featureKey === "modmail") {
@@ -4720,6 +4941,65 @@ export async function registerRoutes(
       res.json({ success: true, config });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/guilds/:guildId/server-profile", async (req, res) => {
+    try {
+      const auth = await requireGuildAccess(req, res);
+      if (!auth) return;
+      const { guildId, user } = auth;
+
+      const hasManagerAccess = await canManageGuildDashboard(user.id, guildId).catch(() => false);
+      if (!hasManagerAccess) {
+        return res.status(403).json({ error: "You do not have permission to edit this server profile." });
+      }
+
+      const rawAvatarDataUrl = req.body?.avatarDataUrl;
+      const avatarDataUrl = normalizeDashboardAvatarDataUrl(rawAvatarDataUrl);
+      const hasBioInput = typeof req.body?.bio === "string";
+      const bio = normalizeDashboardProfileBio(req.body?.bio);
+
+      if (typeof rawAvatarDataUrl === "string" && rawAvatarDataUrl.trim() && !avatarDataUrl) {
+        return res.status(400).json({ error: "Avatar must be a PNG, JPG, WEBP, or GIF image." });
+      }
+
+      if (!avatarDataUrl && !hasBioInput) {
+        return res.status(400).json({ error: "Provide an avatar image or bio text." });
+      }
+
+      let avatarApplied = false;
+      let bioApplied = false;
+      let avatarWarning: string | null = null;
+      let bioWarning: string | null = null;
+
+      if (avatarDataUrl) {
+        try {
+          await applyGuildBotAvatar(guildId, avatarDataUrl);
+          avatarApplied = true;
+        } catch (error: any) {
+          avatarWarning = String(error?.message || "Discord did not accept this profile image.");
+        }
+      }
+
+      if (hasBioInput) {
+        const bioResult = await applyGuildBotBioBestEffort(guildId, bio);
+        bioApplied = bioResult.applied;
+        if (!bioResult.applied && bioResult.message) {
+          bioWarning = bioResult.message;
+        }
+      }
+
+      res.json({
+        success: true,
+        avatarApplied,
+        avatarWarning,
+        bioApplied,
+        bioWarning,
+      });
+    } catch (e: any) {
+      const message = String(e?.message || "Failed to update server profile.");
+      res.status(500).json({ error: message });
     }
   });
 
