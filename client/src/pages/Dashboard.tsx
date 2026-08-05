@@ -282,6 +282,8 @@ interface DashboardQuickSettings {
   moderationPrefix: string;
   modmailPrefix: string;
   botNickname: string;
+  serverProfileName: string;
+  serverProfileDescription: string;
 }
 
 interface DashboardPermissionSettings {
@@ -923,6 +925,8 @@ export default function Dashboard() {
     moderationPrefix: "",
     modmailPrefix: "",
     botNickname: "",
+    serverProfileName: "",
+    serverProfileDescription: "",
   });
   const [permissionSettings, setPermissionSettings] = useState<DashboardPermissionSettings>({
     stickyCommandRoleIds: [],
@@ -2533,6 +2537,8 @@ export default function Dashboard() {
         moderationPrefix: "",
         modmailPrefix: "",
         botNickname: "",
+        serverProfileName: "",
+        serverProfileDescription: "",
       };
     }
 
@@ -2541,6 +2547,8 @@ export default function Dashboard() {
       moderationPrefix: typeof quickSettingsObject.moderationPrefix === "string" ? quickSettingsObject.moderationPrefix : "",
       modmailPrefix: typeof quickSettingsObject.modmailPrefix === "string" ? quickSettingsObject.modmailPrefix : "",
       botNickname: typeof quickSettingsObject.botNickname === "string" ? quickSettingsObject.botNickname : "",
+      serverProfileName: typeof quickSettingsObject.serverProfileName === "string" ? quickSettingsObject.serverProfileName : "",
+      serverProfileDescription: typeof quickSettingsObject.serverProfileDescription === "string" ? quickSettingsObject.serverProfileDescription : "",
     };
   };
 
@@ -3312,6 +3320,8 @@ export default function Dashboard() {
       moderationPrefix: quickSettings.moderationPrefix.trim(),
       modmailPrefix: quickSettings.modmailPrefix.trim(),
       botNickname: quickSettings.botNickname.trim(),
+      serverProfileName: quickSettings.serverProfileName.trim().slice(0, 80),
+      serverProfileDescription: quickSettings.serverProfileDescription.trim().slice(0, 300),
     };
     categoryPingsObject[FEATURE_POST_CHANNELS_KEY] = featurePostChannels;
 
@@ -3435,6 +3445,8 @@ export default function Dashboard() {
   const textChannels = channels.filter((c) => TEXT_CHANNEL_TYPES.has(c.type));
   const voiceChannels = channels.filter((c) => c.type === 2 || c.type === 13);
   const selectedGuildSummary = guilds.find((guild) => guild.id === selectedGuild) || null;
+  const serverProfileName = quickSettings.serverProfileName.trim() || selectedGuildSummary?.name || "Selected Server";
+  const serverProfileDescription = quickSettings.serverProfileDescription.trim();
   const visibleOwnerGuilds = ownerGuilds;
   const hasGeneralDashboardAccess = viewerIsAdmin || isOwnerUser || filterToCurrentServerRoleIds(config.modRoleIds || []).some((roleId) => viewerRoleIds.includes(roleId));
   const canAccessSecurityTab = isOwnerUser || viewerHasSecurityAccess;
@@ -5902,6 +5914,10 @@ export default function Dashboard() {
               <Card className="border-border/80 bg-card/90" data-testid="card-server-info">
                 <CardHeader>
                   <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Server Info</CardTitle>
+                  <CardDescription>
+                    {serverProfileName}
+                    {serverProfileDescription ? ` - ${serverProfileDescription}` : ""}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -5953,7 +5969,7 @@ export default function Dashboard() {
               <Card className="border-border/80 bg-card/90" data-testid="card-bot-settings-simple">
                 <CardHeader className="space-y-1">
                   <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">Bot Settings</CardTitle>
-                  <CardDescription>Configure moderation commands, modmail commands, nickname, and bot status.</CardDescription>
+                  <CardDescription>Configure moderation commands, modmail commands, nickname, profile, and bot status.</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="grid gap-4 md:grid-cols-2">
@@ -5985,6 +6001,30 @@ export default function Dashboard() {
                       placeholder="Expert Helper Bot"
                       data-testid="input-bot-nickname"
                     />
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Server Profile Name</Label>
+                      <Input
+                        value={quickSettings.serverProfileName}
+                        onChange={(event) => setQuickSettings((prev) => ({ ...prev, serverProfileName: event.target.value }))}
+                        placeholder="Operations Hub"
+                        maxLength={80}
+                        data-testid="input-server-profile-name"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Server Profile Description</Label>
+                      <Textarea
+                        value={quickSettings.serverProfileDescription}
+                        onChange={(event) => setQuickSettings((prev) => ({ ...prev, serverProfileDescription: event.target.value }))}
+                        placeholder="What this server is about"
+                        maxLength={300}
+                        rows={3}
+                        data-testid="input-server-profile-description"
+                      />
+                    </div>
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-3">
