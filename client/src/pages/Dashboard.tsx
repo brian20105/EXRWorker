@@ -2142,25 +2142,47 @@ export default function Dashboard() {
 
     setPostingFeatureEmbed(featureKey);
     try {
-      const data = await fetchJsonWithTimeout(`/api/guilds/${selectedGuild}/feature-embeds/${featureKey}/post`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          channelId: selectedChannelId,
-          reactionRoleSetup: featureKey === "reaction-roles"
-            ? {
-                ...reactionRoleSetup,
-                channelId: selectedChannelId,
-              }
-            : undefined,
-          giveawaySettings: featureKey === "giveaways"
-            ? {
-                ...giveawaySettings,
-                channelId: selectedChannelId,
-              }
-            : undefined,
-        }),
-      }, 15000);
+      const payload = {
+        channelId: selectedChannelId,
+        reactionRoleSetup: featureKey === "reaction-roles"
+          ? {
+              ...reactionRoleSetup,
+              channelId: selectedChannelId,
+            }
+          : undefined,
+        giveawaySettings: featureKey === "giveaways"
+          ? {
+              ...giveawaySettings,
+              channelId: selectedChannelId,
+            }
+          : undefined,
+      };
+
+      const postByKey = async (postKey: string) => fetchJsonWithTimeout(
+        `/api/guilds/${selectedGuild}/feature-embeds/${postKey}/post`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+        15000,
+      );
+
+      let data: any;
+      try {
+        data = await postByKey(featureKey);
+      } catch (error: any) {
+        const loweredMessage = String(error?.message || "").toLowerCase();
+        const looksUnsupported = loweredMessage.includes("not supported") || loweredMessage.includes("unsupported");
+
+        // Compatibility fallback for older backends that use the singular key.
+        if (featureKey === "giveaways" && looksUnsupported) {
+          data = await postByKey("giveaway");
+        } else {
+          throw error;
+        }
+      }
+
       const postedChannelId = String(data?.channelId || selectedChannelId).trim();
       if (featureKey === "reaction-roles") {
         setReactionRoleSetup((prev) => ({
@@ -5277,13 +5299,6 @@ export default function Dashboard() {
                   Configure default giveaway behavior used by your staff workflow, including entry targeting, winner DM text, and role-based access.
                 </p>
               </div>
-
-              {renderFeaturePostSection(
-                "giveaways",
-                "Giveaway Post",
-                "Choose where to post a giveaway announcement using these settings.",
-                "Post Giveaway",
-              )}
 
               <div className="grid gap-4 md:grid-cols-2">
                 {renderCustomChannelSection(

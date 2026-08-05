@@ -125,6 +125,7 @@ const DASHBOARD_FEATURE_COMMAND_MAP: Record<string, string> = {
   list_snippets: "snippets",
   // Sticky messages
   sticky: "sticky",
+  giveaway: "giveaways",
   unsticky: "sticky",
   private: "permissions",
   unprivate: "permissions",
@@ -6056,6 +6057,15 @@ const commands = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName("giveaway")
+    .setDescription("Post giveaway embeds using dashboard settings")
+    .setDefaultMemberPermissions(0)
+    .addSubcommand((sub) =>
+      sub
+        .setName("post")
+        .setDescription("Post a giveaway embed in the current channel")
+    ),
+  new SlashCommandBuilder()
     .setName("pings")
     .setDescription("Manage ping roles for request embeds and ticket request flows")
     .setDefaultMemberPermissions(0)
@@ -7844,7 +7854,145 @@ client.on("interactionCreate", async (interaction) => {
         logCommand(interaction.guildId, interaction.channelId, commandUsed, interaction.user.id, interaction.user.username, optionsData).catch(() => {});
       }
 
-      if (commandName === "setup_pay_request") {
+      if (commandName === "giveaway" && subcommand === "post") {
+        if (!await safeDeferReply(interaction, true)) return;
+
+        try {
+          const { memberRoles, memberPermissions } = getInteractionMemberContext(interaction);
+          const config = await storage.getGuildConfig(interaction.guildId!);
+
+          const giveawayManagerRoleIds = Array.isArray(config?.modRoleIds)
+            ? config.modRoleIds.map((roleId: unknown) => String(roleId || "").trim()).filter(Boolean)
+            : [];
+
+          const permissionBits = typeof memberPermissions === "string"
+            ? BigInt(memberPermissions)
+            : (memberPermissions ?? BigInt(0));
+          const ADMINISTRATOR = BigInt(1) << BigInt(3);
+          const isAdmin = (permissionBits & ADMINISTRATOR) === ADMINISTRATOR;
+          const hasGiveawayRole = giveawayManagerRoleIds.length > 0
+            && !!memberRoles
+            && giveawayManagerRoleIds.some((roleId: string) => memberRoles.includes(roleId));
+
+          if (!isAdmin && !hasGiveawayRole) {
+            await interaction.editReply({ content: "❌ You don't have permission to post giveaways." });
+            return;
+          }
+
+          const jsonRoot = parseJsonObject(config?.customCategoryPings);
+          const rawSettings = jsonRoot?.__giveawaysSettings;
+          const settings = rawSettings && typeof rawSettings === "object" && !Array.isArray(rawSettings)
+            ? rawSettings as Record<string, any>
+            : {};
+
+          const winnerCountRaw = Number(settings.winnerCount || 1);
+          const winnerCount = Number.isFinite(winnerCountRaw) ? Math.max(1, Math.min(10, Math.round(winnerCountRaw))) : 1;
+
+          const mentionTargetRaw = typeof settings.mentionTarget === "string"
+            ? settings.mentionTarget.toLowerCase()
+            : "none";
+          const mentionTarget: "none" | "everyone" | "here" = mentionTargetRaw === "everyone" || mentionTargetRaw === "here"
+            ? mentionTargetRaw
+            : "none";
+
+          const rawEntryMode = typeof settings.entryMode === "string" ? settings.entryMode.toLowerCase() : "";
+          const legacyUseButtons = settings.useButtons !== false;
+          const entryMode: "button" | "reaction" = rawEntryMode === "reaction"
+            ? "reaction"
+            : rawEntryMode === "button"
+              ? "button"
+              : (legacyUseButtons ? "button" : "reaction");
+
+          const inviteLink = typeof settings.inviteLink === "string" ? settings.inviteLink.trim().slice(0, 400) : "";
+          const reactionEmoji = typeof settings.reactionEmoji === "string" && settings.reactionEmoji.trim().length > 0
+            ? settings.reactionEmoji.trim().slice(0, 100)
+            : "✋";
+          const allowedRoleIds = Array.isArray(settings.allowedRoleIds)
+            ? settings.allowedRoleIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+            : [];
+          const ignoredRoleIds = Array.isArray(settings.ignoredRoleIds)
+            ? settings.ignoredRoleIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+            : [];
+
+          const mentionContent = mentionTarget === "everyone"
+            ? "@everyone"
+            : mentionTarget === "here"
+              ? "@here"
+              : "";
+
+          const winnerLabel = winnerCount === 1 ? "1 winner" : `${winnerCount} winners`;
+          const entryLine = entryMode === "reaction"
+            ? `React with ${reactionEmoji} to enter.`
+            : "Click the button below to enter.";
+
+          const extraLines: string[] = [];
+          extraLines.push(`Default draw: **${winnerLabel}**`);
+          if (allowedRoleIds.length > 0) {
+            extraLines.push(`Allowed roles: ${allowedRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
+          }
+          if (ignoredRoleIds.length > 0) {
+            extraLines.push(`Ignored roles: ${ignoredRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
+          }
+
+          const giveawayEmbed = new EmbedBuilder()
+            .setTitle("Giveaway")
+            .setDescription([
+              "A new giveaway has started.",
+              "",
+              entryLine,
+              ...extraLines,
+              inviteLink ? `\nInvite: ${inviteLink}` : "",
+            ].filter(Boolean).join("\n"))
+            .setColor(0x5865f2)
+            .setFooter({ text: "Powered by Expert Worker Dashboard" })
+            .setTimestamp();
+
+          const targetChannel = interaction.channel;
+          if (!targetChannel || !("send" in targetChannel)) {
+            await interaction.editReply({ content: "❌ Could not post giveaway in this channel." });
+            return;
+          }
+
+          const messagePayload: any = {
+            content: mentionContent || undefined,
+            allowedMentions: mentionContent ? { parse: ["everyone"] } : undefined,
+            embeds: [giveawayEmbed],
+            components: [],
+          };
+
+          if (entryMode === "button") {
+            const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`giveaway_enter_${interaction.guildId}`)
+                .setLabel("Enter Giveaway")
+                .setStyle(ButtonStyle.Success)
+            );
+            messagePayload.components = [row];
+          }
+
+          const sentMessage: any = await (targetChannel as any).send(messagePayload);
+
+          let followUpNote = "✅ Giveaway posted in this channel using dashboard settings.";
+          if (entryMode === "reaction") {
+            const reactionValue = normalizeReactionEmojiInput(reactionEmoji) || "✋";
+            try {
+              await sentMessage.react(reactionValue);
+            } catch {
+              try {
+                await sentMessage.react("✋");
+                followUpNote = "✅ Giveaway posted, but your custom emoji failed so I used ✋.";
+              } catch {
+                followUpNote = "⚠️ Giveaway posted, but I could not add the entry reaction.";
+              }
+            }
+          }
+
+          await interaction.editReply({ content: followUpNote });
+        } catch (error: any) {
+          console.log("Error in /giveaway post:", error?.message || error);
+          await interaction.editReply({ content: "Failed to post giveaway. Please try again." }).catch(() => {});
+        }
+      } else if (commandName === "setup_pay_request") {
         if (!await safeDeferReply(interaction)) return;
         try {
           const channel = interaction.options.getChannel("channel", true);
