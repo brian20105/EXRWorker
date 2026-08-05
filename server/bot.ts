@@ -3645,6 +3645,7 @@ interface AutoRoleRuleConfig {
 
 type ReactionRoleMode = "both" | "add_only" | "remove_only";
 type ReactionRolePickerStyle = "reactions" | "buttons" | "dropdown";
+type GiveawayEntryMode = "button" | "reaction";
 
 interface ReactionRoleEntryConfig {
   id: string;
@@ -3672,6 +3673,22 @@ interface ReactionRoleSetupConfig {
   items: ReactionRoleEntryConfig[];
 }
 
+interface GiveawaySettingsConfig {
+  giveawayName: string;
+  endsAtUnix: number | null;
+  winnerCount: number;
+  mentionTarget: "none" | "everyone" | "here";
+  entryMode: GiveawayEntryMode;
+  reactionEmoji: string;
+  inviteLink: string;
+  mentionRoleIds: string[];
+  allowDailyEntries: boolean;
+  allowReferralEntries: boolean;
+  showEntrantCount: boolean;
+  allowedRoleIds: string[];
+  ignoredRoleIds: string[];
+}
+
 const DEFAULT_REACTION_ROLE_SETUP: ReactionRoleSetupConfig = {
   name: "Reaction Roles",
   channelId: null,
@@ -3689,6 +3706,22 @@ const DEFAULT_REACTION_ROLE_SETUP: ReactionRoleSetupConfig = {
   thumbnailUrl: "",
   imageUrl: "",
   items: [],
+};
+
+const DEFAULT_GIVEAWAY_SETTINGS: GiveawaySettingsConfig = {
+  giveawayName: "",
+  endsAtUnix: null,
+  winnerCount: 1,
+  mentionTarget: "none",
+  entryMode: "button",
+  reactionEmoji: "✋",
+  inviteLink: "",
+  mentionRoleIds: [],
+  allowDailyEntries: false,
+  allowReferralEntries: false,
+  showEntrantCount: false,
+  allowedRoleIds: [],
+  ignoredRoleIds: [],
 };
 
 function getAutoRolesFromGuildConfig(config?: any): AutoRoleRuleConfig[] {
@@ -3782,6 +3815,125 @@ function getReactionEmojiKey(reaction: any): string {
     return `${emoji.name}:${emoji.id}`;
   }
   return String(emoji.name || "").trim();
+}
+
+function getGiveawaySettingsFromGuildConfig(config?: any): GiveawaySettingsConfig {
+  const root = parseJsonObject(config?.customCategoryPings);
+  const raw = root?.__giveawaysSettings;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...DEFAULT_GIVEAWAY_SETTINGS };
+  }
+
+  const endsAtUnixRaw = Number(raw.endsAtUnix);
+  const winnerCountRaw = Number(raw.winnerCount || DEFAULT_GIVEAWAY_SETTINGS.winnerCount);
+  const mentionTargetRaw = typeof raw.mentionTarget === "string"
+    ? raw.mentionTarget.toLowerCase()
+    : DEFAULT_GIVEAWAY_SETTINGS.mentionTarget;
+  const rawEntryMode = typeof raw.entryMode === "string" ? raw.entryMode.toLowerCase() : "";
+  const legacyUseButtons = raw.useButtons !== false;
+
+  return {
+    giveawayName: typeof raw.giveawayName === "string" ? raw.giveawayName.trim().slice(0, 120) : "",
+    endsAtUnix: Number.isFinite(endsAtUnixRaw) && endsAtUnixRaw > 0 ? Math.floor(endsAtUnixRaw) : null,
+    winnerCount: Number.isFinite(winnerCountRaw) ? Math.max(1, Math.min(10, Math.round(winnerCountRaw))) : DEFAULT_GIVEAWAY_SETTINGS.winnerCount,
+    mentionTarget: mentionTargetRaw === "everyone" || mentionTargetRaw === "here" ? mentionTargetRaw : "none",
+    entryMode: rawEntryMode === "reaction"
+      ? "reaction"
+      : rawEntryMode === "button"
+        ? "button"
+        : (legacyUseButtons ? "button" : "reaction"),
+    reactionEmoji: typeof raw.reactionEmoji === "string" && raw.reactionEmoji.trim().length > 0
+      ? raw.reactionEmoji.trim().slice(0, 100)
+      : DEFAULT_GIVEAWAY_SETTINGS.reactionEmoji,
+    inviteLink: typeof raw.inviteLink === "string" ? raw.inviteLink.trim().slice(0, 400) : "",
+    mentionRoleIds: Array.isArray(raw.mentionRoleIds)
+      ? raw.mentionRoleIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+      : [],
+    allowDailyEntries: raw.allowDailyEntries === true,
+    allowReferralEntries: raw.allowReferralEntries === true,
+    showEntrantCount: raw.showEntrantCount === true,
+    allowedRoleIds: Array.isArray(raw.allowedRoleIds)
+      ? raw.allowedRoleIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+      : [],
+    ignoredRoleIds: Array.isArray(raw.ignoredRoleIds)
+      ? raw.ignoredRoleIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
+      : [],
+  };
+}
+
+function buildGiveawayDescription(settings: GiveawaySettingsConfig, entrantCount?: number): string {
+  const winnerLabel = settings.winnerCount === 1 ? "1 winner" : `${settings.winnerCount} winners`;
+  const entryLine = settings.entryMode === "reaction"
+    ? `React with ${settings.reactionEmoji} to join. Remove your reaction to leave.`
+    : "Use the buttons below to join or leave.";
+
+  const extraLines: string[] = [];
+  extraLines.push(`Default draw: **${winnerLabel}**`);
+  if (settings.showEntrantCount) {
+    extraLines.push(`Entries: **${Math.max(0, Number(entrantCount || 0))}**`);
+  }
+  if (settings.endsAtUnix) {
+    extraLines.push(`Ends: <t:${settings.endsAtUnix}:F> (<t:${settings.endsAtUnix}:R>)`);
+  }
+  if (settings.allowReferralEntries && settings.giveawayName) {
+    extraLines.push(`Referral entries: enabled for **${settings.giveawayName}**.`);
+  }
+  if (settings.allowedRoleIds.length > 0) {
+    extraLines.push(`Allowed roles: ${settings.allowedRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
+  }
+  if (settings.ignoredRoleIds.length > 0) {
+    extraLines.push(`Ignored roles: ${settings.ignoredRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
+  }
+
+  return [
+    "A new giveaway has started.",
+    "",
+    entryLine,
+    ...extraLines,
+    settings.inviteLink ? `\nInvite: ${settings.inviteLink}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function parseGiveawayHammertime(value: string | null | undefined): number | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  const hammerMatch = raw.match(/^<t:(\d{1,11})(?::[tTdDfFR])?>$/i);
+  if (hammerMatch?.[1]) {
+    const unix = Number(hammerMatch[1]);
+    return Number.isFinite(unix) && unix > 0 ? Math.floor(unix) : null;
+  }
+
+  if (/^\d{1,11}$/.test(raw)) {
+    const unix = Number(raw);
+    return Number.isFinite(unix) && unix > 0 ? Math.floor(unix) : null;
+  }
+
+  const parsedDate = new Date(raw);
+  const ms = parsedDate.getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return Math.floor(ms / 1000);
+}
+
+function buildGiveawayAnnouncementContent(settings: GiveawaySettingsConfig): { content: string; allowedMentions: any } {
+  const mentionTargetText = settings.mentionTarget === "everyone"
+    ? "@everyone"
+    : settings.mentionTarget === "here"
+      ? "@here"
+      : "";
+  const mentionRoleIds = (settings.mentionRoleIds || []).map((roleId) => String(roleId || "").trim()).filter(Boolean);
+  const roleMentionText = mentionRoleIds.map((roleId) => `<@&${roleId}>`).join(" ");
+  const content = [mentionTargetText, roleMentionText].filter(Boolean).join(" ").trim();
+
+  return {
+    content,
+    allowedMentions: content
+      ? {
+          parse: settings.mentionTarget === "everyone" || settings.mentionTarget === "here" ? ["everyone"] : [],
+          roles: mentionRoleIds,
+        }
+      : undefined,
+  };
 }
 
 function parseReactionRoleButtonCustomId(customId: string | null | undefined): { guildId: string; roleId: string; mode: ReactionRoleMode } | null {
@@ -4001,6 +4153,66 @@ async function handleReactionRoleEvent(reaction: any, user: any, action: "add" |
     }
   } catch (error) {
     console.log("Error in reaction role handler:", error);
+  }
+}
+
+async function handleGiveawayReactionEvent(reaction: any, user: any, action: "add" | "remove"): Promise<void> {
+  if (!user || user.bot) return;
+
+  try {
+    if (reaction?.partial) {
+      await reaction.fetch().catch(() => null);
+    }
+
+    if (reaction?.message?.partial) {
+      await reaction.message.fetch().catch(() => null);
+    }
+
+    const message = reaction?.message;
+    const guild = message?.guild;
+    if (!guild || !message?.id) return;
+
+    if (String(message.author?.id || "") !== String(client.user?.id || "")) return;
+    const giveawayEmbed = message.embeds?.[0];
+    if (!giveawayEmbed || String(giveawayEmbed.title || "").trim().toLowerCase() !== "giveaway") return;
+
+    const guildConfig = await storage.getGuildConfig(guild.id).catch(() => undefined);
+    if (!isDashboardFeatureEnabled(guildConfig, "giveaways")) return;
+
+    const giveawaySettings = getGiveawaySettingsFromGuildConfig(guildConfig);
+    if (giveawaySettings.entryMode !== "reaction") return;
+
+    const emojiKey = getReactionEmojiKey(reaction);
+    const configuredEmojiKey = normalizeReactionEmojiInput(giveawaySettings.reactionEmoji || "✋");
+    if (!emojiKey || !configuredEmojiKey || emojiKey !== configuredEmojiKey) return;
+
+    const entryKey = getGiveawayEntryKey(guild.id, String(message.id));
+    const entrants = getGiveawayEntrants(entryKey);
+
+    if (action === "remove") {
+      entrants.delete(user.id);
+      scheduleGiveawayEntryCleanup(entryKey);
+      await updateGiveawayEntryDisplay(message, giveawaySettings, entrants.size);
+      return;
+    }
+
+    if (entrants.has(user.id)) return;
+
+    const dailyCheck = checkGiveawayDailyEntryAllowed(entryKey, user.id, giveawaySettings.allowDailyEntries);
+    if (!dailyCheck.allowed) {
+      await reaction.users.remove(user.id).catch(() => undefined);
+      return;
+    }
+
+    entrants.add(user.id);
+    if (giveawaySettings.allowDailyEntries) {
+      markGiveawayDailyEntry(entryKey, user.id);
+    } else {
+      scheduleGiveawayEntryCleanup(entryKey);
+    }
+    await updateGiveawayEntryDisplay(message, giveawaySettings, entrants.size);
+  } catch (error) {
+    console.log("Error in giveaway reaction handler:", error);
   }
 }
 
@@ -6064,6 +6276,18 @@ const commands = [
       sub
         .setName("post")
         .setDescription("Post a giveaway embed in the current channel")
+        .addStringOption((option) =>
+          option
+            .setName("name")
+            .setDescription("Giveaway name (used as title and referral identifier)")
+            .setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName("end")
+            .setDescription("End time in hammertime, unix, or date text (e.g. <t:1777005000:F>)")
+            .setRequired(false)
+        )
     ),
   new SlashCommandBuilder()
     .setName("pings")
@@ -7665,6 +7889,93 @@ client.once("clientReady", async () => {
 const processedInteractions = new Set<string>();
 const INTERACTION_DEDUP_TIMEOUT = 15000;
 
+const giveawayEntrantsByMessage = new Map<string, Set<string>>();
+const giveawayDailyEntryByMessage = new Map<string, Map<string, number>>();
+const GIVEAWAY_ENTRY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const GIVEAWAY_DAILY_ENTRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const giveawayEntryTimeouts = new Map<string, NodeJS.Timeout>();
+
+function scheduleGiveawayEntryCleanup(entryKey: string): void {
+  const existingTimeout = giveawayEntryTimeouts.get(entryKey);
+  if (existingTimeout) {
+    clearTimeout(existingTimeout);
+  }
+
+  const timeout = setTimeout(() => {
+    giveawayEntrantsByMessage.delete(entryKey);
+    giveawayDailyEntryByMessage.delete(entryKey);
+    giveawayEntryTimeouts.delete(entryKey);
+  }, GIVEAWAY_ENTRY_RETENTION_MS);
+
+  giveawayEntryTimeouts.set(entryKey, timeout);
+}
+
+function getGiveawayEntryKey(guildId: string, messageId: string): string {
+  return `${guildId}:${messageId}`;
+}
+
+function getGiveawayEntrants(entryKey: string): Set<string> {
+  let entrants = giveawayEntrantsByMessage.get(entryKey);
+  if (!entrants) {
+    entrants = new Set<string>();
+    giveawayEntrantsByMessage.set(entryKey, entrants);
+  }
+  return entrants;
+}
+
+function getGiveawayDailyEntries(entryKey: string): Map<string, number> {
+  let timestamps = giveawayDailyEntryByMessage.get(entryKey);
+  if (!timestamps) {
+    timestamps = new Map<string, number>();
+    giveawayDailyEntryByMessage.set(entryKey, timestamps);
+  }
+  return timestamps;
+}
+
+function checkGiveawayDailyEntryAllowed(entryKey: string, userId: string, allowDailyEntries: boolean): { allowed: boolean; waitMs: number } {
+  if (!allowDailyEntries) return { allowed: true, waitMs: 0 };
+
+  const timestamps = getGiveawayDailyEntries(entryKey);
+  const lastJoinedAt = Number(timestamps.get(userId) || 0);
+  const now = Date.now();
+  if (lastJoinedAt > 0 && now - lastJoinedAt < GIVEAWAY_DAILY_ENTRY_WINDOW_MS) {
+    return { allowed: false, waitMs: GIVEAWAY_DAILY_ENTRY_WINDOW_MS - (now - lastJoinedAt) };
+  }
+  return { allowed: true, waitMs: 0 };
+}
+
+function markGiveawayDailyEntry(entryKey: string, userId: string): void {
+  const timestamps = getGiveawayDailyEntries(entryKey);
+  timestamps.set(userId, Date.now());
+  scheduleGiveawayEntryCleanup(entryKey);
+}
+
+function formatGiveawayDailyRetry(waitMs: number): string {
+  const minutes = Math.max(1, Math.ceil(waitMs / 60000));
+  if (minutes >= 60) {
+    const hours = Math.ceil(minutes / 60);
+    return `${hours}h`;
+  }
+  return `${minutes}m`;
+}
+
+async function updateGiveawayEntryDisplay(message: any, settings: GiveawaySettingsConfig, entrantCount: number): Promise<void> {
+  if (!settings.showEntrantCount) return;
+  const firstEmbed = message?.embeds?.[0];
+  if (!firstEmbed) return;
+
+  try {
+    const updatedEmbed = EmbedBuilder.from(firstEmbed)
+      .setDescription(buildGiveawayDescription(settings, entrantCount));
+    await message.edit({
+      embeds: [updatedEmbed],
+      components: message.components || [],
+    });
+  } catch {
+    // Ignore display update failures so entry state still works.
+  }
+}
+
 const ticketCreationLocks = new Map<string, number>();
 const TICKET_CREATION_LOCK_MS = 60000;
 
@@ -7879,70 +8190,36 @@ client.on("interactionCreate", async (interaction) => {
             return;
           }
 
-          const jsonRoot = parseJsonObject(config?.customCategoryPings);
-          const rawSettings = jsonRoot?.__giveawaysSettings;
-          const settings = rawSettings && typeof rawSettings === "object" && !Array.isArray(rawSettings)
-            ? rawSettings as Record<string, any>
-            : {};
+          const settings = getGiveawaySettingsFromGuildConfig(config);
+          const nowUnix = Math.floor(Date.now() / 1000);
 
-          const winnerCountRaw = Number(settings.winnerCount || 1);
-          const winnerCount = Number.isFinite(winnerCountRaw) ? Math.max(1, Math.min(10, Math.round(winnerCountRaw))) : 1;
+          const commandNameInput = String(interaction.options.getString("name", false) || "").trim().slice(0, 120);
+          const commandEndInput = interaction.options.getString("end", false);
+          const commandEndUnix = parseGiveawayHammertime(commandEndInput);
 
-          const mentionTargetRaw = typeof settings.mentionTarget === "string"
-            ? settings.mentionTarget.toLowerCase()
-            : "none";
-          const mentionTarget: "none" | "everyone" | "here" = mentionTargetRaw === "everyone" || mentionTargetRaw === "here"
-            ? mentionTargetRaw
-            : "none";
-
-          const rawEntryMode = typeof settings.entryMode === "string" ? settings.entryMode.toLowerCase() : "";
-          const legacyUseButtons = settings.useButtons !== false;
-          const entryMode: "button" | "reaction" = rawEntryMode === "reaction"
-            ? "reaction"
-            : rawEntryMode === "button"
-              ? "button"
-              : (legacyUseButtons ? "button" : "reaction");
-
-          const inviteLink = typeof settings.inviteLink === "string" ? settings.inviteLink.trim().slice(0, 400) : "";
-          const reactionEmoji = typeof settings.reactionEmoji === "string" && settings.reactionEmoji.trim().length > 0
-            ? settings.reactionEmoji.trim().slice(0, 100)
-            : "✋";
-          const allowedRoleIds = Array.isArray(settings.allowedRoleIds)
-            ? settings.allowedRoleIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
-            : [];
-          const ignoredRoleIds = Array.isArray(settings.ignoredRoleIds)
-            ? settings.ignoredRoleIds.map((entry: unknown) => String(entry || "").trim()).filter(Boolean)
-            : [];
-
-          const mentionContent = mentionTarget === "everyone"
-            ? "@everyone"
-            : mentionTarget === "here"
-              ? "@here"
-              : "";
-
-          const winnerLabel = winnerCount === 1 ? "1 winner" : `${winnerCount} winners`;
-          const entryLine = entryMode === "reaction"
-            ? `React with ${reactionEmoji} to enter.`
-            : "Click the button below to enter.";
-
-          const extraLines: string[] = [];
-          extraLines.push(`Default draw: **${winnerLabel}**`);
-          if (allowedRoleIds.length > 0) {
-            extraLines.push(`Allowed roles: ${allowedRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
+          settings.giveawayName = commandNameInput || settings.giveawayName;
+          if (!settings.giveawayName) {
+            await interaction.editReply({ content: "❌ Please provide a giveaway name using `/giveaway post name:<name>`." });
+            return;
           }
-          if (ignoredRoleIds.length > 0) {
-            extraLines.push(`Ignored roles: ${ignoredRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
+          if (commandEndInput && commandEndUnix === null) {
+            await interaction.editReply({ content: "❌ Invalid end time format. Use hammertime (`<t:...:F>`), unix seconds, or a date string." });
+            return;
           }
+          if (commandEndUnix !== null) {
+            settings.endsAtUnix = commandEndUnix;
+          }
+
+          if (settings.endsAtUnix && settings.endsAtUnix <= nowUnix) {
+            await interaction.editReply({ content: "Giveaway Already Ended" });
+            return;
+          }
+
+          const { content: mentionContent, allowedMentions } = buildGiveawayAnnouncementContent(settings);
 
           const giveawayEmbed = new EmbedBuilder()
-            .setTitle("Giveaway")
-            .setDescription([
-              "A new giveaway has started.",
-              "",
-              entryLine,
-              ...extraLines,
-              inviteLink ? `\nInvite: ${inviteLink}` : "",
-            ].filter(Boolean).join("\n"))
+            .setTitle(settings.giveawayName ? `Giveaway: ${settings.giveawayName}` : "Giveaway")
+            .setDescription(buildGiveawayDescription(settings, 0))
             .setColor(0x5865f2)
             .setFooter({ text: "Powered by Expert Worker Dashboard" })
             .setTimestamp();
@@ -7955,17 +8232,21 @@ client.on("interactionCreate", async (interaction) => {
 
           const messagePayload: any = {
             content: mentionContent || undefined,
-            allowedMentions: mentionContent ? { parse: ["everyone"] } : undefined,
+            allowedMentions,
             embeds: [giveawayEmbed],
             components: [],
           };
 
-          if (entryMode === "button") {
+          if (settings.entryMode === "button") {
             const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
               new ButtonBuilder()
-                .setCustomId(`giveaway_enter_${interaction.guildId}`)
-                .setLabel("Enter Giveaway")
-                .setStyle(ButtonStyle.Success)
+                .setCustomId(`giveaway_join_${interaction.guildId}`)
+                .setLabel("Join Giveaway")
+                .setStyle(ButtonStyle.Success),
+              new ButtonBuilder()
+                .setCustomId(`giveaway_leave_${interaction.guildId}`)
+                .setLabel("Leave Giveaway")
+                .setStyle(ButtonStyle.Secondary)
             );
             messagePayload.components = [row];
           }
@@ -7973,8 +8254,8 @@ client.on("interactionCreate", async (interaction) => {
           const sentMessage: any = await (targetChannel as any).send(messagePayload);
 
           let followUpNote = "✅ Giveaway posted in this channel using dashboard settings.";
-          if (entryMode === "reaction") {
-            const reactionValue = normalizeReactionEmojiInput(reactionEmoji) || "✋";
+          if (settings.entryMode === "reaction") {
+            const reactionValue = normalizeReactionEmojiInput(settings.reactionEmoji) || "✋";
             try {
               await sentMessage.react(reactionValue);
             } catch {
@@ -14561,6 +14842,64 @@ client.on("interactionCreate", async (interaction) => {
         }
       } else if (interaction.isButton()) {
         const customId = interaction.customId;
+
+        const giveawayButtonMatch = customId.match(/^giveaway_(join|leave|enter)_(\d{17,20})$/);
+        if (giveawayButtonMatch) {
+          const action = giveawayButtonMatch[1];
+          const guildIdFromButton = giveawayButtonMatch[2];
+          const interactionGuildId = String(interaction.guildId || "").trim();
+          const messageId = String(interaction.message?.id || "").trim();
+
+          if (!interactionGuildId || !messageId || !guildIdFromButton || guildIdFromButton !== interactionGuildId) {
+            await interaction.reply({ content: "This giveaway button is no longer valid.", flags: 64 });
+            return;
+          }
+
+          const guildConfig = await storage.getGuildConfig(interactionGuildId).catch(() => undefined);
+          const giveawaySettings = getGiveawaySettingsFromGuildConfig(guildConfig);
+          const entryKey = getGiveawayEntryKey(interactionGuildId, messageId);
+          const entrants = getGiveawayEntrants(entryKey);
+
+          if (action === "leave") {
+            entrants.delete(interaction.user.id);
+            scheduleGiveawayEntryCleanup(entryKey);
+            await updateGiveawayEntryDisplay(interaction.message, giveawaySettings, entrants.size);
+            await interaction.reply({ content: "You have left the giveaway.", flags: 64 });
+            return;
+          }
+
+          const hasJoined = entrants.has(interaction.user.id);
+
+          if (action === "enter" && hasJoined) {
+            entrants.delete(interaction.user.id);
+            scheduleGiveawayEntryCleanup(entryKey);
+            await updateGiveawayEntryDisplay(interaction.message, giveawaySettings, entrants.size);
+            await interaction.reply({ content: "You have left the giveaway.", flags: 64 });
+            return;
+          }
+
+          if (hasJoined) {
+            await interaction.reply({ content: "You have already joined the giveaway.", flags: 64 });
+            return;
+          }
+
+          const dailyCheck = checkGiveawayDailyEntryAllowed(entryKey, interaction.user.id, giveawaySettings.allowDailyEntries);
+          if (!dailyCheck.allowed) {
+            const retryText = formatGiveawayDailyRetry(dailyCheck.waitMs);
+            await interaction.reply({ content: `You can join this giveaway again in ${retryText}.`, flags: 64 });
+            return;
+          }
+
+          entrants.add(interaction.user.id);
+          if (giveawaySettings.allowDailyEntries) {
+            markGiveawayDailyEntry(entryKey, interaction.user.id);
+          } else {
+            scheduleGiveawayEntryCleanup(entryKey);
+          }
+          await updateGiveawayEntryDisplay(interaction.message, giveawaySettings, entrants.size);
+          await interaction.reply({ content: "You have joined the giveaway!", flags: 64 });
+          return;
+        }
 
         const reactionRoleButton = parseReactionRoleButtonCustomId(customId);
         if (reactionRoleButton) {
@@ -26630,10 +26969,12 @@ client.on("guildMemberRemove", async (member) => {
 
 client.on("messageReactionAdd", async (reaction, user) => {
   await handleReactionRoleEvent(reaction, user, "add");
+  await handleGiveawayReactionEvent(reaction, user, "add");
 });
 
 client.on("messageReactionRemove", async (reaction, user) => {
   await handleReactionRoleEvent(reaction, user, "remove");
+  await handleGiveawayReactionEvent(reaction, user, "remove");
 });
 
 client.on("guildMemberAdd", async (member) => {

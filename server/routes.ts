@@ -1804,6 +1804,8 @@ type DashboardGiveawayEntryMode = "button" | "reaction";
 
 type DashboardGiveawaySettings = {
   channelId: string | null;
+  giveawayName: string;
+  endsAtUnix: number | null;
   winnerCount: number;
   mentionTarget: "none" | "everyone" | "here";
   dmWinners: boolean;
@@ -1811,9 +1813,11 @@ type DashboardGiveawaySettings = {
   inviteLink: string;
   entryMode: DashboardGiveawayEntryMode;
   reactionEmoji: string;
+  mentionRoleIds: string[];
   allowDailyEntries: boolean;
   allowReferralEntries: boolean;
   hideFromNonMembers: boolean;
+  showEntrantCount: boolean;
   allowedRoleIds: string[];
   ignoredRoleIds: string[];
 };
@@ -1839,6 +1843,8 @@ const DEFAULT_REACTION_ROLE_SETUP: DashboardReactionRoleSetup = {
 
 const DEFAULT_GIVEAWAYS_SETTINGS: DashboardGiveawaySettings = {
   channelId: null,
+  giveawayName: "",
+  endsAtUnix: null,
   winnerCount: 1,
   mentionTarget: "none",
   dmWinners: true,
@@ -1846,9 +1852,11 @@ const DEFAULT_GIVEAWAYS_SETTINGS: DashboardGiveawaySettings = {
   inviteLink: "",
   entryMode: "button",
   reactionEmoji: "✋",
+  mentionRoleIds: [],
   allowDailyEntries: false,
   allowReferralEntries: false,
   hideFromNonMembers: false,
+  showEntrantCount: false,
   allowedRoleIds: [],
   ignoredRoleIds: [],
 };
@@ -1931,12 +1939,15 @@ function normalizeGiveawaysSettings(input: unknown): DashboardGiveawaySettings {
 
   const value = input as Record<string, unknown>;
   const winnerCount = Number(value.winnerCount || DEFAULT_GIVEAWAYS_SETTINGS.winnerCount);
+  const endsAtUnixRaw = Number(value.endsAtUnix);
   const mentionTarget = String(value.mentionTarget || DEFAULT_GIVEAWAYS_SETTINGS.mentionTarget).toLowerCase();
   const rawEntryMode = String(value.entryMode || "").toLowerCase();
   const legacyUseButtons = value.useButtons !== false;
 
   return {
     channelId: String(value.channelId || "").trim() || null,
+    giveawayName: String(value.giveawayName || "").trim().slice(0, 120),
+    endsAtUnix: Number.isFinite(endsAtUnixRaw) && endsAtUnixRaw > 0 ? Math.floor(endsAtUnixRaw) : null,
     winnerCount: Number.isFinite(winnerCount) ? Math.max(1, Math.min(10, Math.round(winnerCount))) : DEFAULT_GIVEAWAYS_SETTINGS.winnerCount,
     mentionTarget: mentionTarget === "everyone" || mentionTarget === "here" ? mentionTarget : "none",
     dmWinners: value.dmWinners !== false,
@@ -1944,9 +1955,13 @@ function normalizeGiveawaysSettings(input: unknown): DashboardGiveawaySettings {
     inviteLink: String(value.inviteLink || "").trim().slice(0, 400),
     entryMode: rawEntryMode === "reaction" ? "reaction" : rawEntryMode === "button" ? "button" : (legacyUseButtons ? "button" : "reaction"),
     reactionEmoji: String(value.reactionEmoji || DEFAULT_GIVEAWAYS_SETTINGS.reactionEmoji).trim().slice(0, 100) || DEFAULT_GIVEAWAYS_SETTINGS.reactionEmoji,
+    mentionRoleIds: Array.isArray(value.mentionRoleIds)
+      ? value.mentionRoleIds.map((entry) => String(entry || "").trim()).filter(Boolean)
+      : [],
     allowDailyEntries: value.allowDailyEntries === true,
     allowReferralEntries: value.allowReferralEntries === true,
     hideFromNonMembers: value.hideFromNonMembers === true,
+    showEntrantCount: value.showEntrantCount === true,
     allowedRoleIds: Array.isArray(value.allowedRoleIds)
       ? value.allowedRoleIds.map((entry) => String(entry || "").trim()).filter(Boolean)
       : [],
@@ -4561,7 +4576,7 @@ export async function registerRoutes(
         }
 
         reactionRoleResultNote = componentNote;
-      } else if (featureKey === "giveaways") {
+      } else if (featureKey === "giveaways" || featureKey === "giveaway") {
         const hasOverride = req.body?.giveawaySettings && typeof req.body.giveawaySettings === "object" && !Array.isArray(req.body.giveawaySettings);
         const giveawaySettings = hasOverride
           ? normalizeGiveawaysSettings(req.body.giveawaySettings)
@@ -4572,20 +4587,37 @@ export async function registerRoutes(
           return res.status(400).json({ error: "Choose a giveaway channel first." });
         }
 
-        const mentionContent = giveawaySettings.mentionTarget === "everyone"
+        const nowUnix = Math.floor(Date.now() / 1000);
+        if (giveawaySettings.endsAtUnix && giveawaySettings.endsAtUnix <= nowUnix) {
+          return res.status(400).json({ error: "Giveaway Already Ended" });
+        }
+
+        const mentionTargetText = giveawaySettings.mentionTarget === "everyone"
           ? "@everyone"
           : giveawaySettings.mentionTarget === "here"
             ? "@here"
             : "";
+        const mentionRoleIds = (giveawaySettings.mentionRoleIds || []).map((roleId) => String(roleId || "").trim()).filter(Boolean);
+        const roleMentionText = mentionRoleIds.map((roleId) => `<@&${roleId}>`).join(" ");
+        const mentionContent = [mentionTargetText, roleMentionText].filter(Boolean).join(" ").trim();
 
         const entryEmoji = giveawaySettings.reactionEmoji || "✋";
         const winnerLabel = giveawaySettings.winnerCount === 1 ? "1 winner" : `${giveawaySettings.winnerCount} winners`;
         const entryLine = giveawaySettings.entryMode === "reaction"
-          ? `React with ${entryEmoji} to enter.`
-          : "Click the button below to enter.";
+          ? `React with ${entryEmoji} to join. Remove your reaction to leave.`
+          : "Use the buttons below to join or leave.";
 
         const extraLines: string[] = [];
         extraLines.push(`Default draw: **${winnerLabel}**`);
+        if (giveawaySettings.showEntrantCount) {
+          extraLines.push("Entries: **0**");
+        }
+        if (giveawaySettings.endsAtUnix) {
+          extraLines.push(`Ends: <t:${giveawaySettings.endsAtUnix}:F> (<t:${giveawaySettings.endsAtUnix}:R>)`);
+        }
+        if (giveawaySettings.allowReferralEntries && giveawaySettings.giveawayName) {
+          extraLines.push(`Referral entries: enabled for **${giveawaySettings.giveawayName}**.`);
+        }
         if (giveawaySettings.allowedRoleIds.length > 0) {
           extraLines.push(`Allowed roles: ${giveawaySettings.allowedRoleIds.map((roleId) => `<@&${roleId}>`).join(" ")}`);
         }
@@ -4594,7 +4626,7 @@ export async function registerRoutes(
         }
 
         const giveawayEmbed = new EmbedBuilder()
-          .setTitle("Giveaway")
+          .setTitle(giveawaySettings.giveawayName ? `Giveaway: ${giveawaySettings.giveawayName}` : "Giveaway")
           .setDescription([
             "A new giveaway has started.",
             "",
@@ -4609,13 +4641,22 @@ export async function registerRoutes(
         if (giveawaySettings.entryMode === "button") {
           const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
             new ButtonBuilder()
-              .setCustomId(`giveaway_enter_${guildId}`)
-              .setLabel("Enter Giveaway")
-              .setStyle(ButtonStyle.Success)
+              .setCustomId(`giveaway_join_${guildId}`)
+              .setLabel("Join Giveaway")
+              .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+              .setCustomId(`giveaway_leave_${guildId}`)
+              .setLabel("Leave Giveaway")
+              .setStyle(ButtonStyle.Secondary),
           );
           messagePayload = {
             content: mentionContent || undefined,
-            allowedMentions: mentionContent ? { parse: ["everyone"] } : undefined,
+            allowedMentions: mentionContent
+              ? {
+                  parse: giveawaySettings.mentionTarget === "everyone" || giveawaySettings.mentionTarget === "here" ? ["everyone"] : [],
+                  roles: mentionRoleIds,
+                }
+              : undefined,
             embeds: [giveawayEmbed],
             components: [row],
           };
@@ -4627,7 +4668,12 @@ export async function registerRoutes(
 
           messagePayload = {
             content: mentionContent || undefined,
-            allowedMentions: mentionContent ? { parse: ["everyone"] } : undefined,
+            allowedMentions: mentionContent
+              ? {
+                  parse: giveawaySettings.mentionTarget === "everyone" || giveawaySettings.mentionTarget === "here" ? ["everyone"] : [],
+                  roles: mentionRoleIds,
+                }
+              : undefined,
             embeds: [giveawayEmbed],
             components: [],
           };
@@ -4724,7 +4770,7 @@ export async function registerRoutes(
         });
       }
 
-      if (featureKey === "giveaways" && giveawayReactionValue) {
+      if ((featureKey === "giveaways" || featureKey === "giveaway") && giveawayReactionValue) {
         try {
           if (hasBotToken) {
             await discordBotApiRequest(`/channels/${targetChannelId}/messages/${sentMessage.id}/reactions/${encodeURIComponent(giveawayReactionValue)}/@me`, {

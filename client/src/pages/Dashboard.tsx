@@ -359,6 +359,8 @@ type GiveawayMentionTarget = "none" | "everyone" | "here";
 
 interface DashboardGiveawaySettings {
   channelId: string;
+  giveawayName: string;
+  endsAtUnix: number | null;
   winnerCount: number;
   mentionTarget: GiveawayMentionTarget;
   dmWinners: boolean;
@@ -366,9 +368,11 @@ interface DashboardGiveawaySettings {
   inviteLink: string;
   entryMode: "button" | "reaction";
   reactionEmoji: string;
+  mentionRoleIds: string[];
   allowDailyEntries: boolean;
   allowReferralEntries: boolean;
   hideFromNonMembers: boolean;
+  showEntrantCount: boolean;
   allowedRoleIds: string[];
   ignoredRoleIds: string[];
 }
@@ -568,6 +572,8 @@ function createDefaultReactionRoleSetup(): DashboardReactionRoleSetup {
 function createDefaultGiveawaySettings(): DashboardGiveawaySettings {
   return {
     channelId: "",
+    giveawayName: "",
+    endsAtUnix: null,
     winnerCount: 1,
     mentionTarget: "none",
     dmWinners: true,
@@ -575,9 +581,11 @@ function createDefaultGiveawaySettings(): DashboardGiveawaySettings {
     inviteLink: "",
     entryMode: "button",
     reactionEmoji: "✋",
+    mentionRoleIds: [],
     allowDailyEntries: false,
     allowReferralEntries: false,
     hideFromNonMembers: false,
+    showEntrantCount: false,
     allowedRoleIds: [],
     ignoredRoleIds: [],
   };
@@ -1087,6 +1095,7 @@ export default function Dashboard() {
     const loadedGiveawaySettings = getGiveawaySettingsFromCustomCategoryPings(nextConfig.customCategoryPings || "{}");
     setGiveawaySettings({
       ...loadedGiveawaySettings,
+      mentionRoleIds: loadedGiveawaySettings.mentionRoleIds.filter((roleId) => validRoleIds.has(roleId)),
       allowedRoleIds: loadedGiveawaySettings.allowedRoleIds.filter((roleId) => validRoleIds.has(roleId)),
       ignoredRoleIds: loadedGiveawaySettings.ignoredRoleIds.filter((roleId) => validRoleIds.has(roleId)),
     });
@@ -2751,6 +2760,7 @@ export default function Dashboard() {
 
     const settings = value as Record<string, unknown>;
     const winnerCount = Number(settings.winnerCount || defaults.winnerCount);
+    const endsAtUnixRaw = Number(settings.endsAtUnix);
     const mentionTarget = typeof settings.mentionTarget === "string" ? settings.mentionTarget.toLowerCase() : defaults.mentionTarget;
     const rawEntryMode = typeof settings.entryMode === "string" ? settings.entryMode.toLowerCase() : "";
     const legacyUseButtons = settings.useButtons !== false;
@@ -2762,6 +2772,8 @@ export default function Dashboard() {
 
     return {
       channelId: typeof settings.channelId === "string" ? settings.channelId.trim() : defaults.channelId,
+      giveawayName: typeof settings.giveawayName === "string" ? settings.giveawayName.trim().slice(0, 120) : defaults.giveawayName,
+      endsAtUnix: Number.isFinite(endsAtUnixRaw) && endsAtUnixRaw > 0 ? Math.floor(endsAtUnixRaw) : null,
       winnerCount: Number.isFinite(winnerCount) ? Math.max(1, Math.min(10, Math.round(winnerCount))) : defaults.winnerCount,
       mentionTarget: mentionTarget === "everyone" || mentionTarget === "here" ? mentionTarget : "none",
       dmWinners: settings.dmWinners !== false,
@@ -2773,9 +2785,11 @@ export default function Dashboard() {
       reactionEmoji: typeof settings.reactionEmoji === "string" && settings.reactionEmoji.trim()
         ? settings.reactionEmoji.trim().slice(0, 100)
         : defaults.reactionEmoji,
+      mentionRoleIds: normalizeStringArray(settings.mentionRoleIds),
       allowDailyEntries: settings.allowDailyEntries === true,
       allowReferralEntries: settings.allowReferralEntries === true,
       hideFromNonMembers: settings.hideFromNonMembers === true,
+      showEntrantCount: settings.showEntrantCount === true,
       allowedRoleIds: normalizeStringArray(settings.allowedRoleIds),
       ignoredRoleIds: normalizeStringArray(settings.ignoredRoleIds),
     };
@@ -3070,7 +3084,7 @@ export default function Dashboard() {
     });
   };
 
-  const toggleGiveawayRoleList = (key: "allowedRoleIds" | "ignoredRoleIds", roleId: string) => {
+  const toggleGiveawayRoleList = (key: "mentionRoleIds" | "allowedRoleIds" | "ignoredRoleIds", roleId: string) => {
     setGiveawaySettings((prev) => {
       const current = prev[key] || [];
       return {
@@ -3644,6 +3658,10 @@ export default function Dashboard() {
     };
     categoryPingsObject[GIVEAWAYS_SETTINGS_KEY] = {
       channelId: giveawaySettings.channelId.trim(),
+      giveawayName: giveawaySettings.giveawayName.trim().slice(0, 120),
+      endsAtUnix: typeof giveawaySettings.endsAtUnix === "number" && giveawaySettings.endsAtUnix > 0
+        ? Math.floor(giveawaySettings.endsAtUnix)
+        : null,
       winnerCount: Math.max(1, Math.min(10, Math.round(Number(giveawaySettings.winnerCount) || 1))),
       mentionTarget: giveawaySettings.mentionTarget,
       dmWinners: giveawaySettings.dmWinners,
@@ -3651,10 +3669,12 @@ export default function Dashboard() {
       inviteLink: giveawaySettings.inviteLink.trim().slice(0, 400),
       entryMode: giveawaySettings.entryMode,
       reactionEmoji: giveawaySettings.reactionEmoji.trim().slice(0, 100) || "✋",
+      mentionRoleIds: filterToCurrentServerRoleIds(giveawaySettings.mentionRoleIds),
       useButtons: giveawaySettings.entryMode === "button",
       allowDailyEntries: giveawaySettings.allowDailyEntries,
       allowReferralEntries: giveawaySettings.allowReferralEntries,
       hideFromNonMembers: giveawaySettings.hideFromNonMembers,
+      showEntrantCount: giveawaySettings.showEntrantCount,
       allowedRoleIds: filterToCurrentServerRoleIds(giveawaySettings.allowedRoleIds),
       ignoredRoleIds: filterToCurrentServerRoleIds(giveawaySettings.ignoredRoleIds),
     };
@@ -5329,6 +5349,40 @@ export default function Dashboard() {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
+                  <Label>Giveaway Name</Label>
+                  <Input
+                    value={giveawaySettings.giveawayName}
+                    onChange={(event) => setGiveawaySettings((prev) => ({ ...prev, giveawayName: event.target.value.slice(0, 120) }))}
+                    placeholder="Summer Nitro Drop"
+                  />
+                  <p className="text-xs text-muted-foreground">Used as the default giveaway name and referral identifier.</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Ends On (Optional)</Label>
+                  <Input
+                    type="datetime-local"
+                    value={giveawaySettings.endsAtUnix
+                      ? (() => {
+                          const date = new Date(giveawaySettings.endsAtUnix * 1000);
+                          const pad = (value: number) => String(value).padStart(2, "0");
+                          return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+                        })()
+                      : ""}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      const parsed = value ? Math.floor(new Date(value).getTime() / 1000) : null;
+                      setGiveawaySettings((prev) => ({
+                        ...prev,
+                        endsAtUnix: parsed && Number.isFinite(parsed) ? parsed : null,
+                      }));
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">Posting is blocked if this timestamp is already in the past.</p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
                   <Label>Announcement Mention</Label>
                   <Select
                     value={giveawaySettings.mentionTarget}
@@ -5447,10 +5501,27 @@ export default function Dashboard() {
                     onCheckedChange={(checked) => setGiveawaySettings((prev) => ({ ...prev, hideFromNonMembers: checked }))}
                   />
                 </div>
+                <div className="flex items-center justify-between rounded-md border border-border/60 bg-background/40 px-3 py-2 md:col-span-2">
+                  <div>
+                    <p className="text-sm font-medium">Show Entrant Count</p>
+                    <p className="text-xs text-muted-foreground">Display the current number of entries on the giveaway message.</p>
+                  </div>
+                  <Switch
+                    checked={giveawaySettings.showEntrantCount}
+                    onCheckedChange={(checked) => setGiveawaySettings((prev) => ({ ...prev, showEntrantCount: checked }))}
+                  />
+                </div>
               </div>
 
               <div className="space-y-5">
                 {renderRoleSection("Giveaway Manager Roles", "modRoleIds", "module-settings-giveaway-role")}
+                {renderCustomRoleSection(
+                  "Announcement Role Pings",
+                  roles,
+                  giveawaySettings.mentionRoleIds,
+                  (roleId) => toggleGiveawayRoleList("mentionRoleIds", roleId),
+                  "module-settings-giveaway-mention-roles",
+                )}
                 {renderCustomRoleSection(
                   "Giveaway Allowed Roles (Optional)",
                   roles,
